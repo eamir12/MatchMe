@@ -1,0 +1,106 @@
+name: matchme
+description: A proximity-first connection network.
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.7.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  # --- RIVERPOD 3 & STATE MANAGEMENT ---
+  flutter_riverpod: ^3.0.3
+  connectivity_plus: ^7.0.0
+
+  # --- SUPABASE & BACKEND ---
+  supabase_flutter: ^2.10.3
+  http: ^1.2.2
+  flutter_dotenv: ^6.0.0
+
+  # --- LOCATION & BACKGROUND ---
+  geolocator: ^14.0.2
+  geocoding: ^3.0.0
+  background_fetch: ^1.2.1
+
+  # --- UI & UTILITIES ---
+  intl: ^0.20.2
+  shared_preferences: ^2.3.3
+  characters: ^1.4.0
+  image_picker: ^1.2.0
+  file_picker: ^10.3.8
+  photo_view: ^0.15.0
+  extended_image: ^10.0.1
+  image: ^4.5.4
+  flutter_improved_scrolling: ^0.0.3
+  web: ^1.0.0
+  uuid: ^4.5.1
+  collection: ^1.19.1
+  syncfusion_flutter_datepicker: ^31.2.18
+  url_launcher: ^6.3.0
+  riverpod_annotation: ^3.0.3
+
+  # --- ML KIT (ON-DEVICE TRANSLATION) ---
+  google_mlkit_translation: ^0.13.0
+  google_mlkit_language_id: ^0.13.0
+
+  # --- Locale Detection ---
+  devicelocale: ^0.8.2
+  device_info_plus: ^12.3.0
+  package_info_plus: ^8.0.0
+  crypto: ^3.0.2
+
+  # --- Local Database (Hive) ---
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  path_provider: ^2.1.5
+
+  cupertino_icons: ^1.0.8
+  google_fonts: ^6.3.0
+  auto_size_text: ^3.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+
+  # --- Build runner & Riverpod 3 Generators ---
+  build_runner: ^2.10.4
+  riverpod_generator: ^3.0.3
+
+  # This analyzer version is required by riverpod_generator
+  analyzer: ^8.4.0
+
+  # Riverpod annotations used by generators
+  # riverpod_annotation: ^3.0.3
+
+  # --- Supabase for seeding script ---
+  supabase: ^2.5.0
+
+  mockito: ^5.4.4
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - .env
+    - assets/images/
+
+  fonts:
+    - family: NotoColorEmoji
+      fonts:
+        - asset: assets/fonts/NotoColorEmoji.ttf
+    - family: NotoSansHebrew
+      fonts:
+        - asset: assets/fonts/NotoSansHebrew-Regular.ttf
+    - family: NotoSansArabic
+      fonts:
+        - asset: assets/fonts/NotoSansArabic-Regular.ttf
+    - family: NotoSansTC
+      fonts:
+        - asset: assets/fonts/NotoSansTC-Regular.ttf

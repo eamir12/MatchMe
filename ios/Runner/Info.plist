@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+    <string>MatchMe uses your location in the background to find potential matches nearby, even when the app is closed.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>MatchMe uses your location to find potential matches nearby while you're using the app.</string>
+
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>location</string>
+        <string>processing</string>
+        <string>remote-notification</string>
+    </array>
+
+    <key>NSPhotoLibraryUsageDescription</key>
+	<string>Allow access to photo library to upload event tickets.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Allow access to camera to take photos of event tickets.</string>
+
+</dict>
+</plist>

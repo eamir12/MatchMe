@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+echo "Pre-commit: running dart fixes and flutter analyze"
+
+if ! command -v dart >/dev/null 2>&1; then
+  echo "ERROR: 'dart' not found in PATH. Install Dart SDK and ensure 'dart' is available." >&2
+  exit 1
+fi
+
+if ! command -v flutter >/dev/null 2>&1; then
+  echo "ERROR: 'flutter' not found in PATH. Install Flutter and ensure 'flutter' is available." >&2
+  exit 1
+fi
+
+echo "Running: dart fix --apply"
+dart fix --apply
+
+# Re-stage any changes made by dart fix
+git add -A
+
+echo "Running: flutter analyze"
+if ! flutter analyze; then
+  echo "flutter analyze failed — please fix analyzer errors before committing." >&2
+  exit 1
+fi
+
+echo "Pre-commit checks passed."
+exit 0

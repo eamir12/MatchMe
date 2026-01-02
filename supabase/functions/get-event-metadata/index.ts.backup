@@ -1,0 +1,120 @@
+// supabase/functions/get-event-metadata/index.ts
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
+import { DOMParser } from "https://deno.land/x/deno_dom@v0.1.36-alpha/deno-dom-wasm.ts"
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+}
+
+// Helper to get all visible text from the HTML body
+function extractMainText(doc: any): string {
+  try {
+    doc.querySelectorAll('script, style, nav, footer, header').forEach((el: any) => el.remove());
+    let text = doc.querySelector('body')?.textContent || "";
+    return text.replace(/\s+/g, ' ').trim();
+  } catch (e) {
+    console.error("Error extracting text:", e.message);
+    return "";
+  }
+}
+
+// Helper to call the Google AI API
+async function callGemini(text: string, apiKey: string) {
+  
+  // Use the model that we previously confirmed is correct
+  const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  
+  // --- THIS IS THE FIX ---
+  // The new prompt is much more specific and handles multilingual text.
+  const prompt = `
+    You are an expert event data parser. Your task is to extract the event name, venue/location, and a raw date/time string from the given text.
+    Return ONLY a valid JSON object with the keys "title", "location", and "dateString".
+
+    - "title": The full name of the event. Be concise. 
+      Example 1: "HalloQueen w/ The Electric Landladies at Tractor Tavern..." should be "HalloQueen w/ The Electric Landladies".
+      Example 2: "מסיבת סוכות" should be "מסיבת סוכות".
+    - "location": The venue or address.
+      Example 1: "Tractor Tavern in Seattle, WA" should be "Tractor Tavern, Seattle, WA".
+      Example 2: "אוזן, קינג ג'ורג' 48 תל אביב" should be "אוזן, קינג ג'ורג' 48 תל אביב".
+      If not found, set to null.
+    - "dateString": The raw text for the event's date and time.
+      Example 1: "Friday, October 31"
+      Example 2: "שישי 31.10 | פתיחת דלתות 22:30"
+      If not found, set to null.
+
+    Do not try to parse the date into an ISO string. Only extract the raw text.
+    
+    Text to parse: "${text}"
+  `;
+  // --- END FIX ---
+
+  const body = {
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      "responseMimeType": "application/json", // Correct spelling
+    }
+  };
+  
+  const res = await fetch(GEMINI_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Gemini Text API failed: ${res.status} ${await res.text()}`);
+  const data = await res.json();
+  return JSON.parse(data.candidates[0].content.parts[0].text);
+}
+
+// --- Main Function ---
+serve(async (req) => {
+  console.log("--- get-event-metadata function invoked ---");
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+
+  try {
+    const { url } = await req.json();
+    if (!url) throw new Error('No URL provided');
+    console.log("Parsing URL:", url);
+
+    const API_KEY = Deno.env.get('GOOGLE_AI_API_KEY');
+    if (!API_KEY) throw new Error('API key not set in Supabase secrets');
+
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      }
+    });
+    
+    if (!res.ok) throw new Error(`Failed to fetch URL: ${res.status}`);
+    
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    if (!doc) throw new Error('Failed to parse HTML');
+
+    const pageText = extractMainText(doc);
+    if (pageText.length < 50) {
+      console.log("Not enough text on page to parse, sending title only.");
+      const title = doc.querySelector('title')?.textContent.trim() || 'Event from Link';
+      return new Response(JSON.stringify({ title: title, location: null, dateString: null }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    console.log("Sending text to Gemini for parsing...");
+    const parsedData = await callGemini(pageText.substring(0, 8000), API_KEY); 
+
+    console.log("Gemini returned:", parsedData);
+
+    return new Response(JSON.stringify(parsedData), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+
+  } catch (e) {
+    console.error("Function Error:", e.message);
+    return new Response(JSON.stringify({ error: e.message }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+})

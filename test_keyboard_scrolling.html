@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Keyboard Scrolling Test</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            height: 200vh; /* Make page scrollable */
+            background: linear-gradient(to bottom, #f0f0f0, #e0e0e0);
+        }
+        
+        .content {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .instructions {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            border-left: 4px solid #2196f3;
+        }
+        
+        .test-area {
+            height: 400px;
+            overflow: auto;
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin: 20px 0;
+        }
+        
+        input, textarea {
+            margin: 10px 0;
+            padding: 8px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        
+        .key-test {
+            display: inline-block;
+            background: #f5f5f5;
+            padding: 5px 10px;
+            border-radius: 4px;
+            margin: 5px;
+            border: 1px solid #ddd;
+        }
+    </style>
+</head>
+<body>
+    <div class="content">
+        <h1>Keyboard Scrolling Test</h1>
+        
+        <div class="instructions">
+            <h3>Test Instructions:</h3>
+            <p><strong>Arrow Keys:</strong> Should scroll the page up/down/left/right</p>
+            <p><strong>Page Up/Down:</strong> Should scroll faster</p>
+            <p><strong>Home/End:</strong> Should jump to top/bottom</p>
+            <p><strong>In Inputs:</strong> Arrow keys should work normally for text navigation</p>
+        </div>
+
+        <div class="test-area" id="scrollArea">
+            <h3>Scrollable Test Area</h3>
+            <p>This area has overflow: auto and should respond to keyboard scrolling.</p>
+            
+            <div style="height: 600px; background: linear-gradient(to bottom, #fff, #f0f0f0);">
+                <p>Long content to make this area scrollable...</p>
+                <p>Use arrow keys to scroll within this area.</p>
+                <p>Page Up/Down should also work here.</p>
+            </div>
+        </div>
+
+        <div>
+            <h3>Form Inputs Test</h3>
+            <p>Arrow keys should work normally in these inputs (move cursor, not scroll page):</p>
+            
+            <input type="text" placeholder="Type here and use arrow keys to move cursor">
+            <textarea rows="4" placeholder="Multi-line text area - arrow keys should move cursor"></textarea>
+            <select>
+                <option>Option 1</option>
+                <option>Option 2</option>
+                <option>Option 3</option>
+            </select>
+        </div>
+
+        <div style="height: 100vh; background: #f9f9f9; padding: 20px;">
+            <h3>Long Page Content</h3>
+            <p>This creates a long page to test scrolling. Use arrow keys to navigate.</p>
+            
+            <div class="key-test">Up Arrow (↑)</div>
+            <div class="key-test">Down Arrow (↓)</div>
+            <div class="key-test">Left Arrow (←)</div>
+            <div class="key-test">Right Arrow (→)</div>
+            <div class="key-test">Page Up</div>
+            <div class="key-test">Page Down</div>
+            <div class="key-test">Home</div>
+            <div class="key-test">End</div>
+        </div>
+    </div>
+
+    <script>
+        // Simple keyboard event listener to demonstrate the functionality
+        document.addEventListener('keydown', function(event) {
+            const key = event.key;
+            const target = event.target;
+            
+            // Only handle scrolling when not in form elements
+            if (target.tagName === 'INPUT' || 
+                target.tagName === 'TEXTAREA' || 
+                target.tagName === 'SELECT') {
+                console.log('Arrow key in input - allowing default behavior');
+                return;
+            }
+
+            let handled = false;
+            
+            switch (key) {
+                case 'ArrowDown':
+                    window.scrollBy(0, 100);
+                    handled = true;
+                    break;
+                case 'ArrowUp':
+                    window.scrollBy(0, -100);
+                    handled = true;
+                    break;
+                case 'ArrowLeft':
+                    window.scrollBy(-100, 0);
+                    handled = true;
+                    break;
+                case 'ArrowRight':
+                    window.scrollBy(100, 0);
+                    handled = true;
+                    break;
+                case 'PageDown':
+                    window.scrollBy(0, window.innerHeight * 0.8);
+                    handled = true;
+                    break;
+                case 'PageUp':
+                    window.scrollBy(0, -window.innerHeight * 0.8);
+                    handled = true;
+                    break;
+                case 'Home':
+                    window.scrollTo(0, 0);
+                    handled = true;
+                    break;
+                case 'End':
+                    window.scrollTo(0, document.body.scrollHeight);
+                    handled = true;
+                    break;
+            }
+            
+            if (handled) {
+                event.preventDefault();
+                console.log('Handled keyboard scroll:', key);
+            }
+        });
+
+        console.log('Keyboard scrolling test loaded. Try using arrow keys!');
+    </script>
+</body>
+</html>

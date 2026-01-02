@@ -1,0 +1,4 @@
+{
+    "cmake.ignoreCMakeListsMissing": true,
+    "chat.agent.maxRequests": 600
+}

@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Geolocation Test (enableHighAccuracy)</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;margin:16px}
+    .box{border:1px solid #ddd;padding:12px;border-radius:8px;margin-bottom:12px}
+    .warn{color:#a33}
+    table{width:100%;border-collapse:collapse}
+    td,th{padding:6px;border-bottom:1px solid #eee}
+    .mono{font-family:monospace}
+  </style>
+</head>
+<body>
+  <h2>Geolocation Test — Browser (Chrome / Edge)</h2>
+  <p>This page continuously requests high-accuracy location with <code>enableHighAccuracy: true</code> and displays raw vs smoothed values. Open Google Maps in a separate tab to compare.</p>
+
+  <div class="box">
+    <strong>Status:</strong> <span id="status">idle</span>
+    <br>
+    <strong>Permission:</strong> <span id="perm">unknown</span>
+  </div>
+
+  <div class="box">
+    <h3>Latest Readings</h3>
+    <table>
+      <tr><th></th><th>Latitude</th><th>Longitude</th><th>Accuracy (m)</th><th>Time</th></tr>
+      <tr><td>Raw</td><td id="raw-lat" class="mono">—</td><td id="raw-lng" class="mono">—</td><td id="raw-acc">—</td><td id="raw-ts">—</td></tr>
+      <tr><td>Smoothed (MA)</td><td id="filt-lat" class="mono">—</td><td id="filt-lng" class="mono">—</td><td id="filt-acc">—</td><td id="filt-ts">—</td></tr>
+    </table>
+    <p><strong>Velocity:</strong> <span id="velocity">—</span> m/s</p>
+    <p id="advice"></p>
+  </div>
+
+  <div class="box">
+    <h3>Recent History (last 10)</h3>
+    <pre id="history" style="max-height:220px;overflow:auto;margin:0"></pre>
+  </div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const permEl = document.getElementById('perm');
+    const rawLat = document.getElementById('raw-lat');
+    const rawLng = document.getElementById('raw-lng');
+    const rawAcc = document.getElementById('raw-acc');
+    const rawTs = document.getElementById('raw-ts');
+    const filtLat = document.getElementById('filt-lat');
+    const filtLng = document.getElementById('filt-lng');
+    const filtAcc = document.getElementById('filt-acc');
+    const filtTs = document.getElementById('filt-ts');
+    const historyEl = document.getElementById('history');
+    const velocityEl = document.getElementById('velocity');
+    const adviceEl = document.getElementById('advice');
+
+    let watchId = null;
+    const opts = { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 };
+
+    // Simple moving average smoother (last N points)
+    const N = 5;
+    const buf = [];
+
+    function updateUI(raw){
+      rawLat.textContent = raw.latitude.toFixed(6);
+      rawLng.textContent = raw.longitude.toFixed(6);
+      rawAcc.textContent = Math.round(raw.accuracy);
+      rawTs.textContent = new Date(raw.timestamp).toLocaleTimeString();
+
+      // push to buffer
+      buf.push(raw);
+      if (buf.length > 10) buf.shift();
+
+      // compute moving average over last N
+      const window = buf.slice(-N);
+      const sum = window.reduce((acc, p) => ({lat: acc.lat + p.latitude, lng: acc.lng + p.longitude, accm: acc.accm + p.accuracy}), {lat:0,lng:0,accm:0});
+      const mLat = sum.lat / window.length;
+      const mLng = sum.lng / window.length;
+      const mAcc = sum.accm / window.length;
+
+      filtLat.textContent = mLat.toFixed(6);
+      filtLng.textContent = mLng.toFixed(6);
+      filtAcc.textContent = Math.round(mAcc);
+      filtTs.textContent = new Date(window[window.length-1].timestamp).toLocaleTimeString();
+
+      // compute velocity between last two raw points if available
+      if (buf.length >= 2) {
+        const a = buf[buf.length-2];
+        const b = buf[buf.length-1];
+        const dt = (b.timestamp - a.timestamp)/1000;
+        const d = haversine(a.latitude,a.longitude,b.latitude,b.longitude);
+        const v = dt > 0 ? (d/dt) : 0;
+        velocityEl.textContent = v.toFixed(2);
+      }
+
+      // history
+      historyEl.textContent = buf.slice().reverse().map(p => `${new Date(p.timestamp).toISOString()}  ${p.latitude.toFixed(6)}, ${p.longitude.toFixed(6)}  acc:${Math.round(p.accuracy)}m`).join('\n');
+
+      // advice
+      if (raw.accuracy > 50) {
+        adviceEl.innerHTML = '<span class="warn">Accuracy poor (&gt;50m). Ensure OS location is enabled and allow precise location in browser settings. Try moving closer to windows / enabling Wi‑Fi.</span>';
+      } else {
+        adviceEl.textContent = '';
+      }
+    }
+
+    function haversine(lat1,lon1,lat2,lon2){
+      const toRad = v => v * Math.PI / 180;
+      const R = 6371000;
+      const dLat = toRad(lat2-lat1);
+      const dLon = toRad(lon2-lon1);
+      const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+
+    function startWatch(){
+      if (!('geolocation' in navigator)) {
+        statusEl.textContent = 'Geolocation API not available';
+        return;
+      }
+      statusEl.textContent = 'starting...';
+
+      // Query permission state (if supported)
+      if (navigator.permissions && navigator.permissions.query) {
+        navigator.permissions.query({name:'geolocation'}).then(p => {
+          permEl.textContent = p.state;
+          p.onchange = () => permEl.textContent = p.state;
+        }).catch(()=>{});
+      }
+
+      try {
+        watchId = navigator.geolocation.watchPosition(pos => {
+          statusEl.textContent = 'running';
+          const coords = pos.coords;
+          const entry = {
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+            accuracy: coords.accuracy || 1,
+            timestamp: pos.timestamp || Date.now()
+          };
+          updateUI(entry);
+        }, err => {
+          statusEl.textContent = 'error: ' + err.message;
+        }, opts);
+      } catch (e) {
+        statusEl.textContent = 'exception: ' + e;
+      }
+    }
+
+    function stopWatch(){
+      if (watchId != null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null; statusEl.textContent = 'stopped';
+      }
+    }
+
+    // start automatically after a short delay so user can read instructions
+    setTimeout(startWatch, 500);
+
+  </script>
+</body>
+</html>

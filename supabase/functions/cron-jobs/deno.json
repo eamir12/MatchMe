@@ -1,0 +1,8 @@
+{
+  "imports": {
+    "std/": "https://deno.land/std@0.168.0/",
+    "supabase": "https://esm.sh/@supabase/supabase-js@2",
+    "upstash_redis": "https://esm.sh/@upstash/redis@1.20.6",
+    "rrule-deno": "https://esm.sh/rrule@2.6.4"
+  }
+}
