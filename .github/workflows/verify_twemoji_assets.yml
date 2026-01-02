@@ -1,0 +1,32 @@
+name: Verify Twemoji Assets
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  check-assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 'stable'
+      - name: Install deps
+        run: flutter pub get
+      - name: Build web
+        run: flutter build web --release
+      - name: Verify twemoji assets present
+        run: |
+          if [ ! -d "assets/twemoji" ]; then
+            echo "assets/twemoji not found" >&2
+            exit 1
+          fi
+          COUNT=$(ls -1 assets/twemoji | wc -l)
+          echo "Found $COUNT files in assets/twemoji"
+          if [ "$COUNT" -lt 1 ]; then
+            echo "No twemoji assets found in assets/twemoji" >&2
+            exit 1
+          fi

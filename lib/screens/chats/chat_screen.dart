@@ -18,9 +18,11 @@ import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/screens/chats/report_dialog.dart';
 import 'package:matchme/screens/matches/match_profile_screen.dart';
 import 'package:matchme/widgets/signed_image.dart';
+import 'package:matchme/widgets/emoji_widget.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/foundation.dart' as foundation;
+import 'package:hive/hive.dart';
 
 final supabase = Supabase.instance.client;
 
@@ -40,6 +42,52 @@ bool _isRtl(String text) {
   return false;
 }
 
+// A small curated emoji list used on web for the quick grid; kept top-level to avoid
+// scoping issues when used by other helpers in this file.
+const List<String> _webEmojis = [
+  '😀',
+  '😁',
+  '😂',
+  '🤣',
+  '😅',
+  '😊',
+  '😍',
+  '😘',
+  '😎',
+  '🤩',
+  '😇',
+  '🙂',
+  '🙃',
+  '😉',
+  '😭',
+  '😢',
+  '😤',
+  '😡',
+  '🤬',
+  '😱',
+  '😴',
+  '🤔',
+  '🤗',
+  '🤝',
+  '👍',
+  '👎',
+  '👏',
+  '🙏',
+  '🔥',
+  '🌟',
+  '💯',
+  '✅',
+  '❌',
+  '❤️',
+  '💔',
+  '💖',
+  '✨',
+  '🎉',
+  '🎶',
+  '🌹',
+  '☀️',
+  '🌧️',
+];
 
 class ChatScreen extends ConsumerStatefulWidget {
   final String matchId;
@@ -67,50 +115,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _isSending = false;
   bool _showEmojiPicker = false;
 
-  static const List<String> _webEmojis = [
-    '😀',
-    '😁',
-    '😂',
-    '🤣',
-    '😅',
-    '😊',
-    '😍',
-    '😘',
-    '😎',
-    '🤩',
-    '😇',
-    '🙂',
-    '🙃',
-    '😉',
-    '😭',
-    '😢',
-    '😤',
-    '😡',
-    '🤬',
-    '😱',
-    '😴',
-    '🤔',
-    '🤗',
-    '🤝',
-    '👍',
-    '👎',
-    '👏',
-    '🙏',
-    '🔥',
-    '🌟',
-    '💯',
-    '✅',
-    '❌',
-    '❤️',
-    '💔',
-    '💖',
-    '✨',
-    '🎉',
-    '🎶',
-    '🌹',
-    '☀️',
-    '🌧️',
-  ];
+
 
   @override
   void initState() {
@@ -548,20 +553,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             spans.add(TextSpan(text: buffer.toString(), style: style));
             buffer.clear();
           }
-          final codepoints = _emojiToCodepoints(emoji);
-          final url =
-              'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/$codepoints.png';
+          // Use glyph-first widget (WhatsApp-style): EmojiWidget prefers native glyphs
+          // and will fall back to bundled assets or CDN images if the glyph is not available.
           spans.add(
             WidgetSpan(
               alignment: PlaceholderAlignment.middle,
-              child: Image.network(
-                url,
-                width: style.fontSize != null ? style.fontSize! * 1.2 : 18,
-                height: style.fontSize != null ? style.fontSize! * 1.2 : 18,
-                errorBuilder: (context, error, stackTrace) {
-                  return Text(emoji, style: style);
-                },
-              ),
+              child: EmojiWidget(emoji: emoji, size: style.fontSize ?? 14),
             ),
           );
           i += emoji.length;
@@ -1151,7 +1148,7 @@ class _MessageBubble extends ConsumerWidget {
     return GestureDetector(
       onLongPress: () async {
         // Open the reaction picker for this message
-        await showReactionPicker(context, ref, initialMatchId: matchId, initialMessageId: message.id);
+        await showReactionPicker(context, ref, initialMatchId: matchId, initialMessageId: message.id, allEmojis: _webEmojis);
       },
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4.0),
@@ -1310,25 +1307,29 @@ class ReactionRow extends ConsumerWidget {
       entries.insert(0, MapEntry(message.myReaction!, 1));
     }
 
+    debugPrint('ReactionRow build for message ${message.id}: myReaction=${message.myReaction} summary=${message.reactionSummary}');
     return Wrap(
       spacing: 8,
       children: entries.map((e) {
         final emoji = e.key;
-        final count = e.value;
         final bool isMine = message.myReaction == emoji;
         return GestureDetector(
           onTap: () async {
+            // Show who reacted with this emoji
+            await showReactorsSheet(context, ref, matchId, message.id, emoji);
+          },
+          onLongPress: () async {
+            // Long-press toggles the reaction for quick changes
+            final scaffold = ScaffoldMessenger.maybeOf(context);
             try {
-              // Toggle: if already mine, clear; otherwise set
               final newReaction = isMine ? null : emoji;
               await ref.read(chatServiceProvider).setReaction(
                 matchId: matchId,
                 messageId: message.id,
                 reaction: newReaction,
               );
+              ref.invalidate(chatMessagesProvider(matchId));
             } catch (err) {
-              // ignore: use_build_context_synchronously
-            final scaffold = ScaffoldMessenger.maybeOf(context);
               if (scaffold != null) scaffold.showSnackBar(SnackBar(content: Text(l10n.getString('errorGeneric'))));
             }
           },
@@ -1342,9 +1343,8 @@ class ReactionRow extends ConsumerWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(emoji, style: const TextStyle(fontSize: 14)),
-                const SizedBox(width: 6),
-                Text(count.toString(), style: Theme.of(context).textTheme.bodySmall),
+                EmojiWidget(emoji: emoji, size: 14),
+                // Count is intentionally hidden for two-user chats where each user has at most one reaction
               ],
             ),
           ),
@@ -1354,7 +1354,7 @@ class ReactionRow extends ConsumerWidget {
   }
 }
 
-Future<void> showReactionPicker(BuildContext context, WidgetRef ref, {String? initialMatchId, String? initialMessageId}) async {
+Future<void> showReactionPicker(BuildContext context, WidgetRef ref, {String? initialMatchId, String? initialMessageId, List<String>? allEmojis}) async {
   final l10n = ref.read(localizationProvider);
   final matchId = initialMatchId ?? '';
   final messageId = initialMessageId ?? '';
@@ -1370,6 +1370,133 @@ Future<void> showReactionPicker(BuildContext context, WidgetRef ref, {String? in
             children: [
               Text(l10n.getString('chatReact'), style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 12),
+
+              // Frequently used emojis row (async) + a "+" button to open the full emoji picker
+              FutureBuilder<List<String>>(
+                future: _getTopUsedEmojis(6),
+                builder: (context, snapshot) {
+                  final frequent = snapshot.data ?? <String>[];
+                  return Row(
+                    children: [
+                      Expanded(
+                        child: SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: Row(
+                            children: [
+                              for (final emoji in frequent)
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 8.0),
+                                  child: InkWell(
+                                    onTap: () async {
+                                      final navigator = Navigator.of(context);
+                                      final chatSvc = ref.read(chatServiceProvider);
+                                      navigator.pop();
+                                      await _recordEmojiUse(emoji);
+                                      try {
+                                        await chatSvc.setReaction(
+                                          matchId: matchId,
+                                          messageId: messageId,
+                                          reaction: emoji,
+                                        );
+                                      } catch (_) {}
+                                    },
+                                    child: Container(
+                                      width: 48,
+                                      height: 48,
+                                      decoration: BoxDecoration(
+                                        color: Theme.of(context).cardColor,
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      alignment: Alignment.center,
+                                      child: EmojiWidget(emoji: emoji, size: 24),
+                                    ),
+                                  ),
+                                ),
+                              // Always show a plus to open full emoji set
+                              InkWell(
+                                onTap: () async {
+                                  // Open full emoji picker (modal)
+                                  final selected = await showModalBottomSheet<String>(
+                                    context: context,
+                                    builder: (context) {
+                                      return SafeArea(
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(12.0),
+                                          child: Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Text(l10n.getString('chatAllEmojis'), style: Theme.of(context).textTheme.titleMedium),
+                                              const SizedBox(height: 12),
+                                              ConstrainedBox(
+                                                constraints: BoxConstraints(
+                                                  // Limit the grid's height to a fraction of the screen to avoid overflow
+                                                  maxHeight: MediaQuery.of(context).size.height * 0.66,
+                                                ),
+                                                child: GridView.count(
+                                                  crossAxisCount: 8,
+                                                  crossAxisSpacing: 6,
+                                                  mainAxisSpacing: 6,
+                                                  shrinkWrap: true,
+                                                  children: (allEmojis ?? _defaultReactions).map((emoji) {
+                                                    return InkWell(
+                                                      onTap: () async {
+                                                        // Return the selected emoji
+                                                        Navigator.of(context).pop(emoji);
+                                                      },
+                                                      child: Container(
+                                                        alignment: Alignment.center,
+                                                        child: EmojiWidget(emoji: emoji, size: 22),
+                                                      ),
+                                                    );
+                                                  }).toList(),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  );
+
+                                  if (selected != null) {
+                                    // Avoid using BuildContext across async gaps — ensure widget is still mounted
+                                    if (!context.mounted) return;
+                                    final navigator = Navigator.of(context);
+                                    await _recordEmojiUse(selected);
+                                    final chatSvc = ref.read(chatServiceProvider);
+                                    try {
+                                      await chatSvc.setReaction(
+                                        matchId: matchId,
+                                        messageId: messageId,
+                                        reaction: selected,
+                                      );
+                                      navigator.pop(); // close main picker
+                                    } catch (_) {}
+                                  }
+                                },
+                                child: Container(
+                                  width: 48,
+                                  height: 48,
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(context).cardColor,
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  alignment: Alignment.center,
+                                  child: const Icon(Icons.add),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+
+              const SizedBox(height: 12),
+
+              // Default reactions (quick access)
               Wrap(
                 spacing: 12,
                 runSpacing: 12,
@@ -1379,6 +1506,19 @@ Future<void> showReactionPicker(BuildContext context, WidgetRef ref, {String? in
                       final navigator = Navigator.of(context);
                       final chatSvc = ref.read(chatServiceProvider);
                       navigator.pop();
+                      await _recordEmojiUse(emoji);
+
+                      // Diagnostic: log emoji and codepoints selected from the picker
+                      try {
+                        final cps = emoji.runes
+                            .map((r) => r.toRadixString(16).toUpperCase())
+                            .map((h) => 'U+$h')
+                            .join(' ');
+                        debugPrint('Reaction picker selected: "$emoji"  Codepoints: $cps');
+                      } catch (e) {
+                        debugPrint('Failed to compute reaction codepoints: $e');
+                      }
+
                       try {
                         await chatSvc.setReaction(
                           matchId: matchId,
@@ -1398,7 +1538,7 @@ Future<void> showReactionPicker(BuildContext context, WidgetRef ref, {String? in
                         borderRadius: BorderRadius.circular(12),
                       ),
                       alignment: Alignment.center,
-                      child: Text(emoji, style: const TextStyle(fontSize: 28)),
+                      child: EmojiWidget(emoji: emoji, size: 28),
                     ),
                   );
                 }).toList(),
@@ -1409,6 +1549,93 @@ Future<void> showReactionPicker(BuildContext context, WidgetRef ref, {String? in
       );
     },
   );
+
+  // end showModalBottomSheet
+  return;
+
+}
+
+/// Show a bottom sheet listing users who reacted with a specific emoji on a message.
+Future<void> showReactorsSheet(BuildContext context, WidgetRef ref, String matchId, String messageId, String emoji) async {
+  final l10n = ref.read(localizationProvider);
+  final chatSvc = ref.read(chatServiceProvider);
+  final reactors = await chatSvc.getReactors(messageId: messageId, reaction: emoji);
+  if (!context.mounted) return;
+  final currentUserId = supabase.auth.currentUser?.id;
+
+  await showModalBottomSheet<void>(
+    context: context,
+    builder: (context) {
+      return SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(12.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Text(emoji, style: Theme.of(context).textTheme.titleLarge),
+                  const Spacer(),
+                  Text(l10n.getString('chatReactors'), style: Theme.of(context).textTheme.bodySmall),
+                ],
+              ),
+              const SizedBox(height: 8),
+              if (reactors.isEmpty) Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12.0),
+                child: Text(l10n.getString('chatNoReactors')),
+              ),
+              if (reactors.isNotEmpty)
+                SizedBox(
+                  height: (reactors.length * 72).clamp(72, 360).toDouble(),
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: reactors.length,
+                    separatorBuilder: (context, _) => const Divider(height: 1),
+                    itemBuilder: (context, index) {
+                      final r = reactors[index];
+                      final isMe = r['user_id'] == currentUserId;
+                      final name = r['display_name'] ?? (isMe ? l10n.getString('you') : null) ?? r['user_id'];
+                      final photo = r['photo'] as String?;
+                      return ListTile(
+                        leading: photo != null
+                            ? SignedImage(source: photo, width: 40, height: 40, fit: BoxFit.cover)
+                            : Icon(Icons.person),
+                        title: Text(name + (isMe ? ' (${l10n.getString('you')})' : '')),
+                      );
+                    },
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+}
+
+// ---- Emoji usage persistence helpers (simple Hive-backed counts) ----
+Future<void> _recordEmojiUse(String emoji) async {
+  try {
+    final box = await Hive.openBox<int>('emoji_usage');
+    final current = box.get(emoji) ?? 0;
+    await box.put(emoji, current + 1);
+  } catch (e) {
+    debugPrint('Failed to record emoji usage: $e');
+  }
+}
+
+Future<List<String>> _getTopUsedEmojis(int limit) async {
+  try {
+    final box = await Hive.openBox<int>('emoji_usage');
+    final entries = box.toMap().entries
+        .map<MapEntry<String, int>>((e) => MapEntry(e.key, e.value))
+        .toList();
+    entries.sort((a, b) => b.value.compareTo(a.value));
+    return entries.take(limit).map((e) => e.key).toList();
+  } catch (e) {
+    debugPrint('Failed to get top used emojis: $e');
+    return <String>[];
+  }
 }
 
 /// Typing row widget updated to use localization (consumer) and keep the animated dots.

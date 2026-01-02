@@ -18,6 +18,12 @@
    <link rel="preconnect" href="https://fonts.googleapis.com">
    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;700&family=Noto+Sans+Hebrew:wght@400;700&family=Noto+Sans+Arabic:wght@400;700&family=Noto+Sans+TC:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    /* Ensure web uses Noto font families (and fallbacks) so missing glyphs are covered */
+    html, body {
+      font-family: 'Noto Sans', 'Noto Sans Hebrew', 'Noto Sans Arabic', 'Noto Sans TC', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    }
+  </style>
   <base href="$FLUTTER_BASE_HREF">
 
   <meta charset="UTF-8">
@@ -50,6 +56,43 @@
       } catch (e) {
         console.warn('Intl.Segmenter polyfill loader failed', e);
       }
+    })();
+  </script>
+
+  <script src="https://twemoji.maxcdn.com/v/latest/twemoji.min.js"></script>
+  <script>
+    (function() {
+      // Twemoji parse helper: parse existing nodes and observe new ones
+      function parseTwemoji(root) {
+        try {
+          if (window.twemoji && root) {
+            // Use SVG for crisp, scalable emoji rendering
+            window.twemoji.parse(root, {folder: 'svg', ext: '.svg'});
+          }
+        } catch (e) {
+          console.warn('twemoji parse failed', e);
+        }
+      }
+
+      // Expose helper so Flutter web code can call it if desired
+      window.twemojiParse = function() { parseTwemoji(document.body); };
+
+      document.addEventListener('DOMContentLoaded', function() { parseTwemoji(document.body); });
+
+      // Observe DOM mutations so that dynamically-added emoji (e.g., from tooltips/overlays)
+      // are also replaced with Twemoji images when possible.
+      var observer = new MutationObserver(function(mutations) {
+        mutations.forEach(function(m) {
+          if (m.addedNodes && m.addedNodes.length) {
+            m.addedNodes.forEach(function(node) {
+              if (node.nodeType === Node.ELEMENT_NODE) {
+                parseTwemoji(node);
+              }
+            });
+          }
+        });
+      });
+      observer.observe(document.body, {childList: true, subtree: true});
     })();
   </script>
 

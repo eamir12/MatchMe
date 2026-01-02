@@ -39,7 +39,8 @@ BEGIN
   UPDATE public.chat_messages SET reaction_summary = summary WHERE id = p_message_id;
   RETURN summary;
 END;
-$$ LANGUAGE plpgsql STABLE;
+$$ LANGUAGE plpgsql VOLATILE; -- Must be VOLATILE because it performs UPDATEs
+
 
 -- Trigger function to update summary on changes
 CREATE OR REPLACE FUNCTION public.handle_message_reactions_change() RETURNS trigger AS $$

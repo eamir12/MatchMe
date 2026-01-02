@@ -556,12 +556,33 @@ class LocalDbService {
       final oldReactionSummary = oldMsg?['reaction_summary'];
       final oldMyReaction = oldMsg?['my_reaction'] as String?;
 
+      // Prefer incoming server-side values when present (e.g., updated reaction_summary)
+      // Fall back to old local values only when incoming doesn't provide them.
+      // Normalize reaction_summary keys: remove empty keys and coerce values to int
+      Map<String, int>? normalizeReactionSummary(dynamic rs) {
+        if (rs == null) return null;
+        if (rs is Map) {
+          final out = <String,int>{};
+          rs.forEach((k, v) {
+            final key = (k?.toString() ?? '').trim();
+            if (key.isEmpty) return; // drop empty keys
+            final intVal = (v is num) ? v.toInt() : int.tryParse(v?.toString() ?? '') ?? 0;
+            if (intVal > 0) out[key] = intVal;
+          });
+          return out;
+        }
+        return null;
+      }
+
+      final mergedReactionSummary = normalizeReactionSummary(incomingMsg['reaction_summary']) ?? normalizeReactionSummary(oldReactionSummary);
+      final mergedMyReaction = (incomingMsg['my_reaction'] == '' ? null : (incomingMsg['my_reaction'] ?? oldMyReaction));
+
       messageMap[incomingMsg['id'].toString()] = {
         ...incomingMsg,
         'translated_text': oldTranslation,
         'translated_lang': oldTranslationLang,
-        'reaction_summary': oldReactionSummary ?? incomingMsg['reaction_summary'],
-        'my_reaction': oldMyReaction ?? incomingMsg['my_reaction'],
+        'reaction_summary': mergedReactionSummary,
+        'my_reaction': mergedMyReaction,
       };
     }
 
@@ -572,6 +593,22 @@ class LocalDbService {
       final bDate = DateTime.tryParse(b['created_at'] ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
       return aDate.compareTo(bDate);
     });
+
+    // Normalize any reaction_summary in the combined list before persisting to avoid
+    // storing empty-string keys or non-integer counts.
+    for (final msg in combinedList) {
+      final rs = msg['reaction_summary'];
+      if (rs is Map) {
+        final cleaned = <String,int>{};
+        rs.forEach((k, v) {
+          final key = (k?.toString() ?? '').trim();
+          if (key.isEmpty) return;
+          final intVal = (v is num) ? v.toInt() : int.tryParse(v?.toString() ?? '') ?? 0;
+          if (intVal > 0) cleaned[key] = intVal;
+        });
+        msg['reaction_summary'] = cleaned;
+      }
+    }
 
     await box.put(matchId, jsonEncode(combinedList));
   }

@@ -312,24 +312,119 @@ class ChatService {
     } catch (_) {}
 
     try {
-      final res = await supabase.rpc('set_message_reaction', params: {
+      // Diagnostic: log reaction codepoints so we can identify missing glyphs
+      try {
+        if (reaction != null) {
+          final cps = reaction.runes
+              .map((r) => r.toRadixString(16).toUpperCase())
+              .map((h) => 'U+$h')
+              .join(' ');
+          debugPrint('setReaction called with reaction: "$reaction"  Codepoints: $cps for message $messageId');
+        } else {
+          debugPrint('setReaction clearing reaction for message $messageId');
+        }
+      } catch (e) {
+        debugPrint('Failed to compute reaction codepoints: $e');
+      }
+
+      final payload = {
         'p_message_id': messageId,
         'p_reaction': reaction,
-      }).single();
+      };
+      debugPrint('Calling supabase.rpc set_message_reaction with payload: $payload');
+
+      final res = await supabase.rpc('set_message_reaction', params: payload).single();
+      debugPrint('set_message_reaction response: $res');
 
       // RPC returns new_summary jsonb; apply it to local DB
       final newSummary = res as Map<String, dynamic>?;
+
+      // Continue: RPC returns new_summary jsonb; apply it to local DB
+
       if (newSummary != null) {
-        await localDb.mergeMessages(matchId, [ {'id': messageId, 'reaction_summary': newSummary} ]);
-        // Also set my_reaction locally to confirm
-        await localDb.mergeMessages(matchId, [ {'id': messageId, 'my_reaction': reaction} ]);
+        debugPrint('Applying new reaction_summary for message $messageId: $newSummary');
+        // Merge both reaction_summary and my_reaction in a single atomic update to avoid overwrite races
+        await localDb.mergeMessages(matchId, [ {'id': messageId, 'reaction_summary': newSummary, 'my_reaction': reaction} ]);
+
+        // Force provider refresh so the UI reflects latest local DB state
+        try {
+          _ref.invalidate(chatMessagesProvider(matchId));
+        } catch (e) {
+          // ignore if invalidation fails in certain contexts
+        }
+
+        // Debug: fetch the resulting message from local DB and print detailed info so we can inspect what's persisted
+        try {
+          final updated = await localDb.getMessageById(matchId, messageId);
+          debugPrint('After setReaction local message: $updated');
+          // Print detailed reaction_summary keys and codepoints for debugging font/variant problems
+          final rs = updated?['reaction_summary'] as Map?;
+          if (rs != null) {
+            rs.forEach((k, v) {
+              final cps = (k?.toString() ?? '').runes.map((r) => r.toRadixString(16).toUpperCase()).join(' ');
+              debugPrint('  reaction key: "$k" codepoints: $cps -> $v');
+            });
+          }
+        } catch (e) {
+          debugPrint('Failed to fetch message after merge: $e');
+        }
       }
-    } catch (e) {
+
+      // Add: ensure RPC result also includes detailed reactors data if available in future
+      // TODO: consider adding an RPC `get_message_reactors` to return {user_id, full_name, photos}.
+
+    } catch (e, st) {
+      debugPrint('set_message_reaction failed for message $messageId with error: $e\n$st');
       // On failure revert optimistic update by syncing messages for the match
       try {
         await _ref.read(chatSyncProvider(matchId)).syncMessages(matchId);
-      } catch (_) {}
+      } catch (e2, st2) {
+        debugPrint('syncMessages after reaction failure also failed: $e2\n$st2');
+      }
       rethrow;
+    }
+  }
+
+  /// Get list of reactors for a message/reaction. Returns list of maps with keys:
+  /// `user_id`, `display_name`, `photo` (nullable).
+  Future<List<Map<String, dynamic>>> getReactors({required String messageId, required String reaction}) async {
+    try {
+      final rows = await supabase
+          .from('message_reactions')
+          .select('user_id')
+          .eq('message_id', messageId)
+          .eq('reaction', reaction);
+      if (rows.isEmpty) return [];
+      final ids = rows.map((r) => r['user_id']?.toString()).whereType<String>().toList();
+      if (ids.isEmpty) return [];
+      // Fetch profiles sequentially to avoid PostgREST `in_` method compatibility issues
+      final Map<String, Map<String, dynamic>> byId = {};
+      for (final id in ids) {
+        try {
+          final p = await supabase
+              .from('profiles')
+              .select('id, full_name, photos')
+              .eq('id', id)
+              .single();
+          byId[id] = p;
+        } catch (_) {
+          // ignore missing profiles
+        }
+      }
+
+      final List<Map<String, dynamic>> result = [];
+      for (final id in ids) {
+        final p = byId[id];
+        result.add({
+          'user_id': id,
+          'display_name': p != null ? (p['full_name'] as String?) : null,
+          'photo': p != null && (p['photos'] is List && (p['photos'] as List).isNotEmpty) ? (p['photos'][0] as String) : null,
+        });
+      }
+      return result;
+    } catch (e) {
+      debugPrint('getReactors failed: $e');
+      return [];
     }
   }
 }

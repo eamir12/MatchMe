@@ -90,17 +90,40 @@ flutter:
   assets:
     - .env
     - assets/images/
+    - assets/twemoji/
 
   fonts:
-    - family: NotoColorEmoji
+    - family: "Noto Color Emoji"
       fonts:
         - asset: assets/fonts/NotoColorEmoji.ttf
-    - family: NotoSansHebrew
+    - family: "Noto Sans"
+      fonts:
+        - asset: assets/fonts/NotoSans-Regular.ttf
+        - asset: assets/fonts/NotoSans-Bold.ttf
+          weight: 700
+    - family: "Noto Sans Hebrew"
       fonts:
         - asset: assets/fonts/NotoSansHebrew-Regular.ttf
-    - family: NotoSansArabic
+        - asset: assets/fonts/NotoSansHebrew-Bold.ttf
+          weight: 700
+    - family: "Noto Sans Arabic"
       fonts:
         - asset: assets/fonts/NotoSansArabic-Regular.ttf
-    - family: NotoSansTC
+        - asset: assets/fonts/NotoSansArabic-Bold.ttf
+          weight: 700
+    - family: "Noto Sans TC"
       fonts:
         - asset: assets/fonts/NotoSansTC-Regular.ttf
+        - asset: assets/fonts/NotoSansTC-Bold.ttf
+          weight: 700
+    - family: "Noto Sans Symbols"
+      fonts:
+        - asset: assets/fonts/NotoSansSymbols-Regular.ttf
+    - family: "Noto Sans Symbols2"
+      fonts:
+        - asset: assets/fonts/NotoSansSymbols2-Regular.ttf
+    - family: "Noto Serif"
+      fonts:
+        - asset: assets/fonts/NotoSerif-Regular.ttf
+        - asset: assets/fonts/NotoSerif-Bold.ttf
+          weight: 700
