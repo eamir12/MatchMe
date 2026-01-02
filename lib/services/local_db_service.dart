@@ -510,6 +510,78 @@ class LocalDbService {
     }
   }
 
+  /// Get a locally cached profile (if any) for a user id.
+  Future<Map<String, dynamic>?> getLocalProfile(String userId) async {
+    final box = await _getProfileBox();
+    final stored = box.get(userId);
+    if (stored == null) return null;
+    try {
+      return jsonDecode(stored) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Local cache helpers for reactors per-message. Reactors are stored inside the message
+  /// object under a key `reactors` which is a map from reaction string -> List<Map>
+  /// Each reactor map shape: { user_id, display_name?, photo? }
+  Future<List<Map<String, dynamic>>> getCachedReactors(String matchId, String messageId, String reaction) async {
+    final msg = await getMessageById(matchId, messageId);
+    if (msg == null) return [];
+    final reactorsContainer = msg['reactors'];
+    if (reactorsContainer is Map) {
+      final list = reactorsContainer[reaction];
+      if (list is List) {
+        try {
+          return list.cast<Map<String, dynamic>>();
+        } catch (_) {
+          // fallback: attempt to coerce
+          return list.map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e as Map)).toList();
+        }
+      }
+    }
+    return [];
+  }
+
+  Future<void> saveCachedReactors(String matchId, String messageId, String reaction, List<Map<String, dynamic>> reactors) async {
+    final box = await _getMessagesBox();
+    final messages = await getMessages(matchId);
+    final index = messages.indexWhere((m) => m['id']?.toString() == messageId);
+    if (index == -1) return;
+    final msg = Map<String, dynamic>.from(messages[index]);
+    final reactorsContainer = (msg['reactors'] is Map) ? Map<String, dynamic>.from(msg['reactors']) : <String, dynamic>{};
+    
+    // Deduplicate reactors by user_id before saving
+    final seenUserIds = <String>{};
+    final deduplicatedReactors = reactors.where((r) {
+      final userId = r['user_id'] as String?;
+      if (userId == null || seenUserIds.contains(userId)) {
+        return false;
+      }
+      seenUserIds.add(userId);
+      return true;
+    }).toList();
+    
+    reactorsContainer[reaction] = deduplicatedReactors;
+    msg['reactors'] = reactorsContainer;
+    messages[index] = msg;
+    await box.put(matchId, jsonEncode(messages));
+  }
+
+  Future<void> clearMessageReactorCache(String matchId, String messageId) async {
+    final box = await _getMessagesBox();
+    final messages = await getMessages(matchId);
+    final index = messages.indexWhere((m) => m['id']?.toString() == messageId);
+    if (index == -1) return;
+    final msg = Map<String, dynamic>.from(messages[index]);
+    if (msg.containsKey('reactors')) {
+      msg.remove('reactors');
+      messages[index] = msg;
+      await box.put(matchId, jsonEncode(messages));
+    }
+  }
+
+
   Future<void> addMessages(String matchId, List<Map<String, dynamic>> newMessages) async {
     if (newMessages.isEmpty) {
       return;

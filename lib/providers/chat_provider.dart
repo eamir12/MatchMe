@@ -25,6 +25,16 @@ final uuid = Uuid();
 // Throttle map to avoid triggering translation multiple times for the same message
 final Map<String, DateTime> _lastTranslationTriggeredAt = {};
 
+// Debouncer for reaction updates to prevent rapid clicks
+final Map<String, Timer> _reactionDebouncer = {};
+
+// Cleanup old entries from throttle map to prevent memory leaks
+void _cleanupTranslationThrottle() {
+  final now = DateTime.now();
+  final cutoff = now.subtract(const Duration(minutes: 5)); // Keep entries for 5 minutes
+  _lastTranslationTriggeredAt.removeWhere((key, value) => value.isBefore(cutoff));
+}
+
 // --- ChatSyncService (Modified to take localDb as parameter) ---
 class ChatSyncService {
   final LocalDbService localDb;
@@ -116,6 +126,7 @@ final chatMessagesProvider = StreamProvider.autoDispose
                debugPrint('Skipping duplicate translation trigger for incoming message: $messageId');
              } else {
                _lastTranslationTriggeredAt[messageId] = now;
+               _cleanupTranslationThrottle(); // Cleanup old entries
                debugPrint('Triggering translation for incoming message: $messageId');
                // Trigger translation in background - don't await to avoid blocking realtime handling
                final translationParams = jsonEncode({
@@ -132,7 +143,23 @@ final chatMessagesProvider = StreamProvider.autoDispose
            debugPrint('Ignoring INSERT for own message');
          }
        } else if (eventType == PostgresChangeEvent.update) {
-         localDb.mergeMessages(matchId, [payload.newRecord]);
+         final oldRecord = payload.oldRecord;
+         final newRecord = payload.newRecord;
+         
+         localDb.mergeMessages(matchId, [newRecord]);
+
+         // Invalidate reactor cache if reaction_summary changed
+         if (oldRecord['reaction_summary'] != newRecord['reaction_summary']) {
+           final messageId = newRecord['id'];
+           if (messageId != null) {
+             try {
+               // Clear all cached reactors for this message since summary changed
+               await localDb.clearMessageReactorCache(matchId, messageId);
+             } catch (e) {
+               debugPrint('Failed to clear reactor cache for message $messageId: $e');
+             }
+           }
+         }
 
          // Check if this update includes content that needs translation
          final messageId = payload.newRecord['id'];
@@ -149,6 +176,7 @@ final chatMessagesProvider = StreamProvider.autoDispose
              debugPrint('Skipping duplicate translation trigger for updated message: $messageId');
            } else {
              _lastTranslationTriggeredAt[messageId] = now;
+             _cleanupTranslationThrottle(); // Cleanup old entries
              debugPrint('Triggering translation for updated incoming message: $messageId');
              final translationParams = jsonEncode({
                'text': contentOriginal,
@@ -274,59 +302,34 @@ class ChatService {
     if (user == null) throw Exception('User not logged in');
     final localDb = _ref.read(localDbProvider);
 
-    // Optimistic local update: modify local cache immediately for snappy UI
-    try {
-      // Fetch current messages for this match
-      final messages = await localDb.getMessages(matchId);
-      final idx = messages.indexWhere((m) => m['id']?.toString() == messageId);
-      if (idx != -1) {
-        final msg = Map<String, dynamic>.from(messages[idx]);
-        // update my_reaction
-        if (reaction == null) {
-          msg.remove('my_reaction');
-        } else {
-          msg['my_reaction'] = reaction;
-        }
-
-        // update reaction_summary counts optimistically
-        final Map<String, dynamic> summary = (msg['reaction_summary'] is Map) ? Map<String, dynamic>.from(msg['reaction_summary']) : {};
-        // decrement previous reaction if any
-        final prev = messages[idx]['my_reaction'] as String?;
-        if (prev != null) {
-          final int prevCount = (summary[prev] as int?) ?? 0;
-          if (prevCount <= 1) {
-            summary.remove(prev);
-          } else {
-            summary[prev] = prevCount - 1;
-          }
-        }
-        if (reaction != null) {
-          final int cur = (summary[reaction] as int?) ?? 0;
-          summary[reaction] = cur + 1;
-        }
-        msg['reaction_summary'] = summary;
-
-        messages[idx] = msg;
-        await localDb.saveMessages(matchId, messages);
-      }
-    } catch (_) {}
-
-    try {
-      // Diagnostic: log reaction codepoints so we can identify missing glyphs
+    // Debounce rapid clicks
+    final key = '$matchId:$messageId';
+    _reactionDebouncer[key]?.cancel();
+    
+    final completer = Completer<void>();
+    _reactionDebouncer[key] = Timer(const Duration(milliseconds: 300), () async {
       try {
-        if (reaction != null) {
-          final cps = reaction.runes
-              .map((r) => r.toRadixString(16).toUpperCase())
-              .map((h) => 'U+$h')
-              .join(' ');
-          debugPrint('setReaction called with reaction: "$reaction"  Codepoints: $cps for message $messageId');
-        } else {
-          debugPrint('setReaction clearing reaction for message $messageId');
-        }
+        await _performSetReaction(matchId, messageId, reaction, user, localDb);
+        completer.complete();
       } catch (e) {
-        debugPrint('Failed to compute reaction codepoints: $e');
+        completer.completeError(e);
+      } finally {
+        _reactionDebouncer.remove(key);
       }
+    });
+    
+    return completer.future;
+  }
 
+  Future<void> _performSetReaction(String matchId, String messageId, String? reaction, User user, LocalDbService localDb) async {
+    // Store original state for rollback
+    final originalMessages = await localDb.getMessages(matchId);
+
+    try {
+      // Optimistic update
+      await _applyOptimisticUpdate(matchId, messageId, reaction, user, localDb);
+
+      // Server call
       final payload = {
         'p_message_id': messageId,
         'p_reaction': reaction,
@@ -336,52 +339,116 @@ class ChatService {
       final res = await supabase.rpc('set_message_reaction', params: payload).single();
       debugPrint('set_message_reaction response: $res');
 
-      // RPC returns new_summary jsonb; apply it to local DB
+      // Apply server result (may differ from optimistic)
       final newSummary = res as Map<String, dynamic>?;
-
-      // Continue: RPC returns new_summary jsonb; apply it to local DB
-
       if (newSummary != null) {
         debugPrint('Applying new reaction_summary for message $messageId: $newSummary');
-        // Merge both reaction_summary and my_reaction in a single atomic update to avoid overwrite races
-        await localDb.mergeMessages(matchId, [ {'id': messageId, 'reaction_summary': newSummary, 'my_reaction': reaction} ]);
+        await localDb.mergeMessages(matchId, [{'id': messageId, 'reaction_summary': newSummary, 'my_reaction': reaction}]);
 
-        // Force provider refresh so the UI reflects latest local DB state
+        // Force provider refresh
         try {
           _ref.invalidate(chatMessagesProvider(matchId));
         } catch (e) {
-          // ignore if invalidation fails in certain contexts
-        }
-
-        // Debug: fetch the resulting message from local DB and print detailed info so we can inspect what's persisted
-        try {
-          final updated = await localDb.getMessageById(matchId, messageId);
-          debugPrint('After setReaction local message: $updated');
-          // Print detailed reaction_summary keys and codepoints for debugging font/variant problems
-          final rs = updated?['reaction_summary'] as Map?;
-          if (rs != null) {
-            rs.forEach((k, v) {
-              final cps = (k?.toString() ?? '').runes.map((r) => r.toRadixString(16).toUpperCase()).join(' ');
-              debugPrint('  reaction key: "$k" codepoints: $cps -> $v');
-            });
-          }
-        } catch (e) {
-          debugPrint('Failed to fetch message after merge: $e');
+          // ignore if invalidation fails
         }
       }
-
-      // Add: ensure RPC result also includes detailed reactors data if available in future
-      // TODO: consider adding an RPC `get_message_reactors` to return {user_id, full_name, photos}.
 
     } catch (e, st) {
       debugPrint('set_message_reaction failed for message $messageId with error: $e\n$st');
-      // On failure revert optimistic update by syncing messages for the match
-      try {
-        await _ref.read(chatSyncProvider(matchId)).syncMessages(matchId);
-      } catch (e2, st2) {
-        debugPrint('syncMessages after reaction failure also failed: $e2\n$st2');
-      }
+      // Rollback optimistic update
+      await _rollbackOptimisticUpdate(matchId, originalMessages, localDb);
       rethrow;
+    }
+  }
+
+  Future<void> _applyOptimisticUpdate(String matchId, String messageId, String? reaction, User user, LocalDbService localDb) async {
+    final messages = await localDb.getMessages(matchId);
+    final idx = messages.indexWhere((m) => m['id']?.toString() == messageId);
+    if (idx == -1) return;
+
+    final msg = Map<String, dynamic>.from(messages[idx]);
+    
+    // Update my_reaction
+    if (reaction == null) {
+      msg.remove('my_reaction');
+    } else {
+      msg['my_reaction'] = reaction;
+    }
+
+    // Update reaction_summary counts optimistically
+    final Map<String, dynamic> summary = (msg['reaction_summary'] is Map) ? Map<String, dynamic>.from(msg['reaction_summary']) : {};
+    final prev = messages[idx]['my_reaction'] as String?;
+    
+    // Decrement previous reaction
+    if (prev != null) {
+      final int prevCount = (summary[prev] as int?) ?? 0;
+      if (prevCount <= 1) {
+        summary.remove(prev);
+      } else {
+        summary[prev] = prevCount - 1;
+      }
+    }
+    
+    // Increment new reaction
+    if (reaction != null) {
+      final int cur = (summary[reaction] as int?) ?? 0;
+      summary[reaction] = cur + 1;
+    }
+    
+    msg['reaction_summary'] = summary;
+    messages[idx] = msg;
+    await localDb.saveMessages(matchId, messages);
+
+    // Update cached reactors
+    await _updateCachedReactors(matchId, messageId, reaction, prev, user.id, localDb);
+  }
+
+  Future<void> _updateCachedReactors(String matchId, String messageId, String? reaction, String? prevReaction, String currentUserId, LocalDbService localDb) async {
+    try {
+      // Remove from previous reaction cache
+      if (prevReaction != null) {
+        final prevList = await localDb.getCachedReactors(matchId, messageId, prevReaction);
+        final updatedPrev = prevList.where((r) => r['user_id'] != currentUserId).toList();
+        await localDb.saveCachedReactors(matchId, messageId, prevReaction, updatedPrev);
+      }
+
+      // Add to new reaction cache
+      if (reaction != null) {
+        final profile = await localDb.getLocalProfile(currentUserId);
+        String? displayName;
+        String? photoUrl;
+        if (profile != null) {
+          displayName = profile['name'] as String?;
+          final photos = profile['photos'];
+          if (photos is List && photos.isNotEmpty) photoUrl = photos[0] as String?;
+        }
+        
+        final newEntry = {
+          'user_id': currentUserId,
+          'display_name': displayName,
+          'photo': photoUrl,
+        };
+        
+        final curList = await localDb.getCachedReactors(matchId, messageId, reaction);
+        final exists = curList.any((r) => r['user_id'] == currentUserId);
+        if (!exists) {
+          final updated = [...curList, newEntry];
+          await localDb.saveCachedReactors(matchId, messageId, reaction, updated);
+        }
+      }
+    } catch (e) {
+      // Ignore cache update failures
+      debugPrint('Failed to update cached reactors: $e');
+    }
+  }
+
+  Future<void> _rollbackOptimisticUpdate(String matchId, List<Map<String, dynamic>> originalMessages, LocalDbService localDb) async {
+    try {
+      await localDb.saveMessages(matchId, originalMessages);
+      // Also invalidate provider to refresh UI
+      _ref.invalidate(chatMessagesProvider(matchId));
+    } catch (e) {
+      debugPrint('Failed to rollback optimistic update: $e');
     }
   }
 
@@ -389,6 +456,52 @@ class ChatService {
   /// `user_id`, `display_name`, `photo` (nullable).
   Future<List<Map<String, dynamic>>> getReactors({required String messageId, required String reaction}) async {
     try {
+      // Prefer a server-side RPC that returns masked names/photos for reactors (avoids RLS issues).
+      try {
+        final rpcRows = await supabase.rpc('get_message_reactors', params: {
+          'message_id': messageId,
+          'reaction': reaction,
+        });
+        if (rpcRows != null && rpcRows.isNotEmpty) {
+          final initial = (rpcRows as List).map<Map<String, dynamic>>((r) {
+            final row = r as Map<String, dynamic>;
+            return {
+              'user_id': row['user_id']?.toString(),
+              'display_name': row['display_name'] as String?,
+              'photo': row['photo'] as String?,
+            };
+          }).toList();
+
+          // Post-process: if any returned rows lack photos, attempt to fetch photos from users table as a fallback
+          final idsMissingPhotos = initial.where((e) => e['photo'] == null).map((e) => e['user_id'] as String?).whereType<String>().toList();
+          if (idsMissingPhotos.isNotEmpty) {
+            for (final id in idsMissingPhotos) {
+              try {
+                final userRows = await supabase.from('users').select('id, photos').eq('id', id).limit(1);
+                if (userRows.isNotEmpty) {
+                  final ur = userRows[0];
+                  final photos = (ur['photos'] is List) ? List<String>.from(ur['photos']) : null;
+                  if (photos != null && photos.isNotEmpty) {
+                    final idx = initial.indexWhere((e) => e['user_id'] == id);
+                    if (idx >= 0) {
+                      initial[idx]['photo'] = photos[0];
+                      debugPrint('getReactors: filled photo from users.photos for user $id -> ${photos[0]}');
+                    }
+                  }
+                }
+              } catch (e) {
+                debugPrint('getReactors: failed to fetch photos for user $id: $e');
+              }
+            }
+          }
+
+          return initial;
+        }
+      } catch (e) {
+        // RPC may not exist or be restricted; fall back to client-side fetching
+        debugPrint('getReactors rpc failed, falling back: $e');
+      }
+
       final rows = await supabase
           .from('message_reactions')
           .select('user_id')
@@ -397,30 +510,43 @@ class ChatService {
       if (rows.isEmpty) return [];
       final ids = rows.map((r) => r['user_id']?.toString()).whereType<String>().toList();
       if (ids.isEmpty) return [];
-      // Fetch profiles sequentially to avoid PostgREST `in_` method compatibility issues
+      // Fetch user names sequentially to avoid PostgREST `in_` method compatibility issues
       final Map<String, Map<String, dynamic>> byId = {};
       for (final id in ids) {
         try {
-          final p = await supabase
-              .from('profiles')
-              .select('id, full_name, photos')
-              .eq('id', id)
-              .single();
-          byId[id] = p;
+          final userRows = await supabase.from('users').select('id, name, photos').eq('id', id).limit(1);
+          if (userRows.isNotEmpty) {
+            final ur = userRows[0];
+            final name = ur['name'] as String?;
+            final photos = (ur['photos'] is List) ? List<String>.from(ur['photos']) : null;
+            byId[id] = {'id': id, 'full_name': name, 'photos': photos};
+          }
         } catch (_) {
-          // ignore missing profiles
+          // ignore user fetch errors
         }
+      }
+
+      String? maskFullName(String? fullName) {
+        if (fullName == null) return null;
+        final parts = fullName.trim().split(RegExp(r'\s+'));
+        if (parts.isEmpty) return null;
+        if (parts.length == 1) return parts.first;
+        final first = parts.first;
+        final lastInitial = parts.last[0].toUpperCase();
+        return '$first $lastInitial.';
       }
 
       final List<Map<String, dynamic>> result = [];
       for (final id in ids) {
         final p = byId[id];
+        final masked = p != null ? maskFullName(p['full_name'] as String?) : null;
         result.add({
           'user_id': id,
-          'display_name': p != null ? (p['full_name'] as String?) : null,
+          'display_name': masked,
           'photo': p != null && (p['photos'] is List && (p['photos'] as List).isNotEmpty) ? (p['photos'][0] as String) : null,
         });
       }
+
       return result;
     } catch (e) {
       debugPrint('getReactors failed: $e');

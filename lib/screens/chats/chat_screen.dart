@@ -24,7 +24,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/foundation.dart' as foundation;
 import 'package:hive/hive.dart';
 
-final supabase = Supabase.instance.client;
+SupabaseClient get supabase => Supabase.instance.client;
 
 /// Detects if a string is primarily Right-to-Left (e.g., Hebrew, Arabic)
 bool _isRtl(String text) {
@@ -115,8 +115,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _isSending = false;
   bool _showEmojiPicker = false;
 
-
-
   @override
   void initState() {
     super.initState();
@@ -174,8 +172,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (widget.matchId.isEmpty) return;
     final now = DateTime.now();
     // Throttle duplicate calls in quick succession (avoid double RPCs / logs)
-    if (_lastMarkAsReadAt != null && now.difference(_lastMarkAsReadAt!) < const Duration(seconds: 2)) {
-      debugPrint('_markAsRead suppressed for ${widget.matchId} (called too recently)');
+    if (_lastMarkAsReadAt != null &&
+        now.difference(_lastMarkAsReadAt!) < const Duration(seconds: 2)) {
+      debugPrint(
+        '_markAsRead suppressed for ${widget.matchId} (called too recently)',
+      );
       return;
     }
     _lastMarkAsReadAt = now;
@@ -191,11 +192,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (currentUserId != null) {
         // Refresh messages for this chat
         ref.invalidate(recentChatsProvider(currentUserId));
-        await ref.read(chatSyncProvider(widget.matchId)).syncMessages(widget.matchId);
+        await ref
+            .read(chatSyncProvider(widget.matchId))
+            .syncMessages(widget.matchId);
 
         // Optimistically clear local unread badge and trigger a background sync
         try {
-          await ref.read(localDbProvider).clearUnreadForMatch(currentUserId, widget.matchId);
+          await ref
+              .read(localDbProvider)
+              .clearUnreadForMatch(currentUserId, widget.matchId);
           await ref.read(globalSyncManagerProvider).syncChatsNow(currentUserId);
           ref.invalidate(recentChatsProvider(currentUserId));
         } catch (_) {
@@ -658,7 +663,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               children: [
                 CircleAvatar(
                   radius: 20,
-                  backgroundColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.08),
+                  backgroundColor: Theme.of(
+                    context,
+                  ).colorScheme.primary.withValues(alpha: 0.08),
                   child:
                       otherUserImage != null
                           ? ClipOval(
@@ -692,7 +699,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     children: [
                       Text(
                         chattingCaption,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7)),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onSurface.withValues(alpha: 0.7),
+                        ),
                       ),
                       const SizedBox(height: 2),
                       Text(
@@ -719,11 +730,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 ),
                 child: Row(
                   children: [
-                    Icon(Icons.wifi_off, size: 14, color: Theme.of(context).colorScheme.onPrimaryContainer),
+                    Icon(
+                      Icons.wifi_off,
+                      size: 14,
+                      color: Theme.of(context).colorScheme.onPrimaryContainer,
+                    ),
                     const SizedBox(width: 4),
                     Text(
                       l10n.getString('generalOffline'),
-                      style: TextStyle(color: Theme.of(context).colorScheme.onPrimaryContainer, fontSize: 12),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onPrimaryContainer,
+                        fontSize: 12,
+                      ),
                     ),
                   ],
                 ),
@@ -756,7 +774,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     ref.read(translationVersionProvider.notifier).increment();
                     scaffoldMessenger.showSnackBar(
                       SnackBar(
-                        content: Text('${l10n.getString('chatTranslateOn')} (to $myLanguage)'),
+                        content: Text(
+                          '${l10n.getString('chatTranslateOn')} (to $myLanguage)',
+                        ),
                       ),
                     );
                   } else {
@@ -780,9 +800,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   });
                 } catch (_) {
                   scaffoldMessenger.showSnackBar(
-                    SnackBar(
-                      content: Text(l10n.getString('errorGeneric')),
-                    ),
+                    SnackBar(content: Text(l10n.getString('errorGeneric'))),
                   );
                 }
               },
@@ -972,10 +990,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               child: Builder(
                                 builder: (context) {
                                   // Use the user profile name if available to ensure we display the proper name
-                                  final otherProfile = ref.watch(userProfileProvider(widget.otherUserId)).asData?.value;
-                                  final displayName = (otherProfile?.name != null && otherProfile!.name.isNotEmpty)
-                                      ? otherProfile.name
-                                      : (widget.otherUserName.isNotEmpty ? widget.otherUserName : '');
+                                  final otherProfile =
+                                      ref
+                                          .watch(
+                                            userProfileProvider(
+                                              widget.otherUserId,
+                                            ),
+                                          )
+                                          .asData
+                                          ?.value;
+                                  final displayName =
+                                      (otherProfile?.name != null &&
+                                              otherProfile!.name.isNotEmpty)
+                                          ? otherProfile.name
+                                          : (widget.otherUserName.isNotEmpty
+                                              ? widget.otherUserName
+                                              : '');
                                   return _TypingRow(name: displayName);
                                 },
                               ),
@@ -989,7 +1019,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             Row(
               children: [
                 // Emoji icon: show only on web or non-mobile platforms (mobile keyboards provide emojis)
-                if (foundation.kIsWeb || (foundation.defaultTargetPlatform != TargetPlatform.android && foundation.defaultTargetPlatform != TargetPlatform.iOS))
+                if (foundation.kIsWeb ||
+                    (foundation.defaultTargetPlatform !=
+                            TargetPlatform.android &&
+                        foundation.defaultTargetPlatform != TargetPlatform.iOS))
                   IconButton(
                     icon: Icon(
                       _showEmojiPicker
@@ -1103,8 +1136,6 @@ class _MessageBubble extends ConsumerWidget {
     final targetLanguage = ref.watch(translationProvider)[matchId];
     bool needsTranslation = targetLanguage != null && !isMe;
 
-
-
     final translationParams = jsonEncode({
       'text': message.contentOriginal,
       'matchId': matchId,
@@ -1115,22 +1146,20 @@ class _MessageBubble extends ConsumerWidget {
     AsyncValue<String>? translationAsync;
     final String? translatedData;
     // Check if we have a valid cached translation for the current target language
-    final hasValidCachedTranslation = message.translatedText != null &&
-                                     message.translatedText!.isNotEmpty &&
-                                     message.translatedLang == targetLanguage;
+    final hasValidCachedTranslation =
+        message.translatedText != null &&
+        message.translatedText!.isNotEmpty &&
+        message.translatedLang == targetLanguage;
 
     if (needsTranslation && !hasValidCachedTranslation) {
       translationAsync = ref.watch(
         translationFamilyProvider(translationParams),
       );
       translatedData = translationAsync?.asData?.value;
-
     } else if (hasValidCachedTranslation) {
       translatedData = message.translatedText;
-
     } else {
       translatedData = null;
-
     }
 
     final bool isOriginalRtl = _isRtl(message.contentOriginal);
@@ -1143,12 +1172,23 @@ class _MessageBubble extends ConsumerWidget {
 
     final messageTextStyle = TextStyle(color: textColor, fontSize: 16);
 
-    final timeLabel = formatTimeOfDateTimeWithPrefs(context, ref, l10n, message.createdAt.toLocal());
+    final timeLabel = formatTimeOfDateTimeWithPrefs(
+      context,
+      ref,
+      l10n,
+      message.createdAt.toLocal(),
+    );
 
     return GestureDetector(
       onLongPress: () async {
         // Open the reaction picker for this message
-        await showReactionPicker(context, ref, initialMatchId: matchId, initialMessageId: message.id, allEmojis: _webEmojis);
+        await showReactionPicker(
+          context,
+          ref,
+          initialMatchId: matchId,
+          initialMessageId: message.id,
+          allEmojis: _webEmojis,
+        );
       },
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 4.0),
@@ -1173,21 +1213,25 @@ class _MessageBubble extends ConsumerWidget {
                   children: [
                     // Original message content aligned based on detected direction
                     Align(
-                      alignment: isOriginalRtl ? Alignment.centerRight : Alignment.centerLeft,
-                      child: messageContentBuilder != null
-                          ? messageContentBuilder!(
-                            message.contentOriginal,
-                            messageTextStyle,
-                            isOriginalRtl,
-                          )
-                          : Text(
-                            message.contentOriginal,
-                            style: messageTextStyle,
-                            textDirection:
-                                isOriginalRtl
-                                    ? ui.TextDirection.rtl
-                                    : ui.TextDirection.ltr,
-                          ),
+                      alignment:
+                          isOriginalRtl
+                              ? Alignment.centerRight
+                              : Alignment.centerLeft,
+                      child:
+                          messageContentBuilder != null
+                              ? messageContentBuilder!(
+                                message.contentOriginal,
+                                messageTextStyle,
+                                isOriginalRtl,
+                              )
+                              : Text(
+                                message.contentOriginal,
+                                style: messageTextStyle,
+                                textDirection:
+                                    isOriginalRtl
+                                        ? ui.TextDirection.rtl
+                                        : ui.TextDirection.ltr,
+                              ),
                     ),
 
                     Visibility(
@@ -1217,25 +1261,29 @@ class _MessageBubble extends ConsumerWidget {
                             fontSize: 14,
                           );
                           return Align(
-                            alignment: isTranslatedRtl ? Alignment.centerRight : Alignment.centerLeft,
-                            child: messageContentBuilder != null
-                                ? SizedBox(
-                                  key: ValueKey('${message.id}_translated'),
-                                  child: messageContentBuilder!(
-                                    displayText,
-                                    translatedStyle,
-                                    isTranslatedRtl,
-                                  ),
-                                )
-                                : Text(
-                                  displayText,
-                                  key: ValueKey('${message.id}_translated'),
-                                  style: translatedStyle,
-                                  textDirection:
-                                      isTranslatedRtl
-                                          ? ui.TextDirection.rtl
-                                          : ui.TextDirection.ltr,
-                                ),
+                            alignment:
+                                isTranslatedRtl
+                                    ? Alignment.centerRight
+                                    : Alignment.centerLeft,
+                            child:
+                                messageContentBuilder != null
+                                    ? SizedBox(
+                                      key: ValueKey('${message.id}_translated'),
+                                      child: messageContentBuilder!(
+                                        displayText,
+                                        translatedStyle,
+                                        isTranslatedRtl,
+                                      ),
+                                    )
+                                    : Text(
+                                      displayText,
+                                      key: ValueKey('${message.id}_translated'),
+                                      style: translatedStyle,
+                                      textDirection:
+                                          isTranslatedRtl
+                                              ? ui.TextDirection.rtl
+                                              : ui.TextDirection.ltr,
+                                    ),
                           );
                         },
                       ),
@@ -1247,9 +1295,13 @@ class _MessageBubble extends ConsumerWidget {
             const SizedBox(height: 4),
 
             // Reaction row
-            if ((message.reactionSummary ?? {}).isNotEmpty || message.myReaction != null)
+            if ((message.reactionSummary ?? {}).isNotEmpty ||
+                message.myReaction != null)
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 8.0,
+                  vertical: 4.0,
+                ),
                 child: ReactionRow(message: message, matchId: matchId),
               ),
 
@@ -1284,7 +1336,16 @@ class _MessageBubble extends ConsumerWidget {
 }
 
 /// Small reaction picker and row helpers
-const List<String> _defaultReactions = ['❤️','👍','😂','😮','😢','😡','🔥','🎉'];
+const List<String> _defaultReactions = [
+  '❤️',
+  '👍',
+  '😂',
+  '😮',
+  '😢',
+  '😡',
+  '🔥',
+  '🎉',
+];
 
 class ReactionRow extends ConsumerWidget {
   const ReactionRow({super.key, required this.message, required this.matchId});
@@ -1296,65 +1357,92 @@ class ReactionRow extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final l10n = ref.watch(localizationProvider);
     final summary = message.reactionSummary ?? {};
-    if (summary.isEmpty && message.myReaction == null) return const SizedBox.shrink();
-
-    // Sort by count desc then emoji
-    final entries = summary.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-
-    // Ensure current user's reaction appears even if absent from summary
-    if (message.myReaction != null && !summary.containsKey(message.myReaction)) {
-      entries.insert(0, MapEntry(message.myReaction!, 1));
+    if (summary.isEmpty && message.myReaction == null) {
+      return const SizedBox.shrink();
     }
 
-    debugPrint('ReactionRow build for message ${message.id}: myReaction=${message.myReaction} summary=${message.reactionSummary}');
+    // Sort by count desc then emoji
+    final entries =
+        summary.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+
+    debugPrint(
+      'ReactionRow build for message ${message.id}: myReaction=${message.myReaction} summary=${message.reactionSummary}',
+    );
     return Wrap(
       spacing: 8,
-      children: entries.map((e) {
-        final emoji = e.key;
-        final bool isMine = message.myReaction == emoji;
-        return GestureDetector(
-          onTap: () async {
-            // Show who reacted with this emoji
-            await showReactorsSheet(context, ref, matchId, message.id, emoji);
-          },
-          onLongPress: () async {
-            // Long-press toggles the reaction for quick changes
-            final scaffold = ScaffoldMessenger.maybeOf(context);
-            try {
-              final newReaction = isMine ? null : emoji;
-              await ref.read(chatServiceProvider).setReaction(
-                matchId: matchId,
-                messageId: message.id,
-                reaction: newReaction,
-              );
-              ref.invalidate(chatMessagesProvider(matchId));
-            } catch (err) {
-              if (scaffold != null) scaffold.showSnackBar(SnackBar(content: Text(l10n.getString('errorGeneric'))));
-            }
-          },
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: isMine ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.12) : Theme.of(context).cardColor,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: Colors.grey.withValues(alpha: 0.08)),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                EmojiWidget(emoji: emoji, size: 14),
-                // Count is intentionally hidden for two-user chats where each user has at most one reaction
-              ],
-            ),
-          ),
-        );
-      }).toList(),
+      children:
+          entries.map((e) {
+            final emoji = e.key;
+            final bool isMine = message.myReaction == emoji;
+            return GestureDetector(
+              onTap: () async {
+                // Show who reacted with this emoji
+                await showReactorsSheet(
+                  context,
+                  ref,
+                  matchId,
+                  message.id,
+                  emoji,
+                  reactionSummary: message.reactionSummary,
+                  myReaction: message.myReaction,
+                );
+              },
+              onLongPress: () async {
+                // Long-press toggles the reaction for quick changes
+                final scaffold = ScaffoldMessenger.maybeOf(context);
+                try {
+                  final newReaction = isMine ? null : emoji;
+                  await ref
+                      .read(chatServiceProvider)
+                      .setReaction(
+                        matchId: matchId,
+                        messageId: message.id,
+                        reaction: newReaction,
+                      );
+                  ref.invalidate(chatMessagesProvider(matchId));
+                } catch (err) {
+                  if (scaffold != null) {
+                    scaffold.showSnackBar(
+                      SnackBar(content: Text(l10n.getString('errorGeneric'))),
+                    );
+                  }
+                }
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color:
+                      isMine
+                          ? Theme.of(
+                            context,
+                          ).colorScheme.primary.withValues(alpha: 0.12)
+                          : Theme.of(context).cardColor,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: Colors.grey.withValues(alpha: 0.08),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    EmojiWidget(emoji: emoji, size: 14),
+                    // Count is intentionally hidden for two-user chats where each user has at most one reaction
+                  ],
+                ),
+              ),
+            );
+          }).toList(),
     );
   }
 }
 
-Future<void> showReactionPicker(BuildContext context, WidgetRef ref, {String? initialMatchId, String? initialMessageId, List<String>? allEmojis}) async {
+Future<void> showReactionPicker(
+  BuildContext context,
+  WidgetRef ref, {
+  String? initialMatchId,
+  String? initialMessageId,
+  List<String>? allEmojis,
+}) async {
   final l10n = ref.read(localizationProvider);
   final matchId = initialMatchId ?? '';
   final messageId = initialMessageId ?? '';
@@ -1368,7 +1456,10 @@ Future<void> showReactionPicker(BuildContext context, WidgetRef ref, {String? in
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(l10n.getString('chatReact'), style: Theme.of(context).textTheme.titleMedium),
+              Text(
+                l10n.getString('chatReact'),
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
               const SizedBox(height: 12),
 
               // Frequently used emojis row (async) + a "+" button to open the full emoji picker
@@ -1389,7 +1480,9 @@ Future<void> showReactionPicker(BuildContext context, WidgetRef ref, {String? in
                                   child: InkWell(
                                     onTap: () async {
                                       final navigator = Navigator.of(context);
-                                      final chatSvc = ref.read(chatServiceProvider);
+                                      final chatSvc = ref.read(
+                                        chatServiceProvider,
+                                      );
                                       navigator.pop();
                                       await _recordEmojiUse(emoji);
                                       try {
@@ -1408,7 +1501,10 @@ Future<void> showReactionPicker(BuildContext context, WidgetRef ref, {String? in
                                         borderRadius: BorderRadius.circular(12),
                                       ),
                                       alignment: Alignment.center,
-                                      child: EmojiWidget(emoji: emoji, size: 24),
+                                      child: EmojiWidget(
+                                        emoji: emoji,
+                                        size: 24,
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -1416,7 +1512,9 @@ Future<void> showReactionPicker(BuildContext context, WidgetRef ref, {String? in
                               InkWell(
                                 onTap: () async {
                                   // Open full emoji picker (modal)
-                                  final selected = await showModalBottomSheet<String>(
+                                  final selected = await showModalBottomSheet<
+                                    String
+                                  >(
                                     context: context,
                                     builder: (context) {
                                       return SafeArea(
@@ -1425,30 +1523,53 @@ Future<void> showReactionPicker(BuildContext context, WidgetRef ref, {String? in
                                           child: Column(
                                             mainAxisSize: MainAxisSize.min,
                                             children: [
-                                              Text(l10n.getString('chatAllEmojis'), style: Theme.of(context).textTheme.titleMedium),
+                                              Text(
+                                                l10n.getString('chatAllEmojis'),
+                                                style:
+                                                    Theme.of(
+                                                      context,
+                                                    ).textTheme.titleMedium,
+                                              ),
                                               const SizedBox(height: 12),
                                               ConstrainedBox(
                                                 constraints: BoxConstraints(
                                                   // Limit the grid's height to a fraction of the screen to avoid overflow
-                                                  maxHeight: MediaQuery.of(context).size.height * 0.66,
+                                                  maxHeight:
+                                                      MediaQuery.of(
+                                                        context,
+                                                      ).size.height *
+                                                      0.66,
                                                 ),
                                                 child: GridView.count(
                                                   crossAxisCount: 8,
                                                   crossAxisSpacing: 6,
                                                   mainAxisSpacing: 6,
                                                   shrinkWrap: true,
-                                                  children: (allEmojis ?? _defaultReactions).map((emoji) {
-                                                    return InkWell(
-                                                      onTap: () async {
-                                                        // Return the selected emoji
-                                                        Navigator.of(context).pop(emoji);
-                                                      },
-                                                      child: Container(
-                                                        alignment: Alignment.center,
-                                                        child: EmojiWidget(emoji: emoji, size: 22),
-                                                      ),
-                                                    );
-                                                  }).toList(),
+                                                  children:
+                                                      (allEmojis ??
+                                                              _defaultReactions)
+                                                          .map((emoji) {
+                                                            return InkWell(
+                                                              onTap: () async {
+                                                                // Return the selected emoji
+                                                                Navigator.of(
+                                                                  context,
+                                                                ).pop(emoji);
+                                                              },
+                                                              child: Container(
+                                                                alignment:
+                                                                    Alignment
+                                                                        .center,
+                                                                child:
+                                                                    EmojiWidget(
+                                                                      emoji:
+                                                                          emoji,
+                                                                      size: 22,
+                                                                    ),
+                                                              ),
+                                                            );
+                                                          })
+                                                          .toList(),
                                                 ),
                                               ),
                                             ],
@@ -1463,7 +1584,9 @@ Future<void> showReactionPicker(BuildContext context, WidgetRef ref, {String? in
                                     if (!context.mounted) return;
                                     final navigator = Navigator.of(context);
                                     await _recordEmojiUse(selected);
-                                    final chatSvc = ref.read(chatServiceProvider);
+                                    final chatSvc = ref.read(
+                                      chatServiceProvider,
+                                    );
                                     try {
                                       await chatSvc.setReaction(
                                         matchId: matchId,
@@ -1500,48 +1623,53 @@ Future<void> showReactionPicker(BuildContext context, WidgetRef ref, {String? in
               Wrap(
                 spacing: 12,
                 runSpacing: 12,
-                children: _defaultReactions.map((emoji) {
-                  return InkWell(
-                    onTap: () async {
-                      final navigator = Navigator.of(context);
-                      final chatSvc = ref.read(chatServiceProvider);
-                      navigator.pop();
-                      await _recordEmojiUse(emoji);
+                children:
+                    _defaultReactions.map((emoji) {
+                      return InkWell(
+                        onTap: () async {
+                          final navigator = Navigator.of(context);
+                          final chatSvc = ref.read(chatServiceProvider);
+                          navigator.pop();
+                          await _recordEmojiUse(emoji);
 
-                      // Diagnostic: log emoji and codepoints selected from the picker
-                      try {
-                        final cps = emoji.runes
-                            .map((r) => r.toRadixString(16).toUpperCase())
-                            .map((h) => 'U+$h')
-                            .join(' ');
-                        debugPrint('Reaction picker selected: "$emoji"  Codepoints: $cps');
-                      } catch (e) {
-                        debugPrint('Failed to compute reaction codepoints: $e');
-                      }
+                          // Diagnostic: log emoji and codepoints selected from the picker
+                          try {
+                            final cps = emoji.runes
+                                .map((r) => r.toRadixString(16).toUpperCase())
+                                .map((h) => 'U+$h')
+                                .join(' ');
+                            debugPrint(
+                              'Reaction picker selected: "$emoji"  Codepoints: $cps',
+                            );
+                          } catch (e) {
+                            debugPrint(
+                              'Failed to compute reaction codepoints: $e',
+                            );
+                          }
 
-                      try {
-                        await chatSvc.setReaction(
-                          matchId: matchId,
-                          messageId: messageId,
-                          reaction: emoji,
-                        );
-                      } catch (_) {
-                        // Silently ignore - caller may show snackbar
-                      }
-                    },
+                          try {
+                            await chatSvc.setReaction(
+                              matchId: matchId,
+                              messageId: messageId,
+                              reaction: emoji,
+                            );
+                          } catch (_) {
+                            // Silently ignore - caller may show snackbar
+                          }
+                        },
 
-                    child: Container(
-                      width: 56,
-                      height: 56,
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).cardColor,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      alignment: Alignment.center,
-                      child: EmojiWidget(emoji: emoji, size: 28),
-                    ),
-                  );
-                }).toList(),
+                        child: Container(
+                          width: 56,
+                          height: 56,
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).cardColor,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          alignment: Alignment.center,
+                          child: EmojiWidget(emoji: emoji, size: 28),
+                        ),
+                      );
+                    }).toList(),
               ),
             ],
           ),
@@ -1552,68 +1680,927 @@ Future<void> showReactionPicker(BuildContext context, WidgetRef ref, {String? in
 
   // end showModalBottomSheet
   return;
-
 }
 
 /// Show a bottom sheet listing users who reacted with a specific emoji on a message.
-Future<void> showReactorsSheet(BuildContext context, WidgetRef ref, String matchId, String messageId, String emoji) async {
+Future<void> showReactorsSheet(
+  BuildContext context,
+  WidgetRef ref,
+  String matchId,
+  String messageId,
+  String emoji, {
+  Future<List<Map<String, dynamic>>> Function(
+    String messageId,
+    String reaction,
+  )?
+  getReactorsFn,
+  Map<String, int>? reactionSummary,
+  String? myReaction,
+}) async {
   final l10n = ref.read(localizationProvider);
   final chatSvc = ref.read(chatServiceProvider);
-  final reactors = await chatSvc.getReactors(messageId: messageId, reaction: emoji);
+  final localDb = ref.read(localDbProvider);
+
+  // Build list of emojis from provided summary (sorted by count desc). If none provided, fall back to the tapped emoji only.
+  final Map<String, int> summary = Map<String, int>.from(reactionSummary ?? {});
+  if (summary.isEmpty && emoji.isNotEmpty) summary[emoji] = 1;
+  final sortedEmojis =
+      summary.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+  final emojiList = sortedEmojis.map((e) => e.key).toList();
+
+  // Helper: load reactors for a single emoji, prefer local cache, fallback to server, and hydrate missing fields from local profile.
+  Future<List<Map<String, dynamic>>> loadReactors(String rEmoji) async {
+    try {
+      var cached = await localDb.getCachedReactors(matchId, messageId, rEmoji);
+      if (cached.isNotEmpty) {
+        // Deduplicate cached reactors by user_id
+        final seenUserIds = <String>{};
+        cached =
+            cached.where((r) {
+              final userId = r['user_id'] as String?;
+              if (userId == null || seenUserIds.contains(userId)) {
+                return false;
+              }
+              seenUserIds.add(userId);
+              return true;
+            }).toList();
+
+        debugPrint(
+          'loadReactors: loaded ${cached.length} deduplicated cached reactors for $rEmoji',
+        );
+
+        // hydrate missing display_name/photo from local profiles
+        for (int i = 0; i < cached.length; i++) {
+          final r = cached[i];
+          final uid = r['user_id'] as String?;
+          if (uid == null) continue;
+          final needsName =
+              (r['display_name'] == null ||
+                  (r['display_name'] as String).isEmpty);
+          final needsPhoto =
+              (r['photo'] == null || (r['photo'] as String?)?.isEmpty == true);
+          if (!needsName && !needsPhoto) continue;
+          try {
+            final profile = await localDb.getLocalProfile(uid);
+            if (profile != null) {
+              if (needsName) {
+                final name = profile['name'] as String?;
+                if (name != null && name.isNotEmpty) r['display_name'] = name;
+              }
+              if (needsPhoto) {
+                final photos = profile['photos'];
+                if (photos is List && photos.isNotEmpty) r['photo'] = photos[0];
+              }
+            }
+          } catch (_) {}
+        }
+        return cached;
+      }
+
+      // No local cache available, fetch from server and save for future use
+      final server =
+          await (getReactorsFn != null
+              ? getReactorsFn(messageId, rEmoji)
+              : chatSvc.getReactors(messageId: messageId, reaction: rEmoji));
+
+      // Deduplicate server response by user_id before saving
+      final seenUserIds = <String>{};
+      final deduplicatedServer =
+          server.where((r) {
+            final userId = r['user_id'] as String?;
+            if (userId == null || seenUserIds.contains(userId)) {
+              return false;
+            }
+            seenUserIds.add(userId);
+            return true;
+          }).toList();
+
+      debugPrint(
+        'loadReactors: fetched ${deduplicatedServer.length} deduplicated server reactors for $rEmoji',
+      );
+
+      if (deduplicatedServer.isNotEmpty) {
+        try {
+          await localDb.saveCachedReactors(
+            matchId,
+            messageId,
+            rEmoji,
+            deduplicatedServer,
+          );
+        } catch (_) {}
+      }
+      return deduplicatedServer;
+    } catch (e) {
+      debugPrint('loadReactors error for $rEmoji: $e');
+      return [];
+    }
+  }
+
+  // Preload for tapped emoji so the sheet opens fast
+  List<Map<String, dynamic>> reactors = await loadReactors(emoji);
+  bool haveCached = reactors.isNotEmpty;
+
+  debugPrint(
+    'showReactorsSheet reactors for message $messageId reaction $emoji (initial): $reactors',
+  );
   if (!context.mounted) return;
-  final currentUserId = supabase.auth.currentUser?.id;
+  String? currentUserId;
+  try {
+    currentUserId = supabase.auth.currentUser?.id;
+  } catch (_) {
+    // In test environment Supabase may not be initialized; treat as unauthenticated
+    currentUserId = null;
+  }
+
+  // Best-effort: fill missing display_name/photo from local profile cache before showing UI
+  Future<void> hydrateMissingFromLocal() async {
+    try {
+      final localDb2 = localDb; // captured above
+      var changed = false;
+      for (int i = 0; i < reactors.length; i++) {
+        final r = reactors[i];
+        final uid = r['user_id'] as String?;
+        if (uid == null) continue;
+        final needsName =
+            (r['display_name'] == null ||
+                (r['display_name'] as String).isEmpty);
+        final needsPhoto =
+            (r['photo'] == null || (r['photo'] as String?)?.isEmpty == true);
+        if (!needsName && !needsPhoto) continue;
+        try {
+          final profile = await localDb2.getLocalProfile(uid);
+          if (profile != null) {
+            if (needsName) {
+              final name = profile['name'] as String?;
+              if (name != null && name.isNotEmpty) {
+                r['display_name'] = name;
+                changed = true;
+                debugPrint(
+                  'showReactorsSheet: filled display_name for user $uid from local profile',
+                );
+              }
+            }
+            if (needsPhoto) {
+              final photos = profile['photos'];
+              if (photos is List && photos.isNotEmpty) {
+                r['photo'] = photos[0];
+                changed = true;
+                debugPrint(
+                  'showReactorsSheet: filled photo for user $uid from local profile -> ${photos[0]}',
+                );
+              }
+            }
+          }
+        } catch (e) {
+          debugPrint(
+            'showReactorsSheet: failed to hydrate profile for $uid: $e',
+          );
+        }
+      }
+      if (changed) {
+        try {
+          await localDb2.saveCachedReactors(
+            matchId,
+            messageId,
+            emoji,
+            reactors,
+          );
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  // Try to hydrate immediately (best-effort, non-blocking on errors)
+  await hydrateMissingFromLocal();
+
+  // Ensure the calling context is still mounted before presenting a modal (we awaited above)
+  if (!context.mounted) return;
+
+  // UI state: selected tab, per-emoji list and grouped map
+  final ValueNotifier<String> selectedTab = ValueNotifier<String>('All');
+  final ValueNotifier<bool> loading = ValueNotifier<bool>(false);
+  final ValueNotifier<List<Map<String, dynamic>>> reactorsNotifier =
+      ValueNotifier<List<Map<String, dynamic>>>(
+        List<Map<String, dynamic>>.from(reactors),
+      );
+  final ValueNotifier<Map<String, List<Map<String, dynamic>>>> groupedNotifier =
+      ValueNotifier<Map<String, List<Map<String, dynamic>>>>({});
+
+  // Initialize groupedNotifier from any locally cached per-message reactors so the 'All' view shows immediately
+  final Set<String> loadingEmojis = <String>{};
+
+  try {
+    final msgLocal = await localDb.getMessageById(matchId, messageId);
+    final Map<String, List<Map<String, dynamic>>> initialGroups = {};
+    if (msgLocal != null && msgLocal['reactors'] is Map) {
+      final Map<String, dynamic> rc = Map<String, dynamic>.from(
+        msgLocal['reactors'],
+      );
+      rc.forEach((k, v) {
+        try {
+          var list =
+              (v is List)
+                  ? (v
+                      .cast<Map<String, dynamic>>()
+                      .map((e) => Map<String, dynamic>.from(e))
+                      .toList())
+                  : <Map<String, dynamic>>[];
+
+          // Deduplicate cached reactors by user_id
+          final seenUserIds = <String>{};
+          list =
+              list.where((r) {
+                final userId = r['user_id'] as String?;
+                if (userId == null || seenUserIds.contains(userId)) {
+                  return false;
+                }
+                seenUserIds.add(userId);
+                return true;
+              }).toList();
+
+          initialGroups[k] = list;
+        } catch (_) {
+          initialGroups[k] = <Map<String, dynamic>>[];
+        }
+      });
+    }
+
+    // Ensure keys exist for all emojis in the summary even if we have no cached reactors yet
+    for (final e in emojiList) {
+      initialGroups.putIfAbsent(e, () => <Map<String, dynamic>>[]);
+    }
+
+    if (initialGroups.isNotEmpty) {
+      groupedNotifier.value = initialGroups;
+      // If currently showing a specific emoji, prefer the local cached list for it
+      if (selectedTab.value != 'All' &&
+          groupedNotifier.value.containsKey(selectedTab.value)) {
+        reactorsNotifier.value = groupedNotifier.value[selectedTab.value] ?? [];
+      }
+    }
+  } catch (e) {
+    debugPrint('Failed to load cached reactors from message: $e');
+  }
+
+  // Reconcile: for any emoji where cached count is less than summary count, fetch per-emoji reactors in background
+  void reconcileMissingGroups() {
+    for (final e in emojiList) {
+      final desired = summary[e] ?? 0;
+      final existing = (groupedNotifier.value[e]?.length ?? 0);
+      if (existing < desired && !loadingEmojis.contains(e)) {
+        loadingEmojis.add(e);
+        // fire-and-forget per-emoji refresh
+        unawaited(
+          Future.microtask(() async {
+            try {
+              final fresh = await loadReactors(e);
+              final cur = Map<String, List<Map<String, dynamic>>>.from(
+                groupedNotifier.value,
+              );
+              cur[e] = fresh;
+              groupedNotifier.value = cur;
+              try {
+                await localDb.saveCachedReactors(matchId, messageId, e, fresh);
+              } catch (_) {}
+            } catch (err) {
+              debugPrint('Failed to reconcile reactors for $e: $err');
+            } finally {
+              loadingEmojis.remove(e);
+            }
+          }),
+        );
+      }
+    }
+  }
+
+  // Immediately reconcile missing groups so counts are matched quickly
+  reconcileMissingGroups();
+  // Background refresh: fetch all emojis from server and update grouped notifier when available
+  if (haveCached) {
+    Future.microtask(() async {
+      try {
+        final Map<String, List<Map<String, dynamic>>> out = {};
+        for (final e in emojiList) {
+          final serverList =
+              await (getReactorsFn != null
+                  ? getReactorsFn(messageId, e)
+                  : chatSvc.getReactors(messageId: messageId, reaction: e));
+
+          // Deduplicate server response by user_id
+          final seenUserIds = <String>{};
+          final deduplicatedServer =
+              serverList.where((r) {
+                final userId = r['user_id'] as String?;
+                if (userId == null || seenUserIds.contains(userId)) {
+                  return false;
+                }
+                seenUserIds.add(userId);
+                return true;
+              }).toList();
+
+          out[e] = deduplicatedServer;
+          // update per-emoji cache
+          if (deduplicatedServer.isNotEmpty) {
+            try {
+              await localDb.saveCachedReactors(
+                matchId,
+                messageId,
+                e,
+                deduplicatedServer,
+              );
+            } catch (_) {}
+          }
+        }
+        groupedNotifier.value = out;
+        // If currently showing a single emoji, update that list too
+        if (selectedTab.value != 'All' &&
+            groupedNotifier.value.containsKey(selectedTab.value)) {
+          reactorsNotifier.value =
+              groupedNotifier.value[selectedTab.value] ?? [];
+        }
+      } catch (e) {
+        debugPrint('Background refresh for reactors failed: $e');
+      }
+    });
+  }
+
+  // Helper to fetch for selected tab (used by UI interactive taps)
+  Future<void> fetchForSelected(String sel) async {
+    loading.value = true;
+    try {
+      if (sel == 'All') {
+        final Map<String, List<Map<String, dynamic>>> out = {};
+        for (final e in emojiList) {
+          final list = await loadReactors(e);
+          out[e] = list;
+        }
+        groupedNotifier.value = out;
+      } else {
+        final list = await loadReactors(sel);
+        reactorsNotifier.value = list;
+      }
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  // Start a background fetch for the grouped 'All' view so it becomes available quickly
+  // (do not block showing the sheet; this updates groupedNotifier when complete)
+  Future.microtask(() async {
+    try {
+      await fetchForSelected('All');
+    } catch (e) {
+      debugPrint('fetchForSelected All failed: $e');
+    }
+  });
+  // Ensure the calling context is still mounted after background fetch scheduling
+  if (!context.mounted) return;
 
   await showModalBottomSheet<void>(
     context: context,
+    isScrollControlled: true,
     builder: (context) {
-      return SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(12.0),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
+      return StatefulBuilder(
+        builder: (context, setState) {
+          final maxSheetHeight = MediaQuery.of(context).size.height * 0.6;
+          final listHeight =
+              (reactors.length * 72).clamp(72, maxSheetHeight).toDouble();
+
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(emoji, style: Theme.of(context).textTheme.titleLarge),
-                  const Spacer(),
-                  Text(l10n.getString('chatReactors'), style: Theme.of(context).textTheme.bodySmall),
-                ],
-              ),
-              const SizedBox(height: 8),
-              if (reactors.isEmpty) Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12.0),
-                child: Text(l10n.getString('chatNoReactors')),
-              ),
-              if (reactors.isNotEmpty)
-                SizedBox(
-                  height: (reactors.length * 72).clamp(72, 360).toDouble(),
-                  child: ListView.separated(
-                    shrinkWrap: true,
-                    itemCount: reactors.length,
-                    separatorBuilder: (context, _) => const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final r = reactors[index];
-                      final isMe = r['user_id'] == currentUserId;
-                      final name = r['display_name'] ?? (isMe ? l10n.getString('you') : null) ?? r['user_id'];
-                      final photo = r['photo'] as String?;
-                      return ListTile(
-                        leading: photo != null
-                            ? SignedImage(source: photo, width: 40, height: 40, fit: BoxFit.cover)
-                            : Icon(Icons.person),
-                        title: Text(name + (isMe ? ' (${l10n.getString('you')})' : '')),
+                  // Header: title
+                  Row(
+                    children: [
+                      Text(
+                        l10n.getString('chatReactors'),
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const Spacer(),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+
+                  // Emoji selector row (All + one chip per emoji)
+                  ValueListenableBuilder<String>(
+                    valueListenable: selectedTab,
+                    builder: (context, sel, _) {
+                      return SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            GestureDetector(
+                              onTap: () {
+                                selectedTab.value = 'All';
+                                fetchForSelected('All');
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 6,
+                                ),
+                                margin: const EdgeInsets.only(right: 8),
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(20),
+                                  color:
+                                      sel == 'All'
+                                          ? Theme.of(context)
+                                              .colorScheme
+                                              .primary
+                                              .withValues(alpha: 0.08)
+                                          : null,
+                                ),
+                                // Prefer the grouped counts (from local cache/server) when available, otherwise fall back to the summary counts
+                                child: Text(
+                                  'All ${groupedNotifier.value.values.map((l) => l.length).fold<int>(0, (p, n) => p + n) != 0 ? groupedNotifier.value.values.map((l) => l.length).fold<int>(0, (p, n) => p + n) : summary.values.fold<int>(0, (p, n) => p + n)}',
+                                ),
+                              ),
+                            ),
+                            ...emojiList.map((e) {
+                              final cachedCount =
+                                  groupedNotifier.value[e]?.length ?? 0;
+                              final count =
+                                  cachedCount != 0
+                                      ? cachedCount
+                                      : (summary[e] ?? 0);
+                              final loading = loadingEmojis.contains(e);
+                              return GestureDetector(
+                                onTap: () {
+                                  selectedTab.value = e;
+                                  fetchForSelected(e);
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 6,
+                                  ),
+                                  margin: const EdgeInsets.only(right: 8),
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(20),
+                                    color:
+                                        sel == e
+                                            ? Theme.of(context)
+                                                .colorScheme
+                                                .primary
+                                                .withValues(alpha: 0.08)
+                                            : null,
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text('$e $count'),
+                                      if (loading) ...[
+                                        const SizedBox(width: 8),
+                                        SizedBox(
+                                          width: 12,
+                                          height: 12,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                              );
+                            }),
+                          ],
+                        ),
                       );
                     },
                   ),
-                ),
-            ],
-          ),
-        ),
+
+                  const SizedBox(height: 8),
+
+                  // Body: grouped All view or single emoji list
+                  ValueListenableBuilder<String>(
+                    valueListenable: selectedTab,
+                    builder: (context, sel, _) {
+                      return ValueListenableBuilder<bool>(
+                        valueListenable: loading,
+                        builder: (context, isLoading, _) {
+                          if (sel == 'All') {
+                            return ValueListenableBuilder<
+                              Map<String, List<Map<String, dynamic>>>
+                            >(
+                              valueListenable: groupedNotifier,
+                              builder: (context, groups, _) {
+                                if (isLoading && groups.isEmpty) {
+                                  return const SizedBox(
+                                    height: 80,
+                                    child: Center(
+                                      child: CircularProgressIndicator(),
+                                    ),
+                                  );
+                                }
+                                if (groups.isEmpty) {
+                                  return Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 12.0,
+                                    ),
+                                    child: Text(
+                                      l10n.getString('chatNoReactors'),
+                                    ),
+                                  );
+                                }
+
+                                return ConstrainedBox(
+                                  constraints: BoxConstraints(
+                                    maxHeight: listHeight,
+                                  ),
+                                  child: ListView.builder(
+                                    shrinkWrap: true,
+                                    itemCount: groups.keys.length,
+                                    itemBuilder: (context, idx) {
+                                      final e = groups.keys.elementAt(idx);
+                                      final list = groups[e] ?? [];
+                                      return Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Padding(
+                                            padding: const EdgeInsets.symmetric(
+                                              vertical: 8.0,
+                                            ),
+                                            child: Text(
+                                              '$e ${list.length}',
+                                              style:
+                                                  Theme.of(
+                                                    context,
+                                                  ).textTheme.bodyMedium,
+                                            ),
+                                          ),
+                                          ...list.map((r) {
+                                            final idStr =
+                                                r['user_id'] as String?;
+                                            final displayName =
+                                                r['display_name'] as String?;
+                                            final photo = r['photo'] as String?;
+                                            final isMe =
+                                                idStr ==
+                                                supabase.auth.currentUser?.id;
+                                            String name;
+                                            String? maskFullNameLocal(
+                                              String? fullName,
+                                            ) {
+                                              if (fullName == null) {
+                                                return null;
+                                              }
+                                              final parts = fullName
+                                                  .trim()
+                                                  .split(RegExp(r'\\s+'));
+                                              if (parts.isEmpty) {
+                                                return null;
+                                              }
+                                              if (parts.length == 1) {
+                                                return parts.first;
+                                              }
+                                              final first = parts.first;
+                                              final lastInitial =
+                                                  parts.last[0].toUpperCase();
+                                              return '$first $lastInitial.';
+                                            }
+
+                                            if (isMe) {
+                                              name = l10n.getString('you');
+                                            } else if (displayName != null &&
+                                                displayName.isNotEmpty) {
+                                              name =
+                                                  maskFullNameLocal(
+                                                    displayName,
+                                                  ) ??
+                                                  displayName;
+                                            } else if (idStr != null &&
+                                                idStr.length >= 8) {
+                                              name =
+                                                  '${idStr.substring(0, 8)}...';
+                                            } else {
+                                              name = l10n.getString(
+                                                'generalUnknown',
+                                              );
+                                            }
+
+                                            debugPrint(
+                                              'Rendering reactor in All view: $name (user_id: $idStr) for emoji $e',
+                                            );
+
+                                            return ListTile(
+                                              leading:
+                                                  photo != null
+                                                      ? SignedImage(
+                                                        source: photo,
+                                                        width: 40,
+                                                        height: 40,
+                                                        fit: BoxFit.cover,
+                                                      )
+                                                      : Icon(Icons.person),
+                                              title: Text(name),
+                                              subtitle:
+                                                  isMe
+                                                      ? Text(
+                                                        l10n.getString(
+                                                          'chatReactorsTapToRemove',
+                                                        ),
+                                                      )
+                                                      : null,
+                                              trailing: Text(e),
+                                              onTap:
+                                                  isMe
+                                                      ? () async {
+                                                        try {
+                                                          debugPrint(
+                                                            'User requested removal of reaction for message $messageId emoji $e',
+                                                          );
+                                                          await chatSvc
+                                                              .setReaction(
+                                                                matchId:
+                                                                    matchId,
+                                                                messageId:
+                                                                    messageId,
+                                                                reaction: null,
+                                                              );
+                                                          debugPrint(
+                                                            'Removal RPC completed for message $messageId emoji $e',
+                                                          );
+                                                        } catch (err) {
+                                                          debugPrint(
+                                                            'Failed to clear reaction from reactors sheet: $err',
+                                                          );
+                                                        }
+
+                                                        // Update local grouped and per-emoji lists immediately so UI reflects removal
+                                                        try {
+                                                          final cur = Map<
+                                                            String,
+                                                            List<
+                                                              Map<
+                                                                String,
+                                                                dynamic
+                                                              >
+                                                            >
+                                                          >.from(
+                                                            groupedNotifier
+                                                                .value,
+                                                          );
+                                                          final updated =
+                                                              (cur[e] ?? [])
+                                                                  .where(
+                                                                    (r) =>
+                                                                        r['user_id'] !=
+                                                                        currentUserId,
+                                                                  )
+                                                                  .toList();
+                                                          cur[e] = updated;
+                                                          groupedNotifier
+                                                              .value = cur;
+                                                          if (selectedTab
+                                                                  .value ==
+                                                              e) {
+                                                            reactorsNotifier
+                                                                    .value =
+                                                                updated;
+                                                          }
+                                                          try {
+                                                            await localDb
+                                                                .saveCachedReactors(
+                                                                  matchId,
+                                                                  messageId,
+                                                                  e,
+                                                                  updated,
+                                                                );
+                                                          } catch (_) {}
+                                                        } catch (e) {
+                                                          debugPrint(
+                                                            'Failed to update local grouping after removal: $e',
+                                                          );
+                                                        }
+
+                                                        // Refresh the sheet data & message provider to reflect canonical server state
+                                                        try {
+                                                          await fetchForSelected(
+                                                            'All',
+                                                          );
+                                                          ref.invalidate(
+                                                            chatMessagesProvider(
+                                                              matchId,
+                                                            ),
+                                                          );
+                                                        } catch (err) {
+                                                          debugPrint(
+                                                            'Failed to refresh after removal: $err',
+                                                          );
+                                                        }
+                                                      }
+                                                      : null,
+                                            );
+                                          }),
+                                          const Divider(height: 1),
+                                        ],
+                                      );
+                                    },
+                                  ),
+                                );
+                              },
+                            );
+                          } else {
+                            // Single-emoji view
+                            return ValueListenableBuilder<
+                              List<Map<String, dynamic>>
+                            >(
+                              valueListenable: reactorsNotifier,
+                              builder: (context, list, _) {
+                                if (isLoading && list.isEmpty) {
+                                  return const SizedBox(
+                                    height: 80,
+                                    child: Center(
+                                      child: CircularProgressIndicator(),
+                                    ),
+                                  );
+                                }
+                                if (list.isEmpty) {
+                                  return Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 12.0,
+                                    ),
+                                    child: Text(
+                                      l10n.getString('chatNoReactors'),
+                                    ),
+                                  );
+                                }
+
+                                return ConstrainedBox(
+                                  constraints: BoxConstraints(
+                                    maxHeight: listHeight,
+                                  ),
+                                  child: ListView.builder(
+                                    shrinkWrap: true,
+                                    itemCount: list.length,
+                                    itemBuilder: (context, idx) {
+                                      final r = list[idx];
+                                      final idStr = r['user_id'] as String?;
+                                      final displayName =
+                                          r['display_name'] as String?;
+                                      final photo = r['photo'] as String?;
+                                      final isMe =
+                                          idStr ==
+                                          supabase.auth.currentUser?.id;
+                                      String name;
+                                      String? maskFullNameLocal(
+                                        String? fullName,
+                                      ) {
+                                        if (fullName == null) {
+                                          return null;
+                                        }
+                                        final parts = fullName.trim().split(
+                                          RegExp(r'\\s+'),
+                                        );
+                                        if (parts.isEmpty) {
+                                          return null;
+                                        }
+                                        if (parts.length == 1) {
+                                          return parts.first;
+                                        }
+                                        final first = parts.first;
+                                        final lastInitial =
+                                            parts.last[0].toUpperCase();
+                                        return '$first $lastInitial.';
+                                      }
+
+                                      if (isMe) {
+                                        name = l10n.getString('you');
+                                      } else if (displayName != null &&
+                                          displayName.isNotEmpty) {
+                                        name =
+                                            maskFullNameLocal(displayName) ??
+                                            displayName;
+                                      } else if (idStr != null &&
+                                          idStr.length >= 8) {
+                                        name = '${idStr.substring(0, 8)}...';
+                                      } else {
+                                        name = l10n.getString('generalUnknown');
+                                      }
+
+                                      return ListTile(
+                                        leading:
+                                            photo != null
+                                                ? SignedImage(
+                                                  source: photo,
+                                                  width: 40,
+                                                  height: 40,
+                                                  fit: BoxFit.cover,
+                                                )
+                                                : Icon(Icons.person),
+                                        title: Text(name),
+                                        subtitle:
+                                            isMe
+                                                ? Text(
+                                                  l10n.getString(
+                                                    'chatReactorsTapToRemove',
+                                                  ),
+                                                )
+                                                : null,
+                                        trailing: const SizedBox.shrink(),
+                                        onTap:
+                                            isMe
+                                                ? () async {
+                                                  try {
+                                                    await chatSvc.setReaction(
+                                                      matchId: matchId,
+                                                      messageId: messageId,
+                                                      reaction: null,
+                                                    );
+                                                  } catch (err) {
+                                                    debugPrint(
+                                                      'Failed to remove reaction: $err',
+                                                    );
+                                                  }
+
+                                                  try {
+                                                    final cur = List<
+                                                      Map<String, dynamic>
+                                                    >.from(
+                                                      reactorsNotifier.value,
+                                                    );
+                                                    cur.removeWhere(
+                                                      (el) =>
+                                                          el['user_id'] ==
+                                                          currentUserId,
+                                                    );
+                                                    reactorsNotifier.value =
+                                                        cur;
+                                                    // also update grouped notifier cached entry
+                                                    final curMap = Map<
+                                                      String,
+                                                      List<Map<String, dynamic>>
+                                                    >.from(
+                                                      groupedNotifier.value,
+                                                    );
+                                                    final sel =
+                                                        selectedTab.value;
+                                                    if (sel != 'All' &&
+                                                        curMap.containsKey(
+                                                          sel,
+                                                        )) {
+                                                      curMap[sel] =
+                                                          curMap[sel]!
+                                                              .where(
+                                                                (r) =>
+                                                                    r['user_id'] !=
+                                                                    currentUserId,
+                                                              )
+                                                              .toList();
+                                                      groupedNotifier.value =
+                                                          curMap;
+                                                    }
+                                                    try {
+                                                      await localDb
+                                                          .saveCachedReactors(
+                                                            matchId,
+                                                            messageId,
+                                                            selectedTab.value,
+                                                            cur,
+                                                          );
+                                                    } catch (_) {}
+                                                  } catch (e) {
+                                                    debugPrint(
+                                                      'Failed to update local reactors after removal: $e',
+                                                    );
+                                                  }
+                                                }
+                                                : null,
+                                      );
+                                    },
+                                  ),
+                                );
+                              },
+                            );
+                          }
+                        },
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       );
     },
   );
 }
 
-// ---- Emoji usage persistence helpers (simple Hive-backed counts) ----
+// Helper to safely read connectivity provider value (used in build)
+bool? _connectivityProviderChecker(WidgetRef ref) {
+  try {
+    return ref.watch(connectivityProvider).value;
+  } catch (_) {
+    return true;
+  }
+}
+
 Future<void> _recordEmojiUse(String emoji) async {
   try {
     final box = await Hive.openBox<int>('emoji_usage');
@@ -1627,9 +2614,12 @@ Future<void> _recordEmojiUse(String emoji) async {
 Future<List<String>> _getTopUsedEmojis(int limit) async {
   try {
     final box = await Hive.openBox<int>('emoji_usage');
-    final entries = box.toMap().entries
-        .map<MapEntry<String, int>>((e) => MapEntry(e.key, e.value))
-        .toList();
+    final entries =
+        box
+            .toMap()
+            .entries
+            .map((e) => MapEntry(e.key.toString(), e.value))
+            .toList();
     entries.sort((a, b) => b.value.compareTo(a.value));
     return entries.take(limit).map((e) => e.key).toList();
   } catch (e) {
@@ -1638,78 +2628,23 @@ Future<List<String>> _getTopUsedEmojis(int limit) async {
   }
 }
 
-/// Typing row widget updated to use localization (consumer) and keep the animated dots.
-class _TypingRow extends ConsumerStatefulWidget {
+class _TypingRow extends StatelessWidget {
   final String name;
   const _TypingRow({required this.name});
 
   @override
-  ConsumerState<_TypingRow> createState() => _TypingRowState();
-}
-
-class _TypingRowState extends ConsumerState<_TypingRow> {
-  @override
   Widget build(BuildContext context) {
-    final l10n = ref.watch(localizationProvider);
-    // Template should be localized and contain a {name} placeholder.
-    // Display as "user is typing..." format with static ellipses.
-    final template = l10n.getString('chatIsTyping'); // e.g. "{name} is typing"
-    // Force template if localization fails
-    final actualTemplate = template == 'chatIsTyping...' ? '{name} is typing' : template;
-    // Use a safe display name (trim, fallback to localized or English "Someone")
-    final safeDefault = l10n.getString('chatSomeone') != 'chatSomeone' && l10n.getString('chatSomeone').isNotEmpty
-        ? l10n.getString('chatSomeone')
-        : 'Someone';
-    final displayName = widget.name.trim().isNotEmpty ? widget.name.trim() : safeDefault;
-    var label = actualTemplate.replaceAll('{name}', displayName);
-
-    // Debug logging (improved)
-    debugPrint('TypingRow debug: template="$template", actualTemplate="$actualTemplate", displayName="$displayName", label="$label", widget.name="${widget.name}", hasNamePlaceholder=${actualTemplate.contains('{name}')}');
-
-    // If replacement didn't work (template missing placeholder), fallback to a simple localized phrase
-    String finalLabel;
-    if (actualTemplate.contains('{name}')) {
-      finalLabel = label; // already replaced
-    } else if (label.contains('{name}')) {
-      finalLabel = '$displayName is typing';
-    } else {
-      // If template lacks {name}, prepend the display name so the user's name is shown:
-      // e.g., "is typing…" -> "Eran A. is typing…"
-      if (label.trim().isNotEmpty) {
-        finalLabel = '$displayName ${label.trim()}';
-      } else {
-        finalLabel = '$displayName is typing';
-      }
-    }
-
-    debugPrint('TypingRow final: finalLabel="$finalLabel"');
-
-    // Avoid leading ellipses before the name; ensure at most one trailing ellipsis
-    String displayTypingLabel = finalLabel;
-    final normalized = finalLabel.trim();
-    if (!(normalized.endsWith('…') || normalized.endsWith('...'))) {
-      displayTypingLabel = '$normalized…';
-    }
-
     return Row(
       children: [
-        const SizedBox(width: 6),
-        Text(
-          displayTypingLabel,
-          style: Theme.of(
-            context,
-          ).textTheme.bodySmall?.copyWith(color: Theme.of(context).hintColor),
+        Expanded(
+          child: Text(
+            name.isNotEmpty ? '$name is typing...' : 'Typing...',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: Colors.grey),
+          ),
         ),
       ],
     );
-  }
-}
-
-// Helper to safely read connectivity provider value (used in build)
-bool? _connectivityProviderChecker(WidgetRef ref) {
-  try {
-    return ref.watch(connectivityProvider).value;
-  } catch (_) {
-    return true;
   }
 }

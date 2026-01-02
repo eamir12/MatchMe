@@ -100,3 +100,4 @@ Even with both devices in the same location, web browsers may report a location 
    - Add accuracy checks before sending location updates
    - Log accuracy values to help diagnose issues
    - Consider disabling Kalman filter for very inaccurate measurements (e.g., > 100m)
+

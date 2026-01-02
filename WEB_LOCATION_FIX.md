@@ -57,3 +57,4 @@ If you still see errors:
 2. Check the console logs to see which samples are failing
 3. Consider temporarily disabling high precision sampling and using single readings if the geolocator package is too unreliable
 
+
