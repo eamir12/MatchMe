@@ -1,0 +1,48 @@
+test_id,source,case,translation
+greeting_hey,"Hey, nice to meet you!",current,"היי, נעים להכיר אותך!"
+greeting_hi,Hi!,current,היי!
+compliment,You look great!,current,את נראית נהדר!
+compliment,You look great!,context_recipient_gender_female,את נראית נהדר!
+compliment,You (female) look great!,explicit_recipient_female,את (אישה) נראית נהדר!
+compliment,You look great!,context_recipient_gender_male,אתה נראה נהדר!
+compliment,You (male) look great!,explicit_recipient_male,אתה (גבר) נראה נהדר!
+compliment,You look great!,context_recipient_gender_nonbinary,אתה נראה נהדר!
+compliment,You (nonbinary) look great!,explicit_recipient_nonbinary,אתה (לא בינארי) נראה נהדר!
+where_from,Where are you from?,current,מאיפה אתה?
+coffee,Do you want to grab coffee sometime?,current,רוצה לקפוץ לקפה מתישהו?
+liked_photos,I liked your photos.,current,אהבתי את התמונות שלך.
+liked_photos,I liked your photos.,context_speaker_gender_female,אהבתי את התמונות שלך.
+liked_photos,I (female) liked your photos.,explicit_speaker_female,אני (אישה) אהבתי את התמונות שלך.
+liked_photos,I liked your photos.,context_speaker_gender_male,אהבתי את התמונות שלך.
+liked_photos,I (male) liked your photos.,explicit_speaker_male,אני (גבר) אהבתי את התמונות שלך.
+liked_photos,I liked your photos.,context_speaker_gender_nonbinary,אהבתי את התמונות שלך.
+liked_photos,I (nonbinary) liked your photos.,explicit_speaker_nonbinary,אני (לא בינארי) אהבתי את התמונות שלך.
+meet_tmr,Do you want to meet tomorrow?,current,האם אתה רוצה להיפגש מחר?
+sent_message,I sent you a message.,current,שלחתי לך הודעה.
+sent_message,I sent you a message.,context_speaker_gender_female,שלחתי לך הודעה.
+sent_message,I (female) sent you a message.,explicit_speaker_female,אני (אישה) שלחתי לך הודעה.
+sent_message,I sent you a message.,context_speaker_gender_male,שלחתי לך הודעה.
+sent_message,I (male) sent you a message.,explicit_speaker_male,אני (זכר) שלחתי לך הודעה.
+sent_message,I sent you a message.,context_speaker_gender_nonbinary,שלחתי לך הודעה.
+sent_message,I (nonbinary) sent you a message.,explicit_speaker_nonbinary,אני (לא בינארי) שלחתי לך הודעה.
+call,Can I call you?,current,אני יכול להתקשר אליך?
+call,Can I call you?,context_speaker_gender_female,האם אוכל להתקשר אליך?
+call,Can I (female) call you?,explicit_speaker_female,האם אני (אישה) יכולה להתקשר אליך?
+call,Can I call you?,context_speaker_gender_male,האם אני יכול להתקשר אליך?
+call,Can I (male) call you?,explicit_speaker_male,האם אני (גבר) יכול להתקשר אליך?
+typing,is typing...,current,מקליד...
+typing,is typing...,context_recipient_gender_female,מקלידה...
+typing,is typing...,context_recipient_gender_male,מקליד...
+typing,is typing...,context_recipient_gender_nonbinary,מקליד...
+placeholder_name,"Hey <name/>, want to meet tonight?",current,"היי<name/>, רוצה להיפגש הערב?"
+messages_count,You have 1 new messages.,current_count_1,יש לך הודעה חדשה.
+messages_count,You have 2 new messages.,current_count_2,יש לך 2 הודעות חדשות.
+messages_count,You have 5 new messages.,current_count_5,יש לך 5 הודעות חדשות.
+messages_count,You have <count/>  new messages.,placeholder_with_tag,יש לך   <count/>הודעות חדשות.
+ambiguous_they,They liked your message.,current,הם אהבו את ההודעה שלך.
+ambiguous_they,They liked your message.,context_ambiguous_antecedent_nonbinary,הם אהבו את ההודעה שלך.
+on_my_way,I'm on my way.,current,אני בדרך.
+on_my_way,I'm on my way.,context_speaker_gender_female,אני בדרך.
+on_my_way,I'm on my way.,explicit_speaker_female,אני בדרך.
+on_my_way,I'm on my way.,context_speaker_gender_male,אני בדרך.
+on_my_way,I'm on my way.,explicit_speaker_male,אני בדרך.

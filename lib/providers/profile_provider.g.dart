@@ -13,7 +13,7 @@ part of 'profile_provider.dart';
 /// ---------------------------------------------------------------------------
 
 @ProviderFor(ProfileEditNotifier)
-const profileEditProvider = ProfileEditNotifierFamily._();
+final profileEditProvider = ProfileEditNotifierFamily._();
 
 /// ---------------------------------------------------------------------------
 /// profileEditProvider + ProfileEditNotifier
@@ -23,7 +23,7 @@ final class ProfileEditNotifierProvider
   /// ---------------------------------------------------------------------------
   /// profileEditProvider + ProfileEditNotifier
   /// ---------------------------------------------------------------------------
-  const ProfileEditNotifierProvider._({
+  ProfileEditNotifierProvider._({
     required ProfileEditNotifierFamily super.from,
     required String super.argument,
   }) : super(
@@ -68,7 +68,7 @@ final class ProfileEditNotifierProvider
 }
 
 String _$profileEditNotifierHash() =>
-    r'0272cd148f7da29bc493fbfcd69adfc1d0f899c4';
+    r'b9dc35a0b250cb047ea27def34e8a0a0cb1dd05e';
 
 /// ---------------------------------------------------------------------------
 /// profileEditProvider + ProfileEditNotifier
@@ -83,7 +83,7 @@ final class ProfileEditNotifierFamily extends $Family
           AsyncValue<UserProfile?>,
           String
         > {
-  const ProfileEditNotifierFamily._()
+  ProfileEditNotifierFamily._()
     : super(
         retry: null,
         name: r'profileEditProvider',
@@ -116,7 +116,6 @@ abstract class _$ProfileEditNotifier
   @$mustCallSuper
   @override
   void runBuild() {
-    final created = build(_$args);
     final ref =
         this.ref as $Ref<AsyncValue<UserProfile?>, AsyncValue<UserProfile?>>;
     final element =
@@ -127,6 +126,6 @@ abstract class _$ProfileEditNotifier
               Object?,
               Object?
             >;
-    element.handleValue(ref, created);
+    element.handleCreate(ref, () => build(_$args));
   }
 }

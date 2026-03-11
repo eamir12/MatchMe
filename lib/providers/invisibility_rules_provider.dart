@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/models/invisibility_rules.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/current_location_provider.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/services/local_db_service.dart';
@@ -12,12 +13,15 @@ import 'package:matchme/providers/visibility_provider.dart';
 
 class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
   final supabase = Supabase.instance.client;
+  late Future<void> _initializationFuture;
 
   @override
   InvisibilityRules build() {
-    _loadRules();
+    _initializationFuture = _loadRules();
     return InvisibilityRules(isLoaded: false);
   }
+
+  Future<void> waitForInitialization() => _initializationFuture;
 
   Future<void> _loadRules() async {
     try {
@@ -487,7 +491,12 @@ final invisibilityRulesProvider = NotifierProvider<InvisibilityRulesNotifier, In
 
 // Provider to determine current invisibility reasons
 final currentInvisibilityReasonsProvider = Provider<List<String>>((ref) {
+  // Don't compute reasons if rules aren't loaded yet
   final rules = ref.watch(invisibilityRulesProvider);
+  if (!rules.isLoaded) {
+    return [];
+  }
+  
   final currentLocation = ref.watch(currentLocationProvider);
   final now = DateTime.now();
   final reasons = <String>[];
@@ -569,7 +578,12 @@ final currentInvisibilityReasonsProvider = Provider<List<String>>((ref) {
 
 // Provider to track active rule IDs with their types
 final activeRuleIdsProvider = Provider<Map<String, String>>((ref) {
+  // Don't compute active rules if rules aren't loaded yet
   final rules = ref.watch(invisibilityRulesProvider);
+  if (!rules.isLoaded) {
+    return {};
+  }
+  
   final currentLocation = ref.watch(currentLocationProvider);
   final now = DateTime.now();
   final activeRules = <String, String>{}; // Maps ruleId to type
@@ -644,9 +658,94 @@ final activeRuleIdsProvider = Provider<Map<String, String>>((ref) {
 });
 
 // Provider to format the invisibility reason text
+// NOTE: This provider watches the underlying providers directly instead of
+// currentInvisibilityReasonsProvider to avoid Riverpod subscription issues
+// that can occur with chained providers during widget rebuilds.
 final currentInvisibilityReasonProvider = Provider<String?>((ref) {
-  final reasons = ref.watch(currentInvisibilityReasonsProvider);
+  // Watch the underlying providers directly
+  final rules = ref.watch(invisibilityRulesProvider);
+  final currentLocation = ref.watch(currentLocationProvider);
   final l10n = ref.watch(localizationProvider);
+
+  // Don't compute reasons if rules aren't loaded yet
+  if (!rules.isLoaded) {
+    return null;
+  }
+
+  final now = DateTime.now();
+  final reasons = <String>[];
+
+  // Check location rules - only if currently active
+  if (currentLocation?.latitude != null && currentLocation?.longitude != null) {
+    for (final rule in rules.locationRules) {
+      if (!rule.enabled) continue;
+      final distance = rules.calculateDistance(
+        currentLocation!.latitude,
+        currentLocation.longitude,
+        rule.latitude,
+        rule.longitude,
+      );
+      final effectiveRadius = rule.radiusMeters < 5.0 ? 5.0 : rule.radiusMeters;
+      if (distance <= effectiveRadius) {
+        reasons.add('location');
+        break;
+      }
+    }
+  }
+
+  // Check date range rules
+  for (final rule in rules.dateRangeRules) {
+    if (!rule.enabled) continue;
+    final currentDate = DateTime(now.year, now.month, now.day);
+    final startDate = DateTime(rule.startDate.year, rule.startDate.month, rule.startDate.day);
+    final endDate = DateTime(rule.endDate.year, rule.endDate.month, rule.endDate.day);
+
+    if (currentDate.isAfter(startDate.subtract(const Duration(days: 1))) &&
+        currentDate.isBefore(endDate.add(const Duration(days: 1)))) {
+      reasons.add('date');
+      break;
+    }
+  }
+
+  // Check time range rules
+  for (final rule in rules.timeRangeRules) {
+    if (!rule.enabled) continue;
+    final currentTime = TimeOfDay.fromDateTime(now);
+    if (_isTimeInRange(currentTime, rule.startTime, rule.endTime)) {
+      reasons.add('time');
+      break;
+    }
+  }
+
+  // Check day of week rules
+  for (final rule in rules.dayOfWeekRules) {
+    if (!rule.enabled) continue;
+    if (rule.daysOfWeek.contains(now.weekday)) {
+      reasons.add('day');
+      break;
+    }
+  }
+
+  // Check date time range rules
+  for (final rule in rules.dateTimeRangeRules) {
+    if (!rule.enabled) continue;
+    if (now.isAfter(rule.startDateTime) && now.isBefore(rule.endDateTime)) {
+      reasons.add('datetime');
+      break;
+    }
+  }
+
+  // Check day time range rules
+  for (final rule in rules.dayTimeRangeRules) {
+    if (!rule.enabled) continue;
+    if (rule.daysOfWeek.contains(now.weekday)) {
+      final currentTime = TimeOfDay.fromDateTime(now);
+      if (_isTimeInRange(currentTime, rule.startTime, rule.endTime)) {
+        reasons.add('daytime');
+        break;
+      }
+    }
+  }
 
   if (reasons.isEmpty) return null;
 
@@ -662,14 +761,18 @@ final currentInvisibilityReasonProvider = Provider<String?>((ref) {
     }
   }).toList();
 
+  // Determine user's gender (if available) to choose the correct localized phrasing
+  final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+  final currentUserGender = currentUserId != null ? ref.watch(userProfileProvider(currentUserId)).asData?.value?.gender : null;
+
   if (reasonTexts.length == 1) {
-    return '${l10n.getString('invisibleDueTo')} ${reasonTexts[0].toLowerCase()}';
+    return '${l10n.getString('invisibleDueTo', gender: currentUserGender)} ${reasonTexts[0].toLowerCase()}';
   } else if (reasonTexts.length == 2) {
-    return '${l10n.getString('invisibleDueTo')} ${reasonTexts[0].toLowerCase()} ${l10n.getString('and').toLowerCase()} ${reasonTexts[1].toLowerCase()}';
+    return '${l10n.getString('invisibleDueTo', gender: currentUserGender)} ${reasonTexts[0].toLowerCase()} ${l10n.getString('and').toLowerCase()} ${reasonTexts[1].toLowerCase()}';
   } else {
     final last = reasonTexts.removeLast();
     final joined = reasonTexts.join(', ').toLowerCase();
-    return '${l10n.getString('invisibleDueTo')} $joined ${l10n.getString('and').toLowerCase()} $last'.toLowerCase();
+    return '${l10n.getString('invisibleDueTo', gender: currentUserGender)} $joined ${l10n.getString('and').toLowerCase()} $last'.toLowerCase();
   }
 });
 

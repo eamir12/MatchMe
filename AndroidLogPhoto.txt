@@ -1,0 +1,365 @@
+C:\App\MatchMeGPT5.21\MatchMe4>flutter run
+Launching lib\main.dart on moto g54 5G in debug mode...
+Running Gradle task 'assembleDebug'...                             15.2s
+√ Built build\app\outputs\flutter-apk\app-debug.apk
+Installing build\app\outputs\flutter-apk\app-debug.apk...           7.3s
+D/FlutterJNI(18834): Beginning load of flutter...
+D/FlutterJNI(18834): flutter (null) was loaded normally!
+I/flutter (18834): [IMPORTANT:flutter/shell/platform/android/android_context_vk_impeller.cc(62)] Using the Impeller rendering backend (Vulkan).
+D/FlutterGeolocator(18834): Attaching Geolocator to activity
+D/FlutterRenderer(18834): Width is zero. 0,0
+Syncing files to device moto g54 5G...                             172ms
+
+Flutter run key commands.
+r Hot reload.
+R Hot restart.
+h List all available interactive commands.
+d Detach (terminate "flutter run" but leave application running).
+c Clear the screen
+q Quit (terminate the application on the device).
+
+A Dart VM Service on moto g54 5G is available at: http://127.0.0.1:63710/KaA2Ec8V_yg=/
+The Flutter DevTools debugger and profiler on moto g54 5G is available at:
+http://127.0.0.1:63710/KaA2Ec8V_yg=/devtools/?uri=ws://127.0.0.1:63710/KaA2Ec8V_yg=/ws
+D/MatchMeBootReceiver(18834): Received android.intent.action.BOOT_COMPLETED, checking if background service should start
+D/MatchMeBootReceiver(18834): Starting background service after android.intent.action.BOOT_COMPLETED (isVisible=false, highAccuracyMode=false)
+I/Choreographer(18834): Skipped 193 frames!  The application may be doing too much work on its main thread.
+I/WindowExtensionsImpl(18834): Initializing Window Extensions, vendor API level=6, activity embedding enabled=true
+D/FlutterRenderer(18834): Width is zero. 0,0
+D/BufferQueueConsumer(18834): [](id:499200000000,api:0,p:-1,c:18834) connect: controlledByApp=false
+I/example.matchme(18834): Compiler allocated 5189KB to compile void android.view.ViewRootImpl.performTraversals()
+D/BLASTBufferQueue(18834): [VRI[MainActivity]#0](f:0,a:0) constructor()
+D/BLASTBufferQueue(18834): [VRI[MainActivity]#0](f:0,a:0) update width=1080 height=2400 format=-3 mTransformHint=0
+E/FBI     (18834): Can't load library: dlopen failed: library "libmagtsync.so" not found
+D/libMEOW (18834): meow new tls: 0xb40000706e393e40
+D/libMEOW (18834): applied 1 plugins for [com.example.matchme]:
+D/libMEOW (18834):   plugin 1: [libMEOW_gift.so]: 0xb4000070d2cf3a00
+D/libMEOW (18834): rebuild call chain: 0xb40000706e3a2280
+D/FlutterJNI(18834): Sending viewport metrics to the engine.
+I/HWUI    (18834): setGrContext nullptr-->validptr
+D/BufferQueueConsumer(18834): [](id:499200000001,api:0,p:-1,c:18834) connect: controlledByApp=false
+D/BLASTBufferQueue(18834): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity]#1](f:0,a:0) constructor()
+D/BLASTBufferQueue(18834): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity]#1](f:0,a:0) update width=1080 height=2400 format=4 mTransformHint=0
+W/libc    (18834): Access denied finding property "vendor.product.pvr.debug_level"
+E/IMGSRV  (18834): :1501: GrallocTestAlloc: Invalid color format (56)
+W/libc    (18834): Access denied finding property "vendor.product.pvr.debug_level"
+E/IMGSRV  (18834): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  (18834): :220:        width -> 1
+E/IMGSRV  (18834): :221:       height -> 1
+E/IMGSRV  (18834): :222:       format -> 56
+E/IMGSRV  (18834): :223:        usage -> 0x0b00
+E/IMGSRV  (18834): :1501: GrallocTestAlloc: Invalid color format (59)
+E/IMGSRV  (18834): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  (18834): :220:        width -> 1
+E/IMGSRV  (18834): :221:       height -> 1
+E/IMGSRV  (18834): :222:       format -> 59
+E/IMGSRV  (18834): :223:        usage -> 0x0b00
+E/IMGSRV  (18834): :1501: GrallocTestAlloc: Invalid color format (56)
+E/IMGSRV  (18834): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  (18834): :220:        width -> 1
+E/IMGSRV  (18834): :221:       height -> 1
+E/IMGSRV  (18834): :222:       format -> 56
+E/IMGSRV  (18834): :223:        usage -> 0x0b00
+E/IMGSRV  (18834): :1501: GrallocTestAlloc: Invalid color format (59)
+E/IMGSRV  (18834): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  (18834): :220:        width -> 1
+E/IMGSRV  (18834): :221:       height -> 1
+E/IMGSRV  (18834): :222:       format -> 59
+E/IMGSRV  (18834): :223:        usage -> 0x0b00
+D/example.matchme(18834): Can't load libmbrainSDK
+W/libc    (18834): Access denied finding property "persist.vendor.debug.gpud.init"
+I/GrallocExtra(18834): gralloc_extra_query:is_SW3D 0
+D/BLASTBufferQueue(18834): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity]#1](f:0,a:1) acquireNextBufferLocked size=1080x2400 mFrameNumber=1 applyTransaction=true mTimestamp=98889858527355(auto) mPendingTransactions.size=0 graphicBufferId=80891414052874 transform=0
+D/example.matchme(18834): Can't load libmbrainSDK
+D/FlutterGeolocator(18834): Creating service.
+D/FlutterGeolocator(18834): Binding to location service.
+D/MatchMeBackgroundService(18834): Background service created
+D/MatchMeBackgroundService(18834): Synchronously restored state: highAccuracyMode=false, isVisible=false, userId=true
+D/MatchMeBackgroundService(18834): [NATIVE] Delaying ensureRunningFromStoredState by 1500ms to reduce startup contention
+D/MatchMeBackgroundService(18834): Background service started with action: START
+D/MatchMeBackgroundService(18834): Starting service with userId: dd6d20a5-cd79-4761-8a74-751acb555b4d, highAccuracy: false, isVisible: false, isOnline: true
+D/MatchMeBackgroundService(18834): Credentials and config saved for boot recovery
+D/MatchMeBackgroundService(18834): Standard Mode active & App in background -> Stopping Service
+D/MatchMeBackgroundService(18834): Scheduling periodic location work (Standard Mode)
+D/MatchMeBackgroundService(18834): Skipping background updates: Not visible or not online (isVisible=false, isOnline=true)
+D/MatchMeBackgroundService(18834): Location updates stopped
+D/MatchMeBackgroundService(18834): Realtime WebSocket Disconnected
+I/Choreographer(18834): Skipped 50 frames!  The application may be doing too much work on its main thread.
+D/FlutterJNI(18834): Sending viewport metrics to the engine.
+D/BLASTBufferQueue(18834): [VRI[MainActivity]#0](f:0,a:1) acquireNextBufferLocked size=1080x2400 mFrameNumber=1 applyTransaction=true mTimestamp=98890389797509(auto) mPendingTransactions.size=0 graphicBufferId=80891414052880 transform=0
+I/HWUI    (18834): Davey! duration=869ms; Flags=1, FrameTimelineVsyncId=64504299, IntendedVsync=98889517873667, Vsync=98890351207017, InputEventId=0, HandleInputStart=98890357742817, AnimationStart=98890357744586, PerformTraversalsStart=98890357744971, DrawStart=98890367453817, FrameDeadline=98889531873668, FrameInterval=98890357366201, FrameStartTime=16666667, SyncQueued=98890368380894, SyncStart=98890372124355, IssueDrawCommandsStart=98890373582201, SwapBuffers=98890388317894, FrameCompleted=98890390887125, DequeueBufferDuration=0, QueueBufferDuration=396308, GpuCompleted=98890390887125, SwapBuffersCompleted=98890390405278, DisplayPresentTime=472451031409, CommandSubmissionCompleted=98890388317894,
+D/MatchMeMainActivity(18834): applySystemUiColors attempt=1 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9472
+D/MatchMeBackgroundService(18834): [NATIVE] restoreCredentialsAndConnect: start
+D/MatchMeBackgroundService(18834): [NATIVE] restoreCredentialsAndConnect: finished (elapsed=0ms)
+D/MatchMeBackgroundService(18834): Standard Mode active & App in background -> Stopping Service
+D/MatchMeBackgroundService(18834): Scheduling periodic location work (Standard Mode)
+D/MatchMeBackgroundService(18834): Skipping background updates: Not visible or not online (isVisible=false, isOnline=true)
+D/MatchMeBackgroundService(18834): Location updates stopped
+D/MatchMeBackgroundService(18834): Realtime WebSocket Disconnected
+D/MatchMeBackgroundService(18834): [NATIVE] ensureRunningFromStoredState completed (elapsed=5ms)
+D/FlutterGeolocator(18834): Geolocator foreground service connected
+D/FlutterGeolocator(18834): Initializing Geolocator services
+D/FlutterGeolocator(18834): Flutter engine connected. Connected engine count 1
+D/MatchMeBackgroundService(18834): Background service destroyed
+D/MatchMeBackgroundService(18834): Realtime WebSocket Disconnected
+I/Choreographer(18834): Skipped 190 frames!  The application may be doing too much work on its main thread.
+D/FlutterJNI(18834): Sending viewport metrics to the engine.
+I/HWUI    (18834): Davey! duration=3175ms; Flags=0, FrameTimelineVsyncId=64505157, IntendedVsync=98890413867797, Vsync=98893567306727, InputEventId=0, HandleInputStart=98893583227048, AnimationStart=98893583228586, PerformTraversalsStart=98893583229279, DrawStart=98893585308663, FrameDeadline=98890427867798, FrameInterval=98893582784279, FrameStartTime=16597047, SyncQueued=98893585402740, SyncStart=98893585451740, IssueDrawCommandsStart=98893585508279, SwapBuffers=98893587105202, FrameCompleted=98893589758817, DequeueBufferDuration=1040847, QueueBufferDuration=476615, GpuCompleted=98893589758817, SwapBuffersCompleted=98893588570125, DisplayPresentTime=472450948177, CommandSubmissionCompleted=98893587105202,
+D/MatchMeBackgroundService(18834): Background service created
+D/MatchMeBackgroundService(18834): Synchronously restored state: highAccuracyMode=false, isVisible=false, userId=true
+D/MatchMeBackgroundService(18834): [NATIVE] Delaying ensureRunningFromStoredState by 1500ms to reduce startup contention
+D/MatchMeBackgroundService(18834): Background service started with action: UPDATE_APP_FOREGROUND
+D/MatchMeBackgroundService(18834): App foreground state updated: true
+D/MatchMeBackgroundService(18834): Cancelling periodic location work (High Accuracy Mode or Foreground)
+D/MatchMeMainActivity(18834): applySystemUiColors attempt=2 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+D/FlutterJNI(18834): Sending viewport metrics to the engine.
+I/Choreographer(18834): Skipped 73 frames!  The application may be doing too much work on its main thread.
+D/FlutterJNI(18834): Sending viewport metrics to the engine.
+I/HWUI    (18834): Davey! duration=1236ms; Flags=0, FrameTimelineVsyncId=64506533, IntendedVsync=98894011290637, Vsync=98895222669062, InputEventId=0, HandleInputStart=98895239495048, AnimationStart=98895239496279, PerformTraversalsStart=98895239496971, DrawStart=98895242348894, FrameDeadline=98894025290638, FrameInterval=98895239060586, FrameStartTime=16594225, SyncQueued=98895242404663, SyncStart=98895242544971, IssueDrawCommandsStart=98895242610817, SwapBuffers=98895244842433, FrameCompleted=98895247501509, DequeueBufferDuration=1631154, QueueBufferDuration=314077, GpuCompleted=98895247501509, SwapBuffersCompleted=98895246172279, DisplayPresentTime=472450950145, CommandSubmissionCompleted=98895244842433,
+D/MatchMeBackgroundService(18834): [NATIVE] restoreCredentialsAndConnect: start
+D/MatchMeBackgroundService(18834): [NATIVE] restoreCredentialsAndConnect: finished (elapsed=1ms)
+D/MatchMeBackgroundService(18834): Cancelling periodic location work (High Accuracy Mode or Foreground)
+D/MatchMeBackgroundService(18834): [NATIVE] connectToRealtime: start
+D/MatchMeBackgroundService(18834): Connecting to Supabase Realtime...
+D/ProfileInstaller(18834): Installing profile for com.example.matchme
+D/MatchMeBackgroundService(18834): Starting periodic location updates loop (will wait 1000ms before first request)
+D/MatchMeBackgroundService(18834): [NATIVE] ensureRunningFromStoredState completed (elapsed=58ms)
+W/example.matchme(18834): userfaultfd: MOVE ioctl seems unsupported: Try again
+D/MatchMeBackgroundService(18834): Background service started with action: UPDATE_VISIBILITY
+D/MatchMeBackgroundService(18834): Visibility updated: false
+D/MatchMeBackgroundService(18834): Cancelling periodic location work (High Accuracy Mode or Foreground)
+D/MatchMeBackgroundService(18834): Location updates stopped
+D/MatchMeBackgroundService(18834): Successfully updated user activity
+D/MatchMeBackgroundService(18834): [NATIVE] Realtime WebSocket Connected (elapsed=395ms)
+D/MatchMeBackgroundService(18834): Sent Realtime Join: topic=realtime:public:chat_messages token=present
+D/MatchMeBackgroundService(18834): Sent Realtime Join: topic=realtime:public:matches token=present
+D/MatchMeBackgroundService(18834): Background service started with action: UPDATE_VISIBILITY
+D/MatchMeBackgroundService(18834): Visibility updated: false
+D/MatchMeBackgroundService(18834): Cancelling periodic location work (High Accuracy Mode or Foreground)
+D/MatchMeBackgroundService(18834): Location updates stopped
+I/FLTFireBGExecutor(18834): Creating background FlutterEngine instance, with args: [--enable-dart-profiling]
+D/vulkan  (18834): searching for layers in '/data/app/~~JDgPz3CMIn3TFQleA1uFhQ==/com.example.matchme-9iUeT18wfHwu82Xeiz8nhg==/lib/arm64'
+D/vulkan  (18834): searching for layers in '/data/app/~~JDgPz3CMIn3TFQleA1uFhQ==/com.example.matchme-9iUeT18wfHwu82Xeiz8nhg==/base.apk!/lib/arm64-v8a'
+D/FLTFireContextHolder(18834): received application context.
+I/flutter (18834): [IMPORTANT:flutter/shell/platform/android/android_context_vk_impeller.cc(62)] Using the Impeller rendering backend (Vulkan).
+D/FlutterGeolocator(18834): Geolocator foreground service connected
+D/FlutterGeolocator(18834): Initializing Geolocator services
+D/FlutterGeolocator(18834): Flutter engine connected. Connected engine count 2
+I/Choreographer(18834): Skipped 84 frames!  The application may be doing too much work on its main thread.
+I/HWUI    (18834): Davey! duration=936ms; Flags=0, FrameTimelineVsyncId=64507636, IntendedVsync=98896290034286, Vsync=98897218467050, InputEventId=249976705, HandleInputStart=98897221966510, AnimationStart=98897222082202, PerformTraversalsStart=98897222083356, DrawStart=98897222202817, FrameDeadline=98896307589841, FrameInterval=98897221586202, FrameStartTime=11052771, SyncQueued=98897222252894, SyncStart=98897222381894, IssueDrawCommandsStart=98897222452586, SwapBuffers=98897223469817, FrameCompleted=98897226220971, DequeueBufferDuration=50769, QueueBufferDuration=559307, GpuCompleted=98897225908971, SwapBuffersCompleted=98897226220971, DisplayPresentTime=472450950577, CommandSubmissionCompleted=98897223469817,
+D/MatchMeMainActivity(18834): applySystemUiColors attempt=0 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+I/FLTFireMsgService(18834): FlutterFirebaseMessagingBackgroundService started!
+I/System.out(18834): MatchMeBackgroundPlugin: startService called with token: present
+I/flutter (18834): [L10N] Fetched 1198 rows for he (in 1 batches)
+I/flutter (18834): Missing DB translation keys for he: (count=4) [settingsNotificationsPause5m, settingsNotificationsPause15m, settingsNotificationsPause30m, settingsNotificationsMatrixType] (elapsed=1694ms)
+D/MatchMeBackgroundService(18834): Background service started with action: UPDATE_APP_FOREGROUND
+D/MatchMeBackgroundService(18834): App foreground state updated: true
+D/MatchMeBackgroundService(18834): Cancelling periodic location work (High Accuracy Mode or Foreground)
+D/MatchMeMainActivity(18834): applySystemUiColors attempt=1 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+D/MatchMeBackgroundService(18834): Background service started with action: START
+D/MatchMeBackgroundService(18834): Starting service with userId: dd6d20a5-cd79-4761-8a74-751acb555b4d, highAccuracy: false, isVisible: false, isOnline: true
+D/MatchMeBackgroundService(18834): Credentials and config saved for boot recovery
+D/MatchMeBackgroundService(18834): Cancelling periodic location work (High Accuracy Mode or Foreground)
+D/MatchMeBackgroundService(18834): Service started but user is invisible or offline -> NOT starting location updates
+D/MatchMeBackgroundService(18834): Location updates stopped
+I/flutter (18834): [L10N] Background init completed for he
+D/MatchMeMainActivity(18834): applySystemUiColors attempt=3 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+D/MatchMeMainActivity(18834): applySystemUiColors attempt=2 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+D/MatchMeBackgroundService(18834): Background service started with action: SET_CONNECTIVITY
+D/MatchMeBackgroundService(18834): Connectivity updated: true
+D/MatchMeBackgroundService(18834): User went offline (or is invisible) -> stopping location updates
+D/MatchMeBackgroundService(18834): Location updates stopped
+D/MatchMeMainActivity(18834): applySystemUiColors attempt=3 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+I/WebViewFactory(18834): Loading com.google.android.webview version 144.0.7559.132 (code 755913203)
+W/ResourcesManager(18834): Found a null ResourcesImpl, skipped.
+W/ResourcesManager(18834): Found a null ResourcesImpl, skipped.
+V/ResourcesManager(18834): The following library key has been added: ResourcesKey{ mHash=e0c56b0a mResDir=null mSplitDirs=[] mOverlayDirs=[/product/overlay/NavigationBarMode3Button/NavigationBarMode3ButtonOverlay.apk,/product/overlay/FontRookeryRegular/FontRookeryRegularOverlay.apk,/data/resource-cache/com.android.systemui-neutral-3uqi.frro,/data/resource-cache/com.android.systemui-accent-AkbX.frro,/data/resource-cache/com.android.systemui-dynamic-U8gO.frro] mLibDirs=[/data/app/~~x_xTntDAJ_VjCLtxlXcGXg==/com.google.android.webview-2f7C9mG-a0DfhEBFo0YFDA==/base.apk,/system/framework/android.test.base.jar,/system_ext/framework/androidx.window.extensions.jar] mDisplayId=0 mOverrideConfig=v35 mCompatInfo={400dpi always-compat} mLoaders=[]}
+D/ApplicationLoaders(18834): Returning zygote-cached class loader: /system/framework/android.test.base.jar
+D/ApplicationLoaders(18834): Returning zygote-cached class loader: /system_ext/framework/androidx.window.extensions.jar
+W/example.matchme(18834): Loading /data/app/~~x_xTntDAJ_VjCLtxlXcGXg==/com.google.android.webview-2f7C9mG-a0DfhEBFo0YFDA==/oat/arm64/base.odex non-executable as it requires an image which we failed to load
+D/nativeloader(18834): Configuring clns-9 for other apk /data/app/~~x_xTntDAJ_VjCLtxlXcGXg==/com.google.android.webview-2f7C9mG-a0DfhEBFo0YFDA==/base.apk. target_sdk_version=36, uses_libraries=, library_path=/data/app/~~x_xTntDAJ_VjCLtxlXcGXg==/com.google.android.webview-2f7C9mG-a0DfhEBFo0YFDA==/lib/arm64:/data/app/~~x_xTntDAJ_VjCLtxlXcGXg==/com.google.android.webview-2f7C9mG-a0DfhEBFo0YFDA==/base.apk!/lib/arm64-v8a, permitted_path=/data:/mnt/expand
+I/cr_WVCFactoryProvider(18834): version=144.0.7559.132 (755913203) minSdkVersion=29 multiprocess=true packageId=2 splits=<none>
+D/nativeloader(18834): Load /data/app/~~x_xTntDAJ_VjCLtxlXcGXg==/com.google.android.webview-2f7C9mG-a0DfhEBFo0YFDA==/base.apk!/lib/arm64-v8a/libwebviewchromium.so using class loader ns clns-9 (caller=/data/app/~~x_xTntDAJ_VjCLtxlXcGXg==/com.google.android.webview-2f7C9mG-a0DfhEBFo0YFDA==/base.apk): ok
+D/nativeloader(18834): Load /system/lib64/libwebviewchromium_plat_support.so using class loader ns clns-9 (caller=/data/app/~~x_xTntDAJ_VjCLtxlXcGXg==/com.google.android.webview-2f7C9mG-a0DfhEBFo0YFDA==/base.apk): ok
+I/chromium(18834): [0218/135734.941002:INFO:android_webview/browser/variations/variations_seed_loader.cc:67] Failed to open file for reading.: No such file or directory (2)
+I/cr_LibraryLoader(18834): Successfully loaded native library
+I/cr_CachingUmaRecorder(18834): Flushed 20 samples from 20 histograms, 0 samples were dropped.
+I/cr_CombinedPProvider(18834): #registerProvider() provider:WV.rk@4449a49 isPolicyCacheEnabled:false policyProvidersSize:0
+I/cr_PolicyProvider(18834): #setManagerAndSource() 0
+I/cr_DisplayManager(18834): Is Display Topology available: false
+I/cr_CombinedPProvider(18834): #linkNativeInternal() 1
+I/cr_AppResProvider(18834): #getApplicationRestrictionsFromUserManager() Bundle[EMPTY_PARCEL]
+I/cr_PolicyProvider(18834): #notifySettingsAvailable() 0
+I/cr_CombinedPProvider(18834): #onSettingsAvailable() 0
+I/cr_CombinedPProvider(18834): #flushPolicies()
+W/chromium(18834): [WARNING:android_webview/browser/network_service/net_helpers.cc:137] HTTP Cache size is: 34316094
+I/CameraManagerGlobal(18834): Connecting to camera service
+D/libMEOW (18834): meow new tls: 0xb400006fa2ff9d00
+D/libMEOW (18834): applied 1 plugins for [com.example.matchme]:
+D/libMEOW (18834):   plugin 1: [libMEOW_gift.so]: 0xb4000070d2cf3a00
+D/libMEOW (18834): rebuild call chain: 0xb400006fa3008f40
+W/cr_media(18834): BLUETOOTH_CONNECT permission is missing.
+W/cr_media(18834): getBluetoothAdapter() requires BLUETOOTH permission
+W/cr_media(18834): registerBluetoothIntentsIfNeeded: Requires BLUETOOTH permission
+D/vulkan  (18834): searching for layers in '/data/app/~~JDgPz3CMIn3TFQleA1uFhQ==/com.example.matchme-9iUeT18wfHwu82Xeiz8nhg==/lib/arm64'
+D/vulkan  (18834): searching for layers in '/data/app/~~JDgPz3CMIn3TFQleA1uFhQ==/com.example.matchme-9iUeT18wfHwu82Xeiz8nhg==/base.apk!/lib/arm64-v8a'
+I/PlatformViewsController(18834): Hosting view in view hierarchy for platform view: 0
+I/PlatformViewsController(18834): PlatformView is using SurfaceProducer backend
+D/BufferQueueConsumer(18834): [](id:499200000002,api:0,p:-1,c:18834) connect: controlledByApp=true
+I/example.matchme(18834): hiddenapi: Accessing hidden field Landroid/content/pm/ApplicationInfo;->primaryCpuAbi:Ljava/lang/String; (runtime_flags=0, domain=platform, api=unsupported) from Lorg/chromium/android_webview/SystemStateUtil; (domain=app, TargetSdkVersion=36) using reflection: allowed
+W/VideoCapabilities(18834): Unsupported mime image/vnd.android.heic
+W/VideoCapabilities(18834): Unsupported mime image/vnd.android.heic
+W/VideoCapabilities(18834): Unsupported mime image/vnd.android.heic
+W/VideoCapabilities(18834): Unrecognized profile/level 32768/256 for video/mp4v-es
+W/VideoCapabilities(18834): Unrecognized profile/level 32768/256 for video/mp4v-es
+D/FlutterJNI(18834): Sending viewport metrics to the engine.
+D/BufferQueueConsumer(18834): [](id:499200000003,api:0,p:-1,c:18834) connect: controlledByApp=true
+I/IMGSRV  (18834): MTK_IsVKAUXEnabled:320: [VK_AUX] Enabled
+D/libMEOW (18834): meow new tls: 0xb400006fa5fa7800
+D/libMEOW (18834): applied 1 plugins for [com.example.matchme]:
+D/libMEOW (18834):   plugin 1: [libMEOW_gift.so]: 0xb4000070d2cf3a00
+D/libMEOW (18834): rebuild call chain: 0xb400006fa0f9b000
+D/FlutterJNI(18834): Sending viewport metrics to the engine.
+D/Surface (18834): Surface::disconnect
+D/BufferQueueConsumer(18834): [ImageReader-1x1f22m7-18834-0](id:499200000002,api:0,p:-1,c:18834) disconnect
+E/cr_VideoCapture(18834): CameraDevice.StateCallback onOpened
+D/BufferQueueConsumer(18834): [](id:499200000004,api:0,p:-1,c:18834) connect: controlledByApp=true
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:57:36.616999 2225904 face_landmarker_graph.cc:180] Sets FaceBlendshapesGraph acceleration to xnnpack by default.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "I0218 18:57:36.679000 2225904 gl_context.cc:407] GL version: 3.0 (OpenGL ES 3.0 (WebGL 2.0 (OpenGL ES 3.0 Chromium))), renderer: WebKit WebGL", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:57:36.681999 2225904 gl_context.cc:1118] OpenGL error checking is disabled", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "Graph successfully started running.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "I0218 18:57:38.052000 2225904 hand_gesture_recognizer_graph.cc:257] Custom gesture classifier is not defined.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "I0218 18:57:38.126000 2225904 gl_context.cc:407] GL version: 3.0 (OpenGL ES 3.0 (WebGL 2.0 (OpenGL ES 3.0 Chromium))), renderer: WebKit WebGL", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:57:38.128000 2225904 gl_context.cc:1118] OpenGL error checking is disabled", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "Graph successfully started running.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "INFO: Created TensorFlow Lite XNNPACK delegate for CPU.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:57:38.332000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:57:38.372999 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:57:38.376000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:57:38.376999 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:57:38.513999 2225904 landmark_projection_calculator.cc:81] Using NORM_RECT without IMAGE_DIMENSIONS is only supported for the square ROI. Provide IMAGE_DIMENSIONS or use PROJECTION_MATRIX.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "INFO: Created TensorFlow Lite XNNPACK delegate for CPU.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:57:38.545999 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:57:38.569999 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+E/FilePhenotypeFlags(18834): Config package com.google.android.gms.clearcut_client#com.example.matchme cannot use FILE backing without declarative registration. See go/phenotype-android-integration#phenotype for more information. This will lead to stale flags.
+E/FilePhenotypeFlags(18834): Config package com.google.android.gms.clearcut_client#com.example.matchme cannot use FILE backing without declarative registration. See go/phenotype-android-integration#phenotype for more information. This will lead to stale flags.
+E/FilePhenotypeFlags(18834): Config package com.google.android.gms.clearcut_client#com.example.matchme cannot use FILE backing without declarative registration. See go/phenotype-android-integration#phenotype for more information. This will lead to stale flags.
+D/Surface (18834): Surface::disconnect
+D/BufferQueueConsumer(18834): [ImageReader-1080x2163f22m7-18834-1](id:499200000003,api:0,p:-1,c:18834) disconnect
+I/PlatformViewsController(18834): Hosting view in view hierarchy for platform view: 1
+I/PlatformViewsController(18834): PlatformView is using SurfaceProducer backend
+D/BufferQueueConsumer(18834): [](id:499200000005,api:0,p:-1,c:18834) connect: controlledByApp=true
+D/FlutterJNI(18834): Sending viewport metrics to the engine.
+D/BufferQueueConsumer(18834): [](id:499200000006,api:0,p:-1,c:18834) connect: controlledByApp=true
+D/FlutterJNI(18834): Sending viewport metrics to the engine.
+D/Surface (18834): Surface::disconnect
+D/BufferQueueConsumer(18834): [ImageReader-1x1f22m7-18834-3](id:499200000005,api:0,p:-1,c:18834) disconnect
+E/cr_VideoCapture(18834): CameraDevice.StateCallback onOpened
+D/BufferQueueConsumer(18834): [](id:499200000007,api:0,p:-1,c:18834) connect: controlledByApp=true
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:00.824999 2225904 face_landmarker_graph.cc:180] Sets FaceBlendshapesGraph acceleration to xnnpack by default.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "I0218 18:58:00.880000 2225904 gl_context.cc:407] GL version: 3.0 (OpenGL ES 3.0 (WebGL 2.0 (OpenGL ES 3.0 Chromium))), renderer: WebKit WebGL", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:00.884999 2225904 gl_context.cc:1118] OpenGL error checking is disabled", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "Graph successfully started running.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "I0218 18:58:02.699000 2225904 hand_gesture_recognizer_graph.cc:257] Custom gesture classifier is not defined.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "I0218 18:58:02.768000 2225904 gl_context.cc:407] GL version: 3.0 (OpenGL ES 3.0 (WebGL 2.0 (OpenGL ES 3.0 Chromium))), renderer: WebKit WebGL", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:02.768999 2225904 gl_context.cc:1118] OpenGL error checking is disabled", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "Graph successfully started running.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "INFO: Created TensorFlow Lite XNNPACK delegate for CPU.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:02.990000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:03.079000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:03.084999 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:03.087000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:03.188000 2225904 landmark_projection_calculator.cc:81] Using NORM_RECT without IMAGE_DIMENSIONS is only supported for the square ROI. Provide IMAGE_DIMENSIONS or use PROJECTION_MATRIX.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "INFO: Created TensorFlow Lite XNNPACK delegate for CPU.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:03.231000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:03.267000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+D/Surface (18834): Surface::disconnect
+D/BufferQueueConsumer(18834): [ImageReader-1080x2163f22m7-18834-4](id:499200000006,api:0,p:-1,c:18834) disconnect
+I/PlatformViewsController(18834): Hosting view in view hierarchy for platform view: 2
+I/PlatformViewsController(18834): PlatformView is using SurfaceProducer backend
+D/BufferQueueConsumer(18834): [](id:499200000008,api:0,p:-1,c:18834) connect: controlledByApp=true
+D/FlutterJNI(18834): Sending viewport metrics to the engine.
+D/BufferQueueConsumer(18834): [](id:499200000009,api:0,p:-1,c:18834) connect: controlledByApp=true
+D/FlutterJNI(18834): Sending viewport metrics to the engine.
+D/Surface (18834): Surface::disconnect
+D/BufferQueueConsumer(18834): [ImageReader-1x1f22m7-18834-6](id:499200000008,api:0,p:-1,c:18834) disconnect
+E/cr_VideoCapture(18834): CameraDevice.StateCallback onOpened
+D/BufferQueueConsumer(18834): [](id:49920000000a,api:0,p:-1,c:18834) connect: controlledByApp=true
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:12.801999 2225904 face_landmarker_graph.cc:180] Sets FaceBlendshapesGraph acceleration to xnnpack by default.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "I0218 18:58:12.863000 2225904 gl_context.cc:407] GL version: 3.0 (OpenGL ES 3.0 (WebGL 2.0 (OpenGL ES 3.0 Chromium))), renderer: WebKit WebGL", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:12.867000 2225904 gl_context.cc:1118] OpenGL error checking is disabled", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "Graph successfully started running.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "I0218 18:58:14.116000 2225904 hand_gesture_recognizer_graph.cc:257] Custom gesture classifier is not defined.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "I0218 18:58:14.163000 2225904 gl_context.cc:407] GL version: 3.0 (OpenGL ES 3.0 (WebGL 2.0 (OpenGL ES 3.0 Chromium))), renderer: WebKit WebGL", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:14.164999 2225904 gl_context.cc:1118] OpenGL error checking is disabled", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "Graph successfully started running.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "INFO: Created TensorFlow Lite XNNPACK delegate for CPU.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:14.335000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:14.356000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:14.356999 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:14.358000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:14.595000 2225904 landmark_projection_calculator.cc:81] Using NORM_RECT without IMAGE_DIMENSIONS is only supported for the square ROI. Provide IMAGE_DIMENSIONS or use PROJECTION_MATRIX.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "INFO: Created TensorFlow Lite XNNPACK delegate for CPU.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:14.667000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:14.702000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+D/Surface (18834): Surface::disconnect
+D/BufferQueueConsumer(18834): [ImageReader-1080x2163f22m7-18834-7](id:499200000009,api:0,p:-1,c:18834) disconnect
+D/MatchMeBackgroundService(18834): Successfully updated user activity
+I/PlatformViewsController(18834): Hosting view in view hierarchy for platform view: 3
+I/PlatformViewsController(18834): PlatformView is using SurfaceProducer backend
+D/BufferQueueConsumer(18834): [](id:49920000000b,api:0,p:-1,c:18834) connect: controlledByApp=true
+D/FlutterJNI(18834): Sending viewport metrics to the engine.
+D/BufferQueueConsumer(18834): [](id:49920000000c,api:0,p:-1,c:18834) connect: controlledByApp=true
+D/FlutterJNI(18834): Sending viewport metrics to the engine.
+D/Surface (18834): Surface::disconnect
+D/BufferQueueConsumer(18834): [ImageReader-1x1f22m7-18834-9](id:49920000000b,api:0,p:-1,c:18834) disconnect
+E/cr_VideoCapture(18834): CameraDevice.StateCallback onOpened
+D/BufferQueueConsumer(18834): [](id:49920000000d,api:0,p:-1,c:18834) connect: controlledByApp=true
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:28.288000 2225904 face_landmarker_graph.cc:180] Sets FaceBlendshapesGraph acceleration to xnnpack by default.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "I0218 18:58:28.364000 2225904 gl_context.cc:407] GL version: 3.0 (OpenGL ES 3.0 (WebGL 2.0 (OpenGL ES 3.0 Chromium))), renderer: WebKit WebGL", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:28.368000 2225904 gl_context.cc:1118] OpenGL error checking is disabled", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "Graph successfully started running.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "I0218 18:58:29.452000 2225904 hand_gesture_recognizer_graph.cc:257] Custom gesture classifier is not defined.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "I0218 18:58:29.519000 2225904 gl_context.cc:407] GL version: 3.0 (OpenGL ES 3.0 (WebGL 2.0 (OpenGL ES 3.0 Chromium))), renderer: WebKit WebGL", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:29.523000 2225904 gl_context.cc:1118] OpenGL error checking is disabled", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "Graph successfully started running.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "INFO: Created TensorFlow Lite XNNPACK delegate for CPU.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:29.716000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:29.750000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:29.752000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:29.753999 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:29.926000 2225904 landmark_projection_calculator.cc:81] Using NORM_RECT without IMAGE_DIMENSIONS is only supported for the square ROI. Provide IMAGE_DIMENSIONS or use PROJECTION_MATRIX.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "INFO: Created TensorFlow Lite XNNPACK delegate for CPU.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:29.977999 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:30.052000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+D/Surface (18834): Surface::disconnect
+D/BufferQueueConsumer(18834): [ImageReader-1080x2163f22m7-18834-10](id:49920000000c,api:0,p:-1,c:18834) disconnect
+I/PlatformViewsController(18834): Hosting view in view hierarchy for platform view: 4
+I/PlatformViewsController(18834): PlatformView is using SurfaceProducer backend
+D/BufferQueueConsumer(18834): [](id:49920000000e,api:0,p:-1,c:18834) connect: controlledByApp=true
+D/FlutterJNI(18834): Sending viewport metrics to the engine.
+D/BufferQueueConsumer(18834): [](id:49920000000f,api:0,p:-1,c:18834) connect: controlledByApp=true
+D/FlutterJNI(18834): Sending viewport metrics to the engine.
+D/Surface (18834): Surface::disconnect
+D/BufferQueueConsumer(18834): [ImageReader-1x1f22m7-18834-12](id:49920000000e,api:0,p:-1,c:18834) disconnect
+E/cr_VideoCapture(18834): CameraDevice.StateCallback onOpened
+D/BufferQueueConsumer(18834): [](id:499200000010,api:0,p:-1,c:18834) connect: controlledByApp=true
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:37.695000 2225904 face_landmarker_graph.cc:180] Sets FaceBlendshapesGraph acceleration to xnnpack by default.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "I0218 18:58:37.744999 2225904 gl_context.cc:407] GL version: 3.0 (OpenGL ES 3.0 (WebGL 2.0 (OpenGL ES 3.0 Chromium))), renderer: WebKit WebGL", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:37.747000 2225904 gl_context.cc:1118] OpenGL error checking is disabled", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "Graph successfully started running.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "I0218 18:58:39.460000 2225904 hand_gesture_recognizer_graph.cc:257] Custom gesture classifier is not defined.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "I0218 18:58:39.528000 2225904 gl_context.cc:407] GL version: 3.0 (OpenGL ES 3.0 (WebGL 2.0 (OpenGL ES 3.0 Chromium))), renderer: WebKit WebGL", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:39.531000 2225904 gl_context.cc:1118] OpenGL error checking is disabled", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "Graph successfully started running.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "INFO: Created TensorFlow Lite XNNPACK delegate for CPU.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:39.719000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:39.758000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:39.760000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:39.760999 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:40.063000 2225904 landmark_projection_calculator.cc:81] Using NORM_RECT without IMAGE_DIMENSIONS is only supported for the square ROI. Provide IMAGE_DIMENSIONS or use PROJECTION_MATRIX.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "INFO: Created TensorFlow Lite XNNPACK delegate for CPU.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:40.105999 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+I/chromium(18834): [INFO:CONSOLE:1] "W0218 18:58:40.132000 2225904 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.", source: https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm/vision_wasm_internal.js (1)
+D/Surface (18834): Surface::disconnect
+D/BufferQueueConsumer(18834): [ImageReader-1080x2163f22m7-18834-13](id:49920000000f,api:0,p:-1,c:18834) disconnect

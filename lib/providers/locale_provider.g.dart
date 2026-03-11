@@ -10,11 +10,11 @@ part of 'locale_provider.dart';
 // ignore_for_file: type=lint, type=warning
 
 @ProviderFor(Localization)
-const localizationProvider = LocalizationProvider._();
+final localizationProvider = LocalizationProvider._();
 
 final class LocalizationProvider
     extends $NotifierProvider<Localization, LocalizationState> {
-  const LocalizationProvider._()
+  LocalizationProvider._()
     : super(
         from: null,
         argument: null,
@@ -41,14 +41,13 @@ final class LocalizationProvider
   }
 }
 
-String _$localizationHash() => r'e73e4c05a965e1b92b3375499f0395a8bc69cfe7';
+String _$localizationHash() => r'b5bf83f237c1dd194bdf7a55e2a136aa17ebab24';
 
 abstract class _$Localization extends $Notifier<LocalizationState> {
   LocalizationState build();
   @$mustCallSuper
   @override
   void runBuild() {
-    final created = build();
     final ref = this.ref as $Ref<LocalizationState, LocalizationState>;
     final element =
         ref.element
@@ -58,6 +57,6 @@ abstract class _$Localization extends $Notifier<LocalizationState> {
               Object?,
               Object?
             >;
-    element.handleValue(ref, created);
+    element.handleCreate(ref, build);
   }
 }

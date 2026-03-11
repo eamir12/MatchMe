@@ -2,6 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Camera permissions -->
+	<key>NSCameraUsageDescription</key>
+	<string>MatchMe needs access to your camera to take profile photos and selfies.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>MatchMe needs access to your photo library to select profile photos.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>MatchMe needs to save photos to your library.</string>
+	
+	<!-- Location permissions -->
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
     <string>MatchMe uses your location in the background to find potential matches nearby, even when the app is closed.</string>
     <key>NSLocationWhenInUseUsageDescription</key>
@@ -9,15 +18,72 @@
 
     <key>UIBackgroundModes</key>
     <array>
+        <string>fetch</string>
         <string>location</string>
         <string>processing</string>
         <string>remote-notification</string>
+    </array>
+
+    <key>BGTaskSchedulerPermittedIdentifiers</key>
+    <array>
+        <string>com.matchme.backgroundsync</string>
+        <string>com.matchme.locationupdate</string>
+    </array>
+
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.example.matchme</string>
+			</array>
+		</dict>
+	</array>
+
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Event Ticket</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.adobe.pdf</string>
+                <string>com.apple.ical.ics</string>
+                <string>public.calendar-event</string>
+                <string>public.jpeg</string>
+                <string>public.png</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Shared Text</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.text</string>
+                <string>public.url</string>
+            </array>
+        </dict>
     </array>
 
     <key>NSPhotoLibraryUsageDescription</key>
 	<string>Allow access to photo library to upload event tickets.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Allow access to camera to take photos of event tickets.</string>
+
+    <!-- Notification Permissions -->
+    <key>NSUserNotificationsUsageDescription</key>
+    <string>MatchMe uses notifications to alert you about new messages and matches.</string>
+
+    <key>NSCalendarsUsageDescription</key>
+    <string>MatchMe needs access to your calendar to sync events.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>MatchMe needs full access to your calendar to sync events.</string>
 
 </dict>
 </plist>

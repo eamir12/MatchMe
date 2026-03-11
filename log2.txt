@@ -1,0 +1,221 @@
+C:\App\MatchMeGPT5.21\MatchMe4>flutter run
+Launching lib\main.dart on moto g54 5G in debug mode...
+Running Gradle task 'assembleDebug'...                             11.8s
+√ Built build\app\outputs\flutter-apk\app-debug.apk
+Installing build\app\outputs\flutter-apk\app-debug.apk...           7.6s
+D/FlutterJNI( 5513): Beginning load of flutter...
+D/FlutterJNI( 5513): flutter (null) was loaded normally!
+I/flutter ( 5513): [IMPORTANT:flutter/shell/platform/android/android_context_vk_impeller.cc(62)] Using the Impeller rendering backend (Vulkan).
+D/libMEOW ( 5513): meow new tls: 0xb400007d3bf59400
+D/libMEOW ( 5513): meow reload base cfg path: na
+D/libMEOW ( 5513): meow reload overlay cfg path: na
+W/QT      ( 5513): qt_process_init() called
+E/QT      ( 5513): [QT]file does not exist
+W/QT      ( 5513): Support!!
+E/QT      ( 5513): [QT]file does not exist
+D/libMEOW ( 5513): applied 1 plugins for [com.example.matchme]:
+D/libMEOW ( 5513):   plugin 1: [libMEOW_gift.so]: 0xb400007e23133840
+D/libMEOW ( 5513): rebuild call chain: 0xb400007d3bf8f2c0
+D/libMEOW ( 5513): meow delete tls: 0xb400007d3bf59400
+D/FlutterGeolocator( 5513): Attaching Geolocator to activity
+D/com.llfbandit.app_links( 5513): Intent { act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER] flg=0x30000000 cmp=com.example.matchme/.MainActivity (has extras) }
+I/example.matchme( 5513): hiddenapi: Accessing hidden method Landroid/view/accessibility/AccessibilityNodeInfo;->getSourceNodeId()J (runtime_flags=0, domain=platform, api=unsupported,test-api) from Lio/flutter/view/AccessibilityViewEmbedder$ReflectionAccessors; (domain=app, TargetSdkVersion=36) using reflection: allowed
+I/example.matchme( 5513): hiddenapi: Accessing hidden method Landroid/view/accessibility/AccessibilityRecord;->getSourceNodeId()J (runtime_flags=0, domain=platform, api=unsupported) from Lio/flutter/view/AccessibilityViewEmbedder$ReflectionAccessors; (domain=app, TargetSdkVersion=36) using reflection: allowed
+I/example.matchme( 5513): hiddenapi: Accessing hidden field Landroid/view/accessibility/AccessibilityNodeInfo;->mChildNodeIds:Landroid/util/LongArray; (runtime_flags=0, domain=platform, api=unsupported) from Lio/flutter/view/AccessibilityViewEmbedder$ReflectionAccessors; (domain=app, TargetSdkVersion=36) using reflection: allowed
+I/example.matchme( 5513): hiddenapi: Accessing hidden method Landroid/util/LongArray;->get(I)J (runtime_flags=0, domain=platform, api=unsupported) from Lio/flutter/view/AccessibilityViewEmbedder$ReflectionAccessors; (domain=app, TargetSdkVersion=36) using reflection: allowed
+D/MatchMeMainActivity( 5513): onCreate: statusBarColor=0, navigationBarColor=0, systemUiVisibility=1280
+D/MatchMeMainActivity( 5513): applySystemUiColors attempt=0 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=1280
+I/FA      ( 5513): Tag Manager is not found and thus will not be used
+Syncing files to device moto g54 5G...                             227ms
+
+Flutter run key commands.
+r Hot reload.
+R Hot restart.
+h List all available interactive commands.
+d Detach (terminate "flutter run" but leave application running).
+c Clear the screen
+q Quit (terminate the application on the device).
+
+A Dart VM Service on moto g54 5G is available at: http://127.0.0.1:51876/nC1roarO9OI=/
+The Flutter DevTools debugger and profiler on moto g54 5G is available at:
+http://127.0.0.1:51876/nC1roarO9OI=/devtools/?uri=ws://127.0.0.1:51876/nC1roarO9OI=/ws
+D/MatchMeBootReceiver( 5513): Received android.intent.action.BOOT_COMPLETED, checking if background service should start
+D/MatchMeBootReceiver( 5513): Starting background service after android.intent.action.BOOT_COMPLETED (isVisible=true)
+I/Choreographer( 5513): Skipped 243 frames!  The application may be doing too much work on its main thread.
+I/WindowExtensionsImpl( 5513): Initializing Window Extensions, vendor API level=6, activity embedding enabled=true
+D/BufferQueueConsumer( 5513): [](id:158900000000,api:0,p:-1,c:5513) connect: controlledByApp=false
+D/BLASTBufferQueue( 5513): [VRI[MainActivity]#0](f:0,a:0) constructor()
+D/BLASTBufferQueue( 5513): [VRI[MainActivity]#0](f:0,a:0) update width=1080 height=2400 format=-3 mTransformHint=0
+E/FBI     ( 5513): Can't load library: dlopen failed: library "libmagtsync.so" not found
+D/libMEOW ( 5513): meow new tls: 0xb400007bfecfab40
+D/libMEOW ( 5513): applied 1 plugins for [com.example.matchme]:
+D/libMEOW ( 5513):   plugin 1: [libMEOW_gift.so]: 0xb400007e23133840
+D/libMEOW ( 5513): rebuild call chain: 0xb400007bfed09d00
+I/example.matchme( 5513): Compiler allocated 5189KB to compile void android.view.ViewRootImpl.performTraversals()
+I/HWUI    ( 5513): setGrContext nullptr-->validptr
+D/BufferQueueConsumer( 5513): [](id:158900000001,api:0,p:-1,c:5513) connect: controlledByApp=false
+D/BLASTBufferQueue( 5513): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity]#1](f:0,a:0) constructor()
+D/BLASTBufferQueue( 5513): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity]#1](f:0,a:0) update width=1080 height=2400 format=4 mTransformHint=0
+W/libc    ( 5513): Access denied finding property "vendor.product.pvr.debug_level"
+E/IMGSRV  ( 5513): :1501: GrallocTestAlloc: Invalid color format (56)
+W/libc    ( 5513): Access denied finding property "vendor.product.pvr.debug_level"
+E/IMGSRV  ( 5513): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  ( 5513): :220:        width -> 1
+E/IMGSRV  ( 5513): :221:       height -> 1
+E/IMGSRV  ( 5513): :222:       format -> 56
+E/IMGSRV  ( 5513): :223:        usage -> 0x0b00
+E/IMGSRV  ( 5513): :1501: GrallocTestAlloc: Invalid color format (59)
+E/IMGSRV  ( 5513): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  ( 5513): :220:        width -> 1
+E/IMGSRV  ( 5513): :221:       height -> 1
+E/IMGSRV  ( 5513): :222:       format -> 59
+E/IMGSRV  ( 5513): :223:        usage -> 0x0b00
+E/IMGSRV  ( 5513): :1501: GrallocTestAlloc: Invalid color format (56)
+E/IMGSRV  ( 5513): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  ( 5513): :220:        width -> 1
+E/IMGSRV  ( 5513): :221:       height -> 1
+E/IMGSRV  ( 5513): :222:       format -> 56
+E/IMGSRV  ( 5513): :223:        usage -> 0x0b00
+E/IMGSRV  ( 5513): :1501: GrallocTestAlloc: Invalid color format (59)
+E/IMGSRV  ( 5513): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  ( 5513): :220:        width -> 1
+E/IMGSRV  ( 5513): :221:       height -> 1
+E/IMGSRV  ( 5513): :222:       format -> 59
+E/IMGSRV  ( 5513): :223:        usage -> 0x0b00
+D/example.matchme( 5513): Can't load libmbrainSDK
+D/FlutterGeolocator( 5513): Creating service.
+D/FlutterGeolocator( 5513): Binding to location service.
+W/libc    ( 5513): Access denied finding property "persist.vendor.debug.gpud.init"
+I/GrallocExtra( 5513): gralloc_extra_query:is_SW3D 0
+D/BLASTBufferQueue( 5513): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity]#1](f:0,a:1) acquireNextBufferLocked size=1080x2400 mFrameNumber=1 applyTransaction=true mTimestamp=138005940125532(auto) mPendingTransactions.size=0 graphicBufferId=23678154702858 transform=0
+D/example.matchme( 5513): Can't load libmbrainSDK
+D/MatchMeBackgroundService( 5513): Background service created
+D/MatchMeBackgroundService( 5513): [NATIVE] Delaying restoreCredentialsAndConnect by 1500ms to reduce startup contention
+W/MatchMeBackgroundService( 5513): Realtime connection stale or missing (last activity: 1769451594185ms ago). Reconnecting...
+D/MatchMeBackgroundService( 5513): Realtime WebSocket Disconnected
+D/MatchMeBackgroundService( 5513): Background service started with action: START
+D/MatchMeBackgroundService( 5513): Starting periodic location updates loop (will wait 1000ms before first request)
+D/MatchMeBackgroundService( 5513): [NATIVE] connectToRealtime: start
+D/MatchMeBackgroundService( 5513): Connecting to Supabase Realtime...
+D/MatchMeBackgroundService( 5513): Skipping notification polling fallback loop (FCM token present)
+I/flutter ( 5513): Missing translation for key: romantic::casual, strings has 978 entries
+D/MatchMeBackgroundService( 5513): [NATIVE] Realtime WebSocket Connected (elapsed=541ms)
+D/MatchMeBackgroundService( 5513): Sent Realtime Join: topic=realtime:public:chat_messages token=present
+D/MatchMeBackgroundService( 5513): Sent Realtime Join: topic=realtime:public:matches token=present
+D/MatchMeBackgroundService( 5513): Realtime: Joined channel successfully
+D/MatchMeBackgroundService( 5513): Realtime: Joined channel successfully
+I/Choreographer( 5513): Skipped 133 frames!  The application may be doing too much work on its main thread.
+D/BLASTBufferQueue( 5513): [VRI[MainActivity]#0](f:0,a:1) acquireNextBufferLocked size=1080x2400 mFrameNumber=1 applyTransaction=true mTimestamp=138010051364225(auto) mPendingTransactions.size=0 graphicBufferId=23678154702864 transform=0
+I/HWUI    ( 5513): Davey! duration=4478ms; Flags=1, FrameTimelineVsyncId=97178675, IntendedVsync=138005571959311, Vsync=138010005292600, InputEventId=0, HandleInputStart=138010031265455, AnimationStart=138010031266994, PerformTraversalsStart=138010031267378, DrawStart=138010040907917, FrameDeadline=138005585959312, FrameInterval=138010030832532, FrameStartTime=33333333, SyncQueued=138010041643378, SyncStart=138010043691917, IssueDrawCommandsStart=138010044332609, SwapBuffers=138010050295301, FrameCompleted=138010052497148, DequeueBufferDuration=0, QueueBufferDuration=443615, GpuCompleted=138010052497148, SwapBuffersCompleted=138010052029840, DisplayPresentTime=0, CommandSubmissionCompleted=138010050295301,
+D/MatchMeMainActivity( 5513): applySystemUiColors attempt=1 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+I/flutter ( 5513): [L10N] Skipping DB fetch, cache is fresh (0h old)
+D/MatchMeBackgroundService( 5513): [NATIVE] restoreCredentialsAndConnect: start
+D/MatchMeBackgroundService( 5513): Restored credentials from storage. Connecting to Realtime immediately.
+D/MatchMeBackgroundService( 5513): Location updates already running
+D/MatchMeBackgroundService( 5513): [NATIVE] restoreCredentialsAndConnect: finished (elapsed=68ms)
+D/MatchMeBackgroundService( 5513): [NATIVE] restoreCredentialsAndConnect completed (elapsed=68ms)
+D/FlutterGeolocator( 5513): Geolocator foreground service connected
+D/FlutterGeolocator( 5513): Initializing Geolocator services
+D/FlutterGeolocator( 5513): Flutter engine connected. Connected engine count 1
+I/System.out( 5513): MatchMeBackgroundPlugin: startService called with token: present
+D/MatchMeBackgroundService( 5513): startLocationUpdates: initial delay completed (2000ms)
+D/MatchMeBackgroundService( 5513): Requesting single location update...
+D/MatchMeBackgroundService( 5513): Background service started with action: UPDATE_APP_FOREGROUND
+D/MatchMeBackgroundService( 5513): Location updates already running
+W/example.matchme( 5513): userfaultfd: MOVE ioctl seems unsupported: Try again
+I/Choreographer( 5513): Skipped 46 frames!  The application may be doing too much work on its main thread.
+I/HWUI    ( 5513): Davey! duration=777ms; Flags=0, FrameTimelineVsyncId=97180180, IntendedVsync=138010281494049, Vsync=138011044625769, InputEventId=0, HandleInputStart=138011051423686, AnimationStart=138011051428532, PerformTraversalsStart=138011051430763, DrawStart=138011051773148, FrameDeadline=138010295494050, FrameInterval=138011050251071, FrameStartTime=16589820, SyncQueued=138011052074455, SyncStart=138011052197455, IssueDrawCommandsStart=138011052290378, SwapBuffers=138011056644532, FrameCompleted=138011059070994, DequeueBufferDuration=2626692, QueueBufferDuration=719000, GpuCompleted=138011058741840, SwapBuffersCompleted=138011059070994, DisplayPresentTime=0, CommandSubmissionCompleted=138011056644532,
+D/MatchMeBackgroundService( 5513): Background service started with action: START
+D/MatchMeBackgroundService( 5513): Location updates already running
+D/MatchMeBackgroundService( 5513): Skipping notification polling fallback loop (FCM token present)
+D/MatchMeMainActivity( 5513): applySystemUiColors attempt=2 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+D/ProfileInstaller( 5513): Installing profile for com.example.matchme
+I/FLTFireBGExecutor( 5513): Creating background FlutterEngine instance, with args: [--enable-dart-profiling]
+D/vulkan  ( 5513): searching for layers in '/data/app/~~wvI6Rhm1KRQcW1HXxPDxZg==/com.example.matchme-QotnEYDsyhx5rBqqFzHP5g==/lib/arm64'
+D/vulkan  ( 5513): searching for layers in '/data/app/~~wvI6Rhm1KRQcW1HXxPDxZg==/com.example.matchme-QotnEYDsyhx5rBqqFzHP5g==/base.apk!/lib/arm64-v8a'
+D/FLTFireContextHolder( 5513): received application context.
+I/flutter ( 5513): [IMPORTANT:flutter/shell/platform/android/android_context_vk_impeller.cc(62)] Using the Impeller rendering backend (Vulkan).
+D/MatchMeBackgroundService( 5513): Location received (elapsed=1266ms)
+D/MatchMeBackgroundService( 5513): handleLocationUpdate called: isVisible=true, hasUserId=true
+D/MatchMeBackgroundService( 5513): Processing location update for user ffc20046-a777-463b-922a-547151aa1455
+D/MatchMeBackgroundService( 5513): Using configured interval: 20s
+D/MatchMeBackgroundService( 5513): Updating location in Supabase
+I/Choreographer( 5513): Skipped 42 frames!  The application may be doing too much work on its main thread.
+D/FlutterGeolocator( 5513): Geolocator foreground service connected
+D/FlutterGeolocator( 5513): Initializing Geolocator services
+D/FlutterGeolocator( 5513): Flutter engine connected. Connected engine count 2
+I/FLTFireMsgService( 5513): FlutterFirebaseMessagingBackgroundService started!
+I/HWUI    ( 5513): Davey! duration=712ms; Flags=0, FrameTimelineVsyncId=97180885, IntendedVsync=138011476690590, Vsync=138012173868666, InputEventId=0, HandleInputStart=138012185274763, AnimationStart=138012185276532, PerformTraversalsStart=138012185277148, DrawStart=138012185352532, FrameDeadline=138011490690591, FrameInterval=138012184385840, FrameStartTime=16599478, SyncQueued=138012185407917, SyncStart=138012185544302, IssueDrawCommandsStart=138012185629148, SwapBuffers=138012186578148, FrameCompleted=138012189014071, DequeueBufferDuration=53000, QueueBufferDuration=274462, GpuCompleted=138012189014071, SwapBuffersCompleted=138012188554686, DisplayPresentTime=0, CommandSubmissionCompleted=138012186578148,
+D/MatchMeBackgroundService( 5513): Successfully updated location:
+D/MatchMeBackgroundService( 5513): Checking for notifications via RPC... (Message ID: null)
+D/MatchMeBackgroundService( 5513): Notification check response: [{"unread_matches_count":0,"unread_messages_count":0,"latest_match_name":null,"latest_message_sender":null,"latest_message_content":null,"latest_message_id":null,"latest_match_id":null,"latest_sender_id":null}]
+D/MatchMeBackgroundService( 5513): No new notifications found
+D/MatchMeBackgroundService( 5513): Using JWT token for match engine (present)
+D/MatchMeBackgroundService( 5513): Match engine request: method=POST path=/functions/v1/match-engine
+D/MatchMeBackgroundService( 5513): Match engine headers: apikey=present, authorization=present
+D/MatchMeBackgroundService( 5513): Successfully triggered match engine
+D/MatchMeMainActivity( 5513): applySystemUiColors attempt=3 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+D/Surface ( 5513): Surface::disconnect
+D/Surface ( 5513): Surface::disconnect
+D/BLASTBufferQueue( 5513): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity]#1](f:0,a:1) destructor()
+D/BufferQueueConsumer( 5513): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity](BLAST)#85295(BLAST Consumer)pid:5513](id:158900000001,api:0,p:-1,c:5513) disconnect
+D/Surface ( 5513): Surface::disconnect
+D/BLASTBufferQueue( 5513): [VRI[MainActivity]#0](f:0,a:2) destructor()
+D/BufferQueueConsumer( 5513): [com.example.matchme/com.example.matchme.MainActivity#85290(BLAST Consumer)pid:5513](id:158900000000,api:0,p:-1,c:5513) disconnect
+I/HWUI    ( 5513): setGrContext validptr-->nullptr
+W/WindowOnBackDispatcher( 5513): sendCancelIfRunning: isInProgress=false callback=android.app.Activity$$ExternalSyntheticLambda0@fbcb1fc
+D/FlutterGeolocator( 5513): Detaching Geolocator from activity
+D/MatchMeBackgroundService( 5513): Background service started with action: UPDATE_APP_FOREGROUND
+D/MatchMeBackgroundService( 5513): Location updates already running
+D/MatchMeBackgroundService( 5513): Background service started with action: UPDATE_APP_FOREGROUND
+D/MatchMeBackgroundService( 5513): Location updates already running
+D/MatchMeBackgroundService( 5513): Successfully updated user activity
+I/FA      ( 5513): Application backgrounded at: timestamp_millis: 1769451608728
+D/FlutterGeolocator( 5513): Attaching Geolocator to activity
+D/com.llfbandit.app_links( 5513): Intent { act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER] flg=0x10200000 cmp=com.example.matchme/.MainActivity bnds=[280,1684][540,1992] }
+D/libMEOW ( 5513): meow new tls: 0xb400007d0ecb1e00
+D/libMEOW ( 5513): applied 1 plugins for [com.example.matchme]:
+D/libMEOW ( 5513):   plugin 1: [libMEOW_gift.so]: 0xb400007e23133840
+D/libMEOW ( 5513): rebuild call chain: 0xb400007d0ecc6900
+D/libMEOW ( 5513): meow delete tls: 0xb400007d0ecb1e00
+D/MatchMeMainActivity( 5513): onCreate: statusBarColor=0, navigationBarColor=0, systemUiVisibility=1280
+D/MatchMeMainActivity( 5513): applySystemUiColors attempt=0 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=1280
+D/BufferQueueConsumer( 5513): [](id:158900000002,api:0,p:-1,c:5513) connect: controlledByApp=false
+D/BLASTBufferQueue( 5513): [VRI[MainActivity]#2](f:0,a:0) constructor()
+D/BLASTBufferQueue( 5513): [VRI[MainActivity]#2](f:0,a:0) update width=1080 height=2400 format=-3 mTransformHint=0
+D/BufferQueueConsumer( 5513): [](id:158900000003,api:0,p:-1,c:5513) connect: controlledByApp=false
+D/BLASTBufferQueue( 5513): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity]#3](f:0,a:0) constructor()
+D/BLASTBufferQueue( 5513): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity]#3](f:0,a:0) update width=1080 height=2400 format=4 mTransformHint=0
+E/IMGSRV  ( 5513): :1501: GrallocTestAlloc: Invalid color format (56)
+E/IMGSRV  ( 5513): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  ( 5513): :220:        width -> 1
+E/IMGSRV  ( 5513): :221:       height -> 1
+E/IMGSRV  ( 5513): :222:       format -> 56
+E/IMGSRV  ( 5513): :223:        usage -> 0x0b00
+E/IMGSRV  ( 5513): :1501: GrallocTestAlloc: Invalid color format (59)
+E/IMGSRV  ( 5513): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  ( 5513): :220:        width -> 1
+E/IMGSRV  ( 5513): :221:       height -> 1
+E/IMGSRV  ( 5513): :222:       format -> 59
+E/IMGSRV  ( 5513): :223:        usage -> 0x0b00
+E/IMGSRV  ( 5513): :1501: GrallocTestAlloc: Invalid color format (56)
+E/IMGSRV  ( 5513): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  ( 5513): :220:        width -> 1
+E/IMGSRV  ( 5513): :221:       height -> 1
+E/IMGSRV  ( 5513): :222:       format -> 56
+E/IMGSRV  ( 5513): :223:        usage -> 0x0b00
+E/IMGSRV  ( 5513): :1501: GrallocTestAlloc: Invalid color format (59)
+E/IMGSRV  ( 5513): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  ( 5513): :220:        width -> 1
+E/IMGSRV  ( 5513): :221:       height -> 1
+E/IMGSRV  ( 5513): :222:       format -> 59
+E/IMGSRV  ( 5513): :223:        usage -> 0x0b00
+I/HWUI    ( 5513): setGrContext nullptr-->validptr
+D/MatchMeBackgroundService( 5513): Background service started with action: UPDATE_APP_FOREGROUND
+D/MatchMeBackgroundService( 5513): Location updates already running
+D/BLASTBufferQueue( 5513): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity]#3](f:0,a:1) acquireNextBufferLocked size=1080x2400 mFrameNumber=1 applyTransaction=true mTimestamp=138025788408302(auto) mPendingTransactions.size=0 graphicBufferId=23678154702877 transform=0
+D/BLASTBufferQueue( 5513): [VRI[MainActivity]#2](f:0,a:1) acquireNextBufferLocked size=1080x2400 mFrameNumber=1 applyTransaction=true mTimestamp=138025942488610(auto) mPendingTransactions.size=0 graphicBufferId=23678154702883 transform=0
+D/MatchMeMainActivity( 5513): applySystemUiColors attempt=1 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+D/MatchMeBackgroundService( 5513): Background service started with action: UPDATE_APP_FOREGROUND
+D/MatchMeBackgroundService( 5513): Location updates already running
+D/MatchMeMainActivity( 5513): applySystemUiColors attempt=2 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488

@@ -1,62 +1,66 @@
 import 'dart:async';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:matchme/services/location_service.dart';
 import 'package:matchme/services/web_location_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/services/local_db_service.dart';
+import 'package:matchme/providers/connectivity_provider.dart';
+import 'package:flutter/foundation.dart';
 
 class CurrentLocationNotifier extends Notifier<Position?> {
-  Timer? _updateTimer;
-  StreamSubscription<Position>? _positionStreamSubscription;
-  Duration _updateInterval = Duration(minutes: 1); // Default, will be updated
-
   @override
   Position? build() {
-    // Fetch initial location when provider is created
-    _fetchCurrentLocation();
-
-    // Update interval from profile
-    _updateIntervalFromProfile();
-
-    // Set up periodic updates (skip on web - WebLocationService handles this)
-    if (!kIsWeb) {
-      _startPeriodicUpdates();
-    }
-
-    // Start real-time location stream on mobile only
-    if (!kIsWeb) {
-      _startMobileLocationStream();
-    }
+    // Do NOT start any continuous GPS work from here.
+    // GPS should be driven by the existing visibility + throttling logic in
+    // `IsVisible`/`LocationService`. This provider only stores the latest known
+    // position for UI/rules and caches it locally.
+    _loadCachedLocation();
 
     return null;
   }
 
-  Future<void> _updateIntervalFromProfile() async {
+  Future<void> _loadCachedLocation() async {
     try {
       final userId = Supabase.instance.client.auth.currentUser?.id;
       if (userId == null) return;
-      final profileAsync = await ref.read(userProfileProvider(userId).future);
-      // Use seconds directly (profile now stores seconds)
-      final intervalInSeconds = profileAsync?.gpsIntervalDefault ?? 5;
-      _updateInterval = Duration(seconds: intervalInSeconds);
-      // Restart timer with new interval (skip on web - WebLocationService handles this)
-      if (!kIsWeb) {
-        _startPeriodicUpdates();
-      }
-      // Also restart mobile stream if needed
-      if (!kIsWeb) {
-        _startMobileLocationStream();
-      }
-    } catch (e) {
-      // Keep default
+      final localDb = ref.read(localDbProvider);
+      final cached = await localDb.getCurrentLocation(userId);
+      if (cached == null) return;
+
+      final lat = (cached['latitude'] as num?)?.toDouble();
+      final lon = (cached['longitude'] as num?)?.toDouble();
+      if (lat == null || lon == null) return;
+
+      final tsRaw = cached['timestamp']?.toString();
+      final ts = tsRaw != null ? DateTime.tryParse(tsRaw) : null;
+
+      state = Position(
+        latitude: lat,
+        longitude: lon,
+        timestamp: ts ?? DateTime.now(),
+        accuracy: double.infinity,
+        altitude: 0.0,
+        altitudeAccuracy: 0.0,
+        heading: (cached['heading'] as num?)?.toDouble() ?? 0.0,
+        headingAccuracy: 0.0,
+        speed: (cached['speed'] as num?)?.toDouble() ?? 0.0,
+        speedAccuracy: 0.0,
+      );
+    } catch (_) {
+      // Ignore cache load failures
     }
   }
 
   Future<void> _fetchCurrentLocation() async {
     try {
+      // Don't attempt to fetch position while offline
+      final isOnline = ref.read(connectivityProvider).value ?? false;
+      if (!isOnline) {
+        debugPrint('🟠 CurrentLocationNotifier: offline - skipping fetchCurrentLocation');
+        return;
+      }
+
       final locationService = ref.read(locationServiceProvider);
       if (locationService is WebLocationService) {
         final position = await locationService.getCurrentPosition();
@@ -64,7 +68,7 @@ class CurrentLocationNotifier extends Notifier<Position?> {
           await _processNewPosition(position);
         }
       } else {
-        // Mobile: prime state immediately with last known (fast) and then try current position.
+        // Mobile: one-shot fetch only (should be called sparingly).
         final hasPermission = await locationService.handleLocationPermission();
         if (!hasPermission) return;
 
@@ -115,51 +119,13 @@ class CurrentLocationNotifier extends Notifier<Position?> {
     }
   }
 
-  void _startPeriodicUpdates() {
-    _updateTimer?.cancel();
-    _updateTimer = Timer.periodic(_updateInterval, (_) {
-      _fetchCurrentLocation();
-    });
-  }
-
-  void _startMobileLocationStream() {
-    // Cancel existing subscription if any
-    _positionStreamSubscription?.cancel();
-
-    // Configure location settings similar to mobile location service
-    LocationSettings locationSettings;
-    if (defaultTargetPlatform == TargetPlatform.android) {
-      locationSettings = AndroidSettings(
-        accuracy: LocationAccuracy.best, // Use best accuracy for optimal GPS precision
-        distanceFilter: 5, // meters
-        intervalDuration: _updateInterval,
-      );
-    } else if (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.macOS) {
-      locationSettings = AppleSettings(
-        accuracy: LocationAccuracy.best, // Use best accuracy for optimal GPS precision
-        activityType: ActivityType.other,
-        distanceFilter: 5, // meters
-        pauseLocationUpdatesAutomatically: false,
-        showBackgroundLocationIndicator: false, // Don't show indicator for this stream
-      );
-    } else {
-      locationSettings = const LocationSettings(
-        accuracy: LocationAccuracy.best, // Use best accuracy
-        distanceFilter: 5,
-      );
-    }
-
-    _positionStreamSubscription = Geolocator.getPositionStream(
-      locationSettings: locationSettings,
-    ).listen((Position position) async {
-      await _processNewPosition(position);
-    });
+  Future<void> updateFromService(Position position) async {
+    await _processNewPosition(position);
   }
 
   Future<void> refreshLocation() async {
     await _fetchCurrentLocation();
   }
-
 }
 
 final currentLocationProvider = NotifierProvider<CurrentLocationNotifier, Position?>(() {

@@ -9,6 +9,7 @@ import 'package:matchme/providers/event_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/services/event_data_service.dart';
 import 'package:matchme/widgets/please_wait_dialog.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 
@@ -19,8 +20,17 @@ enum EventInputMode { link, image, manual }
 
 class AddEventScreen extends ConsumerStatefulWidget {
   final EventModel? existingEvent;
+  final bool showAppBar;
+  final String? initialSharedText;
+  final String? initialSharedFilePath;
   
-  const AddEventScreen({super.key, this.existingEvent});
+  const AddEventScreen({
+    super.key,
+    this.existingEvent,
+    this.showAppBar = true,
+    this.initialSharedText,
+    this.initialSharedFilePath,
+  });
 
   @override
   ConsumerState<AddEventScreen> createState() => _AddEventScreenState();
@@ -28,11 +38,18 @@ class AddEventScreen extends ConsumerStatefulWidget {
 
 class _AddEventScreenState extends ConsumerState<AddEventScreen> {
   final _formKey = GlobalKey<FormState>();
+  
+  // Text Controllers
   final _eventNameController = TextEditingController();
   final _venueController = TextEditingController();
   final _notesController = TextEditingController();
   final _linkController = TextEditingController(); 
   
+  // Focus Nodes for logical traversal
+  final _eventNameFocus = FocusNode();
+  final _venueFocus = FocusNode();
+  final _notesFocus = FocusNode();
+
   DateTime _startDate = DateTime.now().add(const Duration(hours: 1));
   TimeOfDay _startTime = TimeOfDay.fromDateTime(DateTime.now().add(const Duration(hours: 1)));
   
@@ -40,6 +57,10 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
   EventInputMode _inputMode = EventInputMode.link; // Default to Link
   bool _isProcessingInput = false;
   String? _extractedLink; // Store the link when extracted
+  
+  // State for conditional rendering
+  bool _hasExtractedData = false;
+  bool _extractionFailed = false;
 
   @override
   void initState() {
@@ -53,7 +74,139 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
       _startTime = TimeOfDay.fromDateTime(widget.existingEvent!.startTime);
       _inputMode = EventInputMode.manual; // Start in manual mode when editing
       _extractedLink = widget.existingEvent!.eventLink; // Preserve existing link
+      _hasExtractedData = true; // Treated as extracted/filled
+    } else {
+      _loadSavedInputMode();
+      // Handle shared content (links or files) automatically
+      _processSharedContent();
     }
+  }
+
+  /// Automatically processes shared content (links or files) when the screen is opened
+  void _processSharedContent() {
+    // Check for shared text (event links)
+    if (widget.initialSharedText != null && widget.initialSharedText!.isNotEmpty) {
+      final sharedText = widget.initialSharedText!.trim();
+      // Check if it's a URL
+      if (sharedText.startsWith('http')) {
+        // Set the link in the controller and trigger extraction
+        _linkController.text = sharedText;
+        // Use post-frame callback to ensure the widget is built before extraction
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            _handleLinkExtraction();
+          }
+        });
+      } else {
+        // If shared text is not a URL, treat it as event name
+        _eventNameController.text = sharedText;
+        setState(() {
+          _inputMode = EventInputMode.manual;
+          _hasExtractedData = true;
+        });
+      }
+    }
+    // Check for shared files (event tickets/images)
+    else if (widget.initialSharedFilePath != null && widget.initialSharedFilePath!.isNotEmpty) {
+      // Switch to image mode and trigger file processing
+      setState(() {
+        _inputMode = EventInputMode.image;
+      });
+      // Use post-frame callback to ensure the widget is built before processing
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _processSharedFile(widget.initialSharedFilePath!);
+        }
+      });
+    }
+  }
+
+  /// Process a shared file from the given path
+  Future<void> _processSharedFile(String filePath) async {
+    final l10n = ref.read(localizationProvider);
+    if (!mounted) return;
+
+    setState(() {
+      _isProcessingInput = true;
+      _isLoading = true;
+      _extractionFailed = false;
+    });
+
+    PleaseWaitDialog.show(context);
+
+    final service = ref.read(eventDataServiceProvider);
+    String message = l10n.getString('processingError');
+    ExtractedEventData result = ExtractedEventData.empty();
+
+    try {
+      result = await service.uploadAndProcessLocalFile(filePath);
+
+      message = result.name.isNotEmpty 
+          ? l10n.getString('ticketProcessedSuccessfully') 
+          : l10n.getString('couldNotExtractEventDetailsFromTicket');
+
+      if (mounted) {
+        if (result.name.isNotEmpty) {
+          // If the parsed date is in the past, do not import it
+          if (result.date != null && result.date!.isBefore(DateTime.now())) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(l10n.getString('eventDateInPastNotImported')), 
+                backgroundColor: Colors.orange
+              )
+            );
+          } else {
+            _populateFieldsFromResult(result);
+            setState(() {
+              _hasExtractedData = true;
+              _extractionFailed = false;
+            });
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(message), backgroundColor: Colors.blue)
+            );
+          }
+        } else {
+          setState(() {
+            _extractionFailed = true;
+          });
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _extractionFailed = true;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${l10n.getString('processingError')}: $e'), 
+            backgroundColor: Colors.red
+          )
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isProcessingInput = false;
+          _isLoading = false;
+        });
+        PleaseWaitDialog.hide(context);
+      }
+    }
+  }
+
+  Future<void> _loadSavedInputMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedModeIndex = prefs.getInt('event_input_mode');
+    if (savedModeIndex != null && savedModeIndex >= 0 && savedModeIndex < EventInputMode.values.length) {
+      setState(() {
+        _inputMode = EventInputMode.values[savedModeIndex];
+      });
+    }
+  }
+
+  Future<void> _saveInputMode(EventInputMode mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('event_input_mode', mode.index);
   }
 
   @override
@@ -62,6 +215,9 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
     _venueController.dispose();
     _notesController.dispose();
     _linkController.dispose();
+    _eventNameFocus.dispose();
+    _venueFocus.dispose();
+    _notesFocus.dispose();
     super.dispose();
   }
 
@@ -78,6 +234,7 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
     setState(() {
       _isProcessingInput = true;
       _isLoading = true;
+      _extractionFailed = false;
     });
 
     PleaseWaitDialog.show(context);
@@ -98,26 +255,29 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
       message = result.name.isNotEmpty ? l10n.getString('dataExtractedFromLink') : l10n.getString('couldNotFetchDetailsFromLink');
 
       if (mounted && result.name.isNotEmpty) {
-        bool shouldPopulate = true;
+        // If the parsed date is in the past, do not import it — we prevent adding past events
         if (result.date != null && result.date!.isBefore(DateTime.now())) {
-          final confirm = await _showPastEventConfirmationDialog(result);
-          if (!confirm) {
-            shouldPopulate = false;
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(l10n.getString('eventImportCanceled')), backgroundColor: Colors.orange)); // ignore: use_build_context_synchronously
-          }
-        }
-        if (shouldPopulate) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(l10n.getString('eventDateInPastNotImported')), backgroundColor: Colors.orange)); // ignore: use_build_context_synchronously
+          // We still show the form even if date is past, just let user fix it? 
+          // Current logic seems to be: if past, show warning but do we populate?
+          // The previous code showed snackbar and did NOT populate/switch mode.
+          // I will stick to previous behavior: show warning, do not proceed to success state.
+        } else {
           _populateFieldsFromResult(result);
           // Store the link for later use
           _extractedLink = _linkController.text.trim();
-          // Switch to manual mode to allow editing
+          
           setState(() {
-            _inputMode = EventInputMode.manual;
+            _hasExtractedData = true;
+            _extractionFailed = false;
           });
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message), backgroundColor: Colors.green)); // ignore: use_build_context_synchronously
         }
       } else if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message), backgroundColor: Colors.orange));
+        setState(() {
+           _extractionFailed = true;
+        });
+        // ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message), backgroundColor: Colors.orange));
       }
     } catch (e) {
       if (mounted) {
@@ -125,6 +285,9 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
           PleaseWaitDialog.hide(context);
           dialogDismissed = true;
         }
+        setState(() {
+           _extractionFailed = true;
+        });
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${l10n.getString('processingError')}: $e'), backgroundColor: Colors.red));
       }
     } finally {
@@ -148,29 +311,56 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
     setState(() {
       _isProcessingInput = true;
       _isLoading = true;
+      _extractionFailed = false;
     });
 
     PleaseWaitDialog.show(context);
 
     final service = ref.read(eventDataServiceProvider);
     String message = l10n.getString('processingError');
-    ExtractedEventData result = ExtractedEventData.empty();
+    ExtractedEventData? result;
 
     try {
       result = await service.uploadAndProcessFile();
+
+      // If result is null, the user cancelled the file picker; silently close.
+      if (result == null) {
+        return; // finally will run and hide the dialog
+      }
+
       message = result.name.isNotEmpty ? l10n.getString('ticketProcessedSuccessfully') : l10n.getString('couldNotExtractEventDetailsFromTicket');
 
       if (mounted) {
-        _populateFieldsFromResult(result);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message), backgroundColor: result.name.isNotEmpty ? Colors.blue : Colors.orange));
-
-        // Switch to manual mode after processing
-        setState(() {
-          _inputMode = EventInputMode.manual;
-        });
+        if (result.name.isNotEmpty) {
+          // If the parsed date is in the past, do not import it — we prevent adding past events
+          if (result.date != null && result.date!.isBefore(DateTime.now())) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(l10n.getString('eventDateInPastNotImported')), backgroundColor: Colors.orange));
+          } else {
+            _populateFieldsFromResult(result);
+            setState(() {
+              _hasExtractedData = true;
+              _extractionFailed = false;
+            });
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message), backgroundColor: Colors.blue));
+          }
+        } else {
+           setState(() {
+             _extractionFailed = true;
+           });
+        }
       }
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${l10n.getString('processingError')}: $e'), backgroundColor: Colors.red));
+      // If the exception indicates a user cancel, do not show an error.
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('cancel') || msg.contains('abort') || msg.contains('user canceled') || msg.contains('user cancelled')) {
+        return;
+      }
+      if (mounted) {
+        setState(() {
+           _extractionFailed = true;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${l10n.getString('processingError')}: $e'), backgroundColor: Colors.red));
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -180,6 +370,14 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
         PleaseWaitDialog.hide(context);
       }
     }
+  }
+
+  void _retryExtraction() {
+    setState(() {
+      _extractionFailed = false;
+      _hasExtractedData = false;
+      // Clear fields? Maybe not needed if they weren't populated.
+    });
   }
 
   // --- Helper to populate all fields from a result ---
@@ -203,30 +401,6 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
     // --- END FIX ---
   }
 
-  Future<bool> _showPastEventConfirmationDialog(ExtractedEventData result) async {
-    final l10n = ref.read(localizationProvider);
-    return await showDialog<bool>(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text(l10n.getString('pastEventDetected')),
-          content: Text(
-            '${l10n.getString('eventDateInPast')}: ${result.dateString ?? result.date?.toString() ?? 'Unknown'}. ${l10n.getString('continueImporting')}',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: Text(l10n.getString('generalCancel')),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: Text(l10n.getString('generalContinue')),
-            ),
-          ],
-        );
-      },
-    ) ?? false;
-  }
 
   Future<void> _selectDate(BuildContext context) async {
     final DateTime? pickedDate = await showDatePicker(
@@ -264,6 +438,14 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
     setState(() => _isLoading = true);
 
     final startTime = _startDateTime();
+
+    // Prevent creating events that started more than 30 minutes ago
+    if (widget.existingEvent == null && startTime.isBefore(DateTime.now().subtract(const Duration(minutes: 30)))) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(l10n.getString('eventCannotBeInPast')), backgroundColor: Colors.red));
+      if (mounted) setState(() => _isLoading = false);
+      return;
+    }
+
     final endTime = startTime.add(const Duration(hours: 1));
 
     final event = EventModel(
@@ -318,11 +500,13 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
     return Directionality(
       textDirection: isRtl ? ui.TextDirection.rtl : ui.TextDirection.ltr,
       child: Scaffold(
-      appBar: AppBar(
-        title: Text(widget.existingEvent != null 
-          ? l10n.getString('editEventTitle') 
-          : l10n.getString('addEventTitle'))
-      ),
+      appBar: widget.showAppBar
+          ? AppBar(
+              title: Text(
+                widget.existingEvent != null ? l10n.getString('editEventTitle') : l10n.getString('addEventTitle'),
+              ),
+            )
+          : null,
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
         child: Form(
@@ -330,86 +514,164 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(l10n.getString('eventDetails'), style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 16),
-              
-              // Only show input mode selector when creating new event
+              if (!widget.showAppBar) ...[
+                Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.arrow_back),
+                      onPressed: () => Navigator.of(context).maybePop(),
+                      tooltip: l10n.getString('backToEvents'),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      widget.existingEvent != null ? l10n.getString('editEventTitle') : l10n.getString('addEventTitle'),
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+              ],
+              // Input Mode Selector (Only for new events)
               if (widget.existingEvent == null) ...[
                 Text(l10n.getString('inputMethod'), style: Theme.of(context).textTheme.titleSmall),
                 const SizedBox(height: 8),
                 _buildInputModeSelector(l10n),
                 const SizedBox(height: 20),
-                
-                if (_inputMode == EventInputMode.link)
-                  _buildLinkInput(l10n, isProcessing)
-                else if (_inputMode == EventInputMode.image)
-                   _buildImageInput(l10n, isProcessing),
-                
-                if (_inputMode != EventInputMode.manual)
-                  const SizedBox(height: 20),
               ],
-
-              TextFormField(
-                controller: _eventNameController,
-                decoration: InputDecoration(
-                  labelText: l10n.getString('eventNameRequired'),
-                  border: const OutlineInputBorder(),
-                ),
-                validator: (value) => value == null || value.isEmpty ? l10n.getString('nameCannotBeEmpty') : null,
-              ),
-              const SizedBox(height: 16),
-
-              TextFormField(
-                controller: _venueController,
-                decoration: InputDecoration(
-                  labelText: l10n.getString('venueLocationOptional'),
-                  border: const OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 16),
               
-              Text(l10n.getString('whenIsTheEvent'), style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 16),
-
-              Row(
-                children: [
-                  Expanded(child: _buildDateButton(context, l10n: l10n)),
-                  const SizedBox(width: 16),
-                  Expanded(child: _buildTimeButton(context, l10n: l10n)),
-                ],
-              ),
+              // Input Mode Specific UI
+              if (_inputMode == EventInputMode.link) ...[
+                 _buildLinkInput(l10n, isProcessing),
+                 if (!_hasExtractedData && !_extractionFailed)
+                   Padding(
+                     padding: const EdgeInsets.only(top: 8.0),
+                     child: Text(
+                       l10n.getString('eventLinkMicrocopy'),
+                       style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
+                     ),
+                   ),
+              ] else if (_inputMode == EventInputMode.image) ...[
+                 _buildImageInput(l10n, isProcessing),
+                 if (!_hasExtractedData && !_extractionFailed)
+                   Padding(
+                     padding: const EdgeInsets.only(top: 16.0),
+                     child: Text(
+                       l10n.getString('eventTicketMicrocopy'),
+                       style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
+                       textAlign: TextAlign.center,
+                     ),
+                   ),
+              ],
               
-              const SizedBox(height: 30),
-
-              TextFormField(
-                controller: _notesController,
-                decoration: InputDecoration(
-                  labelText: l10n.getString('notesOptional'),
-                  alignLabelWithHint: true,
-                  border: const OutlineInputBorder(),
-                ),
-                maxLines: 3,
-              ),
-              const SizedBox(height: 40),
-
-              Center(
-                child: isProcessing
-                    ? const CircularProgressIndicator()
-                    : ElevatedButton(
-                        onPressed: isProcessing ? null : _submitEvent,
+              // Retry Button
+              if (_extractionFailed) ...[
+                const SizedBox(height: 20),
+                Center(
+                  child: Column(
+                    children: [
+                      Text(
+                         _inputMode == EventInputMode.link 
+                             ? l10n.getString('couldNotFetchDetailsFromLink') 
+                             : l10n.getString('couldNotExtractEventDetailsFromTicket'),
+                         style: const TextStyle(color: Colors.red),
+                         textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 10),
+                      ElevatedButton.icon(
+                        onPressed: _retryExtraction,
+                        icon: const Icon(Icons.refresh),
+                        label: Text(l10n.getString('retryExtractionButton')),
                         style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
-                          backgroundColor: Theme.of(context).colorScheme.primary,
-                          foregroundColor: Theme.of(context).colorScheme.onPrimary,
-                        ),
-                        child: Text(
-                          widget.existingEvent != null 
-                            ? l10n.getString('updateEvent') 
-                            : l10n.getString('saveEvent'), 
-                          style: const TextStyle(fontSize: 18)
+                          minimumSize: const Size(200, 50), // 44dp+ touch target
                         ),
                       ),
-              ),
+                    ],
+                  ),
+                ),
+              ],
+
+              // Form Fields (Show if Manual mode OR Data Extracted)
+              if (_inputMode == EventInputMode.manual || _hasExtractedData) ...[
+                const SizedBox(height: 30),
+                Text(l10n.getString('eventDetails'), style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: 16),
+
+                TextFormField(
+                  controller: _eventNameController,
+                  focusNode: _eventNameFocus,
+                  textInputAction: TextInputAction.next,
+                  onFieldSubmitted: (_) => FocusScope.of(context).requestFocus(_venueFocus),
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontFeatures: const []),
+                  decoration: InputDecoration(
+                    labelText: l10n.getString('eventNameRequired'),
+                    border: const OutlineInputBorder(),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16), // Ensure height
+                  ),
+                  validator: (value) => value == null || value.isEmpty ? l10n.getString('nameCannotBeEmpty') : null,
+                ),
+                const SizedBox(height: 16),
+
+                TextFormField(
+                  controller: _venueController,
+                  focusNode: _venueFocus,
+                  textInputAction: TextInputAction.next,
+                  onFieldSubmitted: (_) => _selectDate(context), // Logic flow: Venue -> Date
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontFeatures: const []),
+                  decoration: InputDecoration(
+                    labelText: l10n.getString('venueLocationOptional'),
+                    border: const OutlineInputBorder(),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                
+                Text(l10n.getString('whenIsTheEvent'), style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: 16),
+
+                Row(
+                  children: [
+                    Expanded(child: _buildDateButton(context, l10n: l10n)),
+                    const SizedBox(width: 16),
+                    Expanded(child: _buildTimeButton(context, l10n: l10n)),
+                  ],
+                ),
+                
+                const SizedBox(height: 30),
+
+                TextFormField(
+                  controller: _notesController,
+                  focusNode: _notesFocus,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontFeatures: const []),
+                  decoration: InputDecoration(
+                    labelText: l10n.getString('notesOptional'),
+                    alignLabelWithHint: true,
+                    border: const OutlineInputBorder(),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                  ),
+                  maxLines: 3,
+                ),
+                const SizedBox(height: 40),
+
+                Center(
+                  child: isProcessing
+                      ? const CircularProgressIndicator()
+                      : ElevatedButton(
+                          onPressed: isProcessing ? null : _submitEvent,
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
+                            minimumSize: const Size(200, 50), // 44dp+
+                            backgroundColor: Theme.of(context).colorScheme.primary,
+                            foregroundColor: Theme.of(context).colorScheme.onPrimary,
+                          ),
+                          child: Text(
+                            widget.existingEvent != null 
+                              ? l10n.getString('updateEvent') 
+                              : l10n.getString('saveEvent'), 
+                            style: const TextStyle(fontSize: 18)
+                          ),
+                        ),
+                ),
+              ],
             ],
           ),
         ),
@@ -428,7 +690,10 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
           icon: const Icon(Icons.calendar_today, size: 18),
           label: Text(DateFormat('EEE, MMM d, yyyy', l10n.currentLocale.languageCode).format(_startDate)),
           onPressed: () => _selectDate(context),
-          style: OutlinedButton.styleFrom( padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 15), minimumSize: const Size(double.infinity, 50), ),
+          style: OutlinedButton.styleFrom( 
+             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 15), 
+             minimumSize: const Size(double.infinity, 50), // 44dp+
+          ),
         ),
       ],
     );
@@ -444,7 +709,10 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
           icon: const Icon(Icons.access_time, size: 18),
           label: Text(_startTime.format(context)),
           onPressed: () => _selectTime(context),
-          style: OutlinedButton.styleFrom( padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 15), minimumSize: const Size(double.infinity, 50), ),
+          style: OutlinedButton.styleFrom( 
+             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 15), 
+             minimumSize: const Size(double.infinity, 50), // 44dp+
+          ),
         ),
       ],
     );
@@ -457,9 +725,9 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
         spacing: 8.0,
         children: EventInputMode.values.map((mode) {
           String label = switch (mode) {
-            EventInputMode.link => l10n.getString('pasteLink'),
-            EventInputMode.image => l10n.getString('uploadTicket'),
-            EventInputMode.manual => l10n.getString('manualInput'),
+            EventInputMode.link => l10n.getString('eventInputModeLink'),
+            EventInputMode.image => l10n.getString('eventInputModeTicket'),
+            EventInputMode.manual => l10n.getString('eventInputModeManual'),
           };
 
           return ChoiceChip(
@@ -469,7 +737,13 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
               if (selected) {
                 setState(() {
                   _inputMode = mode;
+                  // Reset extraction state when switching modes
+                  if (mode != EventInputMode.manual) {
+                    _hasExtractedData = false;
+                    _extractionFailed = false;
+                  }
                 });
+                _saveInputMode(mode);
               }
             },
             selectedColor: Theme.of(context).colorScheme.tertiaryContainer,
@@ -487,16 +761,17 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
           child: TextFormField(
             controller: _linkController,
             decoration: InputDecoration(
-              labelText: l10n.getString('pasteEventUrl'),
+              labelText: l10n.getString('eventLinkHint'),
               border: const OutlineInputBorder(),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16), // 44dp+
             ),
-            validator: (value) => value == null || !value.startsWith('http') ? l10n.getString('enterValidUrl') : null,
+            validator: (value) => value == null || !value.startsWith('http') ? l10n.getString('pleaseEnterValidUrl') : null,
           ),
         ),
         const SizedBox(width: 8),
         ElevatedButton(
           onPressed: isProcessing ? null : () => _handleLinkExtraction(),
-          style: ElevatedButton.styleFrom(minimumSize: const Size(60, 60)),
+          style: ElevatedButton.styleFrom(minimumSize: const Size(60, 60)), // 44dp+
           child: isProcessing
             ? CircularProgressIndicator(strokeWidth: 2, color: Theme.of(context).colorScheme.onPrimary)
             : const Icon(Icons.download_for_offline_outlined),
@@ -509,10 +784,11 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
     return Center(
       child: ElevatedButton.icon(
         icon: const Icon(Icons.upload_file),
-        label: Text(l10n.getString('selectTicketPdfImage')),
+        label: Text(l10n.getString('eventInputModeTicket')),
         onPressed: isProcessing ? null : () => _handleFileUpload(),
         style: ElevatedButton.styleFrom(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          minimumSize: const Size(200, 50), // 44dp+
         ),
       ),
     );

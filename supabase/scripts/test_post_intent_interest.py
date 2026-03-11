@@ -1,6 +1,0 @@
-import json
-from urllib import request, error
-SUPABASE_URL='https://vazkmvrbshxwyodentng.supabase.co'
-SERVICE='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZhemttdnJic2h4d3lvZGVudG5nIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MDY4ODI5MiwiZXhwIjoyMDc2MjY0MjkyfQ.zS0p7smdEf4th7Lfp3_8CQsL3YUyfnftGrsF1uUBM2M'
-
-# This script is now deprecated: intent_interests table has been removed.

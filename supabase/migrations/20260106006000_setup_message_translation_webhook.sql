@@ -1,0 +1,30 @@
+-- This migration documents how to set up the webhook
+-- You need to do this manually in Supabase Dashboard:
+-- 
+-- 1. Go to Database → Webhooks
+-- 2. Create new webhook:
+--    - Table: chat_messages
+--    - Events: INSERT
+--    - HTTP Method: POST
+--    - URL: https://YOUR_PROJECT_ID.supabase.co/functions/v1/on-message-insert
+--    - Headers: Authorization: Bearer YOUR_ANON_KEY
+-- 3. Enable the webhook
+--
+-- This will automatically call the Edge Function whenever a message is inserted
+
+-- For reference, here's what the webhook payload looks like:
+-- {
+--   "type": "INSERT",
+--   "table": "chat_messages",
+--   "record": {
+--     "id": "...",
+--     "match_id": "...",
+--     "sender_id": "...",
+--     "content_original": "...",
+--     "content_translated": null,
+--     "created_at": "...",
+--     ...
+--   },
+--   "schema": "public",
+--   "old_record": null
+-- }

@@ -11,13 +11,13 @@ part of 'unit_provider.dart';
 /// Provider for determining if imperial units should be used based on location
 
 @ProviderFor(UnitSystem)
-const unitSystemProvider = UnitSystemProvider._();
+final unitSystemProvider = UnitSystemProvider._();
 
 /// Provider for determining if imperial units should be used based on location
 final class UnitSystemProvider
     extends $AsyncNotifierProvider<UnitSystem, bool> {
   /// Provider for determining if imperial units should be used based on location
-  const UnitSystemProvider._()
+  UnitSystemProvider._()
     : super(
         from: null,
         argument: null,
@@ -36,7 +36,7 @@ final class UnitSystemProvider
   UnitSystem create() => UnitSystem();
 }
 
-String _$unitSystemHash() => r'a0ff2f26b2d10eb676cf72f5615d75a471aa4110';
+String _$unitSystemHash() => r'cabe5564b2e32b82ba0e66f3fd6a71db6251da7a';
 
 /// Provider for determining if imperial units should be used based on location
 
@@ -45,7 +45,6 @@ abstract class _$UnitSystem extends $AsyncNotifier<bool> {
   @$mustCallSuper
   @override
   void runBuild() {
-    final created = build();
     final ref = this.ref as $Ref<AsyncValue<bool>, bool>;
     final element =
         ref.element
@@ -55,6 +54,6 @@ abstract class _$UnitSystem extends $AsyncNotifier<bool> {
               Object?,
               Object?
             >;
-    element.handleValue(ref, created);
+    element.handleCreate(ref, build);
   }
 }

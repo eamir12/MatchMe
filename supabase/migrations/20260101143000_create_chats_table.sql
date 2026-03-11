@@ -39,7 +39,7 @@ BEGIN
     last_message_id = COALESCE(EXCLUDED.last_message_id, chats.last_message_id),
     last_message_preview = COALESCE(EXCLUDED.last_message_preview, chats.last_message_preview),
     last_message_at = GREATEST(COALESCE(chats.last_message_at, EXCLUDED.last_message_at), COALESCE(EXCLUDED.last_message_at, chats.last_message_at)),
-    unread_count = GREATEST(chats.unread_count + EXCLUDED.unread_count, 0),
+    unread_count = CASE WHEN chats.unread_count = 0 THEN 1 ELSE chats.unread_count END,
     updated_at = GREATEST(chats.updated_at, EXCLUDED.updated_at);
 END;
 $$ LANGUAGE plpgsql;
@@ -122,6 +122,8 @@ BEGIN
   END IF;
 END$$;
 
+DROP FUNCTION IF EXISTS public.get_user_chats(uuid, int);
+
 -- 5) RPC to fetch top N chats for a user, ordered by last_message_at desc (limit default 5)
 CREATE OR REPLACE FUNCTION public.get_user_chats(p_user_id uuid, p_limit int DEFAULT 5)
 RETURNS TABLE (
@@ -195,5 +197,8 @@ ON CONFLICT (user_id, match_id) DO UPDATE SET
   last_message_at = GREATEST(COALESCE(chats.last_message_at, EXCLUDED.last_message_at), COALESCE(EXCLUDED.last_message_at, chats.last_message_at)),
   unread_count = GREATEST(chats.unread_count, EXCLUDED.unread_count),
   updated_at = GREATEST(chats.updated_at, EXCLUDED.updated_at);
+
+-- Fix any existing unread counts that are greater than 1 (should only be 0 or 1)
+UPDATE public.chats SET unread_count = 1 WHERE unread_count > 1;
 
 COMMIT;

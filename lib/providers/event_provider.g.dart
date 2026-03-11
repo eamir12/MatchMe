@@ -10,11 +10,11 @@ part of 'event_provider.dart';
 // ignore_for_file: type=lint, type=warning
 
 @ProviderFor(EventManager)
-const eventManagerProvider = EventManagerProvider._();
+final eventManagerProvider = EventManagerProvider._();
 
 final class EventManagerProvider
     extends $NotifierProvider<EventManager, AsyncValue<List<EventModel>>> {
-  const EventManagerProvider._()
+  EventManagerProvider._()
     : super(
         from: null,
         argument: null,
@@ -41,14 +41,13 @@ final class EventManagerProvider
   }
 }
 
-String _$eventManagerHash() => r'2694d705ce6b370d478f1bb0f5f5260f2eb97ac3';
+String _$eventManagerHash() => r'c24b5686bb9e7f5bb9b1c386e6fa616da7de705b';
 
 abstract class _$EventManager extends $Notifier<AsyncValue<List<EventModel>>> {
   AsyncValue<List<EventModel>> build();
   @$mustCallSuper
   @override
   void runBuild() {
-    final created = build();
     final ref =
         this.ref
             as $Ref<AsyncValue<List<EventModel>>, AsyncValue<List<EventModel>>>;
@@ -63,6 +62,6 @@ abstract class _$EventManager extends $Notifier<AsyncValue<List<EventModel>>> {
               Object?,
               Object?
             >;
-    element.handleValue(ref, created);
+    element.handleCreate(ref, build);
   }
 }

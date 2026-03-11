@@ -4,10 +4,16 @@ import 'dart:async';
 import '../web_imports.dart' as html;
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'location_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'gps_kalman_filter.dart';
 import 'package:matchme/services/local_db_service.dart';
+import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/utils/permission_manager.dart';
+
+String _ts() => DateTime.now().toIso8601String();
+void _wlog(String message) => debugPrint('[${_ts()}] 🌍 Web location service: $message');
 
 /// WebLocationService: visibility-aware, generation-protected timer to avoid
 /// overlapping timers and duplicated sends when visibility or settings change.
@@ -36,18 +42,21 @@ class WebLocationService implements LocationService {
   bool _isVisible = false;
 
   WebLocationService() {
+    _wlog('constructed');
     _registerVisibilityListeners();
   }
 
   @override
   void setSmartThrottlingEnabled(bool enabled) {
     _smartThrottlingEnabled = enabled;
+    _wlog('setSmartThrottlingEnabled: enabled=$enabled (isStreaming=$_isStreaming, requested=$_requestedIntervalSeconds, current=$_currentIntervalSeconds, gen=$_generation)');
     // Immediately apply current requested interval considering the new flag
     try {
       if (_isStreaming) {
         // If page is hidden and throttling is now disabled, restore requested interval
         final docState = html.document.visibilityState;
         final isHidden = docState == 'hidden';
+        _wlog('setSmartThrottlingEnabled: visibilityState=$docState isHidden=$isHidden');
         if (!isHidden) {
           _applyRequestedInterval();
         } else {
@@ -67,6 +76,7 @@ class WebLocationService implements LocationService {
       html.document.addEventListener('visibilitychange', (ev) {
         final stateStr = html.document.visibilityState;
         final isHidden = stateStr == 'hidden';
+        _wlog('visibilitychange: state=$stateStr isHidden=$isHidden (smartThrottling=$_smartThrottlingEnabled, requested=$_requestedIntervalSeconds, current=$_currentIntervalSeconds, gen=$_generation)');
         if (isHidden) {
           _applyEffectiveIntervalWhenHidden();
         } else {
@@ -75,10 +85,12 @@ class WebLocationService implements LocationService {
       });
 
       html.window.addEventListener('pagehide', (ev) {
+        _wlog('pagehide: applying hidden interval (smartThrottling=$_smartThrottlingEnabled)');
         _applyEffectiveIntervalWhenHidden();
       });
 
       html.window.addEventListener('pageshow', (ev) {
+        _wlog('pageshow: applying requested interval (requested=$_requestedIntervalSeconds)');
         _applyRequestedInterval();
       });
     } catch (e) {
@@ -89,28 +101,129 @@ class WebLocationService implements LocationService {
   @override
   Future<bool> handleLocationPermission() async {
     try {
-      debugPrint('🌍 Web location service: Checking location permission');
+      debugPrint('[${_ts()}] 🌍 Web location service: Checking location permission');
       LocationPermission permission = await Geolocator.checkPermission();
-      debugPrint('🌍 Web location service: Current permission: $permission');
+      debugPrint('[${_ts()}] 🌍 Web location service: Current permission: $permission');
 
+      // If permission is already granted, return true
+      if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
+        return true;
+      }
+
+      // If permission is denied, check if we've already requested it this run
       if (permission == LocationPermission.denied) {
-        debugPrint('🌍 Web location service: Permission denied, requesting permission');
+        if (PermissionManager.hasBeenRequestedThisRun('location')) {
+          debugPrint('[${_ts()}] 🌍 Web location service: Location permission already requested this run, not requesting again');
+          return false;
+        }
+        
+        debugPrint('[${_ts()}] 🌍 Web location service: Permission denied, requesting permission');
         permission = await Geolocator.requestPermission();
-        debugPrint('🌍 Web location service: Permission after request: $permission');
+        PermissionManager.markRequested('location');
+        debugPrint('[${_ts()}] 🌍 Web location service: Permission after request: $permission');
       }
 
       final hasPermission = permission == LocationPermission.whileInUse || permission == LocationPermission.always;
-      debugPrint('🌍 Web location service: Final permission result: $hasPermission');
+      debugPrint('[${_ts()}] 🌍 Web location service: Final permission result: $hasPermission');
       return hasPermission;
     } catch (e) {
       return false;
     }
   }
 
+  double? _toDouble(dynamic v) {
+    if (v is num) return v.toDouble();
+    return null;
+  }
+
+  int? _toInt(dynamic v) {
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    return null;
+  }
+
+  Position? _positionFromBrowserGeolocation(dynamic pos) {
+    try {
+      final coords = pos?.coords;
+      final lat = _toDouble(coords?.latitude);
+      final lon = _toDouble(coords?.longitude);
+      if (lat == null || lon == null) return null;
+
+      final accuracy = _toDouble(coords?.accuracy) ?? double.infinity;
+      final altitude = _toDouble(coords?.altitude) ?? 0.0;
+      final altitudeAccuracy = _toDouble(coords?.altitudeAccuracy) ?? 0.0;
+      final heading = _toDouble(coords?.heading) ?? 0.0;
+      final headingAccuracy = _toDouble(coords?.headingAccuracy) ?? 0.0;
+      final speed = _toDouble(coords?.speed) ?? 0.0;
+      final speedAccuracy = _toDouble(coords?.speedAccuracy) ?? 0.0;
+
+      DateTime timestamp = DateTime.now();
+      final tsMs = _toInt(pos?.timestamp);
+      if (tsMs != null) {
+        timestamp = DateTime.fromMillisecondsSinceEpoch(tsMs);
+      }
+
+      return Position(
+        latitude: lat,
+        longitude: lon,
+        timestamp: timestamp,
+        accuracy: accuracy,
+        altitude: altitude,
+        altitudeAccuracy: altitudeAccuracy,
+        heading: heading,
+        headingAccuracy: headingAccuracy,
+        speed: speed,
+        speedAccuracy: speedAccuracy,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<Position?> _getBrowserCurrentPosition({
+    required bool enableHighAccuracy,
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
+    final completer = Completer<Position?>();
+    try {
+      final geolocation = (html.window as dynamic).navigator?.geolocation;
+      if (geolocation == null) {
+        completer.complete(null);
+      } else {
+        geolocation.getCurrentPosition(
+          (pos) {
+            if (completer.isCompleted) return;
+            completer.complete(_positionFromBrowserGeolocation(pos));
+          },
+          (err) {
+            if (completer.isCompleted) return;
+            completer.complete(null);
+          },
+          {
+            'enableHighAccuracy': enableHighAccuracy,
+            'maximumAge': 0,
+            'timeout': timeout.inMilliseconds,
+          },
+        );
+      }
+    } catch (_) {
+      if (!completer.isCompleted) completer.complete(null);
+    }
+
+    return completer.future.timeout(
+      timeout,
+      onTimeout: () {
+        if (!completer.isCompleted) completer.complete(null);
+        return null;
+      },
+    );
+  }
+
   Future<Position?> getCurrentPosition() async {
     // Double-check pattern: synchronous flag + async completer
     if (_isGettingPosition) {
       // Return last known position if available
+      if (_latestPosition != null) return _latestPosition;
       try {
         return await Geolocator.getLastKnownPosition();
       } catch (e) {
@@ -137,14 +250,14 @@ class WebLocationService implements LocationService {
         position = null;
       } else {
         try {
-          // Try to get current position with best accuracy
-          // Increased timeout to allow browser more time to acquire better location
-          position = await Geolocator.getCurrentPosition(locationSettings: const LocationSettings(accuracy: LocationAccuracy.best))
-              .timeout(const Duration(seconds: 20));
+          position = await _getBrowserCurrentPosition(
+            enableHighAccuracy: true,
+            timeout: const Duration(seconds: 20),
+          );
         } catch (e) {
-          // Catch all errors from Geolocator including "Future already completed"
-          // This is a known issue with geolocator_web package
-          // Try to fall back to last known position
+          if (_latestPosition != null) {
+            position = _latestPosition;
+          }
           try {
             position = await Geolocator.getLastKnownPosition();
           } catch (e2) {
@@ -196,7 +309,7 @@ class WebLocationService implements LocationService {
           final position = await getCurrentPosition().timeout(
             const Duration(seconds: 15),
             onTimeout: () {
-              debugPrint('⚠️ Web location service: Timeout getting position sample ${i + 1}/$sampleCount');
+              debugPrint('[${_ts()}] ⚠️ Web location service: Timeout getting position sample ${i + 1}/$sampleCount');
               return null;
             },
           );
@@ -209,12 +322,12 @@ class WebLocationService implements LocationService {
               goodPositions.add(position);
             }
           } else {
-            debugPrint('⚠️ Web location service: Null position from sample ${i + 1}/$sampleCount');
+            debugPrint('[${_ts()}] ⚠️ Web location service: Null position from sample ${i + 1}/$sampleCount');
           }
         } catch (e) {
           // Catch "Future already completed" and other errors
           // This is a known issue with geolocator_web package
-          debugPrint('⚠️ Web location service: Error getting position sample ${i + 1}/$sampleCount: $e');
+          debugPrint('[${_ts()}] ⚠️ Web location service: Error getting position sample ${i + 1}/$sampleCount: $e');
           // Continue to next sample - we'll use whatever samples we successfully collected
         }
       }
@@ -259,40 +372,59 @@ class WebLocationService implements LocationService {
   // Single protected send that avoids overlap
   Future<void> _sendLocationUpdate() async {
     if (_isSending) {
+      _wlog('_sendLocationUpdate skipped: already sending');
       return;
     }
     _isSending = true;
     try {
       final user = Supabase.instance.client.auth.currentUser;
       if (user == null) {
+        _wlog('_sendLocationUpdate aborted: no current user');
+        return;
+      }
+
+      // Check connectivity
+      final connectivityResult = await Connectivity().checkConnectivity();
+      final isOnline = connectivityResult.any((r) => r != ConnectivityResult.none);
+      if (!isOnline) {
+        debugPrint('[${_ts()}] 🌍 Web location service: Device is offline, skipping location update');
         return;
       }
 
       // Update user activity regardless of visibility status (like mobile does)
       try {
-        debugPrint('Updating user activity for $user.id');
+        debugPrint('[${_ts()}] 🌍 Web location service: Updating user activity for $user.id');
         await Supabase.instance.client.rpc('update_user_activity', params: {'p_user_id': user.id});
-        debugPrint('User activity updated successfully');
+        debugPrint('[${_ts()}] 🌍 Web location service: User activity updated successfully');
       } catch (e) {
-        debugPrint('Error updating user activity: $e');
+        debugPrint('[${_ts()}] 🌍 Web location service: Error updating user activity: $e');
         // Ignore activity update errors
       }
 
       // Do not send location updates if user is invisible
       // This prevents location tracking when user has disabled visibility
       if (!_isVisible) {
-        debugPrint('User is invisible, skipping location update');
+        debugPrint('[${_ts()}] 🌍 Web location service: User is invisible, skipping location update');
         return;
       }
 
-      debugPrint('🌍 Web location service: About to send location update for visible user');
+      debugPrint('[${_ts()}] 🌍 Web location service: About to send location update for visible user');
 
       // Accuracy thresholds
       // Web browsers often have poor initial accuracy (IP geolocation, outdated WiFi databases)
       // Accept up to 1500m to allow matching to work, but prefer better accuracy
-      const double maxAcceptableAccuracyMeters = 1500.0; // Accept locations up to 1.5km (web browsers can be inaccurate)
-      const double preferredAccuracyMeters = 200.0; // Prefer locations better than 200m
-      const double kalmanFilterThresholdMeters = 100.0; // Skip Kalman filter for very inaccurate readings
+      final maxAcceptableAccuracyMeters = await appConfigService.getDouble(
+        'gps.web_max_acceptable_accuracy_meters',
+        defaultValue: 1500.0
+      ); // Accept locations up to 1.5km (web browsers can be inaccurate)
+      final preferredAccuracyMeters = await appConfigService.getDouble(
+        'gps.web_preferred_accuracy_meters',
+        defaultValue: 200.0
+      ); // Prefer locations better than 200m
+      final kalmanFilterThresholdMeters = await appConfigService.getDouble(
+        'gps.kalman_filter_skip_threshold_meters',
+        defaultValue: 100.0
+      ); // Skip Kalman filter for very inaccurate readings
 
       Position? rawPosition;
       
@@ -300,20 +432,20 @@ class WebLocationService implements LocationService {
       // The stream continuously refines location over time as GPS/WiFi acquires better signal
       if (_latestPosition != null && _positionStreamSubscription != null) {
         rawPosition = _latestPosition;
-        debugPrint('🌍 Web location service: Using latest position from continuous stream (Google Maps watchPosition approach)');
+        debugPrint('[${_ts()}] 🌍 Web location service: Using latest position from continuous stream (Google Maps watchPosition approach)');
       } else {
         // Fallback to single getCurrentPosition if stream isn't available
-        debugPrint('🌍 Web location service: Stream not available, using getCurrentPosition fallback');
+        debugPrint('[${_ts()}] 🌍 Web location service: Stream not available, using getCurrentPosition fallback');
         try {
           rawPosition = await getCurrentPosition().timeout(const Duration(seconds: 20));
         } catch (e) {
-          debugPrint('❌ Web location service: getCurrentPosition failed: $e');
+          debugPrint('[${_ts()}] ❌ Web location service: getCurrentPosition failed: $e');
           return;
         }
       }
       
       if (rawPosition == null) {
-        debugPrint('❌ Web location service: Unable to get any position');
+        debugPrint('[${_ts()}] ❌ Web location service: Unable to get any position');
         return;
       }
 
@@ -321,13 +453,13 @@ class WebLocationService implements LocationService {
       // analyzer (avoid losing promotion across awaits).
       Position currentRaw = rawPosition;
 
-      debugPrint('🌍 Web location service: Got position: ${currentRaw.latitude}, ${currentRaw.longitude}, accuracy: ${currentRaw.accuracy}m');
+      debugPrint('[${_ts()}] 🌍 Web location service: Got position: ${currentRaw.latitude}, ${currentRaw.longitude}, accuracy: ${currentRaw.accuracy}m');
 
       // If accuracy is worse than preferred, attempt a short high-precision sampling
       // to try to match what Google Maps does (continuous watch + refined fixes).
       if (currentRaw.accuracy > preferredAccuracyMeters) {
         try {
-          debugPrint('🌍 Web location service: Accuracy ${currentRaw.accuracy}m worse than preferred ${preferredAccuracyMeters}m — attempting high-precision sampling');
+          debugPrint('[${_ts()}] 🌍 Web location service: Accuracy ${currentRaw.accuracy}m worse than preferred ${preferredAccuracyMeters}m — attempting high-precision sampling');
           final high = await getHighPrecisionPosition(
             sampleCount: 5,
             sampleInterval: const Duration(seconds: 2),
@@ -335,22 +467,22 @@ class WebLocationService implements LocationService {
           ).timeout(const Duration(seconds: 20), onTimeout: () => null);
 
           if (high != null && high.accuracy <= currentRaw.accuracy) {
-            debugPrint('🌍 Web location service: Using high-precision sampled position (accuracy ${high.accuracy}m)');
+            debugPrint('[${_ts()}] 🌍 Web location service: Using high-precision sampled position (accuracy ${high.accuracy}m)');
             currentRaw = high;
           } else {
-            debugPrint('🌍 Web location service: High-precision sampling did not improve accuracy');
+            debugPrint('[${_ts()}] 🌍 Web location service: High-precision sampling did not improve accuracy');
           }
         } catch (e) {
-          debugPrint('⚠️ Web location service: High-precision sampling failed: $e');
+          debugPrint('[${_ts()}] ⚠️ Web location service: High-precision sampling failed: $e');
         }
       }
 
       // Warn about poor accuracy but accept it (web browsers can be very inaccurate)
       if (currentRaw.accuracy > preferredAccuracyMeters) {
         if (currentRaw.accuracy > maxAcceptableAccuracyMeters) {
-          debugPrint('⚠️ Web location service: Very poor accuracy (${currentRaw.accuracy.toStringAsFixed(0)}m) but accepting to allow matching. Consider moving to a location with better WiFi/GPS signal.');
+          debugPrint('[${_ts()}] ⚠️ Web location service: Very poor accuracy (${currentRaw.accuracy.toStringAsFixed(0)}m) but accepting to allow matching. Consider moving to a location with better WiFi/GPS signal.');
         } else {
-          debugPrint('⚠️ Web location service: Moderate accuracy (${currentRaw.accuracy.toStringAsFixed(0)}m). Web browsers often have limited location accuracy compared to mobile GPS.');
+          debugPrint('[${_ts()}] ⚠️ Web location service: Moderate accuracy (${currentRaw.accuracy.toStringAsFixed(0)}m). Web browsers often have limited location accuracy compared to mobile GPS.');
         }
       }
       
@@ -363,11 +495,11 @@ class WebLocationService implements LocationService {
       if (currentRaw.accuracy <= kalmanFilterThresholdMeters) {
         // Use Kalman filter for better smoothing of accurate readings
         finalPosition = _kalmanFilter.filter(currentRaw);
-        debugPrint('🌍 Web location service: Filtered position: ${finalPosition.latitude}, ${finalPosition.longitude}, accuracy: ${finalPosition.accuracy}m (raw accuracy: ${currentRaw.accuracy}m)');
+        debugPrint('[${_ts()}] 🌍 Web location service: Filtered position: ${finalPosition.latitude}, ${finalPosition.longitude}, accuracy: ${finalPosition.accuracy}m (raw accuracy: ${currentRaw.accuracy}m)');
       } else {
         // For very inaccurate readings, use raw position to avoid filter drift
         finalPosition = currentRaw;
-        debugPrint('🌍 Web location service: Using raw position (accuracy too poor for Kalman filter): ${finalPosition.latitude}, ${finalPosition.longitude}, accuracy: ${finalPosition.accuracy}m');
+        debugPrint('[${_ts()}] 🌍 Web location service: Using raw position (accuracy too poor for Kalman filter): ${finalPosition.latitude}, ${finalPosition.longitude}, accuracy: ${finalPosition.accuracy}m');
       }
 
       // Use final position for callback
@@ -394,14 +526,14 @@ class WebLocationService implements LocationService {
         // Also sync directly to Supabase for web platform
         await _syncLocationToSupabase(user.id, finalPosition.latitude, finalPosition.longitude, finalPosition.speed, finalPosition.heading);
 
-        debugPrint('📍 Location saved to local DB and synced to Supabase (lat: ${finalPosition.latitude}, lng: ${finalPosition.longitude}, accuracy: ${finalPosition.accuracy}m)');
+        debugPrint('[${_ts()}] 📍 Location saved to local DB and synced to Supabase (lat: ${finalPosition.latitude}, lng: ${finalPosition.longitude}, accuracy: ${finalPosition.accuracy}m)');
       } catch (e) {
-        debugPrint('❌ Failed to save/sync location: $e');
+        debugPrint('[${_ts()}] ❌ Failed to save/sync location: $e');
       }
 
       // Match engine is now handled server-side autonomously
       // No client-side triggering needed - matches are created by Supabase functions
-      debugPrint('📍 Location updated - server-side matching will be triggered automatically');
+      debugPrint('[${_ts()}] 📍 Location updated - server-side matching will be triggered automatically');
     } finally {
       _isSending = false;
     }
@@ -410,9 +542,9 @@ class WebLocationService implements LocationService {
   // Start stream with requested interval; effective interval respects visibility and setting
   @override
   Future<void> startLocationStream(int intervalSeconds) async {
-    debugPrint('🌍 Web location service: startLocationStream called with interval $intervalSeconds');
+    debugPrint('[${_ts()}] 🌍 Web location service: startLocationStream called with interval $intervalSeconds');
     if (_isStarting) {
-      debugPrint('🌍 Web location service: Already starting, returning');
+      debugPrint('[${_ts()}] 🌍 Web location service: Already starting, returning');
       return;
     }
 
@@ -426,9 +558,11 @@ class WebLocationService implements LocationService {
       final effectiveInterval = (_smartThrottlingEnabled && isHidden)
           ? (intervalSeconds < 60 ? 60 : intervalSeconds)
           : intervalSeconds;
+      _wlog('startLocationStream: visibilityState=$docState isHidden=$isHidden smartThrottling=$_smartThrottlingEnabled requested=$intervalSeconds effective=$effectiveInterval (current=$_currentIntervalSeconds, isStreaming=$_isStreaming, gen=$_generation)');
 
       // If already streaming with same effective interval, do nothing (no callback fire, no restart)
       if (_isStreaming && _currentIntervalSeconds == effectiveInterval) {
+        _wlog('startLocationStream: no-op (already streaming at effective interval)');
         return; // Early return - no callback, no restart, no state change
       }
 
@@ -442,10 +576,11 @@ class WebLocationService implements LocationService {
       final gen = _generation;
       _isStreaming = true;
       _currentIntervalSeconds = effectiveInterval;
+      _wlog('startLocationStream: started streaming (gen=$gen, current=$_currentIntervalSeconds)');
 
       // Use continuous position stream (like Google Maps watchPosition) for better accuracy
       // This allows location to refine over time as GPS/WiFi acquires better signal
-      debugPrint('🌍 Web location service: Starting continuous position stream (Google Maps approach)');
+      debugPrint('[${_ts()}] 🌍 Web location service: Starting continuous position stream (Google Maps approach)');
       final hasPermission = await handleLocationPermission();
       if (hasPermission) {
         try {
@@ -460,7 +595,7 @@ class WebLocationService implements LocationService {
             (Position position) {
               // Store latest position from stream
               _latestPosition = position;
-              debugPrint('🌍 Web location service: Position stream update: ${position.latitude}, ${position.longitude}, accuracy: ${position.accuracy}m');
+              debugPrint('[${_ts()}] 🌍 Web location service: Position stream update: ${position.latitude}, ${position.longitude}, accuracy: ${position.accuracy}m');
               
               // Call callback immediately when position updates
               if (_locationUpdateCallback != null) {
@@ -472,12 +607,12 @@ class WebLocationService implements LocationService {
               }
             },
             onError: (error) {
-              debugPrint('⚠️ Web location service: Position stream error: $error');
+              debugPrint('[${_ts()}] ⚠️ Web location service: Position stream error: $error');
             },
             cancelOnError: false, // Keep stream alive even on errors
           );
         } catch (e) {
-          debugPrint('⚠️ Web location service: Failed to start position stream: $e, falling back to timer-based updates');
+          debugPrint('[${_ts()}] ⚠️ Web location service: Failed to start position stream: $e, falling back to timer-based updates');
           _positionStreamSubscription = null;
         }
         // If Geolocator web stream couldn't be started or is unreliable on some browsers,
@@ -502,26 +637,26 @@ class WebLocationService implements LocationService {
                     speedAccuracy: coords.speedAccuracy ?? 0.0,
                   );
                   _latestPosition = p;
-                  debugPrint('🌍 Web location service: HTML watchPosition update: ${p.latitude}, ${p.longitude}, accuracy: ${p.accuracy}m');
+                  debugPrint('[${_ts()}] 🌍 Web location service: HTML watchPosition update: ${p.latitude}, ${p.longitude}, accuracy: ${p.accuracy}m');
                   if (_locationUpdateCallback != null) {
                     try {
                       _locationUpdateCallback!(p);
                     } catch (_) {}
                   }
                 } catch (e) {
-                  debugPrint('⚠️ Web location service: Error processing HTML watchPosition update: $e');
+                  debugPrint('[${_ts()}] ⚠️ Web location service: Error processing HTML watchPosition update: $e');
                 }
               },
               (err) {
-                debugPrint('⚠️ Web location service: HTML watchPosition error: $err');
+                debugPrint('[${_ts()}] ⚠️ Web location service: HTML watchPosition error: $err');
               },
               {'enableHighAccuracy': true, 'maximumAge': 0, 'timeout': 10000},
             );
             _htmlWatchId = watchId;
             _htmlWatchActive = true;
-            debugPrint('🌍 Web location service: Started HTML watchPosition (id: $_htmlWatchId)');
+            debugPrint('[${_ts()}] 🌍 Web location service: Started HTML watchPosition (id: $_htmlWatchId)');
           } catch (e) {
-            debugPrint('⚠️ Web location service: Could not start HTML watchPosition: $e');
+            debugPrint('[${_ts()}] ⚠️ Web location service: Could not start HTML watchPosition: $e');
             _htmlWatchActive = false;
             _htmlWatchId = null;
           }
@@ -531,6 +666,7 @@ class WebLocationService implements LocationService {
       // Also use timer to periodically send updates to Supabase (even with stream running)
       // The stream provides continuous refinement, timer controls update frequency
       _locationTimer = Timer.periodic(Duration(seconds: _currentIntervalSeconds), (timer) async {
+        _wlog('timer tick (gen=$gen, currentGen=$_generation, interval=$_currentIntervalSeconds, isStreaming=$_isStreaming, isVisible=$_isVisible)');
         // If this timer is stale, cancel quietly and return
         if (gen != _generation) {
           try {
@@ -567,13 +703,16 @@ class WebLocationService implements LocationService {
       final effectiveInterval = (_smartThrottlingEnabled && isHidden)
           ? (_requestedIntervalSeconds < 60 ? 60 : _requestedIntervalSeconds)
           : _requestedIntervalSeconds;
+      _wlog('_applyRequestedInterval: visibilityState=$docState isHidden=$isHidden smartThrottling=$_smartThrottlingEnabled requested=$_requestedIntervalSeconds effective=$effectiveInterval (isStreaming=$_isStreaming, current=$_currentIntervalSeconds, gen=$_generation)');
 
       if (!_isStreaming) {
         _currentIntervalSeconds = effectiveInterval;
+        _wlog('_applyRequestedInterval: not streaming; updated current interval to $_currentIntervalSeconds');
         return;
       }
 
       if (_currentIntervalSeconds == effectiveInterval) {
+        _wlog('_applyRequestedInterval: no-op (interval unchanged)');
         return;
       }
 
@@ -583,23 +722,23 @@ class WebLocationService implements LocationService {
       // start a fresh timer for the new effective value (keep streaming true)
       _isStreaming = true;
       final gen = _generation;
-      debugPrint('🌍 Web location service: Starting timer with interval $_currentIntervalSeconds s');
+      debugPrint('[${_ts()}] 🌍 Web location service: Starting timer with interval $_currentIntervalSeconds s');
       _locationTimer = Timer.periodic(Duration(seconds: _currentIntervalSeconds), (timer) async {
         if (gen != _generation) {
-          debugPrint('🌍 Web location service: Timer generation changed, cancelling');
+          debugPrint('[${_ts()}] 🌍 Web location service: Timer generation changed, cancelling');
           try {
             timer.cancel();
           } catch (_) {}
           return;
         }
         if (!_isStreaming) {
-          debugPrint('🌍 Web location service: Streaming stopped, cancelling timer');
+          debugPrint('[${_ts()}] 🌍 Web location service: Streaming stopped, cancelling timer');
           try {
             timer.cancel();
           } catch (_) {}
           return;
         }
-        debugPrint('🌍 Web location service: Timer fired at ${DateTime.now()}, calling _sendLocationUpdate');
+        debugPrint('[${_ts()}] 🌍 Web location service: Timer fired, calling _sendLocationUpdate');
         await _sendLocationUpdate();
       });
     } catch (e) {
@@ -610,17 +749,21 @@ class WebLocationService implements LocationService {
   void _applyEffectiveIntervalWhenHidden() {
     try {
       if (!_smartThrottlingEnabled) {
+        _wlog('_applyEffectiveIntervalWhenHidden: smart throttling disabled; no-op');
         return;
       }
 
       final hiddenInterval = _requestedIntervalSeconds < 60 ? 60 : _requestedIntervalSeconds;
+      _wlog('_applyEffectiveIntervalWhenHidden: requested=$_requestedIntervalSeconds hiddenInterval=$hiddenInterval (isStreaming=$_isStreaming, current=$_currentIntervalSeconds, gen=$_generation)');
 
       if (!_isStreaming) {
         _currentIntervalSeconds = hiddenInterval;
+        _wlog('_applyEffectiveIntervalWhenHidden: not streaming; updated current interval to $_currentIntervalSeconds');
         return;
       }
 
       if (_currentIntervalSeconds == hiddenInterval) {
+        _wlog('_applyEffectiveIntervalWhenHidden: no-op (interval unchanged)');
         return;
       }
 
@@ -630,6 +773,7 @@ class WebLocationService implements LocationService {
       _isStreaming = true;
       final gen = _generation;
       _locationTimer = Timer.periodic(Duration(seconds: _currentIntervalSeconds), (timer) async {
+        _wlog('hidden timer tick (gen=$gen, currentGen=$_generation, interval=$_currentIntervalSeconds, isStreaming=$_isStreaming, isVisible=$_isVisible)');
         if (gen != _generation) {
           try {
             timer.cancel();
@@ -652,6 +796,7 @@ class WebLocationService implements LocationService {
   // Stop immediately and bump generation to invalidate previous timers
   void _stopInternal() {
     _generation++;
+    _wlog('_stopInternal: stopping (newGen=$_generation, hadTimer=${_locationTimer != null}, htmlWatchActive=$_htmlWatchActive)');
     if (_locationTimer != null) {
       try {
         _locationTimer!.cancel();
@@ -668,7 +813,7 @@ class WebLocationService implements LocationService {
         } catch (_) {}
         _htmlWatchActive = false;
         _htmlWatchId = null;
-        debugPrint('🌍 Web location service: Cleared HTML watchPosition');
+        debugPrint('[${_ts()}] 🌍 Web location service: Cleared HTML watchPosition');
       }
     } catch (e) {
       // Ignore errors while clearing watch
@@ -677,6 +822,7 @@ class WebLocationService implements LocationService {
 
   @override
   void stopLocationStream() {
+    _wlog('stopLocationStream called');
     _isStarting = false;
     _stopInternal();
     // Reset Kalman filter for fresh start next time
@@ -690,17 +836,19 @@ class WebLocationService implements LocationService {
   @override
   void setLocationUpdateCallback(void Function(dynamic)? callback) {
     _locationUpdateCallback = callback;
+    _wlog('setLocationUpdateCallback: ${callback == null ? 'null' : 'set'}');
   }
 
   @override
   void setVisibility(bool isVisible) {
     _isVisible = isVisible;
+    _wlog('setVisibility: isVisible=$_isVisible');
   }
 
   /// Sync location data directly to Supabase (web platform workaround)
   Future<void> _syncLocationToSupabase(String userId, double latitude, double longitude, double? speed, double? heading) async {
     try {
-      debugPrint('🔄 Syncing location to Supabase for user: $userId');
+      debugPrint('[${_ts()}] 🔄 Syncing location to Supabase for user: $userId, lat: $latitude, lng: $longitude');
 
       // Use the update_user_location RPC function that should exist in Supabase
       await Supabase.instance.client.rpc('update_user_location', params: {
@@ -711,9 +859,9 @@ class WebLocationService implements LocationService {
         'p_heading': heading,
       });
 
-      debugPrint('✅ Location synced to Supabase successfully');
+      debugPrint('[${_ts()}] ✅ Location synced to Supabase successfully');
     } catch (e) {
-      debugPrint('❌ Failed to sync location to Supabase: $e');
+      debugPrint('[${_ts()}] ❌ Failed to sync location to Supabase: $e');
       // Continue anyway - local DB still has the data for later sync
     }
   }

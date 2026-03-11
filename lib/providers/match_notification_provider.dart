@@ -1,10 +1,17 @@
 // lib/providers/match_notification_provider.dart
 import 'dart:async';
+import 'dart:developer' as developer;
+import 'package:flutter/widgets.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/models/match_model.dart';
+import 'package:matchme/providers/home_providers.dart';
+import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/services/local_db_service.dart';
+import 'package:matchme/services/storage_helper.dart';
+import 'package:matchme/services/web_notification_service.dart';
 
 final supabase = Supabase.instance.client;
 
@@ -53,12 +60,170 @@ class MatchNotificationState {
 /// Notifier that manages match notifications in real-time
 class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
   RealtimeChannel? _matchChannel;
+  RealtimeChannel? _profileChannel;
   StreamSubscription? _channelSubscription;
+  Timer? _matchedProfilePollTimer;
+  Set<String> _matchedOtherUserIds = <String>{};
+  final Map<String, DateTime> _lastProfileRealtimeSyncAt = <String, DateTime>{};
+  List<String> _extractPhotoPaths(dynamic raw) {
+    if (raw is List) {
+      return raw.map((e) => e?.toString() ?? '').where((e) => e.isNotEmpty).toList();
+    }
+    if (raw is String) {
+      final trimmed = raw.trim();
+      return trimmed.isNotEmpty ? [trimmed] : <String>[];
+    }
+    return const <String>[];
+  }
 
   @override
   MatchNotificationState build() {
+    ref.watch(localizationProvider);
+    ref.onDispose(cleanup);
+    final userId = supabase.auth.currentUser?.id;
+    developer.log('🧩 MatchNotificationProvider build: user=$userId', name: 'MatchMeTrace');
     _setupRealtimeSubscription();
+    if (userId != null && userId.trim().isNotEmpty) {
+      ref.listen<AsyncValue<List<MatchModel>>>(recentMatchesProvider(userId), (previous, next) {
+        final matches = next.asData?.value ?? const <MatchModel>[];
+
+        final activeIds = matches.map((m) => m.id).toSet();
+        final updatedNotifications =
+            state.notifications.where((n) => activeIds.contains(n.match.id)).toList();
+
+        if (updatedNotifications.length == state.notifications.length) return;
+
+        final newUnreadCount = updatedNotifications.where((n) => !n.viewed).length;
+        state = state.copyWith(
+          notifications: updatedNotifications,
+          unreadCount: newUnreadCount,
+        );
+      });
+
+      ref.listen<AsyncValue<List<MatchModel>>>(recentMatchesProvider(userId), (previous, next) {
+        final matches = next.asData?.value ?? const <MatchModel>[];
+        final otherUserIds = matches
+            .map((m) => m.otherUserId.trim())
+            .where((id) => id.isNotEmpty && id != userId)
+            .toSet();
+        _updateMatchedUserProfileSubscription(userId, otherUserIds);
+      }, fireImmediately: true);
+    }
     return MatchNotificationState();
+  }
+
+  bool _shouldSyncProfileFromRealtime(String userId, Duration minInterval) {
+    final now = DateTime.now();
+    final last = _lastProfileRealtimeSyncAt[userId];
+    if (last != null && now.difference(last) < minInterval) return false;
+    _lastProfileRealtimeSyncAt[userId] = now;
+    return true;
+  }
+
+  void _updateMatchedUserProfileSubscription(String currentUserId, Set<String> otherUserIds) {
+    final isSame =
+        otherUserIds.length == _matchedOtherUserIds.length &&
+        otherUserIds.containsAll(_matchedOtherUserIds);
+    developer.log('🧩 Update matched user subscription: currentUser=$currentUserId, newCount=${otherUserIds.length}, prevCount=${_matchedOtherUserIds.length}, isSame=$isSame', name: 'MatchMeTrace');
+    if (isSame) return;
+
+    _matchedOtherUserIds = otherUserIds;
+
+    _matchedProfilePollTimer?.cancel();
+    _matchedProfilePollTimer = null;
+
+    if (_profileChannel != null) {
+      supabase.removeChannel(_profileChannel!);
+      _profileChannel = null;
+    }
+
+    if (otherUserIds.isEmpty) return;
+
+    _profileChannel = supabase.channel('match_profile_updates_$currentUserId');
+    _profileChannel!
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
+          schema: 'public',
+          table: 'users',
+          callback: (payload) async {
+            if (!ref.mounted) return;
+            final newRecord = payload.newRecord;
+            final changedUserId = newRecord['id']?.toString();
+            if (changedUserId == null || changedUserId.isEmpty) return;
+            if (changedUserId == currentUserId) return;
+            if (!_matchedOtherUserIds.contains(changedUserId)) return;
+            developer.log('🧩 Realtime users update for matched user: $changedUserId', name: 'MatchMeTrace');
+            final photoPaths = _extractPhotoPaths(newRecord['photos']);
+            final localDb = ref.read(localDbProvider);
+            final cachedLocal = await localDb.getLocalProfile(changedUserId);
+            final cachedPhotos = _extractPhotoPaths(cachedLocal?['photos']);
+            final photosChanged = !listEquals(cachedPhotos, photoPaths);
+            developer.log('🧩 Photos changed: $photosChanged (old: ${cachedPhotos.length}, new: ${photoPaths.length})', name: 'MatchMeTrace');
+            if (photosChanged) {
+              final allPaths = <String>{...cachedPhotos, ...photoPaths};
+              for (final path in allPaths) {
+                StorageHelper.evictImageCache(path);
+              }
+              final updatedLocal = Map<String, dynamic>.from(cachedLocal ?? {});
+              updatedLocal['photos'] = photoPaths;
+              updatedLocal['_cached_at'] = DateTime.now().toIso8601String();
+              await localDb.saveLocalProfile(changedUserId, updatedLocal);
+              final cachedOther = await localDb.getOtherUserProfileWithCacheMeta(changedUserId);
+              if (cachedOther != null) {
+                final updatedOther = Map<String, dynamic>.from(cachedOther);
+                updatedOther['photos'] = photoPaths;
+                await localDb.saveOtherUserProfile(changedUserId, updatedOther);
+              }
+              developer.log('🧩 Local photo caches updated for: $changedUserId', name: 'MatchMeTrace');
+            }
+            if (photosChanged && ref.mounted) {
+              ref.invalidate(otherUserProfileProvider(changedUserId));
+              ref.invalidate(userProfileProvider(changedUserId));
+              ref.invalidate(recentMatchesProvider(currentUserId));
+              ref.invalidate(recentChatsProvider(currentUserId));
+              developer.log('🧩 Providers invalidated for: $changedUserId', name: 'MatchMeTrace');
+            }
+            if (_shouldSyncProfileFromRealtime(changedUserId, const Duration(milliseconds: 100))) {
+              developer.log('🧩 Triggering profile sync for: $changedUserId', name: 'MatchMeTrace');
+              ref.read(profileSyncProvider).syncProfile(changedUserId);
+            } else {
+              developer.log('🧩 Skipping profile sync (throttled) for: $changedUserId', name: 'MatchMeTrace');
+            }
+          },
+        )
+        .subscribe((status, err) {
+          if (!ref.mounted) return;
+          if (status == RealtimeSubscribeStatus.subscribed) {
+            developer.log('🧩 Users realtime subscribed for currentUser=$currentUserId', name: 'MatchMeTrace');
+          }
+          if (status == RealtimeSubscribeStatus.closed || status == RealtimeSubscribeStatus.channelError) {
+            // Prevent reconnect loop if app is in background
+            if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused || 
+                WidgetsBinding.instance.lifecycleState == AppLifecycleState.detached) {
+              return;
+            }
+
+            Future.delayed(const Duration(seconds: 2), () {
+              if (!ref.mounted) return;
+              ref.invalidateSelf();
+            });
+          }
+        });
+
+    for (final id in _matchedOtherUserIds) {
+      if (_shouldSyncProfileFromRealtime(id, const Duration(milliseconds: 300))) {
+        ref.read(profileSyncProvider).syncProfile(id);
+      }
+    }
+
+    _matchedProfilePollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!ref.mounted) return;
+      for (final id in _matchedOtherUserIds) {
+        if (_shouldSyncProfileFromRealtime(id, const Duration(seconds: 5))) {
+          ref.read(profileSyncProvider).syncProfile(id);
+        }
+      }
+    });
   }
 
   void _setupRealtimeSubscription() {
@@ -117,8 +282,20 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
               debugPrint('✅ Match notifications: Subscribed successfully (INSERT, DELETE, UPDATE)');
             } else if (status == RealtimeSubscribeStatus.closed) {
               debugPrint('❌ Match notifications: Channel closed - attempting reconnect');
-              // Try to reconnect after a delay
-              Future.delayed(const Duration(seconds: 2), () {
+              
+              // Prevent reconnect loop if app is in background
+              if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused || 
+                  WidgetsBinding.instance.lifecycleState == AppLifecycleState.detached) {
+                debugPrint('⏸️ App in background, skipping auto-reconnect');
+                return;
+              }
+
+              // Try to reconnect after a delay (but only if still mounted)
+              Future.delayed(const Duration(seconds: 2), () async {
+                if (!ref.mounted) {
+                  debugPrint('🔄 Not reconnecting match notifications - notifier unmounted');
+                  return;
+                }
                 if (_matchChannel == null) {
                   debugPrint('🔄 Reconnecting match notifications...');
                   _setupRealtimeSubscription();
@@ -140,6 +317,11 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
   }
 
   void _handleNewMatch(PostgresChangePayload payload, String currentUserId) async {
+    if (!ref.mounted) {
+      debugPrint('🧭 Not handling new match - notifier not mounted');
+      return;
+    }
+
     try {
       var newRecord = payload.newRecord;
       
@@ -160,14 +342,31 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
       final eventId = newRecord['event_id'] as String?;
       if (eventId != null && eventId.isNotEmpty) {
         try {
-          final eventResponse = await supabase
-              .from('events')
-              .select('event_name, event_link')
-              .eq('id', eventId)
-              .single();
-          eventName = eventResponse['event_name'] as String?;
-          eventLink = eventResponse['event_link'] as String?;
-          debugPrint('   ✓ Fetched event details: $eventName');
+          // Try cache first
+          final localDb = ref.read(localDbProvider);
+          final cachedEvent = await localDb.getEventDetails(eventId);
+
+          if (cachedEvent != null) {
+            eventName = cachedEvent['event_name'] as String?;
+            eventLink = cachedEvent['event_link'] as String?;
+            if (kIsWeb) {
+              debugPrint('🔍 [WEB] Match notification - Using cached event details: $eventName');
+            }
+          } else {
+            // Fetch from server and cache
+            final eventResponse = await supabase
+                .from('events')
+                .select('id, event_name, event_link, event_venue, start_time, end_time')
+                .eq('id', eventId)
+                .single();
+
+            eventName = eventResponse['event_name'] as String?;
+            eventLink = eventResponse['event_link'] as String?;
+
+            // Cache the full event details
+            await localDb.saveEventDetails(eventId, eventResponse);
+            debugPrint('   ✓ Fetched and cached event details: $eventName');
+          }
           
           // Update the match data with event details for local DB
           newRecord = {
@@ -219,6 +418,28 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
 
       debugPrint('🎉 New match notification added! Total unread: $newUnreadCount');
       debugPrint('✅ Match should now appear in Recent Matches');
+      Future.microtask(() => ref.read(profileSyncProvider).syncProfile(match.otherUserId));
+
+      if (kIsWeb) {
+        String? otherUserName;
+        try {
+          final otherUserId = match.otherUserId.trim();
+          if (otherUserId.isNotEmpty) {
+            final otherProfile =
+                await ref.read(otherUserProfileProvider(otherUserId).future);
+            final trimmedName = otherProfile?.name.trim();
+            if (trimmedName != null && trimmedName.isNotEmpty) {
+              otherUserName = trimmedName;
+            }
+          }
+        } catch (_) {}
+
+        await WebNotificationService.showMatchNotification(
+          matchId: match.id,
+          matchName: otherUserName ?? 'MatchMe',
+          matchPhotoUrl: '',
+        );
+      }
     } catch (e, stackTrace) {
       debugPrint('❌ Error handling new match: $e');
       debugPrint('Stack trace: $stackTrace');
@@ -227,6 +448,11 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
 
   /// Handle match deletion from realtime
   void _handleMatchDeleted(PostgresChangePayload payload, String userId) async {
+    if (!ref.mounted) {
+      debugPrint('🧭 Not handling match deletion - notifier not mounted');
+      return;
+    }
+
     try {
       final oldRecord = payload.oldRecord;
       final matchId = oldRecord['id'] as String?;
@@ -258,17 +484,13 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
           .toList();
 
       // Calculate new unread count
-      // If the notification existed and was unviewed, decrease count
-      // If it didn't exist but unreadCount > 0, still decrease (safety)
-      int newUnreadCount;
+      // Only adjust the badge if the deleted match was actually represented in notifications.
+      final newUnreadCount = updatedNotifications.where((n) => !n.viewed).length;
       if (notificationExists) {
         final wasUnviewed = !state.notifications[notificationIndex].viewed;
-        newUnreadCount = updatedNotifications.where((n) => !n.viewed).length;
         debugPrint('   Notification was ${wasUnviewed ? "UNVIEWED" : "viewed"}');
       } else {
-        // Notification not in list - safely decrease unread count if > 0
-        newUnreadCount = state.unreadCount > 0 ? state.unreadCount - 1 : 0;
-        debugPrint('   Notification not found - decreasing unread count anyway');
+        debugPrint('   Notification not found - leaving unread count unchanged');
       }
 
       debugPrint('   New state - notifications: ${updatedNotifications.length}, unread: $newUnreadCount');
@@ -335,6 +557,12 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
     if (_matchChannel != null) {
       supabase.removeChannel(_matchChannel!);
     }
+    _profileChannel?.unsubscribe();
+    if (_profileChannel != null) {
+      supabase.removeChannel(_profileChannel!);
+    }
+    _matchedProfilePollTimer?.cancel();
+    _matchedProfilePollTimer = null;
   }
 }
 

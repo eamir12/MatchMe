@@ -1,9 +1,11 @@
 // lib/utils/unit_utils.dart
 
+import 'dart:async';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:flutter/foundation.dart';
+import '../web_imports.dart' as html;
 
 /// Determines if the given country code uses imperial units (feet, miles) or metric (meters, kilometers).
 bool usesImperialUnitsByCountry(String countryCode) {
@@ -103,11 +105,87 @@ Future<String?> getCountryCodeFromLocation() async {
 
     // Get current position
     debugPrint('Getting current position...');
-    Position position = await Geolocator.getCurrentPosition(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.low,
-      ),
-    );
+    Position? position;
+    if (kIsWeb) {
+      final completer = Completer<Position?>();
+      try {
+        final geolocation = (html.window as dynamic).navigator?.geolocation;
+        if (geolocation == null) {
+          completer.complete(null);
+        } else {
+          geolocation.getCurrentPosition(
+            (pos) {
+              if (completer.isCompleted) return;
+              try {
+                final coords = pos?.coords;
+                final lat = (coords?.latitude is num) ? (coords.latitude as num).toDouble() : null;
+                final lon = (coords?.longitude is num) ? (coords.longitude as num).toDouble() : null;
+                if (lat == null || lon == null) {
+                  completer.complete(null);
+                  return;
+                }
+                final accuracy = (coords?.accuracy is num) ? (coords.accuracy as num).toDouble() : double.infinity;
+                final altitude = (coords?.altitude is num) ? (coords.altitude as num).toDouble() : 0.0;
+                final altitudeAccuracy = (coords?.altitudeAccuracy is num) ? (coords.altitudeAccuracy as num).toDouble() : 0.0;
+                final heading = (coords?.heading is num) ? (coords.heading as num).toDouble() : 0.0;
+                final headingAccuracy = (coords?.headingAccuracy is num) ? (coords.headingAccuracy as num).toDouble() : 0.0;
+                final speed = (coords?.speed is num) ? (coords.speed as num).toDouble() : 0.0;
+                final speedAccuracy = (coords?.speedAccuracy is num) ? (coords.speedAccuracy as num).toDouble() : 0.0;
+
+                DateTime timestamp = DateTime.now();
+                final tsMs = pos?.timestamp;
+                if (tsMs is num) {
+                  timestamp = DateTime.fromMillisecondsSinceEpoch(tsMs.toInt());
+                }
+
+                completer.complete(
+                  Position(
+                    latitude: lat,
+                    longitude: lon,
+                    timestamp: timestamp,
+                    accuracy: accuracy,
+                    altitude: altitude,
+                    altitudeAccuracy: altitudeAccuracy,
+                    heading: heading,
+                    headingAccuracy: headingAccuracy,
+                    speed: speed,
+                    speedAccuracy: speedAccuracy,
+                  ),
+                );
+              } catch (_) {
+                completer.complete(null);
+              }
+            },
+            (err) {
+              if (completer.isCompleted) return;
+              completer.complete(null);
+            },
+            {
+              'enableHighAccuracy': false,
+              'maximumAge': 0,
+              'timeout': 15000,
+            },
+          );
+        }
+      } catch (_) {
+        if (!completer.isCompleted) completer.complete(null);
+      }
+
+      position = await completer.future.timeout(
+        const Duration(seconds: 15),
+        onTimeout: () {
+          if (!completer.isCompleted) completer.complete(null);
+          return null;
+        },
+      );
+    } else {
+      position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.low,
+        ),
+      );
+    }
+    if (position == null) return null;
     debugPrint('Position obtained: ${position.latitude}, ${position.longitude}');
 
     // Try reverse geocoding first

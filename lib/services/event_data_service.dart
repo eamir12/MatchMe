@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
 // We no longer need ML Kit here
 // import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
@@ -29,7 +29,7 @@ class EventDataService {
   final String _bucketId = 'event-uploads';
 
   // --- NEW: File Upload & Process Logic ---
-  Future<ExtractedEventData> uploadAndProcessFile() async {
+  Future<ExtractedEventData?> uploadAndProcessFile() async {
     final userId = supabase.auth.currentUser?.id;
     if (userId == null) throw Exception("User not logged in");
 
@@ -41,8 +41,10 @@ class EventDataService {
         withData: kIsWeb,
       );
 
+      // If the user cancelled the file picker, return null so callers can
+      // treat that as a non-error cancellation and simply close any UI.
       if (result == null) {
-        return ExtractedEventData.empty(); // User cancelled
+        return null; // User cancelled
       }
 
       final file = result.files.single;
@@ -51,25 +53,36 @@ class EventDataService {
       final filePath = '$userId/$fileName';
       final mimeType = _getMimeType(fileExt);
 
-      // 1. UPLOAD the file
-      if (kIsWeb) {
-        if (file.bytes == null) throw Exception("File bytes are null on web.");
-        await supabase.storage
-          .from(_bucketId)
-          .uploadBinary(
-            filePath,
-            file.bytes!,
-            fileOptions: FileOptions(contentType: mimeType),
-          );
-      } else {
-        if (file.path == null) throw Exception("File path is null on mobile.");
-        await supabase.storage
-          .from(_bucketId)
-          .upload(
-            filePath,
-            File(file.path!),
-            fileOptions: FileOptions(contentType: mimeType),
-          );
+      // 1. UPLOAD the file (with improved error handling/logging)
+      try {
+        if (kIsWeb) {
+          if (file.bytes == null) throw Exception("File bytes are null on web.");
+          await supabase.storage
+            .from(_bucketId)
+            .uploadBinary(
+              filePath,
+              file.bytes!,
+              fileOptions: FileOptions(contentType: mimeType),
+            );
+        } else {
+          if (file.path == null) throw Exception("File path is null on mobile.");
+          await supabase.storage
+            .from(_bucketId)
+            .upload(
+              filePath,
+              File(file.path!),
+              fileOptions: FileOptions(contentType: mimeType),
+            );
+        }
+      } catch (e) {
+        // Surface helpful diagnostic info for storage policy / auth failures
+        debugPrint('[EVENT_UPLOAD] Upload failed for $filePath (bucket=$_bucketId): $e');
+        // If it's a StorageException from Supabase, rethrow with clearer message
+        if (e is StorageException) {
+          final msg = 'Storage upload failed: ${e.message}';
+          throw Exception(msg);
+        }
+        rethrow;
       }
       
       // 2. CALL the function and wait for the JSON response
@@ -95,10 +108,76 @@ class EventDataService {
       }
 
     } catch (e) {
+      // If the file picker threw an exception that indicates a user cancel action,
+      // treat it as a cancellation and return null instead of surfacing an error.
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('cancel') || msg.contains('abort') || msg.contains('user canceled') || msg.contains('user cancelled')) {
+        return null;
+      }
       rethrow;
     }
   }
   // --- END NEW ---
+
+  /// Process a file from a local file path (used for shared files from Android)
+  Future<ExtractedEventData> uploadAndProcessLocalFile(String localPath) async {
+    if (kIsWeb) {
+      throw Exception('Local file upload is not supported on web.');
+    }
+
+    final userId = supabase.auth.currentUser?.id;
+    if (userId == null) throw Exception("User not logged in");
+
+    final fileOnDisk = File(localPath);
+    if (!await fileOnDisk.exists()) {
+      throw Exception('File not found.');
+    }
+
+    final dot = localPath.lastIndexOf('.');
+    final fileExt = (dot >= 0 && dot < localPath.length - 1)
+        ? localPath.substring(dot + 1).toLowerCase()
+        : 'file';
+
+    final fileName = '${uuid.v4()}.$fileExt';
+    final filePath = '$userId/$fileName';
+    final mimeType = _getMimeType(fileExt);
+
+    try {
+      await supabase.storage.from(_bucketId).upload(
+            filePath,
+            fileOnDisk,
+            fileOptions: FileOptions(contentType: mimeType),
+          );
+    } catch (e) {
+      debugPrint('[EVENT_UPLOAD] Upload failed for $filePath (bucket=$_bucketId): $e');
+      if (e is StorageException) {
+        final msg = 'Storage upload failed: ${e.message}';
+        throw Exception(msg);
+      }
+      rethrow;
+    }
+
+    final response = await supabase.functions.invoke(
+      'process-event-file',
+      body: {'filePath': filePath, 'bucketId': _bucketId},
+    );
+
+    if (response.data != null) {
+      final body = response.data;
+      DateTime? parsedDate;
+      if (body['date'] != null) {
+        parsedDate = DateTime.tryParse(body['date']);
+      }
+      return ExtractedEventData(
+        name: body['title'] ?? 'Event from File',
+        venue: body['location'],
+        date: parsedDate,
+        dateString: body['dateString'],
+      );
+    }
+
+    throw Exception("Function returned no data.");
+  }
 
   // Helper to get MIME type from extension
   String _getMimeType(String extension) {

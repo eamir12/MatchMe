@@ -28,6 +28,7 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="google-signin-client_id" content="643478128594-39tuorf6b10otd4dib6or6gcidsn2tg0.apps.googleusercontent.com">
   <meta name="description" content="A new Flutter project.">
 
   <!-- iOS meta tags & icons -->
@@ -43,22 +44,67 @@
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
-  <!-- Intl.Segmenter polyfill: load only if missing to silence Intl.v8BreakIterator deprecation and provide Segmenter support -->
   <script>
-    (function(){
+    (function () {
       try {
-        if (!(Intl && Intl.Segmenter)) {
-          var s = document.createElement('script');
-          s.src = 'https://polyfill.io/v3/polyfill.min.js?features=Intl.Segmenter';
-          s.defer = true;
-          document.head.appendChild(s);
-        }
-      } catch (e) {
-        console.warn('Intl.Segmenter polyfill loader failed', e);
-      }
+        var originalWarn = console.warn;
+        console.warn = function () {
+          try {
+            var first = arguments && arguments.length ? String(arguments[0]) : '';
+            if (
+              first.indexOf('[GSI_LOGGER]') !== -1 &&
+              (first.indexOf('Google One Tap prompt UI status methods') !== -1 ||
+                first.indexOf('fedcm-migration') !== -1 ||
+                first.indexOf('FedCM becomes mandatory') !== -1)
+            ) {
+              return;
+            }
+          } catch (_) {}
+          return originalWarn.apply(console, arguments);
+        };
+      } catch (_) {}
     })();
   </script>
-
+  <script>
+    (function () {
+      try {
+        if (!window.performance || typeof window.performance.measure !== 'function') return;
+        var originalMeasure = window.performance.measure.bind(window.performance);
+        window.performance.measure = function () {
+          try {
+            return originalMeasure.apply(window.performance, arguments);
+          } catch (e) {
+            try {
+              var msg = String((e && e.message) ? e.message : e);
+              if (msg.indexOf("The mark '") !== -1 && msg.indexOf("' does not exist") !== -1) {
+                try {
+                  return originalMeasure(arguments[0]);
+                } catch (_) {
+                  return;
+                }
+              }
+            } catch (_) {}
+            throw e;
+          }
+        };
+      } catch (_) {}
+    })();
+  </script>
+  <!-- 
+    NOTE: Google Sign-In (GIS) and Cross-Origin-Opener-Policy (COOP)
+    
+    If you see "Cross-Origin-Opener-Policy policy would block the window.closed call" in the console,
+    it is because the Google Identity Services SDK tries to access the popup window state, but 
+    browser security policies block it when strict COOP isolation is not configured.
+    
+    This is typically a warning and does not break authentication flow.
+    
+    To fix this message in production, configure your web server (Firebase, Vercel, Nginx, etc.)
+    to serve this file with the following headers:
+    
+    Cross-Origin-Opener-Policy: same-origin-allow-popups
+    Cross-Origin-Embedder-Policy: require-corp
+  -->
   <script src="https://twemoji.maxcdn.com/v/latest/twemoji.min.js"></script>
   <script>
     (function() {
@@ -94,6 +140,68 @@
       });
       observer.observe(document.body, {childList: true, subtree: true});
     })();
+  </script>
+
+  <script src="https://alcdn.msauth.net/browser/2.35.0/js/msal-browser.min.js" 
+          crossorigin="anonymous"
+          onerror="console.error('❌ MSAL.js failed to load from CDN')"></script>
+  <script>
+    if (typeof msal === 'undefined') {
+      document.write(
+        unescape(
+          "<script src='https://alcdn.msftauth.net/browser/2.35.0/js/msal-browser.min.js' type='text/javascript' crossorigin='anonymous'><\/script>"
+        )
+      );
+    }
+  </script>
+  <script>
+    // Verify MSAL loaded correctly with detailed logging
+    console.log('[MSAL Check] Script tag executed');
+    console.log('[MSAL Check] typeof window:', typeof window);
+    console.log('[MSAL Check] typeof msal:', typeof msal);
+    console.log('[MSAL Check] typeof window.msal:', typeof window.msal);
+    console.log('[MSAL Check] window keys:', Object.keys(window).filter(k => k.toLowerCase().includes('msal')));
+    
+    // Check for global msal object
+    if (typeof msal !== 'undefined') {
+      console.log('✅ [MSAL] Global msal object exists');
+      console.log('[MSAL] msal keys:', Object.keys(msal));
+      if (msal.PublicClientApplication) {
+        console.log('✅ [MSAL] msal.PublicClientApplication constructor found');
+        
+        // Test creating an instance to check methods
+        try {
+          const testConfig = {
+            auth: { clientId: 'test', authority: 'https://login.microsoftonline.com/common' }
+          };
+          const testInstance = new msal.PublicClientApplication(testConfig);
+          console.log('[MSAL] Test instance created');
+          console.log('[MSAL] Instance has initialize:', typeof testInstance.initialize);
+          console.log('[MSAL] Instance methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(testInstance)));
+        } catch (e) {
+          console.warn('[MSAL] Could not create test instance:', e);
+        }
+      }
+    }
+    
+    // Check for window.msal
+    if (typeof window.msal !== 'undefined') {
+      console.log('✅ [MSAL] window.msal object exists');
+      console.log('[MSAL] window.msal keys:', Object.keys(window.msal));
+      if (window.msal.PublicClientApplication) {
+        console.log('✅ [MSAL] window.msal.PublicClientApplication constructor found');
+      }
+    }
+    
+    // If neither exists, log error
+    if (typeof msal === 'undefined' && typeof window.msal === 'undefined') {
+      console.error('❌ [MSAL] Library failed to load - no msal object found anywhere');
+      console.error('[MSAL] This may be due to:');
+      console.error('  1. CDN blocked by firewall/network');
+      console.error('  2. CORS policy blocking the script');
+      console.error('  3. Script failed to download');
+      console.error('  4. Check Network tab in DevTools for failed requests');
+    }
   </script>
 
   <script src="flutter_bootstrap.js" async></script>

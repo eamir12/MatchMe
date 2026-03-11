@@ -37,6 +37,7 @@ class _ReportDialogContentState extends ConsumerState<ReportDialogContent> {
             const SizedBox(height: 16),
             TextFormField(
               controller: _reportReasonController,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontFeatures: const []),
               decoration: InputDecoration(
                 labelText: l10n.getString('reportReasonRequired'), // Use l10n
                 border: const OutlineInputBorder(),

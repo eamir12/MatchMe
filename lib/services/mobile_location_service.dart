@@ -2,11 +2,15 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'location_service.dart';
 import 'package:matchme/services/local_db_service.dart';
+import 'package:matchme/utils/permission_manager.dart';
 
 final supabase = Supabase.instance.client;
+
+String _ts() => DateTime.now().toIso8601String();
 
 class MobileLocationService implements LocationService {
   Timer? _positionUpdateTimer;
@@ -35,18 +39,29 @@ class MobileLocationService implements LocationService {
   }
 
   Future<void> _fetchAndSendLocation(Position position) async {
-    debugPrint('📍 Mobile location service: _fetchAndSendLocation called with position: ${position.latitude}, ${position.longitude}');
+    debugPrint('[${_ts()}] 📍 Mobile location service: _fetchAndSendLocation called with position: ${position.latitude}, ${position.longitude}');
     final user = supabase.auth.currentUser;
     if (user == null) {
-      debugPrint('📍 Mobile location service: No user, stopping location stream');
+      debugPrint('[${_ts()}] 📍 Mobile location service: No user, stopping location stream');
       stopLocationStream();
+      return;
+    }
+
+    // Check connectivity
+    final connectivityResult = await Connectivity().checkConnectivity();
+    final isOnline = connectivityResult.any((r) => r != ConnectivityResult.none);
+    if (!isOnline) {
+      debugPrint('[${_ts()}] 📍 Mobile location service: Device is offline - skipping location handling');
+      // We don't necessarily stop the stream here, as connectivity might come back,
+      // but we definitely don't want to process this location or try to send it.
+      // However, visibility_provider should handle stopping the stream if offline.
       return;
     }
 
     // Before using or transmitting the location, verify that the user is currently visible.
     final visible = await _isUserVisible(user.id);
     if (!visible) {
-      debugPrint('📍 Mobile location service: User is not visible - skipping location handling and stopping stream');
+      debugPrint('[${_ts()}] 📍 Mobile location service: User is not visible - skipping location handling and stopping stream');
       // Stop the stream as a safety measure
       stopLocationStream();
       return;
@@ -54,18 +69,18 @@ class MobileLocationService implements LocationService {
 
     // Update user activity (only if visible)
     try {
-      debugPrint('Updating user activity for ${user.id}');
+      debugPrint('[${_ts()}] 📍 Mobile location service: Updating user activity for ${user.id}');
       await supabase.rpc('update_user_activity', params: {'p_user_id': user.id});
-      debugPrint('User activity updated successfully');
+      debugPrint('[${_ts()}] 📍 Mobile location service: User activity updated successfully');
     } catch (e) {
-      debugPrint('Error updating user activity: $e');
+      debugPrint('[${_ts()}] 📍 Mobile location service: Error updating user activity: $e');
       // Ignore activity update errors
     }
 
     // Location updates are handled by the background service
     // Match engine is now handled server-side autonomously
     // No client-side triggering needed - matches are created by Supabase functions
-    debugPrint('📍 Location updated - server-side matching will be triggered automatically');
+    debugPrint('[${_ts()}] 📍 Mobile location service: Location updated - server-side matching will be triggered automatically');
 
     try {
       final localDb = LocalDbService();
@@ -81,7 +96,7 @@ class MobileLocationService implements LocationService {
       // Also sync directly to Supabase (mobile platform workaround)
       await _syncLocationToSupabase(user.id, position.latitude, position.longitude, position.speed, position.heading);
     } catch (e) {
-      debugPrint('❌ Failed to save/sync location: $e');
+      debugPrint('[${_ts()}] ❌ Mobile location service: Failed to save/sync location: $e');
     }
   }
 
@@ -96,15 +111,32 @@ class MobileLocationService implements LocationService {
     }
 
     permission = await Geolocator.checkPermission();
+    
+    // If permission is already granted, return true
+    if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
+      return true;
+    }
+
+    // If permission was denied forever, return false
+    if (permission == LocationPermission.deniedForever) {
+      return false;
+    }
+
+    // If permission is denied, check if we've already requested it this run
+    // If so, don't request again (respects "request once per run" requirement)
     if (permission == LocationPermission.denied) {
+      if (PermissionManager.hasBeenRequestedThisRun('location')) {
+        debugPrint('📍 Mobile location service: Location permission already requested this run, not requesting again');
+        return false;
+      }
+      
+      // Request permission (PermissionManager will track this)
       permission = await Geolocator.requestPermission();
+      PermissionManager.markRequested('location');
+      
       if (permission == LocationPermission.denied) {
         return false;
       }
-    }
-
-    if (permission == LocationPermission.deniedForever) {
-      return false;
     }
 
     // For Android 10+ (API 29+), we also need background location permission
@@ -114,16 +146,11 @@ class MobileLocationService implements LocationService {
         // Check if we have background location permission
         final bgPermission = await Geolocator.checkPermission();
         if (bgPermission != LocationPermission.always && bgPermission != LocationPermission.whileInUse) {
-          debugPrint('Requesting background location permission for Android background service');
-          final requestedBgPermission = await Geolocator.requestPermission();
-          if (requestedBgPermission != LocationPermission.always) {
-            debugPrint('Background location permission not granted - background GPS may not work');
-          } else {
-            debugPrint('Background location permission granted');
-          }
+          debugPrint('Background location permission not granted - background GPS may not work');
+          // Don't request background location here - it's handled by PermissionCoordinator when needed
         }
       } catch (e) {
-        debugPrint('Error requesting background location permission: $e');
+        debugPrint('Error checking background location permission: $e');
       }
     }
 
@@ -149,25 +176,25 @@ class MobileLocationService implements LocationService {
 
       final hasPermission = await handleLocationPermission();
       if (!hasPermission) {
-        debugPrint('📍 Mobile location service: Location permission denied');
+        debugPrint('[${_ts()}] 📍 Mobile location service: Location permission denied');
         return;
       }
 
       // Check if location services are enabled
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      debugPrint('📍 Mobile location service: Location service enabled: $serviceEnabled');
+      debugPrint('[${_ts()}] 📍 Mobile location service: Location service enabled: $serviceEnabled');
       if (!serviceEnabled) {
-        debugPrint('📍 Mobile location service: Location service is disabled on device');
+        debugPrint('[${_ts()}] 📍 Mobile location service: Location service is disabled on device');
         return;
       }
 
-      debugPrint('📍 Mobile location service: Setting up periodic location updates with interval: $intervalSeconds');
+      debugPrint('[${_ts()}] 📍 Mobile location service: Setting up periodic location updates with interval: $intervalSeconds');
 
       // Use getCurrentPosition with timer for more reliable continuous updates
       _positionUpdateTimer?.cancel();
       _positionUpdateTimer = Timer.periodic(Duration(seconds: intervalSeconds), (timer) async {
         try {
-          debugPrint('📍 Mobile location service: Timer triggered - getting current position');
+          debugPrint('[${_ts()}] 📍 Mobile location service: Timer triggered - getting current position');
           // Use best accuracy for optimal GPS precision on mobile devices
           final position = await Geolocator.getCurrentPosition(
             locationSettings: const LocationSettings(
@@ -175,15 +202,15 @@ class MobileLocationService implements LocationService {
               timeLimit: Duration(seconds: 15),
             ),
           );
-          debugPrint('📍 Mobile location service: Got current position: ${position.latitude}, ${position.longitude}, accuracy: ${position.accuracy}m');
+          debugPrint('[${_ts()}] 📍 Mobile location service: Got current position: ${position.latitude}, ${position.longitude}, accuracy: ${position.accuracy}m');
           _locationUpdateCallback?.call(position);
           _fetchAndSendLocation(position);
         } catch (e) {
-          debugPrint('❌ Mobile location service: Failed to get current position: $e');
+          debugPrint('[${_ts()}] ❌ Mobile location service: Failed to get current position: $e');
         }
       });
 
-      debugPrint('📍 Mobile location service: Position timer started successfully with interval: ${intervalSeconds}s');
+      debugPrint('[${_ts()}] 📍 Mobile location service: Position timer started successfully with interval: ${intervalSeconds}s');
 
       _isServiceRunning = true;
       _currentIntervalSeconds = intervalSeconds;
@@ -196,7 +223,7 @@ class MobileLocationService implements LocationService {
 
   @override
   void stopLocationStream() {
-    debugPrint('📍 Mobile location service: stopLocationStream called, currently running: $_isServiceRunning');
+    debugPrint('[${_ts()}] 📍 Mobile location service: stopLocationStream called, currently running: $_isServiceRunning');
     if (!_isServiceRunning) {
       return;
     }
@@ -204,7 +231,7 @@ class MobileLocationService implements LocationService {
     _positionUpdateTimer = null;
     _isServiceRunning = false;
     _currentIntervalSeconds = 0;
-    debugPrint('📍 Mobile location service: Location timer stopped');
+    debugPrint('[${_ts()}] 📍 Mobile location service: Location timer stopped');
   }
 
   @override
@@ -220,7 +247,7 @@ class MobileLocationService implements LocationService {
   /// Sync location data directly to Supabase (mobile platform workaround)
   Future<void> _syncLocationToSupabase(String userId, double latitude, double longitude, double? speed, double? heading) async {
     try {
-      debugPrint('🔄 Mobile location service: Syncing location to Supabase for user: $userId, lat: $latitude, lng: $longitude');
+      debugPrint('[${_ts()}] 🔄 Mobile location service: Syncing location to Supabase for user: $userId, lat: $latitude, lng: $longitude');
 
       // Use the update_user_location RPC function
       await supabase.rpc('update_user_location', params: {
@@ -231,9 +258,9 @@ class MobileLocationService implements LocationService {
         'p_heading': heading,
       });
 
-      debugPrint('✅ Mobile location service: Location synced to Supabase successfully');
+      debugPrint('[${_ts()}] ✅ Mobile location service: Location synced to Supabase successfully');
     } catch (e) {
-      debugPrint('❌ Mobile location service: Failed to sync location to Supabase: $e');
+      debugPrint('[${_ts()}] ❌ Mobile location service: Failed to sync location to Supabase: $e');
       // Continue anyway - local DB still has the data for later sync
     }
   }

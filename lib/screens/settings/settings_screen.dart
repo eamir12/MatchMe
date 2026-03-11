@@ -1,10 +1,12 @@
-﻿// lib/screens/settings/settings_screen.dart
+// lib/screens/settings/settings_screen.dart
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/visibility_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
+import 'package:matchme/services/app_config_service.dart';
 import '../../providers/main_intents_provider.dart';
 import '../../providers/translation_version_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -14,6 +16,10 @@ import 'dart:ui' as ui;
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/screens/settings/invisibility_rules_screen.dart';
 import 'package:matchme/screens/settings/gender_age_preferences_screen.dart';
+import 'package:matchme/screens/settings/notifications_settings_screen.dart';
+import 'package:matchme/screens/paywall/paywall_screen.dart';
+import 'package:matchme/screens/referral/invite_friends_screen.dart';
+import 'package:matchme/screens/profile/verification_screen.dart';
 import 'package:matchme/providers/user_preferences_provider.dart';
 import 'package:matchme/providers/theme_provider.dart';
 
@@ -82,6 +88,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           children: [
                             TextFormField(
                               controller: currentPasswordController,
+                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontFeatures: const []),
                               decoration: InputDecoration(
                                 label: Text(l10n.getString('settingsCurrentPassword')),
                                 suffixIcon: IconButton(
@@ -98,6 +105,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             const SizedBox(height: 16),
                             TextFormField(
                               controller: newPasswordController,
+                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontFeatures: const []),
                               decoration: InputDecoration(
                                 label: Text(l10n.getString('settingsNewPassword')),
                                 suffixIcon: IconButton(
@@ -117,6 +125,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             const SizedBox(height: 16),
                             TextFormField(
                               controller: confirmPasswordController,
+                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontFeatures: const []),
                               decoration: InputDecoration(
                                 label: Text(l10n.getString('settingsConfirmNewPassword')),
                                 suffixIcon: IconButton(
@@ -606,9 +615,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       ],
                     ),
                     const SizedBox(height: 16),
-                    Builder(
-                      builder: (context) {
-                        final allowedRadii = [5, 10, 20, 100];
+                    FutureBuilder<List<int>>(
+                      future: appConfigService.getIntList(
+                        'profile.match_radius_options_km',
+                        defaultValue: [5, 10, 20, 100]
+                      ),
+                      builder: (context, snapshot) {
+                        final allowedRadii = snapshot.data ?? [5, 10, 20, 100];
                         final currentRadius = profile.matchRadiusDefault;
                         final radii = Set<int>.from(allowedRadii)..add(currentRadius);
                         final sortedRadii = radii.toList()..sort();
@@ -653,9 +666,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       },
                     ),
                     const SizedBox(height: 16),
-                    Builder(
-                      builder: (context) {
-                        final allowedRates = [5, 10, 20, 30, 60];
+                    FutureBuilder<List<int>>(
+                      future: appConfigService.getIntList(
+                        'gps.interval_options_seconds',
+                        defaultValue: [5, 10, 20, 30, 60]
+                      ),
+                      builder: (context, snapshot) {
+                        final allowedRates = snapshot.data ?? [5, 10, 20, 30, 60];
                         final currentRate = profile.gpsIntervalDefault;
                         final rates = Set<int>.from(allowedRates)..add(currentRate);
                         final sortedRates = rates.toList()..sort();
@@ -711,6 +728,43 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       children: [
                         Expanded(
                           child: Text(
+                            l10n.getString('settingsHighAccuracyMode'),
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                              color: colors.onSurface,
+                            ),
+                          ),
+                        ),
+                        Switch(
+                          value: prefs.highAccuracyMode,
+                          onChanged: (value) async {
+                            await ref.read(userPreferencesProvider.notifier).setHighAccuracyMode(value);
+                          },
+                          activeThumbColor: Theme.of(context).colorScheme.tertiary,
+                          activeTrackColor: Theme.of(context).colorScheme.tertiary.withValues(alpha: 0.3),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Padding(
+                      padding: const EdgeInsets.only(left: 4.0, right: 8.0),
+                      child: Text(
+                        kIsWeb
+                            ? l10n.getString('settingsHighAccuracyModeDesc_web')
+                            : (defaultTargetPlatform == TargetPlatform.android
+                                ? l10n.getString('settingsHighAccuracyModeDesc_android')
+                                : (defaultTargetPlatform == TargetPlatform.iOS
+                                    ? l10n.getString('settingsHighAccuracyModeDesc_ios')
+                                    : l10n.getString('settingsHighAccuracyModeDesc'))),
+                        style: TextStyle(fontSize: 12, color: colors.onSurface.withAlpha((0.6 * 255).round())),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
                             l10n.getString('settingsSmartGpsThrottling'),
                             style: TextStyle(
                               fontSize: 14,
@@ -741,6 +795,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           activeTrackColor: Theme.of(context).colorScheme.tertiary.withValues(alpha:0.3),
                         ),
                       ],
+                    ),
+                    const SizedBox(height: 8),
+                    Padding(
+                      padding: const EdgeInsets.only(left: 4.0, right: 8.0),
+                      child: Text(
+                        l10n.getString('settingsSmartGpsThrottlingDesc'),
+                        style: TextStyle(fontSize: 12, color: colors.onSurface.withAlpha((0.6 * 255).round())),
+                      ),
                     ),
                     const SizedBox(height: 16),
                     Row(
@@ -948,6 +1010,342 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ),
               ),
 
+              // Notifications Settings Section - Navigate to dedicated screen
+              Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                child: InkWell(
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const NotificationsSettingsScreen()),
+                    );
+                  },
+                  borderRadius: BorderRadius.circular(16),
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          Theme.of(context).colorScheme.secondary.withValues(alpha:0.1),
+                          Theme.of(context).colorScheme.secondary.withValues(alpha:0.05),
+                        ],
+                      ),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Theme.of(context).colorScheme.secondary.withValues(alpha:0.2)),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.secondary.withValues(alpha:0.1),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Icon(Icons.notifications_outlined, color: Theme.of(context).colorScheme.secondary, size: 28),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                l10n.getString('settingsNotifications'),
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: Theme.of(context).colorScheme.secondary,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                l10n.getString('settingsNotificationsSettingsDesc'),
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha:0.7),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Icon(
+                          Icons.arrow_forward_ios,
+                          color: Theme.of(context).colorScheme.secondary,
+                          size: 20,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
+              Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                child: InkWell(
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const PaywallScreen()),
+                    );
+                  },
+                  borderRadius: BorderRadius.circular(16),
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          Theme.of(context).colorScheme.tertiary.withValues(alpha: 0.12),
+                          Theme.of(context).colorScheme.tertiary.withValues(alpha: 0.06),
+                        ],
+                      ),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Theme.of(context).colorScheme.tertiary.withValues(alpha: 0.25)),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.tertiary.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Icon(
+                            Icons.workspace_premium_outlined,
+                            color: Theme.of(context).colorScheme.tertiary,
+                            size: 28,
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                l10n.getString('paywallTitle'),
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: Theme.of(context).colorScheme.tertiary,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                l10n.getString('paywallFeaturesTitle'),
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Icon(
+                          Icons.arrow_forward_ios,
+                          color: Theme.of(context).colorScheme.tertiary,
+                          size: 20,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
+              Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                child: InkWell(
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const InviteFriendsScreen()),
+                    );
+                  },
+                  borderRadius: BorderRadius.circular(16),
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          Theme.of(context).colorScheme.secondary.withValues(alpha: 0.1),
+                          Theme.of(context).colorScheme.secondary.withValues(alpha: 0.05),
+                        ],
+                      ),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Theme.of(context).colorScheme.secondary.withValues(alpha: 0.2)),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.secondary.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Icon(Icons.card_giftcard, color: Theme.of(context).colorScheme.secondary, size: 28),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                l10n.getString('inviteFriendsTitle'),
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: Theme.of(context).colorScheme.secondary,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                l10n.getString('inviteFriendsDescription'),
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Icon(
+                          Icons.arrow_forward_ios,
+                          color: Theme.of(context).colorScheme.secondary,
+                          size: 20,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
+              Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                child: InkWell(
+                  onTap:
+                      profile.isVerified
+                          ? null
+                          : () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(builder: (context) => const VerificationScreen()),
+                            );
+                          },
+                  borderRadius: BorderRadius.circular(16),
+                  child: Opacity(
+                    opacity: profile.isVerified ? 0.8 : 1,
+                    child: Builder(
+                      builder: (context) {
+                        final status =
+                            profile.isVerified ? 'approved' : profile.verificationStatus;
+
+                        Color accentColor;
+                        IconData leadingIcon;
+                        String title;
+                        String subtitle;
+
+                        switch (status) {
+                          case 'approved':
+                            accentColor = Colors.green;
+                            leadingIcon = Icons.verified;
+                            title = l10n.getString('verified');
+                            subtitle = l10n.getString('verifiedDescription');
+                            break;
+                          case 'pending':
+                            accentColor = Colors.orange;
+                            leadingIcon = Icons.pending;
+                            title = l10n.getString('underReview');
+                            subtitle = l10n.getString('underReviewDescription');
+                            break;
+                          case 'analyzing':
+                            accentColor = Colors.blue;
+                            leadingIcon = Icons.hourglass_top;
+                            title = l10n.getString('analyzingPhotos');
+                            subtitle = l10n.getString('analyzingPhotosDescription');
+                            break;
+                          case 'rejected':
+                            accentColor = colors.error;
+                            leadingIcon = Icons.error;
+                            title = l10n.getString('verificationRejected');
+                            subtitle = l10n.getString('verificationNotApproved');
+                            break;
+                          default:
+                            accentColor = Theme.of(context).colorScheme.primary;
+                            leadingIcon = Icons.verified_outlined;
+                            title = l10n.getString('profileVerification');
+                            subtitle =
+                                profile.verificationSubmittedAt == null
+                                    ? l10n.getString('getVerifiedToBuildTrust')
+                                    : l10n.getString('notVerifiedDescription');
+                        }
+
+                        return Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [
+                                accentColor.withValues(alpha: 0.1),
+                                accentColor.withValues(alpha: 0.05),
+                              ],
+                            ),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                              color: accentColor.withValues(alpha: 0.2),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: accentColor.withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Icon(
+                                  leadingIcon,
+                                  color: accentColor,
+                                  size: 28,
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      title,
+                                      style: TextStyle(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.bold,
+                                        color: accentColor,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      subtitle,
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Icon(
+                                profile.isVerified ? Icons.check_circle : Icons.arrow_forward_ios,
+                                color: accentColor,
+                                size: 20,
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ),
+
 
               // Account Management (Change Password + Delete Account)
               Container(
@@ -1027,6 +1425,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   ],
                 ),
               ),
+
             ],
           );
         },

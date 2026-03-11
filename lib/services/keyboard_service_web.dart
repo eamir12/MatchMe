@@ -1,7 +1,8 @@
 // services/keyboard_service.dart
 // Service for handling keyboard navigation in web browsers
 
-import 'dart:html' as html; // ignore: deprecated_member_use,avoid_web_libraries_in_flutter
+import 'package:web/web.dart' as web;
+import 'dart:js_interop';
 import 'package:flutter/foundation.dart';
 
 class KeyboardService {
@@ -19,24 +20,26 @@ class KeyboardService {
     _isInitialized = true;
     
     // Add keyboard event listener for arrow key scrolling
-    html.document.addEventListener('keydown', _handleKeyDown);
+    web.window.document.addEventListener('keydown', _handleKeyDown.toJS);
     
     // Prevent default behavior for arrow keys when not in input fields
-    html.document.addEventListener('keydown', _preventDefaultInInputs);
+    web.window.document.addEventListener('keydown', _preventDefaultInInputs.toJS);
   }
 
-  void _handleKeyDown(html.Event event) {
-    final keyboardEvent = event as html.KeyboardEvent;
+  void _handleKeyDown(web.Event event) {
+    final keyboardEvent = event as web.KeyboardEvent;
     
     // Only handle scrolling when not in input fields
-    final target = keyboardEvent.target;
-    if (target is html.InputElement || 
-        target is html.TextAreaElement || 
-        target is html.SelectElement) {
-      return;
+    final target = keyboardEvent.target as web.Element?;
+    if (target != null) {
+      if (target.tagName.toLowerCase() == 'input' || 
+          target.tagName.toLowerCase() == 'textarea' || 
+          target.tagName.toLowerCase() == 'select') {
+        return;
+      }
     }
 
-    final docElement = html.document.documentElement;
+    final docElement = web.window.document.documentElement;
     if (docElement == null) return;
 
     // Handle arrow key scrolling
@@ -58,11 +61,11 @@ class KeyboardService {
         keyboardEvent.preventDefault();
         break;
       case 'PageDown':
-        docElement.scrollTop += ((html.window.innerHeight ?? 0) * 0.8).toInt();
+        docElement.scrollTop += ((web.window.innerHeight) * 0.8).toInt();
         keyboardEvent.preventDefault();
         break;
       case 'PageUp':
-        docElement.scrollTop -= ((html.window.innerHeight ?? 0) * 0.8).toInt();
+        docElement.scrollTop -= ((web.window.innerHeight) * 0.8).toInt();
         keyboardEvent.preventDefault();
         break;
       case 'Home':
@@ -76,30 +79,29 @@ class KeyboardService {
     }
   }
 
-  void _preventDefaultInInputs(html.Event event) {
-    final keyboardEvent = event as html.KeyboardEvent;
-    final target = keyboardEvent.target;
+  void _preventDefaultInInputs(web.Event event) {
+    final keyboardEvent = event as web.KeyboardEvent;
+    final target = keyboardEvent.target as web.Element?;
     
     // Prevent arrow key scrolling when focused on form elements
-    if (target is html.InputElement || 
-        target is html.TextAreaElement || 
-        target is html.SelectElement) {
-      if ((keyboardEvent.key?.startsWith('Arrow') ?? false) ||
-          keyboardEvent.key == 'PageUp' ||
-          keyboardEvent.key == 'PageDown' ||
-          keyboardEvent.key == 'Home' ||
-          keyboardEvent.key == 'End') {
-        // Let the default behavior happen for text navigation in inputs
-        return;
+    if (target != null) {
+      final tagName = target.tagName.toLowerCase();
+      if (tagName == 'input' || tagName == 'textarea' || tagName == 'select') {
+         if ((keyboardEvent.key.startsWith('Arrow')) ||
+            keyboardEvent.key == 'PageUp' ||
+            keyboardEvent.key == 'PageDown' ||
+            keyboardEvent.key == 'Home' ||
+            keyboardEvent.key == 'End') {
+          // Let the default behavior happen for text navigation in inputs
+          return;
+        }
       }
     }
   }
 
   void dispose() {
     if (!kIsWeb) return;
-    
-    html.document.removeEventListener('keydown', _handleKeyDown);
-    html.document.removeEventListener('keydown', _preventDefaultInInputs);
-    _isInitialized = false;
+    web.window.document.removeEventListener('keydown', _handleKeyDown.toJS);
+    web.window.document.removeEventListener('keydown', _preventDefaultInInputs.toJS);
   }
 }

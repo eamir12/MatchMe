@@ -1,0 +1,7 @@
+calendarSyncOutlookNotInstalled=Outlook is not installed on this device. You can still connect via Outlook Web to import your calendars.
+calendarSyncOutlookUseWeb=Connect Outlook via Web
+calendarSyncOutlookWebNote=If Outlook is not synced locally, sign in with your Outlook credentials and we will pull your calendars directly.
+calendarSyncOutlookDetected=Outlook app is installed but calendar sync is disabled
+calendarSyncOpenOutlookGuidance=Open Outlook app, go to Settings → Calendar → Sync calendars, then return here and refresh
+calendarSyncWaitForSync=Note: After enabling sync, it may take 30-60 seconds for calendars to appear. Wait a moment before clicking Retry.
+calendarSyncOpenOutlookSettings=Open Outlook App

@@ -6,7 +6,6 @@ import 'package:matchme/providers/main_intents_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../providers/new_options_provider.dart';
-import 'dart:developer' as developer;
 
 class GenderAgePreferencesScreen extends ConsumerStatefulWidget {
   const GenderAgePreferencesScreen({super.key});
@@ -44,8 +43,11 @@ class _GenderAgePreferencesScreenState extends ConsumerState<GenderAgePreference
       // Create UserProfile from the response
       _profile = UserProfile.fromMap(response);
       _initializePreferences(_profile!);
-    } catch (e) {
-      developer.log('Error loading profile data: $e');
+    } catch (e, st) {
+      FlutterError.reportError(
+        FlutterErrorDetails(exception: e, stack: st),
+      );
+      _profile = null;
     } finally {
       if (mounted) {
         setState(() => _isLoadingProfile = false);
@@ -155,23 +157,55 @@ class _GenderAgePreferencesScreenState extends ConsumerState<GenderAgePreference
                           Row(
                             children: [
                               Expanded(
-                                child: Text(
-                                  strictEnforcement ? l10n.getString('settingsStrictLabel') : l10n.getString('settingsFlexibleLabel'),
-                                  style: TextStyle(
+                                child: ChoiceChip(
+                                  label: Text(l10n.getString('settingsFlexibleLabel')),
+                                  selected: !strictEnforcement,
+                                  onSelected: (_) => _strictEnforcement.value = false,
+                                  selectedColor: Theme.of(context).colorScheme.secondary.withValues(alpha: 0.1),
+                                  labelStyle: TextStyle(
                                     fontSize: 14,
                                     fontWeight: FontWeight.w600,
-                                    color: Theme.of(context).colorScheme.onSurface,
+                                    color: !strictEnforcement
+                                        ? Theme.of(context).colorScheme.secondary
+                                        : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                  ),
+                                  backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+                                  shape: StadiumBorder(
+                                    side: BorderSide(
+                                      color: !strictEnforcement
+                                          ? Theme.of(context).colorScheme.secondary
+                                          : Theme.of(context).dividerColor,
+                                    ),
                                   ),
                                 ),
                               ),
-                              Switch(
-                                value: strictEnforcement,
-                                onChanged: (value) => _strictEnforcement.value = value,
-                                activeThumbColor: Theme.of(context).colorScheme.secondary,
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: ChoiceChip(
+                                  label: Text(l10n.getString('settingsStrictLabel')),
+                                  selected: strictEnforcement,
+                                  onSelected: (_) => _strictEnforcement.value = true,
+                                  selectedColor: Theme.of(context).colorScheme.secondary.withValues(alpha: 0.1),
+                                  labelStyle: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: strictEnforcement
+                                        ? Theme.of(context).colorScheme.secondary
+                                        : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                  ),
+                                  backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+                                  shape: StadiumBorder(
+                                    side: BorderSide(
+                                      color: strictEnforcement
+                                          ? Theme.of(context).colorScheme.secondary
+                                          : Theme.of(context).dividerColor,
+                                    ),
+                                  ),
+                                ),
                               ),
                             ],
                           ),
-                          const SizedBox(height: 6),
+                          const SizedBox(height: 10),
                           Text(
                             strictEnforcement ? l10n.getString('settingsStrictEnforcement') : l10n.getString('settingsPrioritizeEnforcement'),
                             style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurface.withValues(alpha:0.75)),

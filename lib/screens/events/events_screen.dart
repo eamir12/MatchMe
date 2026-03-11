@@ -1,21 +1,110 @@
 // lib/screens/events_screen.dart
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:ui' as ui;
 import 'package:intl/intl.dart';
 import 'package:matchme/models/event_model.dart';
+import 'package:matchme/providers/calendar_sync_provider.dart';
 import 'package:matchme/providers/event_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/screens/events/add_event_screen.dart'; // <-- CORRECTED PATH
 import 'package:matchme/screens/events/attendees_screen.dart'; // <-- CORRECTED PATH
+import 'package:matchme/screens/events/calendar_sync_screen.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/utils/string_extensions.dart';
+import 'package:matchme/utils/map_utils.dart';
+
+class EventsTab extends ConsumerStatefulWidget {
+  final GlobalKey<NavigatorState> navigatorKey;
+  const EventsTab({super.key, required this.navigatorKey});
+
+  @override
+  ConsumerState<EventsTab> createState() => _EventsTabState();
+}
+
+class _EventsTabState extends ConsumerState<EventsTab> {
+  @override
+  Widget build(BuildContext context) {
+    final pending = ref.watch(pendingEventTabRouteProvider);
+    if (pending != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        widget.navigatorKey.currentState?.pushNamed('/attendees', arguments: pending);
+        ref.read(pendingEventTabRouteProvider.notifier).clear();
+      });
+    }
+
+    final pendingShare = ref.watch(pendingAddEventShareProvider);
+    if (pendingShare != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        widget.navigatorKey.currentState?.pushNamed('/add', arguments: pendingShare);
+        ref.read(pendingAddEventShareProvider.notifier).clear();
+      });
+    }
+
+    return Navigator(
+      key: widget.navigatorKey,
+      initialRoute: '/',
+      onGenerateRoute: (settings) {
+        if (settings.name == '/' || settings.name == null) {
+          return MaterialPageRoute(
+            builder: (context) => EventsScreen(
+              showAppBar: false,
+              onAddEvent: () => Navigator.of(context).pushNamed('/add'),
+              onOpenEvent: (event) => Navigator.of(context).pushNamed('/attendees', arguments: event),
+            ),
+          );
+        }
+
+        if (settings.name == '/add') {
+          final args = settings.arguments;
+          String? sharedText;
+          String? sharedFilePath;
+          if (args is Map) {
+            final map = Map<String, dynamic>.from(args);
+            sharedText = (map['sharedText'] as String?)?.trim();
+            sharedFilePath = (map['sharedFilePath'] as String?)?.trim();
+          }
+
+          return MaterialPageRoute(
+            builder: (context) => AddEventScreen(
+              showAppBar: false,
+              initialSharedText: sharedText,
+              initialSharedFilePath: sharedFilePath,
+            ),
+          );
+        }
+
+        if (settings.name == '/attendees') {
+          final event = settings.arguments as EventModel;
+          return MaterialPageRoute(builder: (context) => AttendeesScreen(event: event, showAppBar: false));
+        }
+
+        if (settings.name == '/sync') {
+          final args = settings.arguments as CalendarProvider?;
+          return MaterialPageRoute(builder: (context) => CalendarSyncScreen(initialProvider: args));
+        }
+
+        return MaterialPageRoute(builder: (context) => EventsScreen(showAppBar: false));
+      },
+    );
+  }
+}
 
 class EventsScreen extends ConsumerWidget {
-  const EventsScreen({super.key});
+  final bool showAppBar;
+  final VoidCallback? onAddEvent;
+  final void Function(EventModel event)? onOpenEvent;
+
+  const EventsScreen({
+    super.key,
+    this.showAppBar = true,
+    this.onAddEvent,
+    this.onOpenEvent,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -29,59 +118,129 @@ class EventsScreen extends ConsumerWidget {
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(l10n.getString('eventsScreenTitle')),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.add_box_outlined),
-            tooltip: l10n.getString('eventAdd'),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const AddEventScreen()),
-              );
-            },
-          ),
-        ],
-      ),
+      appBar: showAppBar
+          ? AppBar(
+              title: Text(l10n.getString('eventsScreenTitle')),
+              actions: [
+                IconButton(
+                  icon: const Icon(Icons.add_box_outlined),
+                  tooltip: l10n.getString('eventAdd'),
+                  onPressed: () {
+                    final handler = onAddEvent;
+                    if (handler != null) {
+                      handler();
+                      return;
+                    }
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const AddEventScreen()),
+                    );
+                  },
+                ),
+              ],
+            )
+          : null,
       body: Column(
         children: [
           if (profileAsync.hasValue && profileAsync.value != null)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               color: Theme.of(context).scaffoldBackgroundColor,
-              child: Row(
+              child: Column(
                 children: [
-                  Expanded(
-                    child: Text(
-                      l10n.getString('settingsSharedEventMatching'),
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                        color: Theme.of(context).colorScheme.onSurface,
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          l10n.getString('settingsSharedEventMatching'),
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                            color: Theme.of(context).colorScheme.onSurface,
+                          ),
+                        ),
                       ),
-                    ),
+                      Switch(
+                        value: profileAsync.value!.sharedEventMatchingEnabled,
+                        onChanged: (value) async {
+                          try {
+                            await ref.read(profileEditProvider(userId).notifier).updateSharedEventMatching(value);
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text(l10n.getString('settingsSharedEventMatchingUpdated')), backgroundColor: Theme.of(context).colorScheme.primary),
+                              );
+                            }
+                          } catch (e) {
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('${l10n.getString('settingsSharedEventMatchingUpdateFailed')}: $e'), backgroundColor: Theme.of(context).colorScheme.error),
+                              );
+                            }
+                          }
+                        },
+                        activeThumbColor: Theme.of(context).colorScheme.secondary,
+                        activeTrackColor: Theme.of(context).colorScheme.secondary.withValues(alpha:0.3),
+                      ),
+                    ],
                   ),
-                  Switch(
-                    value: profileAsync.value!.sharedEventMatchingEnabled,
-                    onChanged: (value) async {
-                      try {
-                        await ref.read(profileEditProvider(userId).notifier).updateSharedEventMatching(value);
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text(l10n.getString('settingsSharedEventMatchingUpdated')), backgroundColor: Theme.of(context).colorScheme.primary),
-                          );
-                        }
-                      } catch (e) {
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('${l10n.getString('settingsSharedEventMatchingUpdateFailed')}: $e'), backgroundColor: Theme.of(context).colorScheme.error),
-                          );
-                        }
-                      }
-                    },
-                    activeThumbColor: Theme.of(context).colorScheme.secondary,
-                    activeTrackColor: Theme.of(context).colorScheme.secondary.withValues(alpha:0.3),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          l10n.getString('showPastEvents'),
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Theme.of(context).colorScheme.onSurface,
+                          ),
+                        ),
+                      ),
+                      // Use EventManager's notifier to persist the toggle and refresh the list
+                      Switch(
+                        value: ref.read(eventManagerProvider.notifier).showPastEvents,
+                        onChanged: (value) async {
+                          ref.read(eventManagerProvider.notifier).setShowPastEvents(value);
+                          await ref.read(eventManagerProvider.notifier).fetchUserEvents();
+                        },
+                        activeThumbColor: Theme.of(context).colorScheme.secondary,
+                        activeTrackColor: Theme.of(context).colorScheme.secondary.withValues(alpha:0.3),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () => Navigator.of(context).pushNamed('/sync', arguments: CalendarProvider.google),
+                          icon: const Icon(Icons.calendar_month),
+                          label: Text(l10n.getString('eventsImportGoogle')),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () async {
+                            if (kIsWeb) {
+                              final service = ref.read(calendarSyncServiceProvider);
+                              try {
+                                final token = await service.signInOutlook();
+                                if (token == null) return;
+                                if (!context.mounted) return;
+                              } catch (_) {
+                                return;
+                              }
+                            }
+                            Navigator.of(context).pushNamed(
+                              '/sync',
+                              arguments: CalendarProvider.outlook,
+                            );
+                          },
+                          icon: const Icon(Icons.mail_outline),
+                          label: Text(l10n.getString('eventsImportOutlook')),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -151,11 +310,14 @@ class EventsScreen extends ConsumerWidget {
   ],
 ),
       floatingActionButton: FloatingActionButton.extended(
+        heroTag: 'events_add_fab',
         onPressed: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (context) => const AddEventScreen()),
-          );
+          final handler = onAddEvent;
+          if (handler != null) {
+            handler();
+            return;
+          }
+          Navigator.push(context, MaterialPageRoute(builder: (context) => const AddEventScreen()));
         },
         tooltip: l10n.getString('eventAdd'),
         backgroundColor: Theme.of(context).colorScheme.primary,
@@ -170,7 +332,77 @@ class EventsScreen extends ConsumerWidget {
     );
   }
 
+  Widget _buildLocationRow(BuildContext context, WidgetRef ref, LocalizationState l10n, String label, String value) {
+    
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '$label:',
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w500,
+            color: Theme.of(context).colorScheme.onSurface.withValues(alpha:0.85),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            value,
+            style: TextStyle(
+              fontSize: 14,
+              color: Theme.of(context).colorScheme.onSurface.withValues(alpha:0.7),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  bool _isVirtualMeetingLocation(String raw) {
+    final s = raw.toLowerCase().trim();
+    if (s.isEmpty) {
+      return false;
+    }
+    if (s == 'online' || s == 'virtual') {
+      return true;
+    }
+    if (s.contains('http://') || s.contains('https://')) {
+      return true;
+    }
+    if (s.contains('zoom.us') || s.contains('zoom.com') || s.contains('zoom')) {
+      return true;
+    }
+    if (s.contains('meet.google.com') || s.contains('google meet')) {
+      return true;
+    }
+    if (s.contains('teams.microsoft.com') ||
+        s.contains('microsoft teams') ||
+        s.contains('ms teams')) {
+      return true;
+    }
+    if (s.contains('webex') ||
+        s.contains('gotomeeting') ||
+        s.contains('go to meeting') ||
+        s.contains('skype') ||
+        s.contains('hangouts') ||
+        s.contains('discord.gg') ||
+        s.contains('discord.com')) {
+      return true;
+    }
+    if (s.contains('online meeting') ||
+        s.contains('virtual meeting') ||
+        s.contains('video call') ||
+        s.contains('conference call')) {
+      return true;
+    }
+    return false;
+  }
+
   Widget _buildEventListItem(BuildContext context, WidgetRef ref, LocalizationState l10n, EventModel event) {
+    final venue = event.eventVenue?.trim();
+    final hasVenue = venue != null && venue.isNotEmpty;
+    final showMap = hasVenue && !_isVirtualMeetingLocation(venue);
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -188,10 +420,12 @@ class EventsScreen extends ConsumerWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
         onTap: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (context) => AttendeesScreen(event: event)),
-          );
+          final handler = onOpenEvent;
+          if (handler != null) {
+            handler(event);
+            return;
+          }
+          Navigator.push(context, MaterialPageRoute(builder: (context) => AttendeesScreen(event: event)));
         },
         child: Padding(
           padding: const EdgeInsets.all(20),
@@ -216,7 +450,7 @@ class EventsScreen extends ConsumerWidget {
                           textDirection: event.eventName.isRtl() ? ui.TextDirection.rtl : ui.TextDirection.ltr,
                         ),
                         const SizedBox(height: 8),
-                        _buildEventDetailRow(context, l10n.getString('eventLocationLabel'), event.eventVenue ?? l10n.getString('eventVenueNotSpecified')),
+                        _buildLocationRow(context, ref, l10n, l10n.getString('eventLocationLabel'), event.eventVenue ?? l10n.getString('eventVenueNotSpecified')),
                         const SizedBox(height: 4),
                         _buildEventDetailRow(context, l10n.getString('eventDateLabel'), _formatDateOnly(event.startTime, l10n)),
                         const SizedBox(height: 4),
@@ -253,6 +487,39 @@ class EventsScreen extends ConsumerWidget {
                               ),
                             ] else ...[
                               const Spacer(),
+                            ],
+                            if (showMap) ...[
+                              InkWell(
+                                onTap: () async {
+                                  final success = await openGoogleMaps(venue);
+                                  if (!success && context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(l10n.getString('errorCouldNotOpenMaps')),
+                                        backgroundColor: Colors.orange,
+                                      ),
+                                    );
+                                  }
+                                },
+                                borderRadius: BorderRadius.circular(8),
+                                child: Container(
+                                  padding: const EdgeInsets.all(8),
+                                  margin: const EdgeInsets.only(right: 8),
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                      color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
+                                      width: 1,
+                                    ),
+                                  ),
+                                  child: Icon(
+                                    Icons.map_outlined,
+                                    size: 20,
+                                    color: Theme.of(context).colorScheme.primary,
+                                  ),
+                                ),
+                              ),
                             ],
                             IconButton(
                               icon: Icon(Icons.delete_outline, color: Theme.of(context).colorScheme.error),
@@ -331,6 +598,7 @@ class EventsScreen extends ConsumerWidget {
       ],
     );
   }
+
 
   String _formatDateOnly(DateTime dateTime, LocalizationState l10n) {
     try {

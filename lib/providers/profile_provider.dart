@@ -6,19 +6,26 @@
 
 import 'dart:async';
 import 'dart:convert';
-
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
+import 'package:image/image.dart' as img;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/services/profile_request_service.dart';
 import 'package:matchme/services/storage_helper.dart';
+import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/models/subscription_tier.dart';
 import 'package:matchme/providers/visibility_provider.dart';
 import 'package:matchme/providers/new_options_provider.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/utils/resume_diagnostics.dart';
+import 'package:matchme/services/referral_service.dart';
+import 'package:matchme/providers/locale_provider.dart';
+import 'package:uuid/uuid.dart';
 
 part 'profile_provider.g.dart';
 
@@ -219,6 +226,7 @@ class UserProfile {
   final Map<String, List<String>> interests;
   final Map<String, List<String>> languagesKnown;
   final String subscriptionTier;
+  final DateTime? subscriptionExpiresAt;
   final bool isProfileComplete;
   final int matchRadiusDefault;
   final int gpsIntervalDefault;
@@ -236,6 +244,14 @@ class UserProfile {
   final String? bio; // short free-text bio (global)
   final List<String> photos; // ordered list of object paths or URLs (min 1, max 5)
 
+  // Verification fields
+  final bool isVerified;
+  final String verificationStatus;
+  final DateTime? verificationSubmittedAt;
+  final DateTime? verificationReviewedAt;
+  final String? referralCode;
+  final int credits;
+
   UserProfile({
     required this.id,
     required this.name,
@@ -249,6 +265,7 @@ class UserProfile {
     required this.interests,
     required this.languagesKnown,
     required this.subscriptionTier,
+    this.subscriptionExpiresAt,
     required this.isProfileComplete,
     required this.matchRadiusDefault,
     required this.gpsIntervalDefault,
@@ -261,6 +278,12 @@ class UserProfile {
     required this.strictGenderAgeEnforcement,
     this.bio,
     required this.photos,
+    this.isVerified = false,
+    this.verificationStatus = 'unverified',
+    this.verificationSubmittedAt,
+    this.verificationReviewedAt,
+    this.referralCode,
+    this.credits = 0,
   });
 
   factory UserProfile.fromMap(Map<String, dynamic> data) {
@@ -313,6 +336,62 @@ class UserProfile {
 
     final String? bioField = (data['bio'] ?? data['profile_bio'] ?? data['about'])?.toString();
 
+    // Parse verification fields
+    final bool isVerified = (data['is_verified'] ?? false) is bool
+        ? (data['is_verified'] ?? false) as bool
+        : (data['is_verified'] ?? false).toString().toLowerCase() == 'true';
+
+    final String verificationStatus = (data['verification_status'] ?? 'unverified').toString();
+
+    DateTime? verificationSubmittedAt;
+    if (data['verification_submitted_at'] != null) {
+      try {
+        verificationSubmittedAt = DateTime.tryParse(data['verification_submitted_at'].toString());
+      } catch (_) {
+        // Ignore invalid date
+      }
+    }
+
+    DateTime? verificationReviewedAt;
+    if (data['verification_reviewed_at'] != null) {
+      try {
+        verificationReviewedAt = DateTime.tryParse(data['verification_reviewed_at'].toString());
+      } catch (_) {
+        // Ignore invalid date
+      }
+    }
+
+    DateTime? parseOptionalDateTime(dynamic v) {
+      if (v == null) return null;
+      if (v is DateTime) return v;
+      final raw = v.toString().trim();
+      if (raw.isEmpty) return null;
+
+      DateTime? tryParse(String s) => DateTime.tryParse(s);
+
+      final direct = tryParse(raw);
+      if (direct != null) return direct;
+
+      var s = raw;
+      if (s.contains(' ') && !s.contains('T')) {
+        s = s.replaceFirst(' ', 'T');
+      }
+
+      final tzShort = RegExp(r'([+-]\d{2})$');
+      final tzNoColon = RegExp(r'([+-]\d{2})(\d{2})$');
+      if (tzNoColon.hasMatch(s)) {
+        s = s.replaceFirstMapped(tzNoColon, (m) => '${m.group(1)}:${m.group(2)}');
+      } else if (tzShort.hasMatch(s)) {
+        s = s.replaceFirstMapped(tzShort, (m) => '${m.group(1)}:00');
+      }
+
+      return tryParse(s);
+    }
+
+    final subscriptionExpiresAt = parseOptionalDateTime(
+      data['subscription_expires_at'] ?? data['subscriptionExpiresAt'],
+    );
+
     return UserProfile(
       id: data['id']?.toString() ?? '',
       name: data['name']?.toString() ?? 'Unnamed',
@@ -324,6 +403,7 @@ class UserProfile {
       interests: _mapOfLists(data['interests'] ?? data['profile_data']?['interests']),
       languagesKnown: languagesKnown,
       subscriptionTier: (data['subscription_tier'] ?? 'free').toString(),
+      subscriptionExpiresAt: subscriptionExpiresAt,
       // FIXED: normalize multiple possible keys for isProfileComplete
       isProfileComplete: (() {
         final raw = data['isProfileComplete'] ??
@@ -356,6 +436,12 @@ class UserProfile {
           : (data['strict_gender_age_enforcement'] ?? false).toString().toLowerCase() == 'true',
       bio: bioField,
       photos: photos,
+      isVerified: isVerified,
+      verificationStatus: verificationStatus,
+      verificationSubmittedAt: verificationSubmittedAt,
+      verificationReviewedAt: verificationReviewedAt,
+      referralCode: data['referral_code']?.toString(),
+      credits: (data['credits'] is int) ? data['credits'] : int.tryParse(data['credits']?.toString() ?? '0') ?? 0,
     );
   }
 
@@ -371,6 +457,7 @@ class UserProfile {
       'interests': interests,
       'languagesKnown': languagesKnown,
       'subscription_tier': subscriptionTier,
+      'subscription_expires_at': subscriptionExpiresAt?.toIso8601String(),
       'isProfileComplete': isProfileComplete,
       'match_radius_default': matchRadiusDefault,
       'gps_interval_default': gpsIntervalDefault,
@@ -383,6 +470,12 @@ class UserProfile {
       'strict_gender_age_enforcement': strictGenderAgeEnforcement,
       'bio': bio,
       'photos': photos,
+      'is_verified': isVerified,
+      'verification_status': verificationStatus,
+      'verification_submitted_at': verificationSubmittedAt?.toIso8601String(),
+      'verification_reviewed_at': verificationReviewedAt?.toIso8601String(),
+      'referral_code': referralCode,
+      'credits': credits,
     };
   }
 
@@ -405,6 +498,8 @@ class UserProfile {
       'strict_gender_age_enforcement': strictGenderAgeEnforcement,
       'bio': bio,
       'photos': photos, // persist ordered object paths (recommended)
+      'referral_code': referralCode,
+      'credits': credits,
     };
   }
 
@@ -446,6 +541,7 @@ class UserProfile {
     Map<String, List<String>>? interests,
     Map<String, List<String>>? languagesKnown,
     String? subscriptionTier,
+    DateTime? subscriptionExpiresAt,
     bool? isProfileComplete,
     int? matchRadiusDefault,
     int? gpsIntervalDefault,
@@ -458,6 +554,12 @@ class UserProfile {
     bool? strictGenderAgeEnforcement,
     String? bio,
     List<String>? photos,
+    bool? isVerified,
+    String? verificationStatus,
+    DateTime? verificationSubmittedAt,
+    DateTime? verificationReviewedAt,
+    String? referralCode,
+    int? credits,
   }) {
     Map<String, List<String>> cloneMap(Map<String, List<String>> src) =>
         Map<String, List<String>>.from(src.map((k, v) => MapEntry(k, List<String>.from(v))));
@@ -476,6 +578,7 @@ class UserProfile {
       interests: interests != null ? cloneMap(interests) : cloneMap(this.interests),
       languagesKnown: languagesKnown != null ? cloneMap(languagesKnown) : cloneMap(this.languagesKnown),
       subscriptionTier: subscriptionTier ?? this.subscriptionTier,
+      subscriptionExpiresAt: subscriptionExpiresAt ?? this.subscriptionExpiresAt,
       isProfileComplete: isProfileComplete ?? this.isProfileComplete,
       matchRadiusDefault: matchRadiusDefault ?? this.matchRadiusDefault,
       gpsIntervalDefault: gpsIntervalDefault ?? this.gpsIntervalDefault,
@@ -489,6 +592,12 @@ class UserProfile {
       strictGenderAgeEnforcement: strictGenderAgeEnforcement ?? this.strictGenderAgeEnforcement,
       bio: bio ?? this.bio,
       photos: photos != null ? List<String>.from(photos) : List<String>.from(this.photos),
+      isVerified: isVerified ?? this.isVerified,
+      verificationStatus: verificationStatus ?? this.verificationStatus,
+      verificationSubmittedAt: verificationSubmittedAt ?? this.verificationSubmittedAt,
+      verificationReviewedAt: verificationReviewedAt ?? this.verificationReviewedAt,
+      referralCode: referralCode ?? this.referralCode,
+      credits: credits ?? this.credits,
     );
   }
 }
@@ -541,6 +650,7 @@ class ProfileSyncService {
     // Columns we ideally want
     final baseColumns = <String>[
       'id',
+      'created_at',
       'name',
       'date_of_birth',
       'gender',
@@ -548,6 +658,7 @@ class ProfileSyncService {
       'active_modes',
       'languages_known',
       'subscription_tier',
+      'subscription_expires_at',
       'is_profile_complete',
       'match_radius_default',
       'gps_interval_default',
@@ -557,6 +668,13 @@ class ProfileSyncService {
       'editable_profile_fields',
       'bio',
       'photos',
+      'approved_primary_photos',
+      'is_verified',
+      'verification_status',
+      'verification_submitted_at',
+      'verification_reviewed_at',
+      'referral_code',
+      'credits',
     ];
 
     var columnsToTry = List<String>.from(baseColumns);
@@ -594,12 +712,12 @@ class ProfileSyncService {
   Future<void> syncProfile(String userId) async {
     if (userId.isEmpty) return;
 
-    ResumeDiagnostics.log('ProfileSyncService.syncProfile START for user=$userId');
+    debugPrint('ProfileSyncService.syncProfile START for user=$userId');
 
     // Avoid attempting sync when device is offline.
     final isOnline = ref.read(connectivityProvider).value ?? true;
     if (!isOnline) {
-      ResumeDiagnostics.log('ProfileSyncService.syncProfile SKIP offline for user=$userId');
+      debugPrint('ProfileSyncService.syncProfile SKIP offline for user=$userId');
       return;
     }
 
@@ -625,6 +743,96 @@ class ProfileSyncService {
           final List<dynamic> results = await Future.wait([userFuture, profilesFuture]);
           final userData = results[0] as Map<String, dynamic>?;
           final profileDataList = (results[1] as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+
+          // --- Trial Period Logic ---
+          if (userData != null && userData['created_at'] != null) {
+            debugPrint('🔍 [ProfileProvider] syncProfile fetched tier: ${userData['subscription_tier']}');
+            try {
+              final createdAt = DateTime.tryParse(userData['created_at'].toString());
+              if (createdAt != null) {
+                final appConfig = AppConfigService();
+                final trialDuration = await appConfig.getInt('subscription.trial_duration_hours', defaultValue: 0);
+                
+                if (trialDuration > 0) {
+                  final trialTier = await appConfig.getString('subscription.trial_tier_id', defaultValue: '');
+                  if (trialTier.isNotEmpty) {
+                    final trialEndUtc = createdAt.toUtc().add(Duration(hours: trialDuration));
+                    final nowUtc = DateTime.now().toUtc();
+                    if (nowUtc.isBefore(trialEndUtc)) {
+                      final currentTierId = (userData['subscription_tier'] ?? 'free').toString();
+
+                      int getSortOrder(String tierId) {
+                        if (tierId == 'free' || tierId.isEmpty) return 0;
+                        try {
+                          final tier = SubscriptionTier.fallbacks.firstWhere((t) => t.id == tierId);
+                          return tier.sortOrder;
+                        } catch (_) {
+                          return 0;
+                        }
+                      }
+
+                      final currentSort = getSortOrder(currentTierId);
+                      final trialSort = getSortOrder(trialTier);
+
+                      DateTime? currentExpiresAtUtc;
+                      final expRaw = userData['subscription_expires_at'];
+                      if (expRaw is DateTime) {
+                        currentExpiresAtUtc = expRaw.toUtc();
+                      } else if (expRaw != null) {
+                        final raw = expRaw.toString().trim();
+                        if (raw.isNotEmpty) {
+                          var s = raw;
+                          if (s.contains(' ') && !s.contains('T')) {
+                            s = s.replaceFirst(' ', 'T');
+                          }
+                          final tzShort = RegExp(r'([+-]\d{2})$');
+                          final tzNoColon = RegExp(r'([+-]\d{2})(\d{2})$');
+                          if (tzNoColon.hasMatch(s)) {
+                            s = s.replaceFirstMapped(tzNoColon, (m) => '${m.group(1)}:${m.group(2)}');
+                          } else if (tzShort.hasMatch(s)) {
+                            s = s.replaceFirstMapped(tzShort, (m) => '${m.group(1)}:00');
+                          }
+                          currentExpiresAtUtc = DateTime.tryParse(s)?.toUtc();
+                        }
+                      }
+                      final shouldPersistTrial = (trialSort > currentSort) ||
+                          (currentTierId == trialTier && currentExpiresAtUtc == null);
+
+                      if (shouldPersistTrial) {
+                        try {
+                          final dynamic rpcResult = await supabase.rpc(
+                            'apply_revenuecat_subscription',
+                            params: {
+                              'p_tier': trialTier,
+                              'p_expires_at': trialEndUtc.toIso8601String(),
+                            },
+                          );
+
+                          Map<String, dynamic>? result;
+                          if (rpcResult is Map) {
+                            result = Map<String, dynamic>.from(rpcResult);
+                          } else if (rpcResult is List && rpcResult.isNotEmpty && rpcResult.first is Map) {
+                            result = Map<String, dynamic>.from(rpcResult.first as Map);
+                          }
+
+                          if (result != null) {
+                            userData['subscription_tier'] = (result['subscription_tier'] ?? trialTier).toString();
+                            userData['subscription_expires_at'] = result['subscription_expires_at'];
+                          }
+                        } catch (e) {
+                          debugPrint('⚠️ [ProfileProvider] Trial persist failed: $e');
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              debugPrint('⚠️ [ProfileProvider] Error checking trial status: $e');
+            }
+          }
+          debugPrint('🔍 [ProfileProvider] Final tier to save: ${userData?['subscription_tier']}');
+          // --------------------------
 
           final attemptDuration = DateTime.now().difference(startAttempt).inMilliseconds;
           ResumeDiagnostics.log('ProfileSyncService.syncProfile attempt $attempt completed in ${attemptDuration}ms for user=$userId');
@@ -690,10 +898,39 @@ class ProfileSyncService {
           final editableFieldsDynamic = userData['editable_profile_fields'];
           final editableFields = _toStringList(editableFieldsDynamic);
 
+          DateTime? parseOptionalDateTime(dynamic v) {
+            if (v == null) return null;
+            if (v is DateTime) return v;
+            final raw = v.toString().trim();
+            if (raw.isEmpty) return null;
+
+            DateTime? tryParse(String s) => DateTime.tryParse(s);
+
+            final direct = tryParse(raw);
+            if (direct != null) return direct;
+
+            var s = raw;
+            if (s.contains(' ') && !s.contains('T')) {
+              s = s.replaceFirst(' ', 'T');
+            }
+
+            final tzShort = RegExp(r'([+-]\d{2})$');
+            final tzNoColon = RegExp(r'([+-]\d{2})(\d{2})$');
+            if (tzNoColon.hasMatch(s)) {
+              s = s.replaceFirstMapped(
+                tzNoColon,
+                (m) => '${m.group(1)}:${m.group(2)}',
+              );
+            } else if (tzShort.hasMatch(s)) {
+              s = s.replaceFirstMapped(tzShort, (m) => '${m.group(1)}:00');
+            }
+
+            return tryParse(s);
+          }
+
           final profile = UserProfile(
             id: userData['id']?.toString() ?? '',
-            // Mask name to prevent storing full last name locally
-            name: maskName(userData['name']?.toString()),
+            name: userData['name']?.toString() ?? 'Unnamed',
             // Normalize DOB to date-only to avoid timezone shifts that can change the day
             dateOfBirth: (() {
               if (userData['date_of_birth'] == null) return null;
@@ -710,6 +947,7 @@ class ProfileSyncService {
             interests: processedInterests,
             languagesKnown: _mapOfLists(userData['languages_known'] ?? userData['languages_known']),
             subscriptionTier: (userData['subscription_tier'] ?? 'free').toString(),
+            subscriptionExpiresAt: parseOptionalDateTime(userData['subscription_expires_at']),
             isProfileComplete: (userData['is_profile_complete'] ?? false) is bool
                 ? (userData['is_profile_complete'] ?? false) as bool
                 : (userData['is_profile_complete'] ?? false).toString().toLowerCase() == 'true',
@@ -735,15 +973,39 @@ class ProfileSyncService {
                 ? (userData['strict_gender_age_enforcement'] ?? false) as bool
                 : (userData['strict_gender_age_enforcement'] ?? false).toString().toLowerCase() == 'true',
             bio: userData['bio']?.toString(),
+            isVerified: (userData['is_verified'] ?? false) is bool
+                ? (userData['is_verified'] ?? false) as bool
+                : (userData['is_verified'] ?? false).toString().toLowerCase() == 'true',
+            verificationStatus: (userData['verification_status'] ?? 'unverified').toString(),
+            verificationSubmittedAt: userData['verification_submitted_at'] != null
+                ? DateTime.tryParse(userData['verification_submitted_at'].toString())
+                : null,
+            verificationReviewedAt: userData['verification_reviewed_at'] != null
+                ? DateTime.tryParse(userData['verification_reviewed_at'].toString())
+                : null,
             photos: _toStringList(userData['photos']),
           );
 
           final localDb = ref.read(localDbProvider);
-          await localDb.saveLocalProfile(userId, profile.toMap());
+          final approvedPrimaryPhotos = _toStringList(userData['approved_primary_photos']).toSet();
+          await localDb.setApprovedPrimaryPhotos(userId, approvedPrimaryPhotos);
+          final previousMap = await localDb.getLocalProfile(userId);
+          final previousPhotos = previousMap != null ? _toStringList(previousMap['photos']) : <String>[];
+          final newPhotos = profile.photos;
+          if (!listEquals(previousPhotos, newPhotos)) {
+            final allPhotos = <String>{...previousPhotos, ...newPhotos};
+            for (final path in allPhotos) {
+              if (path.isEmpty) continue;
+              StorageHelper.evictImageCache(path);
+            }
+          }
+          final localMap = profile.toMap();
+          localMap['_cached_at'] = DateTime.now().toIso8601String();
+          await localDb.saveLocalProfile(userId, localMap);
 
           // Success — exit retry loop
           final totalDuration = DateTime.now().difference(startAll).inMilliseconds;
-          ResumeDiagnostics.log('ProfileSyncService.syncProfile SUCCESS for user=$userId total=${totalDuration}ms');
+          debugPrint('ProfileSyncService.syncProfile SUCCESS for user=$userId total=${totalDuration}ms');
           break;
         } catch (e) {
           final msg = e.toString().toLowerCase();
@@ -774,7 +1036,101 @@ class ProfileSyncService {
 
 final profileSyncProvider = Provider((ref) => ProfileSyncService(ref));
 
+class BasicFieldAdminReview {
+  final String id;
+  final String status;
+  final String reviewerNote;
+  final DateTime? reviewedAt;
+  final DateTime? updatedAt;
+  final DateTime? userSeenAt;
+
+  const BasicFieldAdminReview({
+    required this.id,
+    required this.status,
+    required this.reviewerNote,
+    required this.reviewedAt,
+    required this.updatedAt,
+    required this.userSeenAt,
+  });
+
+  static DateTime? _tryDate(dynamic v) {
+    if (v == null) return null;
+    if (v is DateTime) return v;
+    return DateTime.tryParse(v.toString());
+  }
+
+  factory BasicFieldAdminReview.fromMap(Map<String, dynamic> row) {
+    return BasicFieldAdminReview(
+      id: (row['id'] ?? '').toString(),
+      status: (row['status'] ?? 'pending').toString(),
+      reviewerNote: (row['reviewer_note'] ?? '').toString(),
+      reviewedAt: _tryDate(row['reviewed_at']),
+      updatedAt: _tryDate(row['updated_at']),
+      userSeenAt: _tryDate(row['user_seen_at']),
+    );
+  }
+}
+
+final basicFieldAdminReviewsProvider =
+    StreamProvider.family<Map<String, BasicFieldAdminReview>, String>((ref, userId) {
+  List<String> toStringList(dynamic v) {
+    if (v == null) return const [];
+    if (v is List) return v.map((e) => e.toString()).where((s) => s.trim().isNotEmpty).toList(growable: false);
+    return const [];
+  }
+
+  final stream = supabase
+      .from('profile_edit_requests')
+      .stream(primaryKey: const ['id'])
+      .eq('user_id', userId)
+      .order('updated_at', ascending: false);
+
+  return stream.map((rows) {
+    final keys = const ['name', 'date_of_birth', 'gender'];
+    final out = <String, BasicFieldAdminReview>{};
+    final latestAt = <String, DateTime>{};
+
+    for (final raw in rows) {
+      final row = Map<String, dynamic>.from(raw);
+      final requested = toStringList(row['requested_fields']);
+      if (requested.isEmpty) continue;
+      final review = BasicFieldAdminReview.fromMap(row);
+      if (review.status != 'pending' && review.status != 'approved' && review.status != 'rejected') continue;
+      final when = review.updatedAt ?? review.reviewedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+      for (final k in keys) {
+        if (!requested.contains(k)) continue;
+        final prev = latestAt[k];
+        if (prev == null || when.isAfter(prev)) {
+          latestAt[k] = when;
+          out[k] = review;
+        }
+      }
+    }
+
+    return out;
+  });
+});
+
 /// --- userProfileProvider ---------------------------------------------------
+final Map<String, DateTime> _profileSyncAttemptAt = {};
+final Map<String, DateTime> _otherUserProfileRefreshAttemptAt = {};
+
+bool _shouldAttemptProfileSync(String userId, Duration minInterval) {
+  final now = DateTime.now();
+  final last = _profileSyncAttemptAt[userId];
+  if (last != null && now.difference(last) < minInterval) return false;
+  _profileSyncAttemptAt[userId] = now;
+  return true;
+}
+
+bool _shouldAttemptOtherUserProfileRefresh(String userId, Duration minInterval) {
+  final now = DateTime.now();
+  final last = _otherUserProfileRefreshAttemptAt[userId];
+  if (last != null && now.difference(last) < minInterval) return false;
+  _otherUserProfileRefreshAttemptAt[userId] = now;
+  return true;
+}
+
 final userProfileProvider = StreamProvider.family<UserProfile?, String>((ref, userId) {
   final localDb = ref.watch(localDbProvider);
 
@@ -787,14 +1143,167 @@ final userProfileProvider = StreamProvider.family<UserProfile?, String>((ref, us
   return localStream.map((localProfileMap) {
     if (localProfileMap == null) {
       unawaited(() {
-        ResumeDiagnostics.log('userProfileProvider triggered syncProfile for user=$userId');
+        debugPrint('[ProfileProvider] userProfileProvider triggered syncProfile for user=$userId');
         return ref.read(profileSyncProvider).syncProfile(userId);
       }());
       return null;
     }
-    ResumeDiagnostics.log('userProfileProvider has local data for user=$userId');
+    debugPrint('[ProfileProvider] userProfileProvider has local data for user=$userId');
+
+    final hasSubscriptionExpiryFields = localProfileMap.containsKey('subscription_expires_at') ||
+        localProfileMap.containsKey('subscriptionExpiresAt');
+    if (!hasSubscriptionExpiryFields) {
+      unawaited(() {
+        debugPrint('[ProfileProvider] userProfileProvider missing subscription expiry fields; syncing for user=$userId');
+        return ref.read(profileSyncProvider).syncProfile(userId);
+      }());
+    }
+
+    final currentUserId = supabase.auth.currentUser?.id;
+    final isOtherUser = currentUserId != null && currentUserId.isNotEmpty && currentUserId != userId;
+    if (isOtherUser) {
+      DateTime? cachedAt;
+      final rawCachedAt = localProfileMap['_cached_at'] ?? localProfileMap['cached_at'];
+      if (rawCachedAt != null) {
+        cachedAt = DateTime.tryParse(rawCachedAt.toString());
+      }
+      final isStale = cachedAt == null || DateTime.now().difference(cachedAt) > const Duration(minutes: 1);
+      if (isStale && _shouldAttemptProfileSync(userId, const Duration(seconds: 30))) {
+        unawaited(() {
+          debugPrint('[ProfileProvider] userProfileProvider stale other-user cache; syncing for user=$userId');
+          return ref.read(profileSyncProvider).syncProfile(userId);
+        }());
+      }
+    }
+
     return UserProfile.fromMap(localProfileMap);
   });
+});
+
+/// --- otherUserProfileProvider ----------------------------------------------
+/// Fetches and caches other users' profiles for better performance
+final otherUserProfileProvider = FutureProvider.family<UserProfile?, String>((ref, userId) async {
+  if (userId.isEmpty) return null;
+
+  final localDb = ref.read(localDbProvider);
+
+  try {
+    // Try cached profile first
+    final cachedProfileWithMeta = await localDb.getOtherUserProfileWithCacheMeta(userId);
+    if (cachedProfileWithMeta != null) {
+      if (kIsWeb) {
+        debugPrint('🔍 [WEB] otherUserProfileProvider - Using cached profile for: $userId');
+      }
+      DateTime? cachedAt;
+      final rawCachedAt = cachedProfileWithMeta['cached_at'];
+      if (rawCachedAt != null) {
+        cachedAt = DateTime.tryParse(rawCachedAt.toString());
+      }
+
+      final clean = Map<String, dynamic>.from(cachedProfileWithMeta)..remove('cached_at');
+      final cached = UserProfile.fromMap(clean);
+
+      final isStale = cachedAt == null || DateTime.now().difference(cachedAt) > const Duration(minutes: 1);
+      if (isStale && _shouldAttemptOtherUserProfileRefresh(userId, const Duration(seconds: 30))) {
+        unawaited(() async {
+          try {
+            final profileResponses = await supabase
+                .from('user_profiles')
+                .select('*')
+                .eq('user_id', userId)
+                .order('created_at', ascending: false)
+                .limit(1);
+
+            Map<String, dynamic> profileRow = {};
+            if (profileResponses.isNotEmpty) {
+              profileRow = Map<String, dynamic>.from(profileResponses.first as Map);
+            }
+
+            final userRow = await supabase
+                .from('users')
+                .select('id,name,date_of_birth,gender,preferred_language,active_modes,languages_known,subscription_tier,subscription_expires_at,is_profile_complete,match_radius_default,gps_interval_default,smart_gps_throttling_enabled,shared_event_matching_enabled,shared_movement_matching_enabled,editable_profile_fields,bio,photos,approved_primary_photos,is_verified,verification_status,verification_submitted_at,verification_reviewed_at,referral_code,credits')
+                .eq('id', userId)
+                .maybeSingle();
+            if (userRow == null) return;
+
+            final response = <String, dynamic>{...userRow, ...profileRow};
+            await localDb.saveOtherUserProfile(userId, response);
+            if (ref.mounted) {
+              ref.invalidateSelf();
+            }
+          } catch (_) {}
+        }());
+      }
+
+      return cached;
+    }
+
+    if (kIsWeb) {
+      debugPrint('🔍 [WEB] otherUserProfileProvider - Fetching fresh profile for: $userId');
+    }
+
+    // Fetch from Supabase - get both profile and user data
+    // Handle case where there might be multiple profiles for a user (take the most recent)
+    final profileResponses = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', ascending: false)
+        .limit(1);
+
+    if (profileResponses.isEmpty) {
+      // No aggregated profile row found; attempt to fetch the user record directly
+      final userResponseOnly = await supabase
+          .from('users')
+          .select('id, name, photos')
+          .eq('id', userId)
+          .maybeSingle();
+
+      if (userResponseOnly == null) {
+        throw Exception('No profile or user found for user $userId');
+      }
+
+      // Build a minimal response so UserProfile.fromMap can construct a usable object
+      final minimalResponse = {
+        'profile_data': {},
+        'users': userResponseOnly,
+      };
+
+      final userProfile = UserProfile.fromMap(minimalResponse);
+      await localDb.saveOtherUserProfile(userId, minimalResponse);
+      return userProfile;
+    }
+
+    final profileResponse = profileResponses.first;
+
+    final userResponse = await supabase
+        .from('users')
+        .select('id, name, photos')
+        .eq('id', userId)
+        .single();
+
+    // Combine the data
+    // Merge the user row fields at top-level so UserProfile.fromMap can find photos, name, languages etc.
+    final response = {
+      ...profileResponse,
+      ...Map<String, dynamic>.from(userResponse),
+      // Keep the original user_profiles' profile_data nested so intent-specific interests remain available
+    };
+
+    // Debug: log available keys to help diagnose missing fields in the UI
+    try {
+      debugPrint('🔍 otherUserProfileProvider response keys for $userId: ${response.keys.toList()}');
+    } catch (_) {}
+
+    // Convert to UserProfile format and cache
+    final userProfile = UserProfile.fromMap(response);
+    await localDb.saveOtherUserProfile(userId, response);
+
+    return userProfile;
+  } catch (e) {
+    debugPrint('Error fetching other user profile for $userId: $e');
+    return null;
+  }
 });
 
 /// --- specificProfileProvider ----------------------------------------------
@@ -841,52 +1350,319 @@ final specificProfileProvider = FutureProvider.family<IntentProfileData?, Map<St
 /// ---------------------------------------------------------------------------
 @riverpod
 class ProfileEditNotifier extends _$ProfileEditNotifier {
+  final Set<String> _wizardUploadedPhotoPaths = <String>{};
+
   @override
   AsyncValue<UserProfile?> build(String userId) {
     return const AsyncLoading();
   }
 
-  Future<void> loadInitialProfile() async {
+  Future<void> _cleanupWizardUploadedPhotosNotIn(Set<String> keep) async {
+    final toDelete = _wizardUploadedPhotoPaths.where((p) => p.isNotEmpty && !keep.contains(p)).toList();
+    for (final path in toDelete) {
+      try {
+        await _deleteStorageObject(path);
+      } catch (_) {}
+      StorageHelper.evict(path);
+      _wizardUploadedPhotoPaths.remove(path);
+    }
+  }
+
+  Future<Set<String>> _fetchApprovedPrimaryPhotosFromSupabase() async {
+    try {
+      final resp = await supabase
+          .from('users')
+          .select('approved_primary_photos')
+          .eq('id', userId)
+          .maybeSingle();
+      if (resp == null) return <String>{};
+      return _toStringList(resp['approved_primary_photos']).toSet();
+    } catch (_) {
+      return <String>{};
+    }
+  }
+
+  Future<String> _sanitizePrimaryPhoto({
+    required String photoPath,
+    required Map<String, dynamic> faceBox,
+    required List<Map<String, dynamic>> textBoxes,
+  }) async {
+    String? signed;
+    try {
+      signed = await StorageHelper.getSignedUrl(photoPath, ttlSeconds: 600);
+    } catch (_) {
+      signed = null;
+    }
+    if (signed == null || signed.isEmpty) {
+      throw Exception('Failed to download photo.');
+    }
+
+    final resp = await http.get(Uri.parse(signed));
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      throw Exception('Failed to download photo.');
+    }
+    final bytes = resp.bodyBytes;
+
+    var decoded = img.decodeImage(bytes);
+    if (decoded == null) {
+      throw Exception('Failed to decode photo.');
+    }
+    decoded = img.bakeOrientation(decoded);
+
+    double toD(dynamic v) {
+      if (v is num) return v.toDouble();
+      if (v is String) return double.tryParse(v) ?? 0;
+      return 0;
+    }
+
+    final fx = toD(faceBox['x']).clamp(0, 1);
+    final fy = toD(faceBox['y']).clamp(0, 1);
+    final fw = toD(faceBox['w']).clamp(0, 1);
+    final fh = toD(faceBox['h']).clamp(0, 1);
+
+    final wPx = decoded.width.toDouble();
+    final hPx = decoded.height.toDouble();
+    final faceW = fw * wPx;
+    final faceH = fh * hPx;
+    final cx = (fx * wPx) + faceW / 2;
+    final cy = (fy * hPx) + faceH / 2;
+
+    final target = math.max(faceW, faceH) * 2.0;
+    final minTarget = math.min(wPx, hPx) * 0.45;
+    final cropSize = math.max(target, minTarget);
+
+    var cropLeft = (cx - cropSize / 2).round();
+    var cropTop = (cy - cropSize / 2).round();
+    var cropW = cropSize.round();
+    var cropH = cropSize.round();
+
+    if (cropW > decoded.width) cropW = decoded.width;
+    if (cropH > decoded.height) cropH = decoded.height;
+    if (cropLeft < 0) cropLeft = 0;
+    if (cropTop < 0) cropTop = 0;
+    if (cropLeft + cropW > decoded.width) cropLeft = decoded.width - cropW;
+    if (cropTop + cropH > decoded.height) cropTop = decoded.height - cropH;
+
+    var cropped = img.copyCrop(
+      decoded,
+      x: cropLeft,
+      y: cropTop,
+      width: cropW,
+      height: cropH,
+    );
+
+    for (final tb in textBoxes) {
+      final tx = toD(tb['x']).clamp(0, 1);
+      final ty = toD(tb['y']).clamp(0, 1);
+      final tw = toD(tb['w']).clamp(0, 1);
+      final th = toD(tb['h']).clamp(0, 1);
+      if (tw <= 0 || th <= 0) continue;
+
+      final left = (tx * wPx).round();
+      final top = (ty * hPx).round();
+      final width = (tw * wPx).round();
+      final height = (th * hPx).round();
+
+      final interLeft = math.max(left, cropLeft);
+      final interTop = math.max(top, cropTop);
+      final interRight = math.min(left + width, cropLeft + cropW);
+      final interBottom = math.min(top + height, cropTop + cropH);
+      final interW = interRight - interLeft;
+      final interH = interBottom - interTop;
+      if (interW <= 2 || interH <= 2) continue;
+
+      final rx = interLeft - cropLeft;
+      final ry = interTop - cropTop;
+      final rw = interW;
+      final rh = interH;
+
+      final region = img.copyCrop(cropped, x: rx, y: ry, width: rw, height: rh);
+      final downW = math.max(1, (rw / 10).round());
+      final downH = math.max(1, (rh / 10).round());
+      final down = img.copyResize(
+        region,
+        width: downW,
+        height: downH,
+        interpolation: img.Interpolation.average,
+      );
+      final up = img.copyResize(
+        down,
+        width: rw,
+        height: rh,
+        interpolation: img.Interpolation.nearest,
+      );
+      img.compositeImage(cropped, up, dstX: rx, dstY: ry, blend: img.BlendMode.direct);
+    }
+
+    final outBytes = Uint8List.fromList(img.encodeJpg(cropped, quality: 90));
+
+    final uploader = ref.read(profileEditRequestServiceProvider);
+    final uuid = const Uuid().v4();
+    final newPath = '$userId/${DateTime.now().millisecondsSinceEpoch}_clean_$uuid.jpg';
+    final uploaded = await uploader.uploadBytesToStorage(newPath, outBytes, public: false);
+    if (uploaded == null || uploaded.isEmpty) {
+      throw Exception('Photo upload failed.');
+    }
+
+    try {
+      await _deleteStorageObject(photoPath);
+    } catch (_) {}
+
+    _wizardUploadedPhotoPaths.remove(photoPath);
+    _wizardUploadedPhotoPaths.add(uploaded);
+
+    StorageHelper.evict(photoPath);
+    StorageHelper.evict(uploaded);
+    return uploaded;
+  }
+
+  Future<String> _ensurePrimaryPhotoAllowed(String photoPath, {int sanitizePass = 0}) async {
+    try {
+      final localDb = ref.read(localDbProvider);
+      var approved = await localDb.loadApprovedPrimaryPhotos(userId);
+      if (!approved.contains(photoPath)) {
+        final remoteApproved = await _fetchApprovedPrimaryPhotosFromSupabase();
+        if (remoteApproved.isNotEmpty) {
+          approved = {...approved, ...remoteApproved};
+          await localDb.setApprovedPrimaryPhotos(userId, approved);
+        }
+      }
+      if (approved.contains(photoPath)) return photoPath;
+
+      final resp = await Supabase.instance.client.functions.invoke(
+        'validate-primary-photo',
+        body: {'photoPath': photoPath},
+      );
+
+      if (resp.status != 200) {
+        final locale = ref.read(localizationProvider);
+        throw Exception(locale.getString('primaryPhotoVerificationErrorSystem'));
+      }
+
+      dynamic data = resp.data;
+      if (data is String && data.trim().isNotEmpty) {
+        try {
+          data = jsonDecode(data);
+        } catch (_) {}
+      }
+
+      final allow = data is Map && data['allow'] == true;
+      final reasonCode = data is Map && data['reasonCode'] is String ? data['reasonCode'] as String : null;
+      final action = data is Map && data['action'] is String ? (data['action'] as String) : null;
+
+      if (action == 'SANITIZE' && !allow) {
+        if (sanitizePass >= 1) {
+          final locale = ref.read(localizationProvider);
+          throw Exception(locale.getString('primaryPhotoVerificationErrorBadContent'));
+        }
+
+        final faceBox = data is Map && data['faceBox'] is Map ? Map<String, dynamic>.from(data['faceBox'] as Map) : null;
+        final textBoxes = data is Map && data['textBoxes'] is List
+            ? (data['textBoxes'] as List).whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList()
+            : <Map<String, dynamic>>[];
+
+        if (faceBox == null || faceBox.isEmpty) {
+          final locale = ref.read(localizationProvider);
+          throw Exception(locale.getString('primaryPhotoVerificationErrorGeneral'));
+        }
+
+        String sanitizedPath;
+        try {
+          sanitizedPath = await _sanitizePrimaryPhoto(
+            photoPath: photoPath,
+            faceBox: faceBox,
+            textBoxes: textBoxes,
+          );
+        } catch (_) {
+          final locale = ref.read(localizationProvider);
+          throw Exception(locale.getString('primaryPhotoVerificationErrorSystem'));
+        }
+
+        return await _ensurePrimaryPhotoAllowed(sanitizedPath, sanitizePass: sanitizePass + 1);
+      }
+      
+      if (!allow) {
+        final locale = ref.read(localizationProvider);
+        String errorMessage;
+        
+        switch (reasonCode) {
+          case 'NO_PERSON':
+            errorMessage = locale.getString('primaryPhotoVerificationErrorNoPerson');
+            break;
+          case 'FACE_NOT_VISIBLE':
+            errorMessage = locale.getString('primaryPhotoVerificationErrorFaceNotVisible');
+            break;
+          case 'BAD_CONTENT':
+            errorMessage = locale.getString('primaryPhotoVerificationErrorBadContent');
+            break;
+          case 'MULTIPLE_PEOPLE':
+            errorMessage = locale.getString('primaryPhotoVerificationErrorMultipleFaces');
+            break;
+          case 'BODY_SHOT':
+            errorMessage = locale.getString('primaryPhotoVerificationErrorBodyNotAllowed');
+            break;
+          case 'GENERAL_ERROR':
+          default:
+             // If we have a message from backend, we could use it, but user wants localized.
+             // If reasonCode is missing (old backend), fall back to general error.
+             errorMessage = locale.getString('primaryPhotoVerificationErrorGeneral');
+             break;
+        }
+        
+        // If the key was missing in translations, locale.getString returns the key or default.
+        // We should ensure these keys have defaults in LocaleProvider or in the DB.
+        
+        throw Exception(errorMessage);
+      }
+      approved.add(photoPath);
+      await localDb.setApprovedPrimaryPhotos(userId, approved);
+      return photoPath;
+    } catch (e) {
+      if (e is Exception) rethrow;
+      final locale = ref.read(localizationProvider);
+      throw Exception(locale.getString('primaryPhotoVerificationErrorSystem'));
+    }
+  }
+
+  Future<void> ensurePrimaryPhotoAllowedForWizard(String photoPath) async {
+    final finalPath = await _ensurePrimaryPhotoAllowed(photoPath);
+    if (finalPath == photoPath) return;
+    final current = state.value;
+    if (current == null) return;
+    final photos = List<String>.from(current.photos);
+    final idx = photos.indexOf(photoPath);
+    if (idx < 0) return;
+    photos[idx] = finalPath;
+    state = AsyncData(current.copyWith(photos: photos));
+    await saveWizardDraft();
+  }
+
+  Future<void> loadInitialProfile({bool applyWizardDraft = false}) async {
     try {
       // Always reload fresh data to ensure we have the latest from server
       state = const AsyncLoading();
       final initialProfile = await ref.read(userProfileProvider(userId).future);
       if (initialProfile != null) {
         state = AsyncData(initialProfile.copyWith());
-        // Pre-warm signed URLs cache for profile photos so image widgets
-        // (SignedImage) can resolve cached signed URLs immediately and
-        // begin loading images without waiting for per-widget signing calls.
-        unawaited(Future.microtask(() async {
-          try {
-            for (final src in initialProfile.photos) {
-              if (src.isEmpty) continue;
-              // Request a signed URL (StorageHelper will cache the result).
-              try {
-                await StorageHelper.getSignedUrl(src);
-              } catch (_) {
-                // Ignore cache errors
-              }
-            }
-          } catch (_) {
-            // Ignore cache errors
-          }
-        }));
+        if (applyWizardDraft) {
+          await _applyWizardDraftIfPresent();
+        }
+        final p = state.value;
+        if (p != null) {
+          unawaited(_prewarmSignedUrls(p.photos));
+        }
       } else {
         await ref.read(profileSyncProvider).syncProfile(userId);
         final reloaded = await ref.read(userProfileProvider(userId).future);
         if (reloaded != null) {
           state = AsyncData(reloaded.copyWith());
-          // Pre-warm signed URLs cache for profile photos (from reloaded profile)
-          unawaited(Future.microtask(() async {
-            try {
-              for (final src in reloaded.photos) {
-                if (src.isEmpty) continue;
-                try {
-                  await StorageHelper.getSignedUrl(src);
-                } catch (_) {}
-              }
-            } catch (_) {}
-          }));
+          if (applyWizardDraft) {
+            await _applyWizardDraftIfPresent();
+          }
+          final p = state.value;
+          if (p != null) {
+            unawaited(_prewarmSignedUrls(p.photos));
+          }
         } else {
           // Create default profile for new user
           final defaultProfile = UserProfile(
@@ -925,10 +1701,110 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     }
   }
 
-  bool _canEditField(String fieldKey) {
-    final profile = state.value;
-    if (profile == null) return false;
-    return profile.editableProfileFields.contains(fieldKey) || !profile.isProfileComplete;
+  Future<void> saveWizardDraft() async {
+    final p = state.value;
+    if (p == null) return;
+    final localDb = ref.read(localDbProvider);
+    final draftData = p.toMap();
+    draftData['_wizard_uploaded_photo_paths'] = _wizardUploadedPhotoPaths.toList();
+    await localDb.saveProfileWizardDraft(userId, draftData);
+  }
+
+  Future<void> clearWizardDraft() async {
+    final localDb = ref.read(localDbProvider);
+    final current = state.value;
+    final keep = current == null ? const <String>{} : current.photos.toSet();
+    final toDelete = _wizardUploadedPhotoPaths.where((p) => p.isNotEmpty && !keep.contains(p)).toList();
+    for (final path in toDelete) {
+      try {
+        await _deleteStorageObject(path);
+      } catch (_) {}
+      StorageHelper.evict(path);
+      _wizardUploadedPhotoPaths.remove(path);
+    }
+    _wizardUploadedPhotoPaths.clear();
+    await localDb.clearProfileWizardDraft(userId);
+  }
+
+  Future<void> _applyWizardDraftIfPresent() async {
+    final localDb = ref.read(localDbProvider);
+    final draft = await localDb.loadProfileWizardDraft(userId);
+    if (draft == null) return;
+    final normalized = Map<String, dynamic>.from(draft);
+    normalized['id'] = userId;
+    _wizardUploadedPhotoPaths
+      ..clear()
+      ..addAll(_toStringList(draft['_wizard_uploaded_photo_paths']));
+    final draftProfile = UserProfile.fromMap(normalized);
+    final base = state.value;
+    if (base == null) {
+      state = AsyncData(draftProfile.copyWith());
+      return;
+    }
+
+    String photoId(String src) => StorageHelper.cacheKeyForSource(src);
+
+    final baseIds = base.photos.map(photoId).where((s) => s.isNotEmpty).toList();
+    final draftIds = draftProfile.photos.map(photoId).where((s) => s.isNotEmpty).toList();
+
+    final baseIdSet = baseIds.toSet();
+    final draftIdSet = draftIds.toSet();
+
+    final keptBase = <String>[];
+    for (final p in base.photos) {
+      final id = photoId(p);
+      if (id.isEmpty) continue;
+      if (draftIdSet.contains(id)) {
+        keptBase.add(p);
+      }
+    }
+
+    final draftOnly = <String>[];
+    final seenDraftOnly = <String>{};
+    for (final p in draftProfile.photos) {
+      final id = photoId(p);
+      if (id.isEmpty) continue;
+      if (!baseIdSet.contains(id) && !seenDraftOnly.contains(id)) {
+        seenDraftOnly.add(id);
+        draftOnly.add(p);
+      }
+    }
+
+    final mergedPhotos = [...keptBase, ...draftOnly];
+
+    final merged = base.copyWith(
+      name: draftProfile.name,
+      dateOfBirth: draftProfile.dateOfBirth,
+      gender: draftProfile.gender,
+      preferredLanguage: draftProfile.preferredLanguage,
+      activeModes: draftProfile.activeModes,
+      subIntents: draftProfile.subIntents,
+      interests: draftProfile.interests,
+      languagesKnown: draftProfile.languagesKnown,
+      matchRadiusDefault: draftProfile.matchRadiusDefault,
+      gpsIntervalDefault: draftProfile.gpsIntervalDefault,
+      smartGpsThrottlingEnabled: draftProfile.smartGpsThrottlingEnabled,
+      sharedEventMatchingEnabled: draftProfile.sharedEventMatchingEnabled,
+      sharedMovementMatchingEnabled: draftProfile.sharedMovementMatchingEnabled,
+      genderPreferences: draftProfile.genderPreferences,
+      agePreferences: draftProfile.agePreferences,
+      strictGenderAgeEnforcement: draftProfile.strictGenderAgeEnforcement,
+      bio: draftProfile.bio,
+      photos: mergedPhotos,
+    );
+
+    state = AsyncData(merged);
+  }
+
+  Future<void> _prewarmSignedUrls(List<String> photos) async {
+    try {
+      for (final src in photos) {
+        if (src.isEmpty) continue;
+        try {
+          await StorageHelper.getSignedUrl(src);
+        } catch (_) {}
+      }
+    } catch (_) {}
   }
 
   /// Helper method to delete storage objects from Supabase storage
@@ -944,28 +1820,16 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
 
   void updateName(String name) {
     if (!state.hasValue || state.value == null) return;
-    if (!_canEditField('name')) {
-      state = AsyncError("Name editing locked. Submit a request to admin to unlock.", StackTrace.current);
-      return;
-    }
     state = AsyncData(state.value!.copyWith(name: name));
   }
 
   void updateDob(DateTime dob) {
     if (!state.hasValue || state.value == null) return;
-    if (!_canEditField('date_of_birth')) {
-      state = AsyncError("DOB editing locked. Submit a request to admin to unlock.", StackTrace.current);
-      return;
-    }
     state = AsyncData(state.value!.copyWith(dateOfBirth: dob));
   }
 
   void updateGender(String? gender) {
     if (!state.hasValue || state.value == null) return;
-    if (!_canEditField('gender')) {
-      state = AsyncError("Gender editing locked. Submit a request to admin to unlock.", StackTrace.current);
-      return;
-    }
     state = AsyncData(state.value!.copyWith(gender: gender));
   }
 
@@ -1310,6 +2174,180 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
   }
 
   // --- Photos management ---
+  Future<void> addPhotoFromBytesDraft(Uint8List bytes) async {
+    if (!state.hasValue || state.value == null) return;
+    final before = state.value!;
+    if (before.photos.length >= 5) {
+      throw Exception('Maximum 5 photos allowed.');
+    }
+
+    final uploader = ref.read(profileEditRequestServiceProvider);
+    final fileName = '$userId/${DateTime.now().millisecondsSinceEpoch}.jpg';
+    final uploadedObjectPath = await uploader.uploadBytesToStorage(fileName, bytes, public: false);
+    if (uploadedObjectPath == null) {
+      throw Exception('Photo upload failed.');
+    }
+    var uploadedPath = uploadedObjectPath;
+    _wizardUploadedPhotoPaths.add(uploadedPath);
+
+    if (before.photos.isEmpty) {
+      try {
+        uploadedPath = await _ensurePrimaryPhotoAllowed(uploadedPath);
+      } catch (e) {
+        await _cleanupWizardUploadedPhotosNotIn(before.photos.toSet());
+        rethrow;
+      }
+    }
+
+    final newPhotos = List<String>.from(before.photos)..add(uploadedPath);
+    final updated = before.copyWith(photos: newPhotos);
+    state = AsyncData(updated);
+    await saveWizardDraft();
+    StorageHelper.evict(uploadedPath);
+  }
+
+  Future<void> removePhotoAtDraft(int index) async {
+    if (!state.hasValue || state.value == null) return;
+    final before = state.value!;
+    if (index < 0 || index >= before.photos.length) return;
+
+    final removedPath = before.photos[index];
+    final newPhotos = List<String>.from(before.photos)..removeAt(index);
+    final updated = before.copyWith(photos: newPhotos);
+    state = AsyncData(updated);
+
+    final oldPrimary = before.photos.isNotEmpty ? before.photos.first : null;
+    final newPrimary = newPhotos.isNotEmpty ? newPhotos.first : null;
+    if (newPrimary != null && oldPrimary != newPrimary) {
+      try {
+        final verifiedPrimary = await _ensurePrimaryPhotoAllowed(newPrimary);
+        if (verifiedPrimary != newPrimary && newPhotos.isNotEmpty) {
+          newPhotos[0] = verifiedPrimary;
+          state = AsyncData(before.copyWith(photos: newPhotos));
+        }
+      } catch (e) {
+        state = AsyncData(before);
+        rethrow;
+      }
+    }
+
+    await saveWizardDraft();
+    if (_wizardUploadedPhotoPaths.contains(removedPath)) {
+      try {
+        await _deleteStorageObject(removedPath);
+      } catch (_) {}
+      StorageHelper.evict(removedPath);
+      _wizardUploadedPhotoPaths.remove(removedPath);
+      await saveWizardDraft();
+    }
+  }
+
+  Future<void> replacePhotoAtIndexDraft(int index, {Uint8List? bytes, String? url}) async {
+    if (!state.hasValue || state.value == null) return;
+    final before = state.value!;
+    if (index < 0 || index >= before.photos.length) return;
+
+    final newPhotos = List<String>.from(before.photos);
+    final oldPath = newPhotos[index];
+    String? newObjectPath = url;
+    final shouldDeleteNewOnFailure = bytes != null;
+    if (bytes != null) {
+      final uploader = ref.read(profileEditRequestServiceProvider);
+      final fileName = '$userId/${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final uploadedObjectPath = await uploader.uploadBytesToStorage(fileName, bytes, public: false);
+      if (uploadedObjectPath == null) {
+        throw Exception('Photo upload failed.');
+      }
+      newObjectPath = uploadedObjectPath;
+      _wizardUploadedPhotoPaths.add(uploadedObjectPath);
+    }
+
+    final initialNewPath = newObjectPath;
+    if (initialNewPath == null) return;
+    var newPath = initialNewPath;
+
+    if (index == 0) {
+      final localDb = ref.read(localDbProvider);
+      var approved = await localDb.loadApprovedPrimaryPhotos(userId);
+      if (!approved.contains(oldPath)) {
+        final remoteApproved = await _fetchApprovedPrimaryPhotosFromSupabase();
+        if (remoteApproved.isNotEmpty) {
+          approved = {...approved, ...remoteApproved};
+          await localDb.setApprovedPrimaryPhotos(userId, approved);
+        }
+      }
+
+      final oldWasApproved = approved.contains(oldPath);
+      try {
+        final verifiedPath = await _ensurePrimaryPhotoAllowed(newPath);
+        if (verifiedPath != newPath && shouldDeleteNewOnFailure) {
+          try {
+            await _deleteStorageObject(newPath);
+          } catch (_) {}
+          _wizardUploadedPhotoPaths.remove(newPath);
+        }
+        newPath = verifiedPath;
+        if (oldWasApproved) {
+          approved.remove(oldPath);
+        }
+        approved.add(newPath);
+        await localDb.setApprovedPrimaryPhotos(userId, approved);
+      } catch (e) {
+        if (shouldDeleteNewOnFailure) {
+          await _cleanupWizardUploadedPhotosNotIn(before.photos.toSet());
+        }
+        rethrow;
+      }
+    }
+
+    newPhotos[index] = newPath;
+    final updated = before.copyWith(photos: newPhotos);
+    state = AsyncData(updated);
+    await saveWizardDraft();
+
+    if (!newPath.startsWith('http://') && !newPath.startsWith('https://')) {
+      StorageHelper.evict(newPath);
+    }
+
+    if (_wizardUploadedPhotoPaths.contains(oldPath) && oldPath != newPath) {
+      try {
+        await _deleteStorageObject(oldPath);
+      } catch (_) {}
+      StorageHelper.evict(oldPath);
+      _wizardUploadedPhotoPaths.remove(oldPath);
+      await saveWizardDraft();
+    }
+  }
+
+  Future<void> reorderPhotosDraft(int oldIndex, int newIndex) async {
+    if (!state.hasValue || state.value == null) return;
+    final before = state.value!;
+    final photos = List<String>.from(before.photos);
+    if (oldIndex < 0 || oldIndex >= photos.length || newIndex < 0 || newIndex >= photos.length) return;
+    final item = photos.removeAt(oldIndex);
+    photos.insert(newIndex, item);
+    var updated = before.copyWith(photos: photos);
+    state = AsyncData(updated);
+
+    final oldPrimary = before.photos.isNotEmpty ? before.photos.first : null;
+    final newPrimary = photos.isNotEmpty ? photos.first : null;
+    if (newPrimary != null && oldPrimary != newPrimary) {
+      try {
+        final verifiedPrimary = await _ensurePrimaryPhotoAllowed(newPrimary);
+        if (verifiedPrimary != newPrimary && photos.isNotEmpty) {
+          photos[0] = verifiedPrimary;
+          updated = before.copyWith(photos: photos);
+          state = AsyncData(updated);
+        }
+      } catch (e) {
+        state = AsyncData(before);
+        rethrow;
+      }
+    }
+
+    await saveWizardDraft();
+  }
+
   Future<void> addPhotoFromBytes(Uint8List bytes, {bool awaitPersist = true}) async {
     if (!state.hasValue || state.value == null) return;
     final before = state.value!;
@@ -1325,8 +2363,20 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     if (uploadedObjectPath == null) {
       throw Exception('Photo upload failed.');
     }
+    var uploadedPath = uploadedObjectPath;
 
-    final newPhotos = List<String>.from(before.photos)..add(uploadedObjectPath);
+    if (before.photos.isEmpty) {
+      try {
+        uploadedPath = await _ensurePrimaryPhotoAllowed(uploadedPath);
+      } catch (e) {
+        try {
+          await _deleteStorageObject(uploadedPath);
+        } catch (_) {}
+        rethrow;
+      }
+    }
+
+    final newPhotos = List<String>.from(before.photos)..add(uploadedPath);
     final updated = before.copyWith(photos: newPhotos);
     state = AsyncData(updated);
 
@@ -1339,7 +2389,7 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
         // Update local DB immediately to avoid sync reverting changes
         await localDb.saveLocalProfile(userId, updated.toMap());
         // Evict any cached signed url for the new path just to be safe
-        StorageHelper.evict(uploadedObjectPath);
+        StorageHelper.evict(uploadedPath);
         // Ensure state reflects the persisted profile
         if (ref.mounted) {
           state = AsyncData(updated);
@@ -1380,6 +2430,7 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
         await _deleteStorageObject(removedPath);
         // Ensure local cache reflects the removal immediately to avoid being reverted by sync
         await localDb.saveLocalProfile(userId, updated.toMap());
+        await localDb.removeApprovedPrimaryPhoto(userId, removedPath);
         // Evict cache for removed objectPath if it's not a full URL
         if (!removedPath.startsWith('http://') && !removedPath.startsWith('https://')) {
           StorageHelper.evict(removedPath);
@@ -1397,6 +2448,7 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     } else {
       // fire-and-forget: update local cache now so UI updates
       await localDb.saveLocalProfile(userId, updated.toMap());
+      await localDb.removeApprovedPrimaryPhoto(userId, removedPath);
       unawaited(supabase.from('users').update({'photos': newPhotos}).eq('id', userId).catchError((e) {
         unawaited(ref.read(profileSyncProvider).syncProfile(userId));
       }).whenComplete(() async {
@@ -1417,6 +2469,7 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     final oldPath = newPhotos[index];
 
     String? newObjectPath = url;
+    final shouldDeleteNewOnFailure = bytes != null;
     if (bytes != null) {
       final uploader = ref.read(profileEditRequestServiceProvider);
       final fileName = '$userId/${DateTime.now().millisecondsSinceEpoch}.jpg';
@@ -1428,8 +2481,43 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
       newObjectPath = uploadedObjectPath;
     }
 
-    if (newObjectPath == null) return;
-    newPhotos[index] = newObjectPath;
+    final initialNewPath = newObjectPath;
+    if (initialNewPath == null) return;
+    var newPath = initialNewPath;
+
+    if (index == 0) {
+      final localDb = ref.read(localDbProvider);
+      var approved = await localDb.loadApprovedPrimaryPhotos(userId);
+      if (!approved.contains(oldPath)) {
+        final remoteApproved = await _fetchApprovedPrimaryPhotosFromSupabase();
+        if (remoteApproved.isNotEmpty) {
+          approved = {...approved, ...remoteApproved};
+          await localDb.setApprovedPrimaryPhotos(userId, approved);
+        }
+      }
+
+      try {
+        final verifiedPath = await _ensurePrimaryPhotoAllowed(newPath);
+        if (verifiedPath != newPath && shouldDeleteNewOnFailure) {
+          try {
+            await _deleteStorageObject(newPath);
+          } catch (_) {}
+        }
+        newPath = verifiedPath;
+        approved.remove(oldPath);
+        approved.add(newPath);
+        await localDb.setApprovedPrimaryPhotos(userId, approved);
+      } catch (e) {
+        if (shouldDeleteNewOnFailure) {
+          try {
+            await _deleteStorageObject(newPath);
+          } catch (_) {}
+        }
+        rethrow;
+      }
+    }
+
+    newPhotos[index] = newPath;
     final updated = before.copyWith(photos: newPhotos);
     state = AsyncData(updated);
 
@@ -1440,13 +2528,14 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
         await supabase.from('users').update({'photos': newPhotos}).eq('id', userId);
         // Delete the old storage object from Supabase storage
         await _deleteStorageObject(oldPath);
+        await localDb.removeApprovedPrimaryPhoto(userId, oldPath);
         await localDb.saveLocalProfile(userId, updated.toMap());
         // Evict old + new cache so SignedImage regenerates signed URLs
         if (!oldPath.startsWith('http://') && !oldPath.startsWith('https://')) {
           StorageHelper.evict(oldPath);
         }
-        if (!newObjectPath.startsWith('http://') && !newObjectPath.startsWith('https://')) {
-          StorageHelper.evict(newObjectPath);
+        if (!newPath.startsWith('http://') && !newPath.startsWith('https://')) {
+          StorageHelper.evict(newPath);
         }
         if (ref.mounted) {
           state = AsyncData(updated);
@@ -1462,11 +2551,12 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
       }).whenComplete(() async {
         // Delete the old storage object from Supabase storage
         await _deleteStorageObject(oldPath);
+        await localDb.removeApprovedPrimaryPhoto(userId, oldPath);
         if (!oldPath.startsWith('http://') && !oldPath.startsWith('https://')) {
           StorageHelper.evict(oldPath);
         }
-        if (newObjectPath != null && !newObjectPath.startsWith('http://') && !newObjectPath.startsWith('https://')) {
-          StorageHelper.evict(newObjectPath);
+        if (!newPath.startsWith('http://') && !newPath.startsWith('https://')) {
+          StorageHelper.evict(newPath);
         }
       }));
     }
@@ -1483,6 +2573,21 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     state = AsyncData(updated);
 
     final localDb = ref.read(localDbProvider);
+
+    final oldPrimary = before.photos.isNotEmpty ? before.photos.first : null;
+    final newPrimary = photos.isNotEmpty ? photos.first : null;
+    if (newPrimary != null && oldPrimary != newPrimary) {
+      try {
+        final verifiedPrimary = await _ensurePrimaryPhotoAllowed(newPrimary);
+        if (verifiedPrimary != newPrimary && photos.isNotEmpty) {
+          photos[0] = verifiedPrimary;
+          state = AsyncData(before.copyWith(photos: photos));
+        }
+      } catch (e) {
+        state = AsyncData(before);
+        rethrow;
+      }
+    }
 
     if (awaitPersist) {
       try {
@@ -1538,7 +2643,7 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
       ];
 
       // Update local state to reflect completion immediately (offline-first).
-      final localProfile = currentState.copyWith(
+      var localProfile = currentState.copyWith(
         isProfileComplete: markComplete ? true : currentState.isProfileComplete,
       );
 
@@ -1593,6 +2698,16 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
         rethrow;
       }
 
+      try {
+        final updatedRow = await supabase.from('users').select('editable_profile_fields').eq('id', userId).maybeSingle();
+        if (updatedRow != null) {
+          final fields = _toStringList(updatedRow['editable_profile_fields']);
+          localProfile = localProfile.copyWith(editableProfileFields: fields);
+          await localDb.saveLocalProfile(userId, localProfile.toMap());
+          ref.invalidate(userProfileProvider(userId));
+        }
+      } catch (_) {}
+
       final activeIntentsNow = currentState.activeModes.map(_normalizeKey).toSet();
       final existingProfilesData = await supabase.from('user_profiles').select('intent_type').eq('user_id', userId);
       final existingIntentTypes = (existingProfilesData as List<dynamic>).map((p) => p['intent_type'] as String).toSet();
@@ -1635,12 +2750,25 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
         await supabase.from('user_profiles').delete().eq('user_id', userId).inFilter('intent_type', intentsToDelete);
       }
 
+      // Check referral completion
+      if (markComplete) {
+        unawaited(ref.read(referralServiceProvider).completeReferral(userId));
+      }
+
       if (ref.mounted) {
         state = AsyncData(localProfile);
       }
       return true;
     } catch (e, st) {
       if (ref.mounted) {
+        if (e is PostgrestException) {
+          final msg = e.message.toLowerCase();
+          if (msg.contains('basic_details_update_not_allowed')) {
+            final locale = ref.read(localizationProvider);
+            state = AsyncError(locale.getString('profileEditBasicDetailsLocked'), st);
+            return false;
+          }
+        }
         state = AsyncError(e, st);
       }
       return false;

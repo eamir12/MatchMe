@@ -1,6 +1,8 @@
 -- Add a lightweight health check RPC for Supabase client initialization
 -- This function is SECURITY DEFINER and grants execution to anon/authenticated so web clients can perform a safe health check without needing direct table access.
 
+DROP FUNCTION IF EXISTS public.health_check();
+
 CREATE OR REPLACE FUNCTION public.health_check()
 RETURNS boolean
 LANGUAGE plpgsql

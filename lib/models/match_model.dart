@@ -10,6 +10,7 @@ class MatchModel {
   final String matchedIntent;
   final String matchType;
   final DateTime createdAt;
+  final int? chatStartWindowSeconds;
   final String? eventId;
   
   // Event details for event matches
@@ -30,6 +31,7 @@ class MatchModel {
     required this.matchType,
     required this.createdAt,
     required this.otherUserId,
+    this.chatStartWindowSeconds,
     this.eventId,
     this.eventName,
     this.eventLink,
@@ -48,6 +50,9 @@ class MatchModel {
     final String matchId = json['match_id'] ?? '';
     final String userAId = json['user1_id'] ?? '';
     final String userBId = json['user2_id'] ?? '';
+    final dynamic rawWindow = json['chat_start_window_seconds'];
+    final int? chatStartWindowSeconds =
+        rawWindow is int ? rawWindow : int.tryParse(rawWindow?.toString() ?? '');
 
     // Determine who the "other" user is
     final bool isAOther = (userAId != currentUserId);
@@ -66,6 +71,7 @@ class MatchModel {
           ? DateTime.parse(json['created_at'])
           : DateTime.now(),
       otherUserId: determinedOtherId, // <-- Pass the ID
+      chatStartWindowSeconds: chatStartWindowSeconds,
       eventId: json['event_id'],
       eventName: json['event_name'],
       eventLink: json['event_link'],

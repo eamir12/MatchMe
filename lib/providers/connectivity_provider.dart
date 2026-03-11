@@ -26,9 +26,11 @@ final connectivityProvider = StreamProvider<bool>((ref) async* {
     try {
       // Try to reach Supabase by calling a lightweight RPC `health_check()`
       // This avoids anonymous clients needing SELECT on the `users` table.
-      final dynamic resp = await Supabase.instance.client.rpc('health_check').maybeSingle().timeout(const Duration(seconds: 5));
+      // We use .rpc() directly without .maybeSingle() because the function returns a scalar/object,
+      // and .maybeSingle() is intended for list responses.
+      final dynamic resp = await Supabase.instance.client.rpc('health_check').timeout(const Duration(seconds: 5));
 
-      // If response is null, consider it a failure
+      // If response is null, consider it a failure (unless it's a void return, but health_check returns bool/json)
       if (resp == null) return false;
 
       // Convert response to a Map<String, dynamic> safely to normalize PostgrestMap types

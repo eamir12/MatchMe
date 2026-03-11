@@ -5,8 +5,10 @@ import 'package:extended_image/extended_image.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/web_imports.dart' as web;
 import 'package:image/image.dart' as img;
 import 'package:http/http.dart' as http;
+import 'package:matchme/widgets/custom_camera_widget.dart';
 
 class PhotoEditor {
   /// Show image editor dialog and return edited bytes
@@ -24,19 +26,47 @@ class PhotoEditor {
     ImageSource source = ImageSource.gallery,
   }) async {
     try {
-      final picker = ImagePicker();
-      final XFile? file = await picker.pickImage(source: source, imageQuality: 90);
-      if (file == null) return null;
-
-      // Read bytes (works on mobile and web)
-      final bytes = await file.readAsBytes();
+      Uint8List? bytes;
+      if (kIsWeb && source == ImageSource.camera) {
+        bytes = await web.pickImageBytesFromCamera(capture: 'user');
+      } else {
+        // Use custom camera implementation for better control
+        if (source == ImageSource.camera) {
+          bytes = await showCustomCamera(
+            context: context,
+            useFrontCamera: true,
+          );
+        } else {
+          // For gallery, still use image_picker
+          final picker = ImagePicker();
+          final XFile? file = await picker.pickImage(
+            source: source, 
+            imageQuality: 90,
+          );
+          if (file == null) {
+            return null;
+          }
+          bytes = await file.readAsBytes();
+        }
+      }
+      if (bytes == null) {
+        return null;
+      }
 
       // Show editor dialog
-      return await _showImageEditor(context, bytes); // ignore: use_build_context_synchronously
+      final result = await _showImageEditor(context, bytes); // ignore: use_build_context_synchronously
+      return result;
     } catch (e) {
       // Return null on error to indicate failure
       return null;
     }
+  }
+
+  /// Pick a camera image with front camera preference for verification
+  static Future<Uint8List?> pickVerificationPhoto(BuildContext context) async {
+    // This method is now handled by the verification screen directly
+    // using the CameraPreviewWidget for live preview
+    throw UnimplementedError('Use CameraPreviewWidget directly from verification screen');
   }
 
   /// Edit existing bytes

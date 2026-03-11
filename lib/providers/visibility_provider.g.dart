@@ -10,10 +10,10 @@ part of 'visibility_provider.dart';
 // ignore_for_file: type=lint, type=warning
 
 @ProviderFor(IsVisible)
-const isVisibleProvider = IsVisibleProvider._();
+final isVisibleProvider = IsVisibleProvider._();
 
 final class IsVisibleProvider extends $NotifierProvider<IsVisible, bool> {
-  const IsVisibleProvider._()
+  IsVisibleProvider._()
     : super(
         from: null,
         argument: null,
@@ -40,14 +40,13 @@ final class IsVisibleProvider extends $NotifierProvider<IsVisible, bool> {
   }
 }
 
-String _$isVisibleHash() => r'3bfe142760437428a85650cb4f4ddaa08a9eaa40';
+String _$isVisibleHash() => r'c46e8fe29b01830eb4ee37f2d203b7c2da73a012';
 
 abstract class _$IsVisible extends $Notifier<bool> {
   bool build();
   @$mustCallSuper
   @override
   void runBuild() {
-    final created = build();
     final ref = this.ref as $Ref<bool, bool>;
     final element =
         ref.element
@@ -57,6 +56,6 @@ abstract class _$IsVisible extends $Notifier<bool> {
               Object?,
               Object?
             >;
-    element.handleValue(ref, created);
+    element.handleCreate(ref, build);
   }
 }

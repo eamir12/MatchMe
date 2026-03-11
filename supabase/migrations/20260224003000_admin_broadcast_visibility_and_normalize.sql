@@ -1,0 +1,423 @@
+BEGIN;
+
+CREATE OR REPLACE FUNCTION public.normalize_broadcast_filter_criteria(p_criteria jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  c jsonb := COALESCE(p_criteria, '{}'::jsonb);
+  out jsonb := '{}'::jsonb;
+
+  v_bool boolean;
+  v_int integer;
+  v_min integer;
+  v_max integer;
+  v_text text;
+  v_visibility text;
+  arr text[];
+BEGIN
+  IF jsonb_typeof(c) IS DISTINCT FROM 'object' THEN
+    c := '{}'::jsonb;
+  END IF;
+
+  BEGIN
+    v_bool := COALESCE((c->>'all_users')::boolean, false);
+  EXCEPTION WHEN OTHERS THEN
+    v_bool := false;
+  END;
+
+  IF v_bool THEN
+    RETURN jsonb_build_object('all_users', true);
+  END IF;
+
+  v_visibility := lower(btrim(COALESCE(c->>'visibility', '')));
+  IF v_visibility = '' THEN
+    BEGIN
+      IF COALESCE((c->>'visible_only')::boolean, false) THEN
+        v_visibility := 'visible';
+      END IF;
+    EXCEPTION WHEN OTHERS THEN
+    END;
+  END IF;
+  IF v_visibility IN ('visible', 'invisible') THEN
+    out := out || jsonb_build_object('visibility', v_visibility);
+  END IF;
+
+  IF c ? 'gender' AND jsonb_typeof(c->'gender') = 'array' THEN
+    SELECT array_agg(DISTINCT lower(btrim(value))) INTO arr
+    FROM jsonb_array_elements_text(c->'gender') AS t(value)
+    WHERE btrim(value) <> '';
+    IF arr IS NOT NULL AND array_length(arr, 1) > 0 THEN
+      out := out || jsonb_build_object('gender', to_jsonb(arr));
+    END IF;
+  END IF;
+
+  IF c ? 'age_range' AND jsonb_typeof(c->'age_range') = 'object' THEN
+    BEGIN
+      v_min := (c->'age_range'->>'min')::int;
+      v_max := (c->'age_range'->>'max')::int;
+    EXCEPTION WHEN OTHERS THEN
+      v_min := NULL;
+      v_max := NULL;
+    END;
+    IF v_min IS NOT NULL AND v_max IS NOT NULL THEN
+      v_min := GREATEST(18, LEAST(v_min, 80));
+      v_max := GREATEST(18, LEAST(v_max, 80));
+      IF v_min > v_max THEN
+        v_int := v_min;
+        v_min := v_max;
+        v_max := v_int;
+      END IF;
+      out := out || jsonb_build_object('age_range', jsonb_build_object('min', v_min, 'max', v_max));
+    END IF;
+  END IF;
+
+  IF c ? 'subscription_tiers' AND jsonb_typeof(c->'subscription_tiers') = 'array' THEN
+    SELECT array_agg(DISTINCT lower(btrim(value))) INTO arr
+    FROM jsonb_array_elements_text(c->'subscription_tiers') AS t(value)
+    WHERE btrim(value) <> '';
+    IF arr IS NOT NULL AND array_length(arr, 1) > 0 THEN
+      out := out || jsonb_build_object('subscription_tiers', to_jsonb(arr));
+    END IF;
+  END IF;
+
+  IF c ? 'verification_status' AND jsonb_typeof(c->'verification_status') = 'array' THEN
+    SELECT array_agg(DISTINCT lower(btrim(value))) INTO arr
+    FROM jsonb_array_elements_text(c->'verification_status') AS t(value)
+    WHERE lower(btrim(value)) = ANY(ARRAY['unverified','analyzing','pending','approved','rejected']);
+    IF arr IS NOT NULL AND array_length(arr, 1) > 0 THEN
+      out := out || jsonb_build_object('verification_status', to_jsonb(arr));
+    END IF;
+  END IF;
+
+  IF c ? 'platform' AND jsonb_typeof(c->'platform') = 'array' THEN
+    SELECT array_agg(DISTINCT lower(btrim(value))) INTO arr
+    FROM jsonb_array_elements_text(c->'platform') AS t(value)
+    WHERE lower(btrim(value)) = ANY(ARRAY['android','ios','web','macos','windows','linux','unknown']);
+    IF arr IS NOT NULL AND array_length(arr, 1) > 0 THEN
+      out := out || jsonb_build_object('platform', to_jsonb(arr));
+    END IF;
+  END IF;
+
+  IF c ? 'last_active_days' THEN
+    BEGIN
+      v_int := (c->>'last_active_days')::int;
+    EXCEPTION WHEN OTHERS THEN
+      v_int := NULL;
+    END;
+    IF v_int IS NOT NULL AND v_int > 0 AND v_int <= 3650 THEN
+      out := out || jsonb_build_object('last_active_days', v_int);
+    END IF;
+  END IF;
+
+  v_text := lower(btrim(COALESCE(c->>'ui_language', '')));
+  IF v_text IN ('en','es','he') THEN
+    out := out || jsonb_build_object('ui_language', v_text);
+  END IF;
+
+  IF c ? 'ui_languages' AND jsonb_typeof(c->'ui_languages') = 'array' THEN
+    SELECT array_agg(DISTINCT lower(btrim(value))) INTO arr
+    FROM jsonb_array_elements_text(c->'ui_languages') AS t(value)
+    WHERE lower(btrim(value)) = ANY(ARRAY['en','es','he']);
+    IF arr IS NOT NULL AND array_length(arr, 1) > 0 THEN
+      out := out || jsonb_build_object('ui_languages', to_jsonb(arr));
+    END IF;
+  END IF;
+
+  RETURN out;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.normalize_broadcast_filter_criteria(jsonb) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.normalize_broadcast_filter_criteria(jsonb) TO service_role;
+
+CREATE OR REPLACE FUNCTION public.get_users_for_broadcast(filter_criteria jsonb)
+RETURNS TABLE(user_id uuid, fcm_token text, platform text)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_is_allowed boolean;
+  c jsonb;
+  v_visibility text;
+  v_tiers text[];
+BEGIN
+  IF auth.role() = 'service_role' THEN
+    v_is_allowed := true;
+  ELSE
+    SELECT EXISTS (
+      SELECT 1
+      FROM public.users u
+      WHERE u.id = auth.uid()
+        AND u.is_admin = true
+    ) INTO v_is_allowed;
+  END IF;
+
+  IF NOT COALESCE(v_is_allowed, false) THEN
+    RAISE EXCEPTION 'not authorized';
+  END IF;
+
+  c := public.normalize_broadcast_filter_criteria(filter_criteria);
+  v_visibility := lower(btrim(COALESCE(c->>'visibility', '')));
+  IF c ? 'subscription_tiers' THEN
+    SELECT array_agg(lower(btrim(value))) INTO v_tiers
+    FROM jsonb_array_elements_text(c->'subscription_tiers') AS t(value);
+  END IF;
+
+  RETURN QUERY
+  SELECT DISTINCT u.id, us.metadata->>'fcm_token', us.platform
+  FROM public.users u
+  JOIN public.user_session us ON u.id = us.user_id
+  WHERE us.revoked = false
+    AND us.metadata->>'fcm_token' IS NOT NULL
+    AND (
+      (c->>'all_users')::boolean = true OR
+      (
+        (c->'gender' IS NULL OR
+          u.gender = ANY(ARRAY(SELECT jsonb_array_elements_text(c->'gender')))) AND
+        (c->'age_range' IS NULL OR
+          (EXTRACT(YEAR FROM AGE(CURRENT_DATE, u.date_of_birth)) >= (c->'age_range'->>'min')::int AND
+          EXTRACT(YEAR FROM AGE(CURRENT_DATE, u.date_of_birth)) <= (c->'age_range'->>'max')::int)) AND
+        (
+          v_tiers IS NULL OR
+          COALESCE(NULLIF(btrim(COALESCE(u.subscription_tier, '')), ''), 'free') = ANY(v_tiers)
+        ) AND
+        (c->'verification_status' IS NULL OR
+          u.verification_status = ANY(ARRAY(SELECT jsonb_array_elements_text(c->'verification_status')))) AND
+        (c->'platform' IS NULL OR
+          us.platform = ANY(ARRAY(SELECT jsonb_array_elements_text(c->'platform')))) AND
+        (c->'last_active_days' IS NULL OR
+          us.last_active_at >= NOW() - INTERVAL '1 day' * (c->>'last_active_days')::int) AND
+        (
+          v_visibility = '' OR v_visibility = 'all' OR
+          (v_visibility = 'visible' AND public.is_user_truly_visible(u.id) = TRUE) OR
+          (v_visibility = 'invisible' AND public.is_user_truly_visible(u.id) = FALSE)
+        ) AND
+        (
+          c->'ui_language' IS NULL OR
+          lower(coalesce(u.preferred_language, '')) = lower(c->>'ui_language')
+        ) AND
+        (
+          c->'ui_languages' IS NULL OR
+          lower(coalesce(u.preferred_language, '')) = ANY(
+            ARRAY(
+              SELECT lower(jsonb_array_elements_text(c->'ui_languages'))
+            )
+          )
+        )
+      )
+    );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.count_target_users(filter_criteria jsonb)
+RETURNS integer
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_is_allowed boolean;
+  user_count integer;
+BEGIN
+  IF auth.role() = 'service_role' THEN
+    v_is_allowed := true;
+  ELSE
+    SELECT EXISTS (
+      SELECT 1
+      FROM public.users u
+      WHERE u.id = auth.uid()
+        AND u.is_admin = true
+    ) INTO v_is_allowed;
+  END IF;
+
+  IF NOT COALESCE(v_is_allowed, false) THEN
+    RAISE EXCEPTION 'not authorized';
+  END IF;
+
+  SELECT COUNT(DISTINCT gufb.user_id)
+  INTO user_count
+  FROM public.get_users_for_broadcast(filter_criteria) AS gufb;
+
+  RETURN COALESCE(user_count, 0);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.admin_list_target_users_for_broadcast(
+  filter_criteria jsonb,
+  p_limit integer DEFAULT 50,
+  p_offset integer DEFAULT 0
+)
+RETURNS TABLE (
+  user_id uuid,
+  name text,
+  platform text,
+  last_active_at timestamptz
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_is_allowed boolean;
+  v_limit integer;
+  v_offset integer;
+  c jsonb;
+  v_visibility text;
+  v_tiers text[];
+BEGIN
+  IF auth.role() = 'service_role' THEN
+    v_is_allowed := true;
+  ELSE
+    SELECT EXISTS (
+      SELECT 1
+      FROM public.users u
+      WHERE u.id = auth.uid()
+        AND u.is_admin = true
+    ) INTO v_is_allowed;
+  END IF;
+
+  IF NOT COALESCE(v_is_allowed, false) THEN
+    RAISE EXCEPTION 'not authorized';
+  END IF;
+
+  v_limit := GREATEST(LEAST(COALESCE(p_limit, 50), 500), 1);
+  v_offset := GREATEST(COALESCE(p_offset, 0), 0);
+
+  c := public.normalize_broadcast_filter_criteria(filter_criteria);
+  v_visibility := lower(btrim(COALESCE(c->>'visibility', '')));
+  IF c ? 'subscription_tiers' THEN
+    SELECT array_agg(lower(btrim(value))) INTO v_tiers
+    FROM jsonb_array_elements_text(c->'subscription_tiers') AS t(value);
+  END IF;
+
+  RETURN QUERY
+  SELECT *
+  FROM (
+    SELECT DISTINCT ON (u.id)
+      u.id AS user_id,
+      u.name,
+      us.platform,
+      us.last_active_at
+    FROM public.users u
+    JOIN public.user_session us ON u.id = us.user_id
+    WHERE us.revoked = false
+      AND us.metadata->>'fcm_token' IS NOT NULL
+      AND (
+        (c->>'all_users')::boolean = true OR
+        (
+          (c->'gender' IS NULL OR
+            u.gender = ANY(ARRAY(SELECT jsonb_array_elements_text(c->'gender')))) AND
+          (c->'age_range' IS NULL OR
+            (EXTRACT(YEAR FROM AGE(CURRENT_DATE, u.date_of_birth)) >= (c->'age_range'->>'min')::int AND
+            EXTRACT(YEAR FROM AGE(CURRENT_DATE, u.date_of_birth)) <= (c->'age_range'->>'max')::int)) AND
+          (
+            v_tiers IS NULL OR
+            COALESCE(NULLIF(btrim(COALESCE(u.subscription_tier, '')), ''), 'free') = ANY(v_tiers)
+          ) AND
+          (c->'verification_status' IS NULL OR
+            u.verification_status = ANY(ARRAY(SELECT jsonb_array_elements_text(c->'verification_status')))) AND
+          (c->'platform' IS NULL OR
+            us.platform = ANY(ARRAY(SELECT jsonb_array_elements_text(c->'platform')))) AND
+          (c->'last_active_days' IS NULL OR
+            us.last_active_at >= NOW() - INTERVAL '1 day' * (c->>'last_active_days')::int) AND
+          (
+            v_visibility = '' OR v_visibility = 'all' OR
+            (v_visibility = 'visible' AND public.is_user_truly_visible(u.id) = TRUE) OR
+            (v_visibility = 'invisible' AND public.is_user_truly_visible(u.id) = FALSE)
+          ) AND
+          (
+            c->'ui_language' IS NULL OR
+            lower(coalesce(u.preferred_language, '')) = lower(c->>'ui_language')
+          ) AND
+          (
+            c->'ui_languages' IS NULL OR
+            lower(coalesce(u.preferred_language, '')) = ANY(
+              ARRAY(
+                SELECT lower(jsonb_array_elements_text(c->'ui_languages'))
+              )
+            )
+          )
+        )
+      )
+    ORDER BY u.id, us.last_active_at DESC NULLS LAST
+  ) t
+  ORDER BY t.last_active_at DESC NULLS LAST, t.user_id DESC
+  LIMIT v_limit
+  OFFSET v_offset;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.send_admin_broadcast(broadcast_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  broadcast_record public.admin_broadcasts%ROWTYPE;
+  target_user RECORD;
+  notification_count integer := 0;
+  c jsonb;
+BEGIN
+  SELECT * INTO broadcast_record FROM public.admin_broadcasts WHERE id = broadcast_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Broadcast not found';
+  END IF;
+
+  c := public.normalize_broadcast_filter_criteria(broadcast_record.filter_criteria);
+
+  UPDATE public.admin_broadcasts
+  SET status = 'sending',
+      sent_at = NOW(),
+      filter_criteria = c
+  WHERE id = broadcast_id;
+
+  FOR target_user IN SELECT * FROM public.get_users_for_broadcast(c)
+  LOOP
+    INSERT INTO public.admin_broadcast_deliveries (broadcast_id, user_id, fcm_token)
+    VALUES (broadcast_id, target_user.user_id, target_user.fcm_token);
+
+    PERFORM public.queue_fcm_notification(
+      target_user.user_id,
+      target_user.fcm_token,
+      broadcast_record.title,
+      broadcast_record.message,
+      jsonb_build_object(
+        'type', 'admin_broadcast',
+        'broadcast_id', broadcast_id,
+        'action_url', broadcast_record.action_url,
+        'action_url_text', broadcast_record.action_url_text
+      ),
+      target_user.platform
+    );
+
+    notification_count := notification_count + 1;
+  END LOOP;
+
+  UPDATE public.admin_broadcasts
+  SET target_user_count = notification_count,
+      actual_sent_count = notification_count,
+      status = 'sent'
+  WHERE id = broadcast_id;
+
+  DELETE FROM public.notification_queue
+  WHERE created_at < NOW() - INTERVAL '7 days'
+    AND status IN ('sent', 'failed');
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_users_for_broadcast(jsonb) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.count_target_users(jsonb) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.admin_list_target_users_for_broadcast(jsonb, integer, integer) TO authenticated;
+
+GRANT EXECUTE ON FUNCTION public.get_users_for_broadcast(jsonb) TO service_role;
+GRANT EXECUTE ON FUNCTION public.count_target_users(jsonb) TO service_role;
+GRANT EXECUTE ON FUNCTION public.admin_list_target_users_for_broadcast(jsonb, integer, integer) TO service_role;
+GRANT EXECUTE ON FUNCTION public.send_admin_broadcast(uuid) TO service_role;
+
+COMMIT;
+

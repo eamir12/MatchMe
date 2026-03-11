@@ -19,13 +19,27 @@ class TypingParams {
   @override
   String toString() =>
       'TypingParams(matchId: $matchId, self: $selfUserId, other: $otherUserId)';
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is TypingParams &&
+        other.matchId == matchId &&
+        other.selfUserId == selfUserId &&
+        other.otherUserId == otherUserId;
+  }
+
+  @override
+  int get hashCode => Object.hash(matchId, selfUserId, otherUserId);
 }
 
 /// Provider to get a scoped TypingService instance
 /// NOTE: not autoDispose so the service remains alive while the chat is open.
 /// UI consumers can still use autoDispose StreamProviders to observe the stream.
-final typingServiceProvider =
-    Provider.family<TypingService, TypingParams>((ref, params) {
+final typingServiceProvider = Provider.family<TypingService, TypingParams>((
+  ref,
+  params,
+) {
   final svc = TypingService(params);
   ref.onDispose(() {
     svc.dispose();
@@ -34,11 +48,11 @@ final typingServiceProvider =
 });
 
 /// Provider to subscribe to the "other user is typing" stream as Riverpod state
-final isOtherTypingProvider =
-    StreamProvider.autoDispose.family<bool, TypingParams>((ref, params) {
-  final svc = ref.read(typingServiceProvider(params));
-  return svc.isOtherTyping$;
-});
+final isOtherTypingProvider = StreamProvider.autoDispose
+    .family<bool, TypingParams>((ref, params) {
+      final svc = ref.read(typingServiceProvider(params));
+      return svc.isOtherTyping$;
+    });
 
 /// Service encapsulating presence for typing
 class TypingService {
@@ -136,7 +150,9 @@ class TypingService {
                 // item may be Presence object with 'payload'
                 if (item.containsKey('payload')) {
                   final payload = item['payload'];
-                  if (payload is Map) out.add(Map<String, dynamic>.from(payload));
+                  if (payload is Map) {
+                    out.add(Map<String, dynamic>.from(payload));
+                  }
                   continue;
                 }
               } else {
@@ -171,7 +187,8 @@ class TypingService {
 
         // Try dynamic access (JS objects)
         try {
-          final dynamic metasDyn = (container as dynamic).metas ?? (container as dynamic).presences;
+          final dynamic metasDyn =
+              (container as dynamic).metas ?? (container as dynamic).presences;
           return metasFromContainer(metasDyn);
         } catch (_) {}
 
@@ -193,7 +210,9 @@ class TypingService {
           final dynamic entryVal = raw[entryKey];
           final metas = metasFromContainer(entryVal);
           // if any payload in metas has matching user_id, use them
-          final filtered = metas.where((m) => m['user_id']?.toString() == _p.otherUserId).toList();
+          final filtered = metas
+              .where((m) => m['user_id']?.toString() == _p.otherUserId)
+              .toList();
           if (filtered.isNotEmpty) {
             _processMetasAndEmit(filtered);
             return;
@@ -213,7 +232,11 @@ class TypingService {
           try {
             if (entry is Map) {
               key = entry['key']?.toString();
-              presContainer = entry['presences'] ?? entry['metas'] ?? entry['presence'] ?? entry['presences'];
+              presContainer =
+                  entry['presences'] ??
+                  entry['metas'] ??
+                  entry['presence'] ??
+                  entry['presences'];
             } else {
               // dynamic JS interop object: try .key and .presences
               try {
@@ -226,10 +249,13 @@ class TypingService {
                 }
               }
               try {
-                presContainer = (entry as dynamic).presences ?? (entry as dynamic).metas;
+                presContainer =
+                    (entry as dynamic).presences ?? (entry as dynamic).metas;
               } catch (_) {
                 try {
-                  presContainer = (entry as dynamic)['presences'] ?? (entry as dynamic)['metas'];
+                  presContainer =
+                      (entry as dynamic)['presences'] ??
+                      (entry as dynamic)['metas'];
                 } catch (_) {
                   presContainer = null;
                 }
@@ -246,7 +272,9 @@ class TypingService {
             }
 
             // Otherwise, check payload.user_id inside metas (some runtimes use different key)
-            final filtered = metas.where((m) => m['user_id']?.toString() == _p.otherUserId).toList();
+            final filtered = metas
+                .where((m) => m['user_id']?.toString() == _p.otherUserId)
+                .toList();
             if (filtered.isNotEmpty) {
               _processMetasAndEmit(filtered);
               return;
@@ -286,9 +314,11 @@ class TypingService {
     }
 
     metas.sort((a, b) {
-      final at = DateTime.tryParse((a['ts'] as String?) ?? '') ??
+      final at =
+          DateTime.tryParse((a['ts'] as String?) ?? '') ??
           DateTime.fromMillisecondsSinceEpoch(0);
-      final bt = DateTime.tryParse((b['ts'] as String?) ?? '') ??
+      final bt =
+          DateTime.tryParse((b['ts'] as String?) ?? '') ??
           DateTime.fromMillisecondsSinceEpoch(0);
       return bt.compareTo(at);
     });
@@ -296,8 +326,8 @@ class TypingService {
     final latest = metas.first;
     final typing = (latest['typing'] == true);
     final ts = DateTime.tryParse((latest['ts'] as String?) ?? '');
-    final fresh = ts != null &&
-        DateTime.now().toUtc().difference(ts).inSeconds <= 5;
+    final fresh =
+        ts != null && DateTime.now().toUtc().difference(ts).inSeconds <= 5;
 
     _emit(typing && fresh);
   }
@@ -315,6 +345,7 @@ class TypingService {
     _pollTimer?.cancel();
     try {
       await _ch.unsubscribe();
+      supabase.removeChannel(_ch);
     } catch (_) {}
     await _ctrl.close();
   }

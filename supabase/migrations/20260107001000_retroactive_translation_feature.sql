@@ -1,0 +1,81 @@
+-- Migration: Retroactive Translation Feature
+-- Date: 2026-01-07
+-- Purpose: Support translating old messages that were received before translation was enabled
+
+-- IMPLEMENTATION NOTES:
+--
+-- Problem: When a user enables translation for a chat, old messages that were received
+-- with translation OFF remain untranslated in the database.
+--
+-- Solution:
+-- 1. Enhanced translate-proxy Edge Function to handle batch translation requests
+-- 2. When user enables translation via setTranslation() in client, trigger translate-proxy with batch params
+-- 3. Function fetches all untranslated messages for that chat and translates them via DeepL
+-- 4. Translations are saved to content_translated field
+--
+-- FLOW:
+-- 1. User enables translation in chat screen
+-- 2. Client calls setTranslation(matchId, targetLanguage)
+-- 3. RPC set_chat_translation updates chats table with translation_enabled=true
+-- 4. Client calls translate-proxy Edge Function with {match_id, target_language}
+-- 5. translate-proxy detects batch request and:
+--    a. Fetches all messages where content_translated IS NULL or empty
+--    b. Calls DeepL API v2 for each message
+--    c. Updates chat_messages with content_translated
+--    d. Returns summary (translated count, failures, etc)
+-- 6. UI shows messages with translations immediately as they load from local cache
+--
+-- TRANSLATE-PROXY UNIFIED FUNCTION:
+-- The translate-proxy Edge Function now handles THREE request types:
+--
+-- 1. Webhook payload (INSERT event from database):
+--    {
+--      "type": "INSERT",
+--      "table": "chat_messages",
+--      "record": { "id": "msg-id", "match_id": "chat-id", "content_original": "text", ... }
+--    }
+--    → Translates single message immediately
+--
+-- 2. Batch translation request (retroactive):
+--    {
+--      "match_id": "chat-uuid",
+--      "target_language": "HE"
+--    }
+--    → Fetches all untranslated messages for chat, translates all
+--
+-- 3. Direct API call (for testing):
+--    {
+--      "text": "message text",
+--      "target_lang": "HE",
+--      "source_lang": "auto"
+--    }
+--    → Returns translation without saving to DB
+--
+-- DATABASE IMPACT:
+-- - No schema changes required
+-- - Leverages existing content_translated column
+-- - No new tables needed
+--
+-- CLIENT CHANGES:
+-- - chat_provider.dart setTranslation() now triggers translate-proxy with batch params
+-- - No UI changes needed - existing translation display logic works
+-- - Background task - doesn't block user interaction
+--
+-- TESTING SCENARIOS:
+-- 1. User receives message with translation OFF
+--    → Message stored with content_original, content_translated=NULL
+-- 2. User enables translation
+--    → Batch function translates all old messages
+--    → Next sync picks up translations
+--    → Old messages now show translations
+-- 3. User disables translation
+--    → Translations remain (not deleted, just not displayed)
+-- 4. User re-enables translation
+--    → Batch function runs again, translates any new untranslated messages
+--
+-- PERFORMANCE CHARACTERISTICS:
+-- - Processes one message at a time to avoid parallel rate limiting
+-- - ~150ms per DeepL API call
+-- - 10 messages = ~1.5 seconds total
+-- - Scales well for 50-100+ messages without timeout
+-- - Runs in background - doesn't block chat UI

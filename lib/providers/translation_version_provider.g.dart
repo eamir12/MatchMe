@@ -15,7 +15,7 @@ part of 'translation_version_provider.dart';
 ///   ref.read(translationVersionProvider.notifier).state++;
 
 @ProviderFor(TranslationVersion)
-const translationVersionProvider = TranslationVersionProvider._();
+final translationVersionProvider = TranslationVersionProvider._();
 
 /// Simple integer version provider used to force re-evaluation of
 /// translation providers when the app language / translation target changes.
@@ -29,7 +29,7 @@ final class TranslationVersionProvider
   ///
   /// Increment the value when the app language is changed:
   ///   ref.read(translationVersionProvider.notifier).state++;
-  const TranslationVersionProvider._()
+  TranslationVersionProvider._()
     : super(
         from: null,
         argument: null,
@@ -70,7 +70,6 @@ abstract class _$TranslationVersion extends $Notifier<int> {
   @$mustCallSuper
   @override
   void runBuild() {
-    final created = build();
     final ref = this.ref as $Ref<int, int>;
     final element =
         ref.element
@@ -80,6 +79,6 @@ abstract class _$TranslationVersion extends $Notifier<int> {
               Object?,
               Object?
             >;
-    element.handleValue(ref, created);
+    element.handleCreate(ref, build);
   }
 }

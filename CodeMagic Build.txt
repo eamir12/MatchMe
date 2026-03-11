@@ -1,0 +1,443 @@
+== Building for iOS ==
+
+> flutter build ios --release --no-codesign
+Resolving dependencies...
+Downloading packages...
+  _fe_analyzer_shared 91.0.0 (97.0.0 available)
+  analyzer 8.4.0 (11.0.0 available)
+  analyzer_buffer 0.1.11 (0.3.1 available)
+  analyzer_plugin 0.13.10 (0.14.5 available)
+  app_links 6.4.1 (7.0.0 available)
+  archive 4.0.7 (4.0.9 available)
+  build 4.0.3 (4.0.4 available)
+  build_config 1.2.0 (1.3.0 available)
+  build_runner 2.10.4 (2.12.2 available)
+  built_value 8.12.1 (8.12.4 available)
+  code_builder 4.11.0 (4.11.1 available)
+  cross_file 0.3.5+1 (0.3.5+2 available)
+  custom_lint_core 0.8.1 (0.8.2 available)
+  custom_lint_visitor 1.0.0+8.4.0 (1.0.0+9.0.0 available)
+  dart_jsonwebtoken 3.3.1 (3.3.2 available)
+  dart_style 3.1.3 (3.1.7 available)
+  dbus 0.7.11 (0.7.12 available)
+  ffi 2.1.4 (2.2.0 available)
+  file_picker 10.3.8 (10.3.10 available)
+  flutter_improved_scrolling 0.0.3 (discontinued)
+  flutter_riverpod 3.0.3 (3.3.1 available)
+  geocoding 3.0.0 (4.0.0 available)
+  geocoding_android 3.3.1 (5.0.0 available)
+  geocoding_platform_interface 3.2.0 (5.0.0 available)
+  geolocator_linux 0.2.3 (0.2.4 available)
+  google_fonts 6.3.3 (8.0.2 available)
+  google_mlkit_commons 0.11.0 (0.11.1 available)
+  google_mlkit_language_id 0.13.0 (0.13.1 available)
+  google_mlkit_translation 0.13.0 (0.13.1 available)
+  image 4.7.2 (4.8.0 available)
+  image_picker_android 0.8.13+10 (0.8.13+14 available)
+  image_picker_ios 0.8.13+3 (0.8.13+6 available)
+  json_annotation 4.9.0 (4.11.0 available)
+  lints 6.0.0 (6.1.0 available)
+  meta 1.17.0 (1.18.1 available)
+  mockito 5.6.1 (5.6.3 available)
+  package_info_plus 8.3.1 (9.0.0 available)
+  path_provider_foundation 2.5.1 (2.6.0 available)
+  petitparser 7.0.1 (7.0.2 available)
+  posix 6.0.3 (6.5.0 available)
+  riverpod 3.0.3 (3.2.1 available)
+  riverpod_analyzer_utils 1.0.0-dev.7 (1.0.0-dev.9 available)
+  riverpod_annotation 3.0.3 (4.0.2 available)
+  riverpod_generator 3.0.3 (4.0.3 available)
+  shared_preferences_android 2.4.18 (2.4.21 available)
+  source_gen 4.1.1 (4.2.0 available)
+  source_span 1.10.1 (1.10.2 available)
+  syncfusion_flutter_core 31.2.18 (32.2.9 available)
+  syncfusion_flutter_datepicker 31.2.18 (32.2.9 available)
+  url_launcher_ios 6.3.6 (6.4.1 available)
+  url_launcher_web 2.4.1 (2.4.2 available)
+  uuid 4.5.2 (4.5.3 available)
+  watcher 1.2.0 (1.2.1 available)
+  win32 5.15.0 (6.0.0 available)
+  win32_registry 2.1.0 (3.0.2 available)
+Got dependencies!
+1 package is discontinued.
+55 packages have newer versions incompatible with dependency constraints.
+Try `flutter pub outdated` for more information.
+Warning: Building for device with codesigning disabled. You will have to manually codesign before deploying to device.
+Building com.example.matchme for device (ios-release)...
+Upgrading AppFrameworkInfo.plist
+Upgrading Podfile
+Upgrading Info.plist
+To ensure your app continues to launch on upcoming iOS versions, UIScene lifecycle support will soon be required. Please see https://flutter.dev/to/uiscene-migration for the migration guide.
+
+Running pod install...                                           1,402ms
+CocoaPods' output:
+↳
+      Preparing
+
+    Analyzing dependencies
+
+    Inspecting targets to integrate
+      Using `ARCHS` setting to build architectures of target `Pods-Runner`: (``)
+      Using `ARCHS` setting to build architectures of target `Pods-RunnerTests`: (``)
+
+    Fetching external sources
+    -> Fetching podspec for `Flutter` from `Flutter`
+    -> Fetching podspec for `app_links` from `.symlinks/plugins/app_links/ios`
+    -> Fetching podspec for `background_fetch` from `.symlinks/plugins/background_fetch/ios`
+    -> Fetching podspec for `connectivity_plus` from `.symlinks/plugins/connectivity_plus/ios`
+    -> Fetching podspec for `device_info_plus` from `.symlinks/plugins/device_info_plus/ios`
+    -> Fetching podspec for `devicelocale` from `.symlinks/plugins/devicelocale/ios`
+    -> Fetching podspec for `file_picker` from `.symlinks/plugins/file_picker/ios`
+    -> Fetching podspec for `geocoding_ios` from `.symlinks/plugins/geocoding_ios/ios`
+    -> Fetching podspec for `geolocator_apple` from `.symlinks/plugins/geolocator_apple/darwin`
+    -> Fetching podspec for `google_mlkit_commons` from `.symlinks/plugins/google_mlkit_commons/ios`
+    -> Fetching podspec for `google_mlkit_language_id` from `.symlinks/plugins/google_mlkit_language_id/ios`
+    -> Fetching podspec for `google_mlkit_translation` from `.symlinks/plugins/google_mlkit_translation/ios`
+    -> Fetching podspec for `image_picker_ios` from `.symlinks/plugins/image_picker_ios/ios`
+    -> Fetching podspec for `package_info_plus` from `.symlinks/plugins/package_info_plus/ios`
+    -> Fetching podspec for `path_provider_foundation` from `.symlinks/plugins/path_provider_foundation/darwin`
+    -> Fetching podspec for `shared_preferences_foundation` from `.symlinks/plugins/shared_preferences_foundation/darwin`
+    -> Fetching podspec for `url_launcher_ios` from `.symlinks/plugins/url_launcher_ios/ios`
+
+    Resolving dependencies of `Podfile`
+
+    Adding spec repo `trunk` with CDN `https://cdn.cocoapods.org/`
+      CDN: trunk Relative path downloaded: CocoaPods-version.yml, save ETag: "69b1ae67-38"
+      CDN: trunk Relative path: CocoaPods-version.yml exists! Returning local because checking is only performed in repo update
+      CDN: trunk Relative path downloaded: all_pods_versions_c_4_1.txt, save ETag: W/"69b1ae67-adf"
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/c/4/1/TSBackgroundFetch/0.0.1/TSBackgroundFetch.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/c/4/1/TSBackgroundFetch/0.0.1/TSBackgroundFetch.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/c/4/1/TSBackgroundFetch/4.0.1/TSBackgroundFetch.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/c/4/1/TSBackgroundFetch/4.0.1/TSBackgroundFetch.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/c/4/1/TSBackgroundFetch/4.0.2/TSBackgroundFetch.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/c/4/1/TSBackgroundFetch/4.0.2/TSBackgroundFetch.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/c/4/1/TSBackgroundFetch/4.0.3/TSBackgroundFetch.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/c/4/1/TSBackgroundFetch/4.0.3/TSBackgroundFetch.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/c/4/1/TSBackgroundFetch/4.0.4/TSBackgroundFetch.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/c/4/1/TSBackgroundFetch/4.0.4/TSBackgroundFetch.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/c/4/1/TSBackgroundFetch/4.0.6/TSBackgroundFetch.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/c/4/1/TSBackgroundFetch/4.0.6/TSBackgroundFetch.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/c/4/1/TSBackgroundFetch/4.0.5/TSBackgroundFetch.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/c/4/1/TSBackgroundFetch/4.0.5/TSBackgroundFetch.podspec.json
+      CDN: trunk Relative path downloaded: Specs/c/4/1/TSBackgroundFetch/4.0.4/TSBackgroundFetch.podspec.json, save ETag: W/"3ec-avFXOzPslXEwoK4YPB7rv2paHKI"
+      CDN: trunk Relative path downloaded: Specs/c/4/1/TSBackgroundFetch/4.0.3/TSBackgroundFetch.podspec.json, save ETag: W/"3ec-2rwA6xBbQSJPgVWnDbOcY+WUHuk"
+      CDN: trunk Relative path downloaded: Specs/c/4/1/TSBackgroundFetch/4.0.5/TSBackgroundFetch.podspec.json, save ETag: W/"3ec-6RAgkk2zLyfQpD333sb3PxB0NXE"
+      CDN: trunk Relative path downloaded: Specs/c/4/1/TSBackgroundFetch/4.0.1/TSBackgroundFetch.podspec.json, save ETag: W/"3ec-kohzsxeV8SDZIzxdlRYSVTXD8O0"
+      CDN: trunk Relative path downloaded: Specs/c/4/1/TSBackgroundFetch/4.0.2/TSBackgroundFetch.podspec.json, save ETag: W/"3ec-Pi3xm3CJABIxDwEMnwr8xJQnAFA"
+      CDN: trunk Relative path downloaded: Specs/c/4/1/TSBackgroundFetch/4.0.6/TSBackgroundFetch.podspec.json, save ETag: W/"3ec-Cvvqrk4RMoZuHUtuVSZa8mtZWK4"
+      CDN: trunk Relative path downloaded: Specs/c/4/1/TSBackgroundFetch/0.0.1/TSBackgroundFetch.podspec.json, save ETag: W/"2e0-Wg5Ng9TFhu2wz2PJNoLo8JxdixY"
+      CDN: trunk Relative path: Specs/c/4/1/TSBackgroundFetch/4.0.6/TSBackgroundFetch.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path downloaded: all_pods_versions_1_6_1.txt, save ETag: W/"69b1ae67-4c9"
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/1.0.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/1.0.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/1.0.3/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/1.0.3/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/2.1.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/2.1.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/2.2.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/2.2.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/1.0.2/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/1.0.2/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/1.0.4/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/1.0.4/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/1.1.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/1.1.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/2.0.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/2.0.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/2.3.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/2.3.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/2.3.1/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/2.3.1/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/2.3.5/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/2.3.5/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/2.3.6/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/2.3.6/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/2.3.7/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/2.3.7/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/2.4.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/2.4.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/2.4.1/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/2.4.1/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/2.4.2/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/2.4.2/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/2.4.3/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/2.4.3/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.0.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.0.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.0.1/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.0.1/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.0.10/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.0.10/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.0.11/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.0.11/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.0.2/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.0.2/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.0.3/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.0.3/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.0.4/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.0.4/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.0.6/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.0.6/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.1.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.1.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.1.1/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.1.1/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.0.5/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.0.5/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.0.7/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.0.7/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.0.8/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.0.8/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.0.9/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.0.9/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.1.2/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.1.2/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.1.3/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.1.3/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.2.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.2.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.2.1/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.2.1/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.3.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.3.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.3.1/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.3.1/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.3.2/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.3.2/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.3.3/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.3.3/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.3.4/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.3.4/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.3.5/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.3.5/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.4.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.4.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.4.1/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.4.1/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.4.2/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.4.2/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.5.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.5.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.5.1/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.5.1/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.5.2/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.5.2/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.5.3/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.5.3/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.5.4/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.5.4/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.5.5/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.5.5/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.5.6/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.5.6/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.5.7/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.5.7/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.6.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.6.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.6.1/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.6.1/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.6.2/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.6.2/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.8.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.8.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/3.8.1/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/3.8.1/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.0.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.0.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.0.0-beta2/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.0.0-beta2/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.0.2/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.0.2/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.0.4/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.0.4/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.1.4/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.1.4/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.0.0-beta/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.0.0-beta/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.0.1/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.0.1/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.0.3/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.0.3/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.1.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.1.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.1.1/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.1.1/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.1.2/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.1.2/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.1.3/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.1.3/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.1.5/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.1.5/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.1.6/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.1.6/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.1.7/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.1.7/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.2.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.2.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.2.1/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.2.1/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.2.2/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.2.2/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.3.0/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.3.0/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.3.9/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.3.9/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.3.2/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.3.2/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.3.3/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.3.3/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.3.1/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.3.1/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.3.4/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.3.4/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.3.7/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.3.7/DKImagePickerController.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/1/6/1/DKImagePickerController/4.3.8/DKImagePickerController.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/1/6/1/DKImagePickerController/4.3.8/DKImagePickerController.podspec.json
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/1.0.0/DKImagePickerController.podspec.json, save ETag: W/"274-LjLZRyIl4V129JK1P2yS27u1OBE"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/1.0.2/DKImagePickerController.podspec.json, save ETag: W/"2a4-GpW0wwdhHmLW4YYyJswVY+/xBV8"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/1.1.0/DKImagePickerController.podspec.json, save ETag: W/"2a4-BZDbpNm0oz74mXhfVOx0wn0I3gA"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/1.0.3/DKImagePickerController.podspec.json, save ETag: W/"2a4-uolwU/fGCB3Ay3G4h2W9BRpsx4Q"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/2.1.0/DKImagePickerController.podspec.json, save ETag: W/"397-9HefS0JXl0jcoUq1j5xcBki746I"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/2.2.0/DKImagePickerController.podspec.json, save ETag: W/"397-C+52MkRzBgIy+GMq0zvkyMZgOGo"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/1.0.4/DKImagePickerController.podspec.json, save ETag: W/"2a4-wSqdkLYm10lgFaK4W3VVtELuDGE"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/2.3.0/DKImagePickerController.podspec.json, save ETag: W/"397-i5cUBT9rReygn4VTgnJYtfZvWzY"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/2.3.1/DKImagePickerController.podspec.json, save ETag: W/"397-tfKEkojNDfpbddwns1DdgWl/+94"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.0.3/DKImagePickerController.podspec.json, save ETag: W/"3e8-onWksJShSbw5/5c9XGQmjbbwMv4"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.0.6/DKImagePickerController.podspec.json, save ETag: W/"3e8-DM1CABVO14bSCXyPnUKen9Xt3Ao"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/2.0.0/DKImagePickerController.podspec.json, save ETag: W/"2de-wKbBnJ9Ee5eVAaPcgjGxNZn4qJ8"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/2.3.5/DKImagePickerController.podspec.json, save ETag: W/"397-IY/dMSQCtcBfhJZraWhXoEt5HX4"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/2.3.6/DKImagePickerController.podspec.json, save ETag: W/"397-KiIUXJWO/prjc3Dkd9mcqAtEa/c"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/2.3.7/DKImagePickerController.podspec.json, save ETag: W/"397-GHurxo9ejXQ9+GfCGZU3Tays7pY"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/2.4.0/DKImagePickerController.podspec.json, save ETag: W/"397-+29HR/gWnK6HoZju8ldYQbRuKzg"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/2.4.1/DKImagePickerController.podspec.json, save ETag: W/"397-8U8yD9FkykX/la7MlDx1vFMj1Rg"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/2.4.2/DKImagePickerController.podspec.json, save ETag: W/"397-EcxJ0QIjXwYUnxC4VDelieCDu8Q"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/2.4.3/DKImagePickerController.podspec.json, save ETag: W/"397-v+XA/SJMUgnt2DJVKraWeoTrY0Q"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.0.0/DKImagePickerController.podspec.json, save ETag: W/"3e8-NCMTMP8yLP+rMqtaYfPV4RjIO58"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.0.1/DKImagePickerController.podspec.json, save ETag: W/"3e8-KxRtCvuHNJYEW1fnT6ut0NfcaKc"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.0.10/DKImagePickerController.podspec.json, save ETag: W/"3ea-2VEGzav7hmHnN4v6qx3Sb98ezjE"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.0.11/DKImagePickerController.podspec.json, save ETag: W/"3ea-cqEFMhUBOFiMj1k/3w+1pv9/lHE"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.0.2/DKImagePickerController.podspec.json, save ETag: W/"3e8-jjDrWyk3U51URl8M0lrtFMRQaL0"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.0.4/DKImagePickerController.podspec.json, save ETag: W/"3e8-Q54C9/RHYzEDpFSWeqJ+sxFdbkY"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.1.0/DKImagePickerController.podspec.json, save ETag: W/"3e8-OKkacct6+CqbwAQIYN6GsT+7hoY"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.0.9/DKImagePickerController.podspec.json, save ETag: W/"3e8-T4/V9liM6L2TiSIMTEOq3JnW2vw"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.1.3/DKImagePickerController.podspec.json, save ETag: W/"3e8-WtOgZeZSh8FYTkJQ43j5kQLidT4"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.3.4/DKImagePickerController.podspec.json, save ETag: W/"3ec-TeFwOtO6i8IWdTRHy7AOSC2NRgQ"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.4.0/DKImagePickerController.podspec.json, save ETag: W/"3ed-XmStvjTCfMY7w4zM2vOkDDtPcpw"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.4.1/DKImagePickerController.podspec.json, save ETag: W/"44e-uRh26kBDcFT44o9ByNCN78qArfY"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.5.5/DKImagePickerController.podspec.json, save ETag: W/"438-FvKNEPQ4TYxYKqBbqrJvx1QypB0"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.5.6/DKImagePickerController.podspec.json, save ETag: W/"438-b04+ih0bADcb+xHDYlg4kqlmTuQ"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.5.7/DKImagePickerController.podspec.json, save ETag: W/"438-2lER9HXC/an5Mrq1VRmkMnW9TPA"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.6.0/DKImagePickerController.podspec.json, save ETag: W/"47b-/qaRKTFXfyupeMTAHlaxqysEVvs"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.6.2/DKImagePickerController.podspec.json, save ETag: W/"47b-9ptgkSro+KDyKIpfV8G1DRiJTAc"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.8.1/DKImagePickerController.podspec.json, save ETag: W/"47b-Ua1u4roFQUu3QdtUpyzX9PsXjjQ"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.0.0-beta/DKImagePickerController.podspec.json, save ETag: W/"929-irtTcJE77O1oysKBoOLu6CAA6DI"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.0.1/DKImagePickerController.podspec.json, save ETag: W/"91f-lJsxmwkHfd/7bPekituva1iEcbY"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.1.1/DKImagePickerController.podspec.json, save ETag: W/"928-QJc5era1Uo73bns6++zJofN1DCI"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.1.5/DKImagePickerController.podspec.json, save ETag: W/"95b-WNbEsxasm/z29yWYZu82zD2YU1I"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.1.6/DKImagePickerController.podspec.json, save ETag: W/"95b-aMYM3TsA+HQL2l/oy9kONjmSZzM"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.1.7/DKImagePickerController.podspec.json, save ETag: W/"95b-b/rZYcISsN6/ZE89GqctCi7gPV8"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.2.0/DKImagePickerController.podspec.json, save ETag: W/"952-1b/EyGlqXQD5ziTULSI1A1Ru1sM"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.2.1/DKImagePickerController.podspec.json, save ETag: W/"952-+t3+WxJA7V+gW2ABFp5g7ZtbLfc"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.2.2/DKImagePickerController.podspec.json, save ETag: W/"952-Sj55SKhIxDSOYAs/5c5BR4g1+hA"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.3.0/DKImagePickerController.podspec.json, save ETag: W/"952-OXcCo1kNSVj60zbpp3B5k1xQDds"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.3.9/DKImagePickerController.podspec.json, save ETag: W/"952-lGzsSMeHMWQnTsxGJNGePaTB7zw"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.3.2/DKImagePickerController.podspec.json, save ETag: W/"952-tet/ejiORkMmQQXWSNAfcnEQ/D0"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.3.1/DKImagePickerController.podspec.json, save ETag: W/"952-89OXiH84uYJ2pQawLtnBZ0JffPM"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.3.4/DKImagePickerController.podspec.json, save ETag: W/"952-tRLCgiCiuKx0GfIcSR/IU0t2Aaw"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.3.7/DKImagePickerController.podspec.json, save ETag: W/"952-CiTr/ntIvut0wnUxVAqqLMHaxs8"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.3.8/DKImagePickerController.podspec.json, save ETag: W/"952-p4NlRs/f4BQXFpT2Q6fVdbyKzn8"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.1.1/DKImagePickerController.podspec.json, save ETag: W/"3e8-xSE0t30ma31fVasGEXxhndTm4M8"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.0.5/DKImagePickerController.podspec.json, save ETag: W/"3e8-cn21NOfamR4/Isy8T2jML5qMFOg"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.0.7/DKImagePickerController.podspec.json, save ETag: W/"3e8-wmEmwOVEhoCDOe46YRS0OkegG/g"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.0.8/DKImagePickerController.podspec.json, save ETag: W/"3e8-uofj6V+AwoTfMPKIjrymTTXzvCA"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.2.0/DKImagePickerController.podspec.json, save ETag: W/"3ec-/iYXVXinQCgzIMOS6VBTKrxts+o"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.2.1/DKImagePickerController.podspec.json, save ETag: W/"3ec-j9ANMcFojc411fzhXTIxp5rC04w"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.3.0/DKImagePickerController.podspec.json, save ETag: W/"3ec-9xiQ917ROdQ/gkAkng5T1dqx7p8"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.3.1/DKImagePickerController.podspec.json, save ETag: W/"3ec-/Shhz2Zq+q7qvZEWyKgOfhhPYK8"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.3.5/DKImagePickerController.podspec.json, save ETag: W/"3ec-OJyv/tqjrgsFgyYITLyjKt8+daU"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.5.0/DKImagePickerController.podspec.json, save ETag: W/"438-D8zGKwR6awxk2B57ZKPeqyK4aDk"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.5.1/DKImagePickerController.podspec.json, save ETag: W/"438-jbfnaoinpmqJO6MOk1zEybt+0zU"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.5.3/DKImagePickerController.podspec.json, save ETag: W/"438-J0tmrW55zZjSaIaFyONwwF0CFVc"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.5.4/DKImagePickerController.podspec.json, save ETag: W/"438-LVZMeRY9RIWcP/22TEBFJ2dGzrc"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.6.1/DKImagePickerController.podspec.json, save ETag: W/"47b-T4ByrtRBGaM5VclYMnPqfIc5wPQ"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.8.0/DKImagePickerController.podspec.json, save ETag: W/"47b-buqfG6LiygugMXuB1oFS0H2eh38"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.1.4/DKImagePickerController.podspec.json, save ETag: W/"926-GyHde6DrSI7whp0etvI7NTS2m7U"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.0.3/DKImagePickerController.podspec.json, save ETag: W/"91f-o5oSTi8nyrwp43yEXbhQQuIUOsQ"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.1.2/DKImagePickerController.podspec.json, save ETag: W/"928-NY681c6H24hj7EuN6mUcZ7rKNuA"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.1.2/DKImagePickerController.podspec.json, save ETag: W/"3e8-qMMD3JoyJT3ka33s7mqRsweDY2c"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.3.2/DKImagePickerController.podspec.json, save ETag: W/"3ec-QW2rLULKr0ymgbrKnC1TOJWowaI"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.3.3/DKImagePickerController.podspec.json, save ETag: W/"3ec-4RhSxTBrGn6ojKnoIi7UB9HU8O0"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.5.2/DKImagePickerController.podspec.json, save ETag: W/"438-LOcjuWnB8EvwjcGVZd5eYvz5wj4"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.0.0/DKImagePickerController.podspec.json, save ETag: W/"91f-+57xz4LmN4X7E7IkIpkHsdKhdg4"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.0.0-beta2/DKImagePickerController.podspec.json, save ETag: W/"92b-Q3ifsAl0sT8mJjzB7g3lwubGOQ0"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.0.2/DKImagePickerController.podspec.json, save ETag: W/"91f-cBHCaeurrN1kDkJp/zwFWX5WiJk"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.0.4/DKImagePickerController.podspec.json, save ETag: W/"91f-3rzE6qCbgsBvwjfxvr1qn9S+n6M"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.1.0/DKImagePickerController.podspec.json, save ETag: W/"928-q3GFp2t1plWdtzxWjJeRyH+RWkE"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.1.3/DKImagePickerController.podspec.json, save ETag: W/"928-fIx4ihclHfvPSSDF8ELVXDuQDWg"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/4.3.3/DKImagePickerController.podspec.json, save ETag: W/"952-cv03jyRM7z0nKI4K6/IXpEZ+QBI"
+      CDN: trunk Relative path downloaded: Specs/1/6/1/DKImagePickerController/3.4.2/DKImagePickerController.podspec.json, save ETag: W/"44e-j8ikISDLDJt5gq8E1H4OWyW1GG8"
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.3.9/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/1.0.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/1.0.2/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/1.0.3/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/1.0.4/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/1.1.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/2.0.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/2.1.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/2.2.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/2.3.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/2.3.1/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/2.3.5/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/2.3.6/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/2.3.7/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/2.4.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/2.4.1/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/2.4.2/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/2.4.3/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.0.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.0.1/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.0.2/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.0.3/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.0.4/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.0.5/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.0.6/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.0.7/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.0.8/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.0.9/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.0.10/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.0.11/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.1.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.1.1/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.1.2/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.1.3/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.2.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.2.1/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.3.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.3.1/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.3.2/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.3.3/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.3.4/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.3.5/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.4.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.4.1/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.4.2/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.5.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.5.1/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.5.2/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.5.3/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.5.4/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.5.5/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.5.6/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.5.7/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.6.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.6.1/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.6.2/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.8.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/3.8.1/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.0.0-beta/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.0.0-beta2/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.0.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.0.1/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.0.2/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.0.3/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.0.4/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.1.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.1.1/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.1.2/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.1.3/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.1.4/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.1.5/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.1.6/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.1.7/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.2.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.2.1/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.2.2/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.3.0/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.3.1/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.3.2/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.3.3/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.3.4/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.3.7/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.3.8/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path: Specs/1/6/1/DKImagePickerController/4.3.9/DKImagePickerController.podspec.json modified during this run! Returning local
+      CDN: trunk Relative path downloaded: all_pods_versions_4_2_c.txt, save ETag: W/"69b1ae67-535"
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/4/2/c/FlutterMacOS/1.12.1303/FlutterMacOS.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/4/2/c/FlutterMacOS/1.12.1303/FlutterMacOS.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/4/2/c/FlutterMacOS/1.17.0/FlutterMacOS.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/4/2/c/FlutterMacOS/1.17.0/FlutterMacOS.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/4/2/c/FlutterMacOS/1.22.4/FlutterMacOS.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/4/2/c/FlutterMacOS/1.22.4/FlutterMacOS.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/4/2/c/FlutterMacOS/1.9.102/FlutterMacOS.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/4/2/c/FlutterMacOS/1.9.102/FlutterMacOS.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/4/2/c/FlutterMacOS/2.0.0/FlutterMacOS.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/4/2/c/FlutterMacOS/2.0.0/FlutterMacOS.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/4/2/c/FlutterMacOS/2.10.2/FlutterMacOS.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/4/2/c/FlutterMacOS/2.10.2/FlutterMacOS.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/4/2/c/FlutterMacOS/2.2.2/FlutterMacOS.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/4/2/c/FlutterMacOS/2.2.2/FlutterMacOS.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/4/2/c/FlutterMacOS/2.5/FlutterMacOS.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/4/2/c/FlutterMacOS/2.5/FlutterMacOS.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/4/2/c/FlutterMacOS/3.0.0/FlutterMacOS.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/4/2/c/FlutterMacOS/3.0.0/FlutterMacOS.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/4/2/c/FlutterMacOS/3.13.0/FlutterMacOS.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/4/2/c/FlutterMacOS/3.13.0/FlutterMacOS.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/4/2/c/FlutterMacOS/3.13.2/FlutterMacOS.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/4/2/c/FlutterMacOS/3.13.2/FlutterMacOS.podspec.json
+      CDN: trunk Redirecting from https://cdn.cocoapods.org/Specs/4/2/c/FlutterMacOS/3.16.0/FlutterMacOS.podspec.json to https://cdn.jsdelivr.net/cocoa/Specs/4/2/c/FlutterMacOS/3.16.0/FlutterMacOS.podspec.json
+      CDN: trunk Relative path downloaded: Specs/4/2/c/FlutterMacOS/1.12.1303/FlutterMacOS.podspec.json, save ETag: W/"a2c-3l7f6SLgY2HFklEJBcPSy7vCMWQ"
+      CDN: trunk Relative path downloaded: Specs/4/2/c/FlutterMacOS/1.17.0/FlutterMacOS.podspec.json, save ETag: W/"a06-kUX4eP4wEg0WifAqbw0mvmQak/c"
+      CDN: trunk Relative path downloaded: Specs/4/2/c/FlutterMacOS/1.22.4/FlutterMacOS.podspec.json, save ETag: W/"a29-rCEO9xlEs/BHiQdtcNTHLH7Axhk"
+      CDN: trunk Relative path downloaded: Specs/4/2/c/FlutterMacOS/2.0.0/FlutterMacOS.podspec.json, save ETag: W/"a30-LxtFbE2UNsTU0TkZvTvo7wO6YyI"
+      CDN: trunk Relative path downloaded: Specs/4/2/c/FlutterMacOS/2.2.2/FlutterMacOS.podspec.json, save ETag: W/"a3c-0iXfw7ucDo+DNkugXnApNY3JP+0"
+      CDN: trunk Relative path downloaded: Specs/4/2/c/FlutterMacOS/3.0.0/FlutterMacOS.podspec.json, save ETag: W/"9ef-ReUIyH4BioQ2hgfBIDtKWWKawnk"
+      CDN: trunk Relative path downloaded: Specs/4/2/c/FlutterMacOS/3.13.2/FlutterMacOS.podspec.json, save ETag: W/"9bd-pvz12gycpa7/oGcgqr7ZN663uh4"
+      CDN: trunk Relative path downloaded: Specs/4/2/c/FlutterMacOS/3.16.0/FlutterMacOS.podspec.json, save ETag: W/"9f0-46dwoEkckuCoGAQO9SCyGine/bw"
+      CDN: trunk Relative path downloaded: Specs/4/2/c/FlutterMacOS/2.5/FlutterMacOS.podspec.json, save ETag: W/"a3a-B4rs1ilNC3vOEcbc3cs+eBhWegQ"
+      CDN: trunk Relative path downloaded: Specs/4/2/c/FlutterMacOS/3.13.0/FlutterMacOS.podspec.json, save ETag: W/"9bc-t9hMLsI2WH9zKfTWETQWmvKcNVQ"
+      CDN: trunk Relative path downloaded: Specs/4/2/c/FlutterMacOS/1.9.102/FlutterMacOS.podspec.json, save ETag: W/"a2a-fs/UyQIY577K/3M8Ewg1MvspJCA"
+      CDN: trunk Relative path downloaded: Specs/4/2/c/FlutterMacOS/2.10.2/FlutterMacOS.podspec.json, save ETag: W/"9f0-1oaoZn36NKQE7v1b/MUE20unGtQ"
+      CDN: trunk Relative path: Specs/4/2/c/FlutterMacOS/3.16.0/FlutterMacOS.podspec.json modified during this run! Returning local
+    [!] CocoaPods could not find compatible versions for pod "google_mlkit_commons":
+      In Podfile:
+        google_mlkit_commons (from `.symlinks/plugins/google_mlkit_commons/ios`)
+
+    Specs satisfying the `google_mlkit_commons (from `.symlinks/plugins/google_mlkit_commons/ios`)` dependency were found, but they required a higher minimum deployment target.
+
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/molinillo-0.8.0/lib/molinillo/resolution.rb:317:in 'Molinillo::Resolver::Resolution#raise_error_unless_state'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/molinillo-0.8.0/lib/molinillo/resolution.rb:299:in 'block in Molinillo::Resolver::Resolution#unwind_for_conflict'
+    <internal:kernel>:91:in 'Kernel#tap'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/molinillo-0.8.0/lib/molinillo/resolution.rb:297:in 'Molinillo::Resolver::Resolution#unwind_for_conflict'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/molinillo-0.8.0/lib/molinillo/resolution.rb:682:in 'Molinillo::Resolver::Resolution#attempt_to_activate'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/molinillo-0.8.0/lib/molinillo/resolution.rb:254:in 'Molinillo::Resolver::Resolution#process_topmost_state'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/molinillo-0.8.0/lib/molinillo/resolution.rb:182:in 'Molinillo::Resolver::Resolution#resolve'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/molinillo-0.8.0/lib/molinillo/resolver.rb:43:in 'Molinillo::Resolver#resolve'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/cocoapods-1.16.2/lib/cocoapods/resolver.rb:94:in 'Pod::Resolver#resolve'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/cocoapods-1.16.2/lib/cocoapods/installer/analyzer.rb:1082:in 'block in Pod::Installer::Analyzer#resolve_dependencies'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/cocoapods-1.16.2/lib/cocoapods/user_interface.rb:64:in 'Pod::UserInterface.section'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/cocoapods-1.16.2/lib/cocoapods/installer/analyzer.rb:1080:in 'Pod::Installer::Analyzer#resolve_dependencies'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/cocoapods-1.16.2/lib/cocoapods/installer/analyzer.rb:125:in 'Pod::Installer::Analyzer#analyze'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/cocoapods-1.16.2/lib/cocoapods/installer.rb:422:in 'Pod::Installer#analyze'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/cocoapods-1.16.2/lib/cocoapods/installer.rb:244:in 'block in Pod::Installer#resolve_dependencies'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/cocoapods-1.16.2/lib/cocoapods/user_interface.rb:64:in 'Pod::UserInterface.section'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/cocoapods-1.16.2/lib/cocoapods/installer.rb:243:in 'Pod::Installer#resolve_dependencies'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/cocoapods-1.16.2/lib/cocoapods/installer.rb:162:in 'Pod::Installer#install!'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/cocoapods-1.16.2/lib/cocoapods/command/install.rb:52:in 'Pod::Command::Install#run'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/claide-1.1.0/lib/claide/command.rb:334:in 'CLAide::Command.run'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/cocoapods-1.16.2/lib/cocoapods/command.rb:52:in 'Pod::Command.run'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/gems/3.4.0/gems/cocoapods-1.16.2/bin/pod:55:in '<top (required)>'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/site_ruby/3.4.0/rubygems.rb:303:in 'Kernel#load'
+    /Users/builder/.rbenv/versions/3.4.7/lib/ruby/site_ruby/3.4.0/rubygems.rb:303:in 'Gem.activate_and_load_bin_path'
+    /Users/builder/.rbenv/versions/3.4.7/bin/pod:25:in '<main>'
+
+Error output from CocoaPods:
+↳
+
+    [!] Automatically assigning platform `iOS` with version `13.0` on target `Runner` because no platform was specified. Please specify a platform for this target in your Podfile. See `https://guides.cocoapods.org/syntax/podfile.html#platform`.
+
+Error: The plugin "google_mlkit_commons" requires a higher minimum iOS deployment version than your application is targeting.
+To build, increase your application's deployment target to at least 15.5 as described at https://flutter.dev/to/ios-deploy
+Error running pod install
+
+
+Build failed :|
+Failed to build for iOS

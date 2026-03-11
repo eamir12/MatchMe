@@ -52,12 +52,12 @@ DECLARE
 BEGIN
     SET search_path = 'public';
 
-    -- Count users who have been active within the last 30 seconds
+    -- Count users who have been active within the last 60 seconds
     -- This includes both visible and invisible users
     SELECT COUNT(*)
     INTO online_count
     FROM user_activity ua
-    WHERE ua.last_activity > NOW() - INTERVAL '30 seconds'
+    WHERE ua.last_activity > NOW() - INTERVAL '60 seconds'
     AND ua.is_online = true;
 
     RETURN COALESCE(online_count, 0);

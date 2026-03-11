@@ -32,11 +32,12 @@ BEGIN
         COALESCE(cm.content_translated, cm.content_original) AS last_message_content,
         cm.id AS last_message_id,
         cm.created_at AS last_message_at,
-        -- Count messages from the other user (simplified unread count)
+        -- Count messages from the other user that are unread (read_at IS NULL)
         (SELECT COUNT(*)::integer
          FROM chat_messages cm_unread
          WHERE cm_unread.match_id = m.id
-         AND cm_unread.sender_id != p_user_id) AS unread_count,
+         AND cm_unread.sender_id != p_user_id
+         AND cm_unread.read_at IS NULL) AS unread_count,
         m.created_at AS match_created_at,
         m.event_id,
         e.event_name,

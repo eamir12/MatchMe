@@ -4,14 +4,30 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.content.Context.MODE_PRIVATE
+import android.util.Log
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
+import android.content.pm.ApplicationInfo
 
 class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     private lateinit var channel: MethodChannel
     private lateinit var context: Context
+
+    private fun isDebug(): Boolean {
+        return try {
+            (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        } catch (_: Exception) {
+            false
+        }
+    }
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         channel = MethodChannel(flutterPluginBinding.binaryMessenger, "matchme/background_service")
@@ -34,12 +50,19 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 val supabaseUrl = call.argument<String>("supabaseUrl")
                 val supabaseKey = call.argument<String>("supabaseKey")
                 val userToken = call.argument<String>("userToken")
+                val refreshToken = call.argument<String>("refreshToken")
+                val appInForeground = call.argument<Boolean>("appInForeground") ?: false
+                val highAccuracyMode = call.argument<Boolean>("highAccuracyMode") ?: false
+                val isVisible = call.argument<Boolean>("isVisible") ?: true
+                val isOnline = call.argument<Boolean>("isOnline") ?: true
 
-                println("MatchMeBackgroundPlugin: startService called with token: ${userToken?.let { "present (${it.length} chars)" } ?: "null"}")
+                if (isDebug()) {
+                    println("MatchMeBackgroundPlugin: startService called with token: ${userToken?.let { "present" } ?: "null"}")
+                }
 
                 if (userId != null && supabaseUrl != null && supabaseKey != null) {
                     if (hasLocationPermission()) {
-                        MatchMeBackgroundService.startService(context, userId, supabaseUrl, supabaseKey, userToken)
+                        MatchMeBackgroundService.startService(context, userId, supabaseUrl, supabaseKey, userToken, refreshToken, appInForeground, highAccuracyMode, isVisible, isOnline)
                         result.success(true)
                     } else {
                         result.error("PERMISSION_DENIED", "Location permission not granted", null)
@@ -53,23 +76,235 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 result.success(true)
             }
             "isRunning" -> {
-                // For simplicity, we'll assume it's running if we can check it
-                // In a real implementation, you'd track service state
-                result.success(true)
+                result.success(MatchMeBackgroundService.isServiceAlive())
             }
             "updateVisibility" -> {
                 val isVisible = call.argument<Boolean>("isVisible") ?: false
                 MatchMeBackgroundService.updateVisibility(context, isVisible)
                 result.success(true)
             }
+            "setConnectivity" -> {
+                val isOnline = call.argument<Boolean>("isOnline") ?: true
+                MatchMeBackgroundService.setConnectivity(context, isOnline)
+                result.success(true)
+            }
+            "updateAppForeground" -> {
+                val isForeground = call.argument<Boolean>("isForeground") ?: false
+                MatchMeBackgroundService.updateAppForeground(context, isForeground)
+                result.success(true)
+            }
+            "updateHighAccuracyMode" -> {
+                val enabled = call.argument<Boolean>("enabled") ?: false
+                MatchMeBackgroundService.updateHighAccuracyMode(context, enabled)
+                result.success(true)
+            }
             "updateToken" -> {
                 val token = call.argument<String>("token")
-                MatchMeBackgroundService.updateToken(context, token)
+                val refreshToken = call.argument<String>("refreshToken")
+                MatchMeBackgroundService.updateToken(context, token, refreshToken)
                 result.success(true)
+            }
+            "updateConfig" -> {
+                val gpsInterval = call.argument<Int>("gpsInterval") ?: 30
+                val smartThrottlingEnabled = call.argument<Boolean>("smartThrottlingEnabled") ?: true
+                MatchMeBackgroundService.updateConfig(context, gpsInterval, smartThrottlingEnabled)
+                result.success(true)
+            }
+            "checkNotifications" -> {
+                val messageId = call.argument<String>("messageId")
+                val translatedContent = call.argument<String>("translatedContent")
+                val originalContent = call.argument<String>("originalContent")
+                val senderName = call.argument<String>("senderName")
+                val matchId = call.argument<String>("matchId")
+
+                Log.d("MatchMeBackgroundPlugin", "[PLUGIN] checkNotifications called with messageId: $messageId, translatedContent: '$translatedContent', originalContent: '$originalContent', senderName: '$senderName', matchId: '$matchId'")
+
+                // If we have translated content, use it directly instead of querying RPC
+                if (translatedContent != null && translatedContent != "null" && translatedContent.isNotEmpty()) {
+                    Log.d("MatchMeBackgroundPlugin", "[PLUGIN] Using provided translated content for notification")
+                    CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            MatchMeBackgroundService.showTranslatedNotification(
+                                context,
+                                messageId ?: "",
+                                translatedContent,
+                                originalContent ?: translatedContent,
+                                senderName ?: "Someone",
+                                matchId
+                            )
+                        } catch (e: Exception) {
+                            Log.e("MatchMeBackgroundPlugin", "[PLUGIN] Error showing translated notification", e)
+                        }
+                    }
+                } else {
+                    // Fallback to RPC query
+                    Log.d("MatchMeBackgroundPlugin", "[PLUGIN] No translated content provided, falling back to RPC query")
+                    CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            Log.d("MatchMeBackgroundPlugin", "[PLUGIN] Calling MatchMeBackgroundService.checkForNotifications")
+                            MatchMeBackgroundService.checkForNotifications(context, messageId)
+                            Log.d("MatchMeBackgroundPlugin", "[PLUGIN] checkForNotifications completed")
+                        } catch (e: Exception) {
+                            Log.e("MatchMeBackgroundPlugin", "[PLUGIN] Error checking notifications", e)
+                        }
+                    }
+                }
+                result.success(null)
+            }
+            "isIgnoringBatteryOptimizations" -> {
+                result.success(isIgnoringBatteryOptimizations())
+            }
+            "requestIgnoreBatteryOptimizations" -> {
+                requestIgnoreBatteryOptimizations()
+                result.success(true)
+            }
+            "setPermissionStrings" -> {
+                val args = call.arguments as? Map<*, *>
+                if (args != null) {
+                    val prefs = try {
+                        val masterKey = MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
+                        EncryptedSharedPreferences.create(
+                            context,
+                            "matchme_prefs",
+                            masterKey,
+                            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                        )
+                    } catch (_: Throwable) {
+                        context.getSharedPreferences("matchme_prefs", MODE_PRIVATE)
+                    }
+                    val edit = prefs.edit()
+                    for ((k, v) in args.entries) {
+                        val key = k?.toString() ?: continue
+                        val value = v?.toString() ?: continue
+                        edit.putString(key, value)
+                    }
+                    edit.apply()
+                }
+                result.success(true)
+            }
+            "consumePermissionIssue" -> {
+                val prefs = try {
+                    val masterKey = MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
+                    EncryptedSharedPreferences.create(
+                        context,
+                        "matchme_prefs",
+                        masterKey,
+                        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                    )
+                } catch (_: Throwable) {
+                    context.getSharedPreferences("matchme_prefs", MODE_PRIVATE)
+                }
+                val code = prefs.getString("permission_issue_code", null)
+                prefs.edit().remove("permission_issue_code").remove("permission_issue_at").apply()
+                result.success(code)
+            }
+            "setPermissionIssue" -> {
+                val code = call.argument<String>("code")
+                if (code.isNullOrBlank()) {
+                    result.success(false)
+                } else {
+                    val prefs = try {
+                        val masterKey = MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
+                        EncryptedSharedPreferences.create(
+                            context,
+                            "matchme_prefs",
+                            masterKey,
+                            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                        )
+                    } catch (_: Throwable) {
+                        context.getSharedPreferences("matchme_prefs", MODE_PRIVATE)
+                    }
+                    prefs.edit().putString("permission_issue_code", code).apply()
+                    result.success(true)
+                }
+            }
+            "resetChatNotification" -> {
+                val matchId = call.argument<String>("matchId")
+                println("MatchMeBackgroundPlugin: resetChatNotification called with matchId: $matchId")
+                if (matchId != null) {
+                    MatchMeBackgroundService.resetChatNotification(context, matchId)
+                    result.success(true)
+                } else {
+                    result.error("INVALID_ARGUMENTS", "Missing matchId", null)
+                }
+            }
+            "dismissChatNotification" -> {
+                val matchId = call.argument<String>("matchId")
+                println("MatchMeBackgroundPlugin: dismissChatNotification called with matchId: $matchId")
+                if (matchId != null) {
+                    MatchMeBackgroundService.dismissChatNotification(context, matchId)
+                    result.success(true)
+                } else {
+                    result.error("INVALID_ARGUMENTS", "Missing matchId", null)
+                }
+            }
+            "setViewingChat" -> {
+                val matchId = call.argument<String>("matchId")
+                println("MatchMeBackgroundPlugin: setViewingChat called with matchId: $matchId")
+                if (matchId != null) {
+                    MatchMeBackgroundService.setViewingChat(context, matchId)
+                    result.success(true)
+                } else {
+                    result.error("INVALID_ARGUMENTS", "Missing matchId", null)
+                }
+            }
+            "clearViewingChat" -> {
+                println("MatchMeBackgroundPlugin: clearViewingChat called")
+                MatchMeBackgroundService.clearViewingChat(context)
+                result.success(true)
+            }
+            "openAppNotificationSettings" -> {
+                try {
+                    val intent = Intent().apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            action = android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS
+                            putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                        } else {
+                            action = android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS
+                            data = android.net.Uri.fromParts("package", context.packageName, null)
+                        }
+                    }
+                    context.startActivity(intent)
+                    result.success(true)
+                } catch (t: Throwable) {
+                    result.error("FAILED", t.message, null)
+                }
+            }
+            "getInitialRoute" -> {
+                // This is a bit tricky because the plugin doesn't have access to the Activity's intent directly
+                // unless we implement ActivityAware.
+                // However, since we are launching the app with a new task, the intent should be delivered to the main activity.
+                // Flutter handles initial route automatically if the intent has "route" extra.
+                // But we are using a custom "route" extra, not the standard Flutter one.
+                // Let's return null here and rely on Flutter's deep linking or intent handling if possible.
+                // Actually, we can't easily get the intent here without ActivityAware.
+                result.success(null)
             }
             else -> {
                 result.notImplemented()
             }
+        }
+    }
+
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val powerManager = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            return powerManager.isIgnoringBatteryOptimizations(context.packageName)
+        }
+        return true
+    }
+
+    private fun requestIgnoreBatteryOptimizations() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val intent = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = android.net.Uri.parse("package:${context.packageName}")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(intent)
         }
     }
 

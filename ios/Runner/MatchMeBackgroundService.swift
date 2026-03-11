@@ -20,8 +20,21 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
     private var supabaseKey: String?
     private var userToken: String?
     private var isVisible = false
+    private var isOnline = false
+    private var highAccuracyMode = false
     private var heartbeatTimer: Timer?
     private var backgroundTaskIdentifier: UIBackgroundTaskIdentifier = .invalid
+    private var pendingBackgroundTask: BGAppRefreshTask?
+    private var lastHeartbeatTime: Date?
+
+    private let defaults = UserDefaults.standard
+    private let kUserId = "mm_user_id"
+    private let kSupabaseUrl = "mm_supabase_url"
+    private let kSupabaseKey = "mm_supabase_key"
+    private let kUserToken = "mm_user_token"
+    private let kIsVisible = "mm_is_visible"
+    private let kIsOnline = "mm_is_online"
+    private let kHighAccuracyMode = "mm_high_accuracy_mode"
 
     init(channel: FlutterMethodChannel) {
         self.channel = channel
@@ -33,11 +46,19 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
         locationManager.allowsBackgroundLocationUpdates = true
         locationManager.pausesLocationUpdatesAutomatically = false
 
+        // Load saved state
+        loadState()
+
         // Register background tasks
         registerBackgroundTasks()
 
         // Request notification permissions for silent notifications
         requestNotificationPermissions()
+        
+        // Resume service if we have state
+        if userId != nil {
+            startBackgroundService()
+        }
     }
 
     public static func register(with registrar: FlutterPluginRegistrar) {
@@ -64,7 +85,20 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
             self.supabaseUrl = supabaseUrl
             self.supabaseKey = supabaseKey
             self.userToken = args["userToken"] as? String
+            
+            if let isOnline = args["isOnline"] as? Bool {
+                self.isOnline = isOnline
+            }
 
+            if let isVisible = args["isVisible"] as? Bool {
+                self.isVisible = isVisible
+            }
+
+            if let highAccuracyMode = args["highAccuracyMode"] as? Bool {
+                self.highAccuracyMode = highAccuracyMode
+            }
+
+            saveState()
             startBackgroundService()
             result(true)
 
@@ -83,6 +117,43 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
             }
 
             self.isVisible = isVisible
+            saveState()
+            updateLocationTracking()
+            // Update heartbeat status based on new visibility/online state
+            if isOnline {
+                startHeartbeat()
+            } else {
+                stopHeartbeat()
+            }
+            result(true)
+
+        case "setConnectivity":
+            guard let args = call.arguments as? [String: Any],
+                  let isOnline = args["isOnline"] as? Bool else {
+                result(FlutterError(code: "INVALID_ARGUMENTS", message: "Missing isOnline argument", details: nil))
+                return
+            }
+
+            self.isOnline = isOnline
+            saveState()
+            updateLocationTracking()
+            
+            if isOnline {
+                startHeartbeat()
+            } else {
+                stopHeartbeat()
+            }
+            result(true)
+
+        case "updateHighAccuracyMode":
+            guard let args = call.arguments as? [String: Any],
+                  let enabled = args["enabled"] as? Bool else {
+                result(FlutterError(code: "INVALID_ARGUMENTS", message: "Missing enabled argument", details: nil))
+                return
+            }
+
+            self.highAccuracyMode = enabled
+            saveState()
             updateLocationTracking()
             result(true)
 
@@ -93,12 +164,33 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
             }
 
             self.userToken = args["token"] as? String
+            saveState()
             print("JWT token updated in iOS background service")
             result(true)
 
         default:
             result(FlutterMethodNotImplemented)
         }
+    }
+
+    private func saveState() {
+        defaults.set(userId, forKey: kUserId)
+        defaults.set(supabaseUrl, forKey: kSupabaseUrl)
+        defaults.set(supabaseKey, forKey: kSupabaseKey)
+        defaults.set(userToken, forKey: kUserToken)
+        defaults.set(isVisible, forKey: kIsVisible)
+        defaults.set(isOnline, forKey: kIsOnline)
+        defaults.set(highAccuracyMode, forKey: kHighAccuracyMode)
+    }
+
+    private func loadState() {
+        userId = defaults.string(forKey: kUserId)
+        supabaseUrl = defaults.string(forKey: kSupabaseUrl)
+        supabaseKey = defaults.string(forKey: kSupabaseKey)
+        userToken = defaults.string(forKey: kUserToken)
+        isVisible = defaults.bool(forKey: kIsVisible)
+        isOnline = defaults.bool(forKey: kIsOnline)
+        highAccuracyMode = defaults.bool(forKey: kHighAccuracyMode)
     }
 
     private func registerBackgroundTasks() {
@@ -148,6 +240,8 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
         self.supabaseKey = nil
         self.userToken = nil
         self.isVisible = false
+        self.isOnline = false
+        saveState()
     }
 
     private func isServiceRunning() -> Bool {
@@ -155,17 +249,46 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
     }
 
     private func updateLocationTracking() {
-        if isVisible && CLLocationManager.locationServicesEnabled() {
+        let shouldTrack = isVisible && isOnline
+        
+        if shouldTrack && CLLocationManager.locationServicesEnabled() {
             locationManager.requestAlwaysAuthorization()
-            locationManager.startUpdatingLocation()
+            
+            if highAccuracyMode {
+                // High Accuracy: Continuous updates with background execution
+                locationManager.allowsBackgroundLocationUpdates = true
+                locationManager.desiredAccuracy = kCLLocationAccuracyBest
+                locationManager.distanceFilter = 10.0 // 10 meters
+                locationManager.pausesLocationUpdatesAutomatically = false
+
+                locationManager.startMonitoringSignificantLocationChanges()
+                locationManager.startUpdatingLocation()
+            } else {
+                // Standard Mode: Significant changes only (battery saving)
+                // This allows the app to be suspended but woken up for major moves (500m+)
+                locationManager.allowsBackgroundLocationUpdates = false // Let app suspend
+                locationManager.pausesLocationUpdatesAutomatically = true
+                
+                locationManager.stopUpdatingLocation()
+                locationManager.startMonitoringSignificantLocationChanges()
+            }
         } else {
             locationManager.stopUpdatingLocation()
+            locationManager.stopMonitoringSignificantLocationChanges()
+            locationManager.allowsBackgroundLocationUpdates = false
         }
     }
 
     private func startHeartbeat() {
         heartbeatTimer?.invalidate()
-        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+        
+        // If offline, don't start heartbeat
+        if !isOnline {
+            return
+        }
+        
+        // Heartbeat every 5 minutes (300 seconds) - minimum allowed frequency for activity updates
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 300.0, repeats: true) { [weak self] _ in
             self?.performHeartbeat()
         }
     }
@@ -179,6 +302,8 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
         guard let userId = userId,
               let supabaseUrl = supabaseUrl,
               let supabaseKey = supabaseKey else { return }
+
+        lastHeartbeatTime = Date()
 
         let url = URL(string: "\(supabaseUrl)/rest/v1/rpc/update_user_activity")!
         var request = URLRequest(url: url)
@@ -238,7 +363,18 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
     }
 
     private func handleLocationUpdate(task: BGAppRefreshTask) {
-        task.setTaskCompleted(success: true)
+        print("Executing background location update task")
+        
+        task.expirationHandler = {
+            self.pendingBackgroundTask = nil
+            task.setTaskCompleted(success: false)
+        }
+        
+        self.pendingBackgroundTask = task
+        
+        // Request a single location update
+        locationManager.requestLocation()
+        
         scheduleBackgroundTasks() // Reschedule
     }
 
@@ -270,14 +406,36 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
     // MARK: - CLLocationManagerDelegate
 
     public func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        // Complete background task if exists
+        defer {
+            if let task = pendingBackgroundTask {
+                task.setTaskCompleted(success: true)
+                pendingBackgroundTask = nil
+            }
+        }
+
+        if isOnline {
+             // Update activity if online (throttled)
+             if let lastTime = lastHeartbeatTime {
+                 if Date().timeIntervalSince(lastTime) > 60 {
+                     performHeartbeat()
+                 }
+             } else {
+                 performHeartbeat()
+             }
+        }
+
         guard let location = locations.last, isVisible, let userId = userId else { return }
 
         updateLocationInSupabase(location: location)
-        triggerMatchEngine(location: location)
     }
 
     public func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         print("Location manager failed: \(error)")
+        if let task = pendingBackgroundTask {
+             task.setTaskCompleted(success: false)
+             pendingBackgroundTask = nil
+        }
     }
 
     private func updateLocationInSupabase(location: CLLocation) {
@@ -309,51 +467,6 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
                     print("Successfully updated location")
                 } else {
                     print("Location update failed with status: \(httpResponse.statusCode)")
-                }
-            }
-        }.resume()
-    }
-
-    private func triggerMatchEngine(location: CLLocation) {
-        guard let userId = userId,
-              let supabaseUrl = supabaseUrl,
-              let supabaseKey = supabaseKey else { return }
-
-        let url = URL(string: "\(supabaseUrl)/functions/v1/match-engine")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue(supabaseKey, forHTTPHeaderField: "apikey")
-
-        // Use JWT token if available, otherwise fall back to anon key
-        if let userToken = userToken, !userToken.isEmpty {
-            request.setValue("Bearer \(userToken)", forHTTPHeaderField: "Authorization")
-            print("Using JWT token for match engine (length: \(userToken.count))")
-        } else {
-            request.setValue("Bearer \(supabaseKey)", forHTTPHeaderField: "Authorization")
-            print("Using anon key for match engine (no valid JWT token)")
-        }
-
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let body: [String: Any] = [
-            "userId": userId,
-            "latitude": location.coordinate.latitude,
-            "longitude": location.coordinate.longitude
-        ]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error {
-                print("Match engine trigger failed: \(error)")
-            } else if let httpResponse = response as? HTTPURLResponse {
-                if httpResponse.statusCode == 200 {
-                    print("Successfully triggered match engine")
-                } else if httpResponse.statusCode == 401 {
-                    // Match engine requires service role permissions, which we can't provide from client
-                    print("Match engine 401 error - this is expected as match engine requires server-side authentication")
-                    print("Location update completed successfully, match engine will work when app is foreground")
-                } else {
-                    print("Match engine trigger failed with status: \(httpResponse.statusCode)")
                 }
             }
         }.resume()

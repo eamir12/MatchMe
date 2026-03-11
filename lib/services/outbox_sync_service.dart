@@ -173,6 +173,7 @@ class OutboxSyncService {
             'match_id': messagePayload['match_id'],
             'sender_id': messagePayload['sender_id'],
             'content_original': messagePayload['content_original'],
+            'reply_to_message_id': messagePayload['reply_to_message_id'],
           });
 
           await localDb.removeMessageFromOutbox(key);
@@ -284,7 +285,19 @@ class OutboxSyncService {
           final userId = (payload['userId'] ?? payload['user_id'] ?? '').toString();
           final isVisible = payload['isVisible'] == true;
           if (userId.isEmpty) continue;
-          await supabase.from('users').update({'user_visibility_setting': isVisible}).eq('id', userId);
+          
+          // Update users table
+          await supabase
+              .from('users')
+              .update({'user_visibility_setting': isVisible})
+              .eq('id', userId);
+              
+          // Update visibility in user_activity
+          await supabase.rpc(
+            'update_user_visibility',
+            params: {'p_user_id': userId}
+          );
+          
           await localDb.removeVisibilityUpdateFromOutbox(key);
         } catch (e) {
           _startRetryTimer();
@@ -339,6 +352,10 @@ class OutboxSyncService {
           await supabase.from('profile_edit_requests').insert(dbData);
           await localDb.removeMessageFromOutbox(key);
         } catch (e) {
+          if (e.toString().contains('profile_edit_request_already_pending')) {
+            await localDb.removeMessageFromOutbox(key);
+            continue;
+          }
           _startRetryTimer();
           break;
         }

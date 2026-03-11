@@ -5,7 +5,9 @@ class ChatModel {
   final String otherUserId;
   final String otherUserName;
   final String lastMessage;
+  final String? lastMessageTranslated; // Translated version of last message
   final String lastMessageId; // <-- [FIX 2] ADD THIS
+  final String? lastMessageSenderId; // ID of user who sent the last message
   final DateTime lastMessageAt;
   final int unreadCount;
   final String? eventId;
@@ -13,13 +15,16 @@ class ChatModel {
   final String? eventLink;
   final bool translationEnabled;
   final String? translationLanguage;
+  final String? lastMessageSourceLanguage; // Source language of the last message (for translation decisions)
 
   ChatModel({
     required this.matchId,
     required this.otherUserId,
     required this.otherUserName,
     required this.lastMessage,
+    this.lastMessageTranslated,
     required this.lastMessageId, // <-- [FIX 2] ADD THIS
+    this.lastMessageSenderId,
     required this.lastMessageAt,
     required this.unreadCount,
     this.eventId,
@@ -27,6 +32,7 @@ class ChatModel {
     this.eventLink,
     this.translationEnabled = false,
     this.translationLanguage,
+    this.lastMessageSourceLanguage,
   });
 
   factory ChatModel.fromJsonRpc(Map<String, dynamic> json) {
@@ -59,9 +65,11 @@ class ChatModel {
       otherUserId: json['other_user_id'] ?? '',
       // Accept either server-side name column (`other_name`) or the legacy `other_user_name`
       otherUserName: maskNameLocal(json['other_user_name'] ?? json['other_name'] ?? 'Unknown User'),
-      // Accept preview/preview field from new RPC or legacy `last_message_content`
-      lastMessage: json['last_message_content'] ?? json['last_message_preview'] ?? '',
+      // Accept preview/preview field from new RPC, legacy `last_message_content`, or local DB `last_message`
+      lastMessage: json['last_message_content'] ?? json['last_message_preview'] ?? json['last_message'] ?? '',
+      lastMessageTranslated: json['last_message_translated'] as String?,
       lastMessageId: json['last_message_id'] ?? '', // <-- [FIX 2] ADD THIS
+      lastMessageSenderId: json['last_message_sender_id'] as String?,
       lastMessageAt: messageTime,
       unreadCount: json['unread_count'] ?? 0,
       eventId: json['event_id'],
@@ -69,6 +77,7 @@ class ChatModel {
       eventLink: json['event_link'],
       translationEnabled: json['translation_enabled'] ?? false,
       translationLanguage: json['translation_language'] as String?,
+      lastMessageSourceLanguage: json['last_message_source_language'] as String?,
     );
   }
 
@@ -92,7 +101,9 @@ class ChatModel {
     String? otherUserId,
     String? otherUserName,
     String? lastMessage,
+    String? lastMessageTranslated,
     String? lastMessageId,
+    String? lastMessageSenderId,
     DateTime? lastMessageAt,
     int? unreadCount,
     String? eventId,
@@ -100,13 +111,16 @@ class ChatModel {
     String? eventLink,
     bool? translationEnabled,
     String? translationLanguage,
+    String? lastMessageSourceLanguage,
   }) {
     return ChatModel(
       matchId: matchId ?? this.matchId,
       otherUserId: otherUserId ?? this.otherUserId,
       otherUserName: otherUserName ?? this.otherUserName,
       lastMessage: lastMessage ?? this.lastMessage,
+      lastMessageTranslated: lastMessageTranslated ?? this.lastMessageTranslated,
       lastMessageId: lastMessageId ?? this.lastMessageId,
+      lastMessageSenderId: lastMessageSenderId ?? this.lastMessageSenderId,
       lastMessageAt: lastMessageAt ?? this.lastMessageAt,
       unreadCount: unreadCount ?? this.unreadCount,
       eventId: eventId ?? this.eventId,
@@ -114,6 +128,7 @@ class ChatModel {
       eventLink: eventLink ?? this.eventLink,
       translationEnabled: translationEnabled ?? this.translationEnabled,
       translationLanguage: translationLanguage ?? this.translationLanguage,
+      lastMessageSourceLanguage: lastMessageSourceLanguage ?? this.lastMessageSourceLanguage,
     );
   }
 

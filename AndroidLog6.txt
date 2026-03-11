@@ -1,0 +1,100 @@
+C:\App\MatchMeGPT5.21\MatchMe4>flutter run
+Launching lib\main.dart on moto g54 5G in debug mode...
+Running Gradle task 'assembleDebug'...                             67.9s
+√ Built build\app\outputs\flutter-apk\app-debug.apk
+Installing build\app\outputs\flutter-apk\app-debug.apk...           6.9s
+D/FlutterJNI( 7724): Beginning load of flutter...
+D/FlutterJNI( 7724): flutter (null) was loaded normally!
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (com.llfbandit.app_links.AppLinksPlugin@4b52e64) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (dev.fluttercommunity.plus.battery.BatteryPlusPlugin@35c4582) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (io.flutter.plugins.camerax.CameraAndroidCameraxPlugin@36493) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (dev.fluttercommunity.plus.connectivity.ConnectivityPlugin@6c8ccd0) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (to.bullet.device_calendar_plus_android.DeviceCalendarPlusAndroidPlugin@ac6c4c9) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (dev.fluttercommunity.plus.device_info.DeviceInfoPlusPlugin@30d37ce) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (com.fintasys.emoji_picker_flutter.EmojiPickerFlutterPlugin@af5b6ef) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (com.mr.flutter.plugin.filepicker.FilePickerPlugin@435e5fc) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (io.flutter.plugins.firebase.analytics.FlutterFirebaseAnalyticsPlugin@3ede485) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (io.flutter.plugins.firebase.core.FlutterFirebaseCorePlugin@bc902da) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (io.flutter.plugins.firebase.messaging.FlutterFirebaseMessagingPlugin@210d30b) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (com.dexterous.flutterlocalnotifications.FlutterLocalNotificationsPlugin@6f965e8) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (io.flutter.plugins.flutter_plugin_android_lifecycle.FlutterAndroidLifecyclePlugin@ead4401) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (com.it_nomads.fluttersecurestorage.FlutterSecureStoragePlugin@44472a6) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (com.baseflow.geocoding.GeocodingPlugin@e7794e7) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (com.baseflow.geolocator.GeolocatorPlugin@9f2f894) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (io.flutter.plugins.googlesignin.GoogleSignInPlugin@aa91f3d) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (io.flutter.plugins.imagepicker.ImagePickerPlugin@7b51332) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (dev.fluttercommunity.plus.packageinfo.PackageInfoPlugin@e9e9883) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (io.flutter.plugins.pathprovider.PathProviderPlugin@4510a00) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (com.baseflow.permissionhandler.PermissionHandlerPlugin@38d7239) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (com.revenuecat.purchases_flutter.PurchasesFlutterPlugin@d1d307e) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (com.revenuecat.purchases_ui_flutter.PurchasesUiFlutterPlugin@9a839df) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (io.flutter.plugins.quickactions.QuickActionsPlugin@fbcc62c) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (dev.fluttercommunity.plus.share.SharePlusPlugin@9c9f8f5) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (io.flutter.plugins.sharedpreferences.SharedPreferencesPlugin@757d68a) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (io.flutter.plugins.urllauncher.UrlLauncherPlugin@c8094fb) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+W/FlutterEngineCxnRegstry( 7724): Attempted to register plugin (io.flutter.plugins.webviewflutter.WebViewFlutterPlugin@5461918) but it was already registered with this FlutterEngine (io.flutter.embedding.engine.FlutterEngine@a9f68cd).
+I/flutter ( 7724): [IMPORTANT:flutter/shell/platform/android/android_context_vk_impeller.cc(62)] Using the Impeller rendering backend (Vulkan).
+D/FlutterGeolocator( 7724): Attaching Geolocator to activity
+D/FlutterRenderer( 7724): Width is zero. 0,0
+D/FlutterRenderer( 7724): Width is zero. 0,0
+D/FlutterJNI( 7724): Sending viewport metrics to the engine.
+D/FlutterGeolocator( 7724): Creating service.
+D/FlutterGeolocator( 7724): Binding to location service.
+E/flutter ( 7724): [ERROR:flutter/runtime/dart_vm_initializer.cc(40)] Unhandled Exception: HiveError: You need to initialize Hive or provide a path to store the box.
+E/flutter ( 7724): #0      BackendManager.open (package:hive/src/backend/vm/backend_manager.dart:21:7)
+E/flutter ( 7724): #1      HiveImpl._openBox (package:hive/src/hive_impl.dart:101:36)
+E/flutter ( 7724): #2      HiveImpl.openBox (package:hive/src/hive_impl.dart:142:18)
+E/flutter ( 7724): #3      LocalDbService.init (package:matchme/services/local_db_service.dart:56:34)
+E/flutter ( 7724): #4      LocalDbService.instance (package:matchme/services/local_db_service.dart:32:22)
+E/flutter ( 7724): #5      _bootstrapInitialize (package:matchme/main.dart:712:28)
+E/flutter ( 7724): <asynchronous suspension>
+E/flutter ( 7724): #6      _FutureBuilderState._subscribe.<anonymous closure> (package:flutter/src/widgets/async.dart:641:7)
+E/flutter ( 7724): <asynchronous suspension>
+E/flutter ( 7724):
+E/flutter ( 7724): [ERROR:flutter/runtime/dart_vm_initializer.cc(40)] Unhandled Exception: HiveError: You need to initialize Hive or provide a path to store the box.
+E/flutter ( 7724): #0      BackendManager.open (package:hive/src/backend/vm/backend_manager.dart:21:7)
+E/flutter ( 7724): #1      HiveImpl._openBox (package:hive/src/hive_impl.dart:101:36)
+E/flutter ( 7724): #2      HiveImpl.openBox (package:hive/src/hive_impl.dart:142:18)
+E/flutter ( 7724): #3      LocalDbService.init (package:matchme/services/local_db_service.dart:56:34)
+E/flutter ( 7724): #4      LocalDbService.instance (package:matchme/services/local_db_service.dart:32:22)
+E/flutter ( 7724): #5      _bootstrapInitialize (package:matchme/main.dart:712:28)
+E/flutter ( 7724): <asynchronous suspension>
+E/flutter ( 7724): #6      _FutureBuilderState._subscribe.<anonymous closure> (package:flutter/src/widgets/async.dart:641:7)
+E/flutter ( 7724): <asynchronous suspension>
+E/flutter ( 7724):
+E/flutter ( 7724): [ERROR:flutter/runtime/dart_vm_initializer.cc(40)] Unhandled Exception: MissingPluginException(No implementation found for method getAll on channel plugins.flutter.io/shared_preferences)
+E/flutter ( 7724):
+D/FlutterJNI( 7724): Sending viewport metrics to the engine.
+D/FlutterGeolocator( 7724): Geolocator foreground service connected
+D/FlutterGeolocator( 7724): Initializing Geolocator services
+D/FlutterGeolocator( 7724): Flutter engine connected. Connected engine count 1
+D/FlutterJNI( 7724): Sending viewport metrics to the engine.
+W/MatchMeBackgroundService( 7724): JWT refresh failed: code=400 body={"code":400,"error_code":"refresh_token_already_used","msg":"Invalid Refresh Token: Already Used"}
+E/MatchMeBackgroundService( 7724): Failed to update user activity: 401, , body: {"code":"PGRST303","details":null,"hint":null,"message":"JWT expired"}
+D/MatchMeBackgroundService( 7724): [NATIVE] connectToRealtime: start
+D/MatchMeBackgroundService( 7724): Connecting to Supabase Realtime...
+D/MatchMeMainActivity( 7724): applySystemUiColors attempt=2 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9984
+D/MatchMeBackgroundService( 7724): [NATIVE] Realtime WebSocket Connected (elapsed=607ms)
+D/MatchMeBackgroundService( 7724): Sent Realtime Join: topic=realtime:public:chat_messages token=present
+D/MatchMeBackgroundService( 7724): Sent Realtime Join: topic=realtime:public:matches token=present
+Syncing files to device moto g54 5G...                             234ms
+
+Flutter run key commands.
+r Hot reload.
+R Hot restart.
+h List all available interactive commands.
+d Detach (terminate "flutter run" but leave application running).
+c Clear the screen
+q Quit (terminate the application on the device).
+
+A Dart VM Service on moto g54 5G is available at: http://127.0.0.1:54013/kcugA4l77EM=/
+The Flutter DevTools debugger and profiler on moto g54 5G is available at:
+http://127.0.0.1:54013/kcugA4l77EM=/devtools/?uri=ws://127.0.0.1:54013/kcugA4l77EM=/ws
+E/MatchMeBackgroundService( 7724): Realtime: Join failed topic=realtime:public:matches payload={"status":"error","response":{"reason":"InvalidJWTToken: Token has expired 19815 seconds ago"}}
+D/MatchMeMainActivity( 7724): applySystemUiColors attempt=3 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9984
+D/ProfileInstaller( 7724): Installing profile for com.example.matchme
+W/example.matchme( 7724): userfaultfd: MOVE ioctl seems unsupported: Connection timed out
+D/VRI[MainActivity]( 7724): visibilityChanged oldVisibility=true newVisibility=false
+D/Surface ( 7724): Surface::disconnect
+D/Surface ( 7724): Surface::disconnect
+D/BLASTBufferQueue( 7724): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity]#1](f:0,a:2) destructor()

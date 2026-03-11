@@ -1,6 +1,7 @@
 // lib/screens/auth/auth_screen.dart
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:matchme/providers/auth_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, TargetPlatform;
@@ -22,11 +23,120 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
   String? _errorMessage;
   bool _isSignUp = false;
 
-  // Focus node for the password field so we can advance focus from email -> password
+  final FocusNode _emailFocusNode = FocusNode();
   final FocusNode _passwordFocusNode = FocusNode();
 
   // NEW: control whether the password is obscured
   bool _obscurePassword = true;
+
+  bool _authUiMessageListenerRegistered = false;
+
+  static const double _oauthProviderIconSize = 20;
+  static const double _oauthButtonHeight = 48;
+
+  String _mapPasswordAuthError(AuthException e, LocalizationState l10n) {
+    final msg = e.message;
+    final lower = msg.toLowerCase();
+    if (lower.contains('invalid login credentials') ||
+        lower.contains('invalid credentials') ||
+        lower.contains('invalid') && lower.contains('credentials')) {
+      return '${l10n.getString('authInvalidCredentials')} ${l10n.getString('authInvalidCredentialsTryOAuth')}';
+    }
+    return msg;
+  }
+
+  String _mapOAuthAuthError(AuthException e, LocalizationState l10n) {
+    final msg = e.message;
+    final lower = msg.toLowerCase();
+    if (lower.contains('cancel') || lower.contains('canceled')) {
+      return l10n.getString('authOAuthCancelled');
+    }
+    if (lower.contains('already registered') ||
+        lower.contains('already exists') ||
+        lower.contains('user already registered')) {
+      return l10n.getString('authOAuthAccountExists');
+    }
+    return msg.isNotEmpty ? msg : l10n.getString('authOAuthFailed');
+  }
+
+  Widget _buildOAuthButton({
+    required OAuthProvider provider,
+    required String label,
+    required String assetPath,
+  }) {
+    final icon = SizedBox(
+      width: _oauthProviderIconSize,
+      height: _oauthProviderIconSize,
+      child: Image.asset(
+        assetPath,
+        fit: BoxFit.contain,
+        errorBuilder: (context, error, stackTrace) {
+          return const SizedBox.shrink();
+        },
+      ),
+    );
+    final text = Text(label);
+    final spacer = const SizedBox(width: 12);
+
+    return OutlinedButton(
+      onPressed: _isLoading ? null : () => _signInWithOAuth(provider),
+      style: OutlinedButton.styleFrom(
+        minimumSize: const Size.fromHeight(_oauthButtonHeight),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [text, spacer, icon],
+      ),
+    );
+  }
+
+  Future<void> _signInWithOAuth(OAuthProvider provider) async {
+    if (!mounted) return;
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      const mobileRedirectTo = 'com.example.matchme://login-callback';
+      final redirectTo = kIsWeb ? '${Uri.base.origin}/auth/callback' : mobileRedirectTo;
+      final scopes = switch (provider) {
+        OAuthProvider.google =>
+          'openid email profile '
+              'https://www.googleapis.com/auth/calendar.readonly '
+              'https://www.googleapis.com/auth/calendar.events.readonly',
+        OAuthProvider.azure =>
+          'openid email profile offline_access User.Read Calendars.Read',
+        OAuthProvider.apple => 'name email',
+        OAuthProvider.facebook => 'email public_profile',
+        _ => null,
+      };
+
+      await supabase.auth.signInWithOAuth(
+        provider,
+        redirectTo: redirectTo,
+        scopes: scopes,
+      );
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = _mapOAuthAuthError(e, ref.read(localizationProvider));
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage =
+            '${ref.read(localizationProvider).getString('authUnexpectedError')}: ${e.toString()}';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
 
   Future<void> _performAuth(String checkEmailMessage) async {
     if (!_formKey.currentState!.validate()) return;
@@ -36,6 +146,10 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
       _errorMessage = null;
     });
     try {
+      // Get the localization provider reference BEFORE async operations
+      // (ref becomes unsafe after widget unmounts due to navigation)
+      final localizationNotifier = ref.read(localizationProvider.notifier);
+      
       if (_isSignUp) {
         await supabase.auth.signUp(
           email: _emailController.text.trim(),
@@ -65,12 +179,21 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
           } catch (e) {
             debugPrint('registerSession failed: $e');
           }
+
+          // Sync language preference to database after login
+          // This ensures the language selected on login screen is persisted to DB
+          // Note: We got the notifier reference before login to avoid ref issues after navigation
+          try {
+            await localizationNotifier.syncLanguageAfterLogin();
+          } catch (e) {
+            debugPrint('syncLanguageAfterLogin failed: $e');
+          }
         }
       }
     } on AuthException catch (e) {
       if (!mounted) return;
       setState(() {
-        _errorMessage = e.message;
+        _errorMessage = _mapPasswordAuthError(e, ref.read(localizationProvider));
       });
     } catch (e) {
       if (!mounted) return;
@@ -90,6 +213,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
+    _emailFocusNode.dispose();
     _passwordFocusNode.dispose();
     super.dispose();
   }
@@ -117,7 +241,12 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
     super.initState();
     _emailController.addListener(_onEmailChanged);
     _passwordController.addListener(_onPasswordChanged);
-    
+    // Request focus after first frame so the view is "served" and keyboard shows correctly (avoids showSoftInput ignored)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _emailFocusNode.canRequestFocus) {
+        _emailFocusNode.requestFocus();
+      }
+    });
     // Clear error message when user starts typing
     _emailController.addListener(() {
       if (_errorMessage != null && _emailController.text.isNotEmpty) {
@@ -229,24 +358,37 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                       : () async {
                           if (!formKey.currentState!.validate()) return;
                           setState(() => isLoading = true);
+                          
+                          // Capture everything we need before any async operations
+                          final navigator = Navigator.of(dialogContext);
+                          final scaffoldMessenger = ScaffoldMessenger.of(dialogContext);
+                          final successMessage = getString('authResetPasswordSent');
+                          final errorMessage = getString('authResetPasswordFailed');
+                          
+                          // Perform async operation
+                          bool success = false;
+                          try {
+                            await supabase.auth.resetPasswordForEmail(emailController.text.trim());
+                            success = true;
+                          } catch (e) {
+                            success = false;
+                          }
+                          
+                          // Close dialog using captured navigator
+                          navigator.pop();
+                          
+                          // Handle UI updates using captured scaffoldMessenger
                           if (mounted) {
-                            try {
-                              await supabase.auth.resetPasswordForEmail(emailController.text.trim());
-                              Navigator.pop(dialogContext); // ignore: use_build_context_synchronously
-                              ScaffoldMessenger.of(context).showSnackBar( // ignore: use_build_context_synchronously
-                                SnackBar(content: Text(getString('authResetPasswordSent')), backgroundColor: Colors.green),
-                              );
-                            } catch (e) {
-                              Navigator.pop(dialogContext); // ignore: use_build_context_synchronously
-                              ScaffoldMessenger.of(context).showSnackBar( // ignore: use_build_context_synchronously
-                                SnackBar(content: Text(getString('authResetPasswordFailed')), backgroundColor: Colors.red),
-                              );
-                            } finally {
-                              setState(() => isLoading = false);
-                            }
+                            scaffoldMessenger.showSnackBar(
+                              SnackBar(
+                                content: Text(success ? successMessage : errorMessage),
+                                backgroundColor: success ? Colors.green : Colors.red,
+                              ),
+                            );
+                            setState(() => isLoading = false);
                           }
                         },
-                  child: isLoading ? const CircularProgressIndicator() : Text(getString('authSignUp')),
+                  child: isLoading ? const CircularProgressIndicator() : Text(getString('authSendResetPassword')),
                 ),
               ],
             );
@@ -260,6 +402,18 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
   Widget build(BuildContext context) {
     final l10n = ref.watch(localizationProvider);
     String getString(String key) => l10n.getString(key);
+
+    if (!_authUiMessageListenerRegistered) {
+      ref.listen<String?>(authUiMessageProvider, (previous, next) {
+        if (next == null || next.trim().isEmpty) return;
+        if (!mounted) return;
+        setState(() {
+          _errorMessage = next;
+        });
+        ref.read(authUiMessageProvider.notifier).clear();
+      });
+      _authUiMessageListenerRegistered = true;
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -299,13 +453,13 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                 const SizedBox(height: 30),
                 TextFormField(
                   controller: _emailController,
-                  autofocus: true,
+                  focusNode: _emailFocusNode,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontFeatures: const []),
                   decoration:
                       InputDecoration(labelText: getString('authEmail'), prefixIcon: const Icon(Icons.email)),
                   keyboardType: TextInputType.emailAddress,
                   textInputAction: TextInputAction.next,
                   onFieldSubmitted: (_) {
-                    // move focus to password when Enter/Next pressed on email
                     FocusScope.of(context).requestFocus(_passwordFocusNode);
                   },
                   validator: (v) {
@@ -319,6 +473,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                 TextFormField(
                   controller: _passwordController,
                   focusNode: _passwordFocusNode,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontFeatures: const []),
                   decoration: InputDecoration(
                     labelText: getString('authPassword'),
                     prefixIcon: const Icon(Icons.lock),
@@ -374,6 +529,41 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                       ),
                     ),
                   ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    const Expanded(child: Divider()),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12.0),
+                      child: Text(getString('authOr')),
+                    ),
+                    const Expanded(child: Divider()),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                _buildOAuthButton(
+                  provider: OAuthProvider.google,
+                  label: getString('authContinueWithGoogle'),
+                  assetPath: 'assets/images/providers/google.png',
+                ),
+                const SizedBox(height: 12),
+                _buildOAuthButton(
+                  provider: OAuthProvider.azure,
+                  label: getString('authContinueWithMicrosoft'),
+                  assetPath: 'assets/images/providers/microsoft.png',
+                ),
+                const SizedBox(height: 12),
+                _buildOAuthButton(
+                  provider: OAuthProvider.apple,
+                  label: getString('authContinueWithApple'),
+                  assetPath: 'assets/images/providers/apple.png',
+                ),
+                const SizedBox(height: 12),
+                _buildOAuthButton(
+                  provider: OAuthProvider.facebook,
+                  label: getString('authContinueWithFacebook'),
+                  assetPath: 'assets/images/providers/facebook.png',
+                ),
                 if (_errorMessage != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 16.0),

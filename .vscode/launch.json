@@ -1,0 +1,41 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "matchme (Chrome)",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "debug",
+            "args": [
+                "-d",
+                "chrome",
+                "--dart-define=flutter.flutter_map.unblockOSM=Our tile servers are not.",
+                "--web-port",
+                "5000"
+            ]
+        },
+        {
+            "name": "matchme (Mobile)",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "debug",
+            "args": [
+                "--dart-define=flutter.flutter_map.unblockOSM=Our tile servers are not."
+            ]
+        },
+        {
+            "name": "matchme_admin (Chrome, WASM)",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "debug",
+            "program": "matchme_admin/lib/main.dart",
+            "args": [
+                "-d",
+                "chrome",
+                "--wasm",
+                "--web-port",
+                "5001"
+            ]
+        }
+    ]
+}

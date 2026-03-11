@@ -1,0 +1,242 @@
+C:\App\MatchMeGPT5.21\MatchMe4>flutter run
+Launching lib\main.dart on moto g54 5G in debug mode...
+Running Gradle task 'assembleDebug'...                             25.2s
+√ Built build\app\outputs\flutter-apk\app-debug.apk
+Installing build\app\outputs\flutter-apk\app-debug.apk...           6.1s
+D/FlutterJNI( 1688): Beginning load of flutter...
+D/FlutterJNI( 1688): flutter (null) was loaded normally!
+I/flutter ( 1688): [IMPORTANT:flutter/shell/platform/android/android_context_vk_impeller.cc(62)] Using the Impeller rendering backend (Vulkan).
+D/libMEOW ( 1688): meow new tls: 0xb400007af5665440
+D/libMEOW ( 1688): meow reload base cfg path: na
+D/libMEOW ( 1688): meow reload overlay cfg path: na
+W/QT      ( 1688): qt_process_init() called
+E/QT      ( 1688): [QT]file does not exist
+W/QT      ( 1688): Support!!
+E/QT      ( 1688): [QT]file does not exist
+D/libMEOW ( 1688): applied 1 plugins for [com.example.matchme]:
+D/libMEOW ( 1688):   plugin 1: [libMEOW_gift.so]: 0xb400007affcdef80
+D/libMEOW ( 1688): rebuild call chain: 0xb400007af5674bc0
+D/libMEOW ( 1688): meow delete tls: 0xb400007af5665440
+D/MatchMeMainActivity( 1688): onCreate: statusBarColor=0, navigationBarColor=0, systemUiVisibility=1280
+D/MatchMeMainActivity( 1688): Using pre-warmed FlutterEngine from cache.
+D/com.llfbandit.app_links( 1688): Intent { act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER] flg=0x30000000 cmp=com.example.matchme/.MainActivity (has extras) }
+D/FlutterGeolocator( 1688): Attaching Geolocator to activity
+I/example.matchme( 1688): hiddenapi: Accessing hidden method Landroid/view/accessibility/AccessibilityNodeInfo;->getSourceNodeId()J (runtime_flags=0, domain=platform, api=unsupported,test-api) from Lio/flutter/view/AccessibilityViewEmbedder$ReflectionAccessors; (domain=app, TargetSdkVersion=36) using reflection: allowed
+I/example.matchme( 1688): hiddenapi: Accessing hidden method Landroid/view/accessibility/AccessibilityRecord;->getSourceNodeId()J (runtime_flags=0, domain=platform, api=unsupported) from Lio/flutter/view/AccessibilityViewEmbedder$ReflectionAccessors; (domain=app, TargetSdkVersion=36) using reflection: allowed
+I/example.matchme( 1688): hiddenapi: Accessing hidden field Landroid/view/accessibility/AccessibilityNodeInfo;->mChildNodeIds:Landroid/util/LongArray; (runtime_flags=0, domain=platform, api=unsupported) from Lio/flutter/view/AccessibilityViewEmbedder$ReflectionAccessors; (domain=app, TargetSdkVersion=36) using reflection: allowed
+I/example.matchme( 1688): hiddenapi: Accessing hidden method Landroid/util/LongArray;->get(I)J (runtime_flags=0, domain=platform, api=unsupported) from Lio/flutter/view/AccessibilityViewEmbedder$ReflectionAccessors; (domain=app, TargetSdkVersion=36) using reflection: allowed
+D/MatchMeMainActivity( 1688): applySystemUiColors attempt=0 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=1280
+I/FA      ( 1688): Tag Manager is not found and thus will not be used
+Syncing files to device moto g54 5G...                             206ms
+
+Flutter run key commands.
+r Hot reload.
+R Hot restart.
+h List all available interactive commands.
+d Detach (terminate "flutter run" but leave application running).
+c Clear the screen
+q Quit (terminate the application on the device).
+
+A Dart VM Service on moto g54 5G is available at: http://127.0.0.1:49998/fYEZ2Ok5OOU=/
+The Flutter DevTools debugger and profiler on moto g54 5G is available at:
+http://127.0.0.1:49998/fYEZ2Ok5OOU=/devtools/?uri=ws://127.0.0.1:49998/fYEZ2Ok5OOU=/ws
+D/MatchMeBootReceiver( 1688): Received android.intent.action.BOOT_COMPLETED, checking if background service should start
+D/MatchMeBootReceiver( 1688): Starting background service after android.intent.action.BOOT_COMPLETED (isVisible=false)
+I/Choreographer( 1688): Skipped 226 frames!  The application may be doing too much work on its main thread.
+I/WindowExtensionsImpl( 1688): Initializing Window Extensions, vendor API level=6, activity embedding enabled=true
+D/BufferQueueConsumer( 1688): [](id:69800000000,api:0,p:-1,c:1688) connect: controlledByApp=false
+D/BLASTBufferQueue( 1688): [VRI[MainActivity]#0](f:0,a:0) constructor()
+D/BLASTBufferQueue( 1688): [VRI[MainActivity]#0](f:0,a:0) update width=1080 height=2400 format=-3 mTransformHint=0
+I/example.matchme( 1688): Compiler allocated 5189KB to compile void android.view.ViewRootImpl.performTraversals()
+E/FBI     ( 1688): Can't load library: dlopen failed: library "libmagtsync.so" not found
+D/libMEOW ( 1688): meow new tls: 0xb400007aa5c00440
+D/libMEOW ( 1688): applied 1 plugins for [com.example.matchme]:
+D/libMEOW ( 1688):   plugin 1: [libMEOW_gift.so]: 0xb400007affcdef80
+D/libMEOW ( 1688): rebuild call chain: 0xb400007aa5c15400
+I/HWUI    ( 1688): setGrContext nullptr-->validptr
+D/BufferQueueConsumer( 1688): [](id:69800000001,api:0,p:-1,c:1688) connect: controlledByApp=false
+D/BLASTBufferQueue( 1688): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity]#1](f:0,a:0) constructor()
+D/BLASTBufferQueue( 1688): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity]#1](f:0,a:0) update width=1080 height=2400 format=4 mTransformHint=0
+W/libc    ( 1688): Access denied finding property "vendor.product.pvr.debug_level"
+E/IMGSRV  ( 1688): :1501: GrallocTestAlloc: Invalid color format (56)
+W/libc    ( 1688): Access denied finding property "vendor.product.pvr.debug_level"
+E/IMGSRV  ( 1688): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  ( 1688): :220:        width -> 1
+E/IMGSRV  ( 1688): :221:       height -> 1
+E/IMGSRV  ( 1688): :222:       format -> 56
+E/IMGSRV  ( 1688): :223:        usage -> 0x0b00
+E/IMGSRV  ( 1688): :1501: GrallocTestAlloc: Invalid color format (59)
+E/IMGSRV  ( 1688): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  ( 1688): :220:        width -> 1
+E/IMGSRV  ( 1688): :221:       height -> 1
+E/IMGSRV  ( 1688): :222:       format -> 59
+E/IMGSRV  ( 1688): :223:        usage -> 0x0b00
+E/IMGSRV  ( 1688): :1501: GrallocTestAlloc: Invalid color format (56)
+E/IMGSRV  ( 1688): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  ( 1688): :220:        width -> 1
+E/IMGSRV  ( 1688): :221:       height -> 1
+E/IMGSRV  ( 1688): :222:       format -> 56
+E/IMGSRV  ( 1688): :223:        usage -> 0x0b00
+E/IMGSRV  ( 1688): :1501: GrallocTestAlloc: Invalid color format (59)
+E/IMGSRV  ( 1688): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  ( 1688): :220:        width -> 1
+E/IMGSRV  ( 1688): :221:       height -> 1
+E/IMGSRV  ( 1688): :222:       format -> 59
+E/IMGSRV  ( 1688): :223:        usage -> 0x0b00
+D/example.matchme( 1688): Can't load libmbrainSDK
+D/FlutterGeolocator( 1688): Creating service.
+D/FlutterGeolocator( 1688): Binding to location service.
+W/libc    ( 1688): Access denied finding property "persist.vendor.debug.gpud.init"
+I/GrallocExtra( 1688): gralloc_extra_query:is_SW3D 0
+D/BLASTBufferQueue( 1688): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity]#1](f:0,a:1) acquireNextBufferLocked size=1080x2400 mFrameNumber=1 applyTransaction=true mTimestamp=49335126203555(auto) mPendingTransactions.size=0 graphicBufferId=7249904795658 transform=0
+D/example.matchme( 1688): Can't load libmbrainSDK
+D/MatchMeBackgroundService( 1688): Background service created
+D/MatchMeBackgroundService( 1688): Synchronously restored state: highAccuracyMode=true, isVisible=false, userId=true
+D/MatchMeBackgroundService( 1688): [NATIVE] Delaying restoreCredentialsAndConnect by 1500ms to reduce startup contention
+D/MatchMeBackgroundService( 1688): Background service started with action: START
+D/MatchMeBackgroundService( 1688): Starting service with userId: ffc20046-a777-463b-922a-547151aa1455, highAccuracy: false, isVisible: true, isOnline: true
+D/MatchMeBackgroundService( 1688): Credentials and config saved for boot recovery
+D/MatchMeBackgroundService( 1688): Standard Mode active & App in background -> Stopping Service
+D/MatchMeBackgroundService( 1688): Scheduling periodic location work (Standard Mode)
+D/MatchMeBackgroundService( 1688): Starting BACKGROUND (Standard Mode) location updates (PendingIntent)
+D/MatchMeBackgroundService( 1688): Starting BACKGROUND (Standard Mode) location updates (PendingIntent)
+D/MatchMeBackgroundService( 1688): [NATIVE] connectToRealtime: start
+D/MatchMeBackgroundService( 1688): Connecting to Supabase Realtime...
+D/MatchMeBackgroundService( 1688): Successfully updated user activity
+D/MatchMeBackgroundService( 1688): [NATIVE] Realtime WebSocket Connected (elapsed=430ms)
+D/MatchMeBackgroundService( 1688): Sent Realtime Join: topic=realtime:public:chat_messages token=null
+D/MatchMeBackgroundService( 1688): Sent Realtime Join: topic=realtime:public:matches token=null
+D/MatchMeBackgroundService( 1688): Realtime: Joined channel successfully
+D/MatchMeBackgroundService( 1688): Realtime: Joined channel successfully
+D/MatchMeBackgroundService( 1688): [NATIVE] restoreCredentialsAndConnect: start
+D/MatchMeBackgroundService( 1688): Restored credentials from storage. Connecting to Realtime immediately.
+D/MatchMeBackgroundService( 1688): Starting BACKGROUND (Standard Mode) location updates (PendingIntent)
+D/MatchMeBackgroundService( 1688): [NATIVE] restoreCredentialsAndConnect: finished (elapsed=105ms)
+D/MatchMeBackgroundService( 1688): [NATIVE] restoreCredentialsAndConnect completed (elapsed=105ms)
+I/Choreographer( 1688): Skipped 100 frames!  The application may be doing too much work on its main thread.
+D/BLASTBufferQueue( 1688): [VRI[MainActivity]#0](f:0,a:1) acquireNextBufferLocked size=1080x2400 mFrameNumber=1 applyTransaction=true mTimestamp=49338233700094(auto) mPendingTransactions.size=0 graphicBufferId=7249904795664 transform=0
+I/HWUI    ( 1688): Davey! duration=3368ms; Flags=1, FrameTimelineVsyncId=31729845, IntendedVsync=49334864212996, Vsync=49338197546296, InputEventId=0, HandleInputStart=49338212535171, AnimationStart=49338212536786, PerformTraversalsStart=49338212537632, DrawStart=49338219540094, FrameDeadline=49334878212997, FrameInterval=49338212152709, FrameStartTime=33333333, SyncQueued=49338220403171, SyncStart=49338222218632, IssueDrawCommandsStart=49338222913402, SwapBuffers=49338232614248, FrameCompleted=49338234859786, DequeueBufferDuration=0, QueueBufferDuration=405846, GpuCompleted=49338234859786, SwapBuffersCompleted=49338234307479, DisplayPresentTime=515560504657, CommandSubmissionCompleted=49338232614248,
+D/MatchMeMainActivity( 1688): applySystemUiColors attempt=1 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9472
+D/FlutterGeolocator( 1688): Geolocator foreground service connected
+D/FlutterGeolocator( 1688): Initializing Geolocator services
+D/FlutterGeolocator( 1688): Flutter engine connected. Connected engine count 1
+D/MatchMeBackgroundService( 1688): Background service started with action: UPDATE_APP_FOREGROUND
+D/MatchMeBackgroundService( 1688): App foreground state updated: true
+D/MatchMeBackgroundService( 1688): Cancelling periodic location work (High Accuracy Mode or Foreground)
+D/MatchMeBackgroundService( 1688): Background service destroyed
+D/MatchMeBackgroundService( 1688): Realtime WebSocket Disconnected
+D/MatchMeBackgroundService( 1688): Realtime WebSocket Closing: 1000 /
+D/MatchMeBackgroundService( 1688): Realtime WebSocket Closed: 1000 /
+D/MatchMeBackgroundService( 1688): Skipping Realtime reconnect (intentional close)
+D/MatchMeBackgroundService( 1688): Background service created
+D/MatchMeBackgroundService( 1688): Synchronously restored state: highAccuracyMode=false, isVisible=true, userId=true
+D/MatchMeBackgroundService( 1688): [NATIVE] Delaying restoreCredentialsAndConnect by 1500ms to reduce startup contention
+D/MatchMeBackgroundService( 1688): User token missing but refresh token available. Refreshing...
+D/MatchMeBackgroundService( 1688): Background service started with action: PROCESS_LOCATION_UPDATE
+D/MatchMeBackgroundService( 1688): Received background location update intent
+D/MatchMeBackgroundService( 1688): Background location received: 6.2664887, -75.5635237
+D/MatchMeBackgroundService( 1688): handleLocationUpdate called: isVisible=true, isOnline=true, userId=ffc20046-a777-463b-922a-547151aa1455, location=6.2664887,-75.5635237
+D/MatchMeBackgroundService( 1688): Standard Mode background update processed -> Stopping Service
+D/MatchMeBackgroundService( 1688): Processing full location update for user ffc20046-a777-463b-922a-547151aa1455
+D/MatchMeBackgroundService( 1688): User token missing but refresh token available. Refreshing...
+D/MatchMeBackgroundService( 1688): Background service started with action: PROCESS_LOCATION_UPDATE
+D/MatchMeBackgroundService( 1688): Received background location update intent
+D/MatchMeBackgroundService( 1688): Background location received: 6.2664887, -75.5635237
+D/MatchMeBackgroundService( 1688): handleLocationUpdate called: isVisible=true, isOnline=true, userId=ffc20046-a777-463b-922a-547151aa1455, location=6.2664887,-75.5635237
+D/MatchMeBackgroundService( 1688): Standard Mode background update processed -> Stopping Service
+D/MatchMeBackgroundService( 1688): Processing full location update for user ffc20046-a777-463b-922a-547151aa1455
+D/MatchMeBackgroundService( 1688): User token missing but refresh token available. Refreshing...
+D/MatchMeBackgroundService( 1688): Background service started with action: PROCESS_LOCATION_UPDATE
+D/MatchMeBackgroundService( 1688): Received background location update intent
+D/MatchMeBackgroundService( 1688): Background location received: 6.2664887, -75.5635237
+D/MatchMeBackgroundService( 1688): handleLocationUpdate called: isVisible=true, isOnline=true, userId=ffc20046-a777-463b-922a-547151aa1455, location=6.2664887,-75.5635237
+D/MatchMeBackgroundService( 1688): Standard Mode background update processed -> Stopping Service
+D/MatchMeBackgroundService( 1688): Processing full location update for user ffc20046-a777-463b-922a-547151aa1455
+D/MatchMeBackgroundService( 1688): User token missing but refresh token available. Refreshing...
+D/MatchMeBackgroundService( 1688): Background service destroyed
+D/MatchMeBackgroundService( 1688): Realtime WebSocket Disconnected
+I/FLTFireBGExecutor( 1688): Creating background FlutterEngine instance, with args: [--enable-dart-profiling]
+D/vulkan  ( 1688): searching for layers in '/data/app/~~e9h42bHXacjXpLgqoV2kJA==/com.example.matchme-Vob9U561rFDVEi1rmi94rA==/lib/arm64'
+D/vulkan  ( 1688): searching for layers in '/data/app/~~e9h42bHXacjXpLgqoV2kJA==/com.example.matchme-Vob9U561rFDVEi1rmi94rA==/base.apk!/lib/arm64-v8a'
+D/FLTFireContextHolder( 1688): received application context.
+I/flutter ( 1688): [IMPORTANT:flutter/shell/platform/android/android_context_vk_impeller.cc(62)] Using the Impeller rendering backend (Vulkan).
+D/FlutterGeolocator( 1688): Geolocator foreground service connected
+D/FlutterGeolocator( 1688): Initializing Geolocator services
+D/FlutterGeolocator( 1688): Flutter engine connected. Connected engine count 2
+D/MatchMeMainActivity( 1688): applySystemUiColors attempt=2 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+W/MatchMeBackgroundService( 1688): JWT refresh failed: code=400 body={"code":400,"error_code":"refresh_token_already_used","msg":"Invalid Refresh Token: Already Used"}
+E/MatchMeBackgroundService( 1688): Refresh token invalidated/used. Clearing credentials to stop retry loop.
+W/MatchMeBackgroundService( 1688): JWT refresh failed: code=400 body={"code":400,"error_code":"refresh_token_already_used","msg":"Invalid Refresh Token: Already Used"}
+E/MatchMeBackgroundService( 1688): Refresh token invalidated/used. Clearing credentials to stop retry loop.
+W/example.matchme( 1688): userfaultfd: MOVE ioctl seems unsupported: Try again
+W/MatchMeBackgroundService( 1688): JWT refresh failed: code=400 body={"code":400,"error_code":"refresh_token_already_used","msg":"Invalid Refresh Token: Already Used"}
+E/MatchMeBackgroundService( 1688): Refresh token invalidated/used. Clearing credentials to stop retry loop.
+D/MatchMeBackgroundService( 1688): Updating location in Supabase: lat=6.2664887, lng=-75.5635237
+W/MatchMeBackgroundService( 1688): JWT refresh failed: code=400 body={"code":400,"error_code":"refresh_token_already_used","msg":"Invalid Refresh Token: Already Used"}
+E/MatchMeBackgroundService( 1688): Refresh token invalidated/used. Clearing credentials to stop retry loop.
+D/MatchMeBackgroundService( 1688): Updating location in Supabase: lat=6.2664887, lng=-75.5635237
+D/MatchMeBackgroundService( 1688): Updating location in Supabase: lat=6.2664887, lng=-75.5635237
+W/MatchMeBackgroundService( 1688): Skipping update_user_activity RPC (missing user JWT)
+W/MatchMeBackgroundService( 1688): Realtime connection stale or missing (last activity: 1770619117145ms ago). Reconnecting...
+D/MatchMeBackgroundService( 1688): Realtime WebSocket Disconnected
+D/MatchMeBackgroundService( 1688): [NATIVE] connectToRealtime: start
+D/MatchMeBackgroundService( 1688): Connecting to Supabase Realtime...
+D/MatchMeBackgroundService( 1688): Successfully updated location:
+D/MatchMeBackgroundService( 1688): Checking for notifications via RPC... (Message ID: null)
+D/MatchMeMainActivity( 1688): applySystemUiColors attempt=0 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+D/MatchMeBackgroundService( 1688): Successfully updated location:
+D/MatchMeBackgroundService( 1688): Skipping notification check - throttled (last check: 60ms ago)
+D/MatchMeBackgroundService( 1688): Successfully updated location:
+D/MatchMeBackgroundService( 1688): Skipping notification check - throttled (last check: 106ms ago)
+D/MatchMeBackgroundService( 1688): Notification check response: [{"unread_matches_count":0,"unread_messages_count":0,"latest_match_name":null,"latest_message_sender":null,"latest_message_content":null,"latest_message_id":null,"latest_match_id":null,"latest_message_sender_id":null,"translation_enabled":null,"translation_language":null,"translation_available":null}]
+D/MatchMeBackgroundService( 1688): No new notifications found
+D/MatchMeBackgroundService( 1688): [NATIVE] Realtime WebSocket Connected (elapsed=500ms)
+D/MatchMeBackgroundService( 1688): Sent Realtime Join: topic=realtime:public:chat_messages token=null
+D/MatchMeBackgroundService( 1688): Sent Realtime Join: topic=realtime:public:matches token=null
+D/MatchMeBackgroundService( 1688): Realtime: Joined channel successfully
+D/MatchMeBackgroundService( 1688): Realtime: Joined channel successfully
+I/FLTFireMsgService( 1688): FlutterFirebaseMessagingBackgroundService started!
+D/ProfileInstaller( 1688): Installing profile for com.example.matchme
+I/Choreographer( 1688): Skipped 40 frames!  The application may be doing too much work on its main thread.
+D/MatchMeMainActivity( 1688): applySystemUiColors attempt=1 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+I/System.out( 1688): MatchMeBackgroundPlugin: startService called with token: present
+D/MatchMeBackgroundService( 1688): Background service created
+D/MatchMeBackgroundService( 1688): Synchronously restored state: highAccuracyMode=false, isVisible=true, userId=true
+D/MatchMeBackgroundService( 1688): [NATIVE] Delaying restoreCredentialsAndConnect by 1500ms to reduce startup contention
+W/MatchMeBackgroundService( 1688): Skipping update_user_activity RPC (missing user JWT)
+W/MatchMeBackgroundService( 1688): Realtime connection stale or missing (last activity: 1770619118233ms ago). Reconnecting...
+D/MatchMeBackgroundService( 1688): Realtime WebSocket Disconnected
+D/MatchMeBackgroundService( 1688): [NATIVE] connectToRealtime: start
+D/MatchMeBackgroundService( 1688): Connecting to Supabase Realtime...
+D/MatchMeBackgroundService( 1688): Background service started with action: UPDATE_APP_FOREGROUND
+D/MatchMeBackgroundService( 1688): App foreground state updated: true
+D/MatchMeBackgroundService( 1688): Cancelling periodic location work (High Accuracy Mode or Foreground)
+I/Choreographer( 1688): Skipped 36 frames!  The application may be doing too much work on its main thread.
+D/MatchMeBackgroundService( 1688): [NATIVE] Realtime WebSocket Connected (elapsed=461ms)
+D/MatchMeBackgroundService( 1688): Background service started with action: START
+D/MatchMeBackgroundService( 1688): Sent Realtime Join: topic=realtime:public:chat_messages token=present
+D/MatchMeBackgroundService( 1688): Sent Realtime Join: topic=realtime:public:matches token=present
+D/MatchMeBackgroundService( 1688): Realtime: Joined channel successfully
+D/MatchMeBackgroundService( 1688): Realtime: Joined channel successfully
+D/MatchMeBackgroundService( 1688): Starting service with userId: ffc20046-a777-463b-922a-547151aa1455, highAccuracy: true, isVisible: false, isOnline: true
+D/MatchMeBackgroundService( 1688): Credentials and config saved for boot recovery
+D/MatchMeBackgroundService( 1688): Cancelling periodic location work (High Accuracy Mode or Foreground)
+D/MatchMeBackgroundService( 1688): Service started but user is invisible or offline -> NOT starting location updates
+D/MatchMeBackgroundService( 1688): Location updates stopped
+D/MatchMeMainActivity( 1688): applySystemUiColors attempt=2 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+I/flutter ( 1688): [L10N] Fetched 1085 rows for en (in 1 batches)
+I/flutter ( 1688): Missing DB translation keys for en: (count=1) [romantic::casual] (elapsed=1459ms)
+I/flutter ( 1688): [L10N] Background init completed for en
+D/MatchMeMainActivity( 1688): applySystemUiColors attempt=3 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+D/MatchMeBackgroundService( 1688): [NATIVE] restoreCredentialsAndConnect: start
+D/MatchMeBackgroundService( 1688): Restored credentials from storage. Connecting to Realtime immediately.
+D/MatchMeBackgroundService( 1688): [NATIVE] restoreCredentialsAndConnect: finished (elapsed=87ms)
+D/MatchMeBackgroundService( 1688): [NATIVE] restoreCredentialsAndConnect completed (elapsed=87ms)
+D/MatchMeMainActivity( 1688): applySystemUiColors attempt=3 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+D/MatchMeBackgroundService( 1688): Background service started with action: SET_CONNECTIVITY
+D/MatchMeBackgroundService( 1688): Connectivity updated: true
+D/MatchMeBackgroundService( 1688): User went offline (or is invisible) -> stopping location updates
+D/MatchMeBackgroundService( 1688): Location updates stopped
+D/MatchMeBackgroundService( 1688): Realtime: Joined channel successfully
+D/MatchMeBackgroundService( 1688): Successfully updated user activity
+D/MatchMeBackgroundService( 1688): Realtime: Joined channel successfully

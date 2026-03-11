@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title></title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #000; color: #fff; overflow: hidden; }
+    #container { position: relative; width: 100vw; height: 100vh; }
+    #video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+    #overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: 20px; }
+    #instruction { pointer-events: none; text-align: center; padding: 12px 20px; background: rgba(0,0,0,0.6); border-radius: 12px; font-size: 1rem; max-width: 90%; }
+    #feedback { pointer-events: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 120px; height: 120px; border-radius: 50%; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; transition: background 0.3s; }
+    #feedback.ready { background: rgba(0, 200, 83, 0.9); }
+    #feedback.ready svg { width: 72px; height: 72px; }
+    #feedback svg { width: 48px; height: 48px; opacity: 0.6; }
+    #feedback.ready svg { opacity: 1; }
+    #captureBar { position: absolute; bottom: 0; left: 0; right: 0; padding: 24px; background: linear-gradient(transparent, rgba(0,0,0,0.8)); display: flex; justify-content: center; }
+    #captureBtn { width: 72px; height: 72px; border-radius: 50%; border: 4px solid #fff; background: rgba(255,255,255,0.3); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: opacity 0.2s, background 0.2s; }
+    #captureBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+    #captureBtn.ready { background: rgba(0, 200, 83, 0.9); }
+    #captureBtn svg { width: 36px; height: 36px; }
+    #status { pointer-events: none; font-size: 0.9rem; margin-top: 8px; text-align: center; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <video id="video" autoplay playsinline muted></video>
+    <div id="overlay">
+      <div id="instruction"></div>
+      <div id="feedback"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg></div>
+      <div id="captureBar">
+        <div>
+          <button id="captureBtn" disabled><svg viewBox="0 0 24 24" fill="white"><circle cx="12" cy="12" r="4"/></svg></button>
+          <div id="status"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <canvas id="canvas" class="hidden"></canvas>
+  <!-- Flutter WebView replaces __GESTURE_CODE__ with the required gesture code -->
+  <script>
+    window.__REQUIRED_GESTURE_CODE__ = __GESTURE_CODE_JSON__;
+    window.__REQUIRED_GESTURE_LABEL__ = __GESTURE_LABEL_JSON__;
+    window.__CAPTURE_STRINGS__ = __CAPTURE_STRINGS_JSON__;
+  </script>
+  <script type="module">
+(function() {
+  var HOLD_MS = 1200;
+  var FPS = 10;
+
+  var gestureRequirements = {
+    'THUMBS_UP_RIGHT_HAND': { gesture: 'Thumb_Up', hand: 'Right' },
+    'PEACE_SIGN_RIGHT_HAND': { gesture: 'Victory', hand: 'Right' }
+  };
+
+  var gestureParam = (typeof window.__REQUIRED_GESTURE_CODE__ === 'string' && window.__REQUIRED_GESTURE_CODE__)
+    ? window.__REQUIRED_GESTURE_CODE__.toUpperCase().replace(/-/g, '_')
+    : (new URLSearchParams(window.location.search).get('gesture') || '').toUpperCase().replace(/-/g, '_');
+  var requirement = gestureRequirements[gestureParam] || gestureRequirements['THUMBS_UP_RIGHT_HAND'];
+  var requiredGesture = requirement.gesture;
+  var requiredHand = requirement.hand || null;
+  var gestureLabel = (typeof window.__REQUIRED_GESTURE_LABEL__ === 'string' && window.__REQUIRED_GESTURE_LABEL__)
+    ? window.__REQUIRED_GESTURE_LABEL__
+    : requiredGesture;
+  document.title = gestureLabel;
+
+  var video = document.getElementById('video');
+  var instruction = document.getElementById('instruction');
+  var feedback = document.getElementById('feedback');
+  var captureBtn = document.getElementById('captureBtn');
+  var statusEl = document.getElementById('status');
+  var canvas = document.getElementById('canvas');
+  var ctx = canvas.getContext('2d');
+
+  var gestureRecognizer = null;
+  var faceLandmarker = null;
+  var holdStart = null;
+  var lastFaceSeenAt = 0;
+  var lastFaceLandmarks = null;
+  var ready = false;
+  var frameIndex = 0;
+  var stream = null;
+  var hasCaptured = false;
+  var tickTimer = null;
+  var strings = (window.__CAPTURE_STRINGS__ && typeof window.__CAPTURE_STRINGS__ === 'object') ? window.__CAPTURE_STRINGS__ : {};
+
+  window.sendVerificationPhoto = function(base64) {
+    if (window.PhotoCapture && typeof window.PhotoCapture.postMessage === 'function') {
+      window.PhotoCapture.postMessage(base64);
+    } else if (window.opener) {
+      window.opener.postMessage({ type: 'verificationPhoto', data: base64 }, '*');
+    }
+  };
+
+  function setInstruction(text) {
+    instruction.textContent = text;
+  }
+
+  function setReady(ready) {
+    if (ready) {
+      feedback.classList.add('ready');
+      captureBtn.classList.add('ready');
+      captureBtn.disabled = false;
+      statusEl.textContent = t('verificationCaptureStatusGestureDetected', 'Ready! Tap to capture');
+    } else {
+      feedback.classList.remove('ready');
+      captureBtn.classList.remove('ready');
+      captureBtn.disabled = true;
+    }
+  }
+
+  function t(key, fallback) {
+    try {
+      var v = strings[key];
+      return (typeof v === 'string' && v.trim().length) ? v : fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  function setStatus(text) {
+    statusEl.textContent = text;
+  }
+
+  setInstruction(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
+  setStatus(t('verificationCaptureStatusShowGesture', 'Show the required gesture'));
+
+  function detectGesture(results) {
+    if (!results || !results.gestures || results.gestures.length === 0) return null;
+    var g = results.gestures[0];
+    if (!g || !g.length) return null;
+    return g[0].categoryName;
+  }
+
+  function detectHandedness(results) {
+    if (!results || !results.handednesses || results.handednesses.length === 0) return null;
+    var h = results.handednesses[0];
+    if (!h || !h.length) return null;
+    return h[0].categoryName;
+  }
+
+  function getHandLandmarks(results) {
+    try {
+      if (!results) return null;
+      if (results.landmarks && results.landmarks.length) return results.landmarks[0];
+      if (results.handLandmarks && results.handLandmarks.length) return results.handLandmarks[0];
+      if (results.worldLandmarks && results.worldLandmarks.length) return results.worldLandmarks[0];
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function isFaceObstructed(faceLandmarks, handLandmarks) {
+    try {
+      if (!faceLandmarks || !handLandmarks) return false;
+      var idx = [1, 13, 14, 61, 291];
+      var minX = 1, minY = 1, maxX = 0, maxY = 0;
+      for (var i = 0; i < idx.length; i++) {
+        var p = faceLandmarks[idx[i]];
+        if (!p) continue;
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+      }
+      if (maxX <= minX || maxY <= minY) return false;
+      var padX = 0.04;
+      var padY = 0.05;
+      minX = Math.max(0, minX - padX);
+      maxX = Math.min(1, maxX + padX);
+      minY = Math.max(0, minY - padY);
+      maxY = Math.min(1, maxY + padY);
+
+      for (var j = 0; j < handLandmarks.length; j++) {
+        var h = handLandmarks[j];
+        if (!h) continue;
+        if (h.x >= minX && h.x <= maxX && h.y >= minY && h.y <= maxY) {
+          return true;
+        }
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function isFullFaceVisible(faceLandmarks) {
+    try {
+      if (!faceLandmarks || !faceLandmarks.length) return false;
+
+      var minX = 1, minY = 1, maxX = 0, maxY = 0;
+      for (var i = 0; i < faceLandmarks.length; i++) {
+        var p = faceLandmarks[i];
+        if (!p) continue;
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+      }
+
+      var margin = 0.08;
+      if (minX < margin || minY < margin || maxX > (1 - margin) || maxY > (1 - margin)) {
+        return false;
+      }
+
+      var w = maxX - minX;
+      var h = maxY - minY;
+      if (w < 0.18 || h < 0.18) {
+        return false;
+      }
+
+      var key = [1, 33, 263, 13, 14];
+      for (var k = 0; k < key.length; k++) {
+        var kp = faceLandmarks[key[k]];
+        if (!kp) return false;
+        if (kp.x < margin || kp.x > (1 - margin) || kp.y < margin || kp.y > (1 - margin)) {
+          return false;
+        }
+      }
+
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function tick() {
+    if (!gestureRecognizer || !faceLandmarker || video.readyState < 2) return;
+    frameIndex++;
+    var now = Date.now();
+    try {
+      if (frameIndex % 2 === 0) {
+        try {
+          var faceResults = faceLandmarker.detectForVideo(video, now);
+          var hasFace = !!(faceResults && faceResults.faceLandmarks && faceResults.faceLandmarks.length > 0);
+          if (hasFace) {
+            lastFaceSeenAt = now;
+            lastFaceLandmarks = faceResults.faceLandmarks[0];
+          }
+        } catch (_) {}
+      }
+      var facePresent = (now - lastFaceSeenAt) < 900 && !!lastFaceLandmarks;
+      var fullFaceVisible = facePresent && isFullFaceVisible(lastFaceLandmarks);
+
+      var gestureResults = gestureRecognizer.recognizeForVideo(video, now);
+      var name = detectGesture(gestureResults);
+      var hand = detectHandedness(gestureResults);
+      var handLandmarks = getHandLandmarks(gestureResults);
+      var faceObstructed = facePresent && handLandmarks && isFaceObstructed(lastFaceLandmarks, handLandmarks);
+      var faceOk = fullFaceVisible && !faceObstructed;
+      var gestureOk = false;
+      var matchesGesture = name === requiredGesture;
+      var matchesHand = !requiredHand || hand === requiredHand;
+      if (matchesGesture && matchesHand) {
+        if (!holdStart) holdStart = now;
+        if ((now - holdStart) >= HOLD_MS) gestureOk = true;
+      } else {
+        holdStart = null;
+      }
+
+      var newReady = faceOk && gestureOk;
+      if (newReady !== ready) {
+        ready = newReady;
+        setReady(ready);
+        if (ready) {
+          triggerAutoCapture();
+          return;
+        }
+      }
+
+      if (!ready) {
+        if (!faceOk) {
+          setStatus(t('verificationCaptureStatusShowFace', 'Make sure your face is visible'));
+        } else if (matchesGesture && requiredHand && hand && hand !== requiredHand) {
+          var handKey = requiredHand === 'Right' ? 'verificationCaptureHandRight' : 'verificationCaptureHandLeft';
+          var handLabel = t(handKey, requiredHand.toLowerCase());
+          setStatus(
+            t('verificationCaptureStatusUseCorrectHand', 'Use your {hand} hand').replace(
+              '{hand}',
+              handLabel,
+            ),
+          );
+        } else {
+          setStatus(t('verificationCaptureStatusShowGesture', 'Show the required gesture'));
+        }
+      }
+    } catch (e) {}
+  }
+
+  function triggerAutoCapture() {
+    if (hasCaptured) return;
+    hasCaptured = true;
+    try {
+      captureBtn.disabled = true;
+    } catch (_) {}
+    try {
+      if (tickTimer) {
+        clearInterval(tickTimer);
+        tickTimer = null;
+      }
+    } catch (_) {}
+    captureSafely(0);
+  }
+
+  function captureSafely(attempt) {
+    try {
+      if (video.videoWidth > 0 && video.videoHeight > 0 && video.readyState >= 2) {
+        capture();
+        return;
+      }
+    } catch (_) {}
+    if (attempt >= 10) {
+      capture();
+      return;
+    }
+    setTimeout(function() { captureSafely(attempt + 1); }, 50);
+  }
+
+  function capture() {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.save();
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
+    ctx.restore();
+    var dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+    var base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, '');
+    window.sendVerificationPhoto(base64);
+    try {
+      if (stream && typeof stream.getTracks === 'function') {
+        stream.getTracks().forEach(function(t) {
+          try { t.stop(); } catch (_) {}
+        });
+      }
+    } catch (_) {}
+  }
+
+  captureBtn.addEventListener('click', function() {
+    if (captureBtn.disabled) return;
+    capture();
+  });
+
+  function run(vision) {
+    setInstruction(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
+    setStatus(t('verificationCaptureStatusShowGesture', 'Show the required gesture'));
+
+    Promise.all([
+      vision.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'),
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
+    ]).then(function(arr) {
+      var resolver = arr[0];
+      stream = arr[1];
+      video.srcObject = stream;
+      return Promise.all([
+        vision.GestureRecognizer.createFromOptions(resolver, {
+          baseOptions: {
+            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task'
+          },
+          runningMode: 'VIDEO',
+          numHands: 1
+        }),
+        vision.FaceLandmarker.createFromOptions(resolver, {
+          baseOptions: {
+            modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task'
+          },
+          runningMode: 'VIDEO',
+          numFaces: 1,
+          outputFaceBlendshapes: false,
+          outputFacialTransformationMatrixes: false
+        })
+      ]);
+    }).then(function(recognizer) {
+      gestureRecognizer = recognizer[0];
+      faceLandmarker = recognizer[1];
+      setInstruction(t('verificationCaptureInstruction', 'Show: {gesture}').replace('{gesture}', gestureLabel));
+      tickTimer = setInterval(tick, 1000 / FPS);
+    }).catch(function(err) {
+      setInstruction(t('verificationCaptureCameraOrModelError', 'Camera or model error: {error}').replace('{error}', (err && (err.message || err)) || 'Unknown error'));
+      console.error(err);
+    });
+  }
+
+  import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs').then(function(mod) {
+    var vision = mod.default || mod;
+    run(vision);
+  }).catch(function(err) {
+    setInstruction(t('verificationCaptureFailedToLoad', 'Failed to load MediaPipe: {error}').replace('{error}', (err && (err.message || err)) || 'Unknown error'));
+    console.error(err);
+  });
+})();
+  </script>
+</body>
+</html>

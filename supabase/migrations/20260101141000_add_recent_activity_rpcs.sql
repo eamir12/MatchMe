@@ -2,6 +2,9 @@
 
 BEGIN;
 
+DROP FUNCTION IF EXISTS public.get_user_recent_matches(uuid, int);
+DROP FUNCTION IF EXISTS public.get_user_recent_chats(uuid, int);
+
 -- get_user_recent_matches: returns recent matches for a user with basic other-user info
 CREATE OR REPLACE FUNCTION public.get_user_recent_matches(p_user_id uuid, p_limit int DEFAULT 20)
 RETURNS TABLE (

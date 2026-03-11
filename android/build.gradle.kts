@@ -44,6 +44,12 @@ subprojects {
     subprojects {
         // Configure Android modules after they've been evaluated so their android extension exists.
         plugins.withId("com.android.library") {
+            // Ensure all Android library modules (including third-party plugins) have a namespace
+            extensions.configure<com.android.build.gradle.LibraryExtension> {
+                if (namespace == null || namespace!!.isEmpty()) {
+                    namespace = project.group.toString()
+                }
+            }
             afterEvaluate {
                 extensions.configure<com.android.build.gradle.LibraryExtension> {
                     compileOptions {
@@ -56,6 +62,9 @@ subprojects {
         plugins.withId("com.android.application") {
             afterEvaluate {
                 extensions.configure<com.android.build.gradle.AppExtension> {
+                    if (namespace == null || namespace!!.isEmpty()) {
+                        namespace = project.group.toString()
+                    }
                     compileOptions {
                         sourceCompatibility = JavaVersion.VERSION_17
                         targetCompatibility = JavaVersion.VERSION_17

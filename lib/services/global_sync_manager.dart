@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
+import 'package:matchme/providers/chat_provider.dart';
 import 'package:matchme/services/local_db_service.dart';
+import 'package:matchme/services/app_config_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/providers/auth_provider.dart';
 
@@ -13,17 +15,29 @@ final supabase = Supabase.instance.client;
 class GlobalHomeSyncManager {
   final Ref _ref;
   Timer? _syncTimer;
-  final Duration _syncInterval = const Duration(seconds: 60);
+  Duration _syncInterval = const Duration(seconds: 60);
 
   // Heartbeat to keep user_activity fresh so online status reflects connectivity
   Timer? _heartbeatTimer;
-  final Duration _heartbeatInterval = const Duration(seconds: 20);
+  Duration _heartbeatInterval = const Duration(seconds: 5);
 
   GlobalHomeSyncManager(this._ref) {
+    // Load config values asynchronously
+    Future.microtask(() async {
+      _syncInterval = await appConfigService.getDuration(
+        'sync.global_interval_seconds',
+        defaultValue: const Duration(seconds: 60)
+      );
+       _heartbeatInterval = await appConfigService.getDuration(
+         'sync.heartbeat_interval_seconds',
+         defaultValue: const Duration(seconds: 5)
+       );
+    });
+
     // Perform immediate sync regardless of connectivity status
     final userId = supabase.auth.currentUser?.id;
     if (userId != null) {
-      _runFullSync(userId, checkConnectivity: false);
+      Future.microtask(() => _runFullSync(userId, checkConnectivity: false));
     }
 
     _ref.listen<AsyncValue<bool>>(connectivityProvider, (previous, next) {
@@ -76,7 +90,7 @@ class GlobalHomeSyncManager {
     if (userId == null) return;
 
     // Run the first sync immediately
-    _runFullSync(userId, checkConnectivity: true);
+    Future.microtask(() => _runFullSync(userId, checkConnectivity: true));
 
     // Schedule the periodic sync
     _syncTimer = Timer.periodic(_syncInterval, (timer) {
@@ -112,6 +126,18 @@ class GlobalHomeSyncManager {
 
   Future<void> _syncMatches(String userId) async {
     try {
+      final localDb = _ref.read(localDbProvider);
+      final defaultWindowSeconds = await appConfigService.getInt(
+        'matches.chat_start_window_seconds',
+        defaultValue: const Duration(hours: 24).inSeconds,
+      );
+
+      final existing = await localDb.watchMatches().first;
+      final existingByMatchId = <String, Map<String, dynamic>>{
+        for (final m in existing)
+          (m['match_id'] ?? m['id'])?.toString() ?? '': m,
+      };
+
       // Fetch matches with event details for event matches
       final response = await supabase
           .from('matches')
@@ -148,15 +174,26 @@ class GlobalHomeSyncManager {
         }
       }
 
-      final List<Map<String, dynamic>> transformedMatches = uniqueMatches
-          .map((match) {
+      final List<Map<String, dynamic>> transformedMatches = uniqueMatches.map((match) {
         final eventDetails = match['events'] as Map<String, dynamic>?;
+        final matchId = (match['id'] ?? match['match_id'])?.toString() ?? '';
+        final existingRow = existingByMatchId[matchId];
+        final dynamic existingWindowRaw = existingRow?['chat_start_window_seconds'];
+        final int? existingWindowSeconds = existingWindowRaw is int
+            ? existingWindowRaw
+            : int.tryParse(existingWindowRaw?.toString() ?? '');
+        final dynamic incomingWindowRaw = match['chat_start_window_seconds'];
+        final int? incomingWindowSeconds = incomingWindowRaw is int
+            ? incomingWindowRaw
+            : int.tryParse(incomingWindowRaw?.toString() ?? '');
+        final resolvedWindowSeconds = incomingWindowSeconds ?? existingWindowSeconds ?? defaultWindowSeconds;
         return {
-          'match_id': match['id'],
+          'match_id': matchId,
           'user1_id': match['user1_id'],
           'user2_id': match['user2_id'],
           'matched_intent': match['matched_intent'],
           'match_type': match['match_type'],
+          'chat_start_window_seconds': resolvedWindowSeconds,
           'created_at': match['created_at'],
           'event_id': match['event_id'],
           'event_name': eventDetails?['event_name'],
@@ -164,7 +201,6 @@ class GlobalHomeSyncManager {
         };
       }).toList();
 
-      final localDb = _ref.read(localDbProvider);
       await localDb.saveMatches(transformedMatches);
     } catch (_) {
       // suppressed error logging
@@ -172,152 +208,234 @@ class GlobalHomeSyncManager {
   }
 
   Future<void> syncChatsNow(String userId) async {
+    if (kIsWeb) {
+      debugPrint('🔍 [WEB] syncChatsNow: Starting sync for user: \$userId');
+    }
     try {
       final localDb = _ref.read(localDbProvider);
 
-      // Use server-side function to get recent chats with unread counts
+      // Use simplified RPC function for better performance
       try {
-        final recent = await supabase.rpc('get_user_chats', params: {'p_user_id': userId, 'p_limit': 5});
+        final recent = await supabase.rpc('get_user_recent_chats', params: {'p_user_id': userId, 'p_limit': 5});
+
+        if (kIsWeb) {
+          debugPrint('🔍 [WEB] syncChatsNow: Server returned \${recent.length} chats');
+          for (final row in recent) {
+            if (row is Map<String, dynamic>) {
+              debugPrint('🔍 [WEB] syncChatsNow: Server chat ${row['match_id']}: unread_count=${row['unread_count']}');
+            }
+          }
+        }
+
         if (recent is List) {
           final List<Map<String, dynamic>> transformed = [];
 
-          // Collect match IDs to enrich with match/event info in a single pass
-          final Set<String> matchIds = {};
           for (final row in recent) {
-            final mid = row['match_id']?.toString();
-            if (mid != null && mid.isNotEmpty) matchIds.add(mid);
-          }
+            if (row is Map<String, dynamic>) {
 
-          final Map<String, Map<String, dynamic>> matchById = {};
-          if (matchIds.isNotEmpty) {
-            try {
-              final orClause = matchIds.map((m) => 'id.eq.$m').join(',');
-              final matchesResponse = await supabase
-                  .from('matches')
-                  .select('id, created_at, event_id, events:event_id (event_name, event_link)')
-                  .or(orClause);
-
-              for (final m in matchesResponse) {
-                // Normalize to Map<String, dynamic> to satisfy typing and avoid unnecessary casts
-                final mm = Map<String, dynamic>.from(m as Map);
-                matchById[mm['id'] as String] = mm;
-              }
-            } catch (_) {
-              // Non-fatal: we'll proceed without match enrichment
-            }
-          }
-
-          for (final row in recent) {
-            try {
-              final matchId = row['match_id']?.toString() ?? '';
-              final lastMessageId = row['last_message_id']?.toString() ?? '';
-
-              final matchData = matchById[matchId];
-
+              // Simple transformation - data comes pre-enriched from RPC
               transformed.add({
-                'match_id': matchId,
+                'match_id': row['match_id'],
                 'other_user_id': row['other_user_id'],
-                // Server side masks full names; fall back to any legacy field if present
-                'other_user_name': row['other_name'] ?? row['other_user_name'] ?? 'Unknown User',
-                // Keep legacy keys the UI expects
-                'last_message_content': row['last_message_preview'] ?? '',
-                'last_message_translated': row['last_message_translated'],
-                'last_message_id': lastMessageId,
+                'other_user_name': row['other_name'] ?? 'Unknown User',
+                'other_user_photos': row['other_photos'] ?? [],
+                'last_message': row['last_message_preview'] ?? '',
                 'last_message_at': row['last_message_at'],
                 'unread_count': row['unread_count'] ?? 0,
-                'match_created_at': matchData != null ? matchData['created_at'] : null,
-                'event_id': matchData != null ? matchData['event_id'] : null,
-                'event_name': matchData != null && matchData['events'] != null ? (matchData['events'] as Map<String, dynamic>)['event_name'] : null,
-                'event_link': matchData != null && matchData['events'] != null ? (matchData['events'] as Map<String, dynamic>)['event_link'] : null,
+                'updated_at': row['updated_at'],
                 'translation_enabled': row['translation_enabled'] ?? false,
                 'translation_language': row['translation_language'],
+                'last_message_id': row['last_message_id'],
+                'last_message_sender_id': row['last_message_sender_id'],
+                'last_message_translated': row['last_message_translated'],
               });
+            }
+          }
 
-              // Ensure latest message exists in local cache for translation and UI lookups
-              if (lastMessageId.isNotEmpty) {
-                try {
-                  final messagesResponse = await supabase
-                      .from('chat_messages')
-                      .select('id, content_original, content_translated, created_at, sender_id')
-                      .eq('id', lastMessageId)
-                      .limit(1);
-                  if (messagesResponse.isNotEmpty) {
-                    await localDb.addMessages(matchId, [Map<String, dynamic>.from(messagesResponse.first as Map)]);
+          if (kIsWeb) {
+            debugPrint('🔍 [WEB] syncChatsNow: About to save \${transformed.length} chats to local DB');
+            for (final chat in transformed) {
+              debugPrint('🔍 [WEB] syncChatsNow: Saving chat ${chat['match_id']}: unread_count=${chat['unread_count']}');
+            }
+          }
+          await localDb.saveChats(userId, transformed);
+          if (kIsWeb) {
+            debugPrint('🔍 [WEB] syncChatsNow: Completed saving chats to local DB');
+          }
+          
+          // Sync translation settings from server for each chat to ensure they match database state
+          for (final row in recent) {
+            if (row is Map<String, dynamic>) {
+              final matchId = row['match_id'];
+              final translationEnabled = row['translation_enabled'] ?? false;
+              final translationLanguage = row['translation_language'];
+              
+              if (matchId != null) {
+                await localDb.syncChatTranslationSettings(userId, matchId, translationEnabled, translationLanguage);
+              }
+            }
+          }
+
+          // Update translation provider state to match server - ensures UI reflects actual server state
+          try {
+            final translationNotifier = _ref.read(translationProvider.notifier);
+            for (final row in recent) {
+              if (row is Map<String, dynamic>) {
+                final matchId = row['match_id'] as String?;
+                final translationEnabled = row['translation_enabled'] == true;
+                final translationLanguage = row['translation_language'] as String?;
+                
+                if (matchId != null) {
+                  // Update provider state: if translation enabled, set language; otherwise remove
+                  if (translationEnabled && translationLanguage != null) {
+                    final currentState = _ref.read(translationProvider);
+                    if (currentState[matchId] != translationLanguage) {
+                      translationNotifier.setTranslationSilent(matchId, translationLanguage);
+                    }
+                  } else {
+                    // Translation is disabled, remove from provider state
+                    final currentState = _ref.read(translationProvider);
+                    if (currentState.containsKey(matchId)) {
+                      translationNotifier.clearTranslationSilent(matchId);
+                    }
                   }
-                } catch (_) {
-                  // ignore per-message fetch errors
                 }
               }
-            } catch (_) {
-              // ignore malformed row
             }
+          } catch (e) {
+            // Ignore provider update errors - they're best-effort
+            debugPrint('⚠️ Failed to update translation provider: $e');
           }
-
-          await localDb.saveChats(userId, transformed);
         }
       } catch (e) {
-        debugPrint('syncChatsNow: get_user_chats RPC failed: $e');
-        // Fall back to previous behavior: attempt a best-effort lightweight sync
-        // (keep previous logic simplified)
-        final matchesResponse = await supabase
-            .from('matches')
-            .select('id, user1_id, user2_id, matched_intent, created_at, event_id, events:event_id (event_name, event_link)')
-            .or('user1_id.eq.$userId,user2_id.eq.$userId');
-
-        final List<Map<String, dynamic>> chats = [];
-
-        for (final match in matchesResponse) {
-          final matchId = match['id'] as String;
-          final messagesResponse = await supabase
-              .from('chat_messages')
-              .select('id, content_original, content_translated, created_at, sender_id')
-              .eq('match_id', matchId)
-              .order('created_at', ascending: false)
-              .limit(1);
-
-          if (messagesResponse.isNotEmpty) {
-            final latestMessage = messagesResponse.first;
-
-            final userAId = match['user2_id'] as String;
-            final userBId = match['user1_id'] as String;
-            final otherUserId = (userAId == userId) ? userBId : userAId;
-            final eventData = match['events'] as Map<String, dynamic>?;
-
-            final String? contentTranslated = latestMessage['content_translated'] as String?;
-            final lastMessageContent = latestMessage['content_original'] ?? '';
-
-            chats.add({
-              'match_id': matchId,
-              'other_user_id': otherUserId,
-              'other_user_name': 'Unknown User',
-              'last_message_content': lastMessageContent,
-              'last_message_translated': contentTranslated,
-              'last_message_id': latestMessage['id'],
-              'last_message_at': latestMessage['created_at'],
-              'unread_count': 0,
-              'match_created_at': match['created_at'],
-              'event_id': match['event_id'],
-              'event_name': eventData?['event_name'],
-              'event_link': eventData?['event_link'],
-            });
-
-            try {
-              await localDb.addMessages(matchId, [Map<String, dynamic>.from(latestMessage as Map)]);
-            } catch (e) {
-              // Ignore local DB save errors here
-            }
-          }
-        }
-
-        await localDb.saveChats(userId, chats);
+        debugPrint('❌ syncChatsNow failed: $e');
+        // No complex fallback - keep it simple
       }
     } catch (e) {
-      // suppressed error logging
+      debugPrint('❌ syncChatsNow error: $e');
     }
   }
 
   Future<void> syncMatchesNow(String userId) async {
-    await _syncMatches(userId);
+    try {
+      final localDb = _ref.read(localDbProvider);
+      final defaultWindowSeconds = await appConfigService.getInt(
+        'matches.chat_start_window_seconds',
+        defaultValue: const Duration(hours: 24).inSeconds,
+      );
+      final existing = await localDb.watchMatches().first;
+      final existingByMatchId = <String, Map<String, dynamic>>{
+        for (final m in existing)
+          (m['match_id'] ?? m['id'])?.toString() ?? '': m,
+      };
+
+      // Use simplified RPC function for better performance
+      try {
+        final recent = await supabase.rpc('get_user_recent_matches', params: {'p_user_id': userId, 'p_limit': 5});
+
+        if (recent is List) {
+          final rows = recent.whereType<Map<String, dynamic>>().toList();
+
+          final hasFullShape =
+              rows.isNotEmpty &&
+              rows.first.containsKey('user1_id') &&
+              rows.first.containsKey('user2_id') &&
+              rows.first.containsKey('matched_intent') &&
+              rows.first.containsKey('match_type') &&
+              rows.first.containsKey('created_at');
+
+          if (hasFullShape) {
+            final normalized = rows.map((r) {
+              final copy = Map<String, dynamic>.from(r);
+              final matchId = (copy['match_id'] ?? copy['id'])?.toString() ?? '';
+              final dynamic incomingWindowRaw = copy['chat_start_window_seconds'];
+              final int? incomingWindowSeconds = incomingWindowRaw is int
+                  ? incomingWindowRaw
+                  : int.tryParse(incomingWindowRaw?.toString() ?? '');
+              final dynamic existingWindowRaw =
+                  existingByMatchId[matchId]?['chat_start_window_seconds'];
+              final int? existingWindowSeconds = existingWindowRaw is int
+                  ? existingWindowRaw
+                  : int.tryParse(existingWindowRaw?.toString() ?? '');
+              final resolvedWindowSeconds =
+                  incomingWindowSeconds ?? existingWindowSeconds ?? defaultWindowSeconds;
+              copy['chat_start_window_seconds'] = resolvedWindowSeconds;
+              return copy;
+            }).toList();
+            await localDb.saveMatches(normalized);
+            return;
+          }
+
+          final matchIds =
+              rows
+                  .map((r) => (r['match_id'] ?? r['id'])?.toString() ?? '')
+                  .where((id) => id.isNotEmpty)
+                  .toList();
+
+          if (matchIds.isEmpty) {
+            await _syncMatches(userId);
+            return;
+          }
+
+          final matchesResponse = await supabase
+              .from('matches')
+              .select('''
+                id,
+                user1_id,
+                user2_id,
+                matched_intent,
+                match_type,
+                created_at,
+                event_id,
+                events:event_id (event_name, event_link)
+              ''')
+              .inFilter('id', matchIds);
+
+          final fetched = matchesResponse.cast<Map<String, dynamic>>();
+          final byId = <String, Map<String, dynamic>>{
+            for (final m in fetched) (m['id']?.toString() ?? ''): m,
+          };
+
+          final transformedMatches = <Map<String, dynamic>>[];
+          for (final id in matchIds) {
+            final m = byId[id];
+            if (m == null) continue;
+            final eventDetails = m['events'] as Map<String, dynamic>?;
+            final dynamic existingWindowRaw = existingByMatchId[id]?['chat_start_window_seconds'];
+            final int? existingWindowSeconds = existingWindowRaw is int
+                ? existingWindowRaw
+                : int.tryParse(existingWindowRaw?.toString() ?? '');
+            final resolvedWindowSeconds = existingWindowSeconds ?? defaultWindowSeconds;
+
+            transformedMatches.add({
+              'match_id': m['id'],
+              'user1_id': m['user1_id'],
+              'user2_id': m['user2_id'],
+              'matched_intent': m['matched_intent'],
+              'match_type': m['match_type'],
+              'chat_start_window_seconds': resolvedWindowSeconds,
+              'created_at': m['created_at'],
+              'event_id': m['event_id'],
+              'event_name': eventDetails?['event_name'],
+              'event_link': eventDetails?['event_link'],
+            });
+          }
+
+          if (transformedMatches.isNotEmpty) {
+            await localDb.saveMatches(transformedMatches);
+            return;
+          }
+
+          await _syncMatches(userId);
+        }
+      } catch (e) {
+        debugPrint('syncMatchesNow: get_user_recent_matches RPC failed: $e');
+        // Fallback to original method
+        await _syncMatches(userId);
+      }
+    } catch (e) {
+      debugPrint('syncMatchesNow error: $e');
+    }
   }
 
   // ---
@@ -347,7 +465,7 @@ class GlobalHomeSyncManager {
           final latestTimestamp = await localDb.getLatestMessageTimestamp(matchId);
 
           // 4. Build the query
-          var query = supabase.from('chat_messages').select().eq('match_id', matchId);
+          var query = supabase.from('chat_messages').select('id, match_id, sender_id, content_original, content_translated, created_at, edited_at, delivered_at, read_at, reply_to_message_id').eq('match_id', matchId);
 
           // 5. If we have a timestamp, only ask for messages *after* it
           if (latestTimestamp != null) {
@@ -356,9 +474,32 @@ class GlobalHomeSyncManager {
 
           final newMessages = await query;
 
-          // 6. Add the new messages to the local cache
+          // 6. Add the new messages to the local cache and get messages to deliver
           if (newMessages.isNotEmpty) {
-            await localDb.addMessages(matchId, newMessages.cast<Map<String, dynamic>>());
+            final messagesToDeliver = await localDb.addMessages(
+              matchId,
+              newMessages.cast<Map<String, dynamic>>(),
+              currentUserId: userId,
+            );
+            
+            // 7. Mark messages as delivered to server (non-blocking, batch RPC calls)
+            if (messagesToDeliver.isNotEmpty) {
+              debugPrint('🔄 GLOBAL_SYNC: Marking ${messagesToDeliver.length} messages as delivered for match $matchId');
+              unawaited(
+                Future.wait(
+                  messagesToDeliver.map((msgId) =>
+                    supabase.rpc('mark_message_delivered', params: {'p_message_id': msgId})
+                      .then((_) {
+                        debugPrint('✅ GLOBAL_SYNC: Message $msgId marked as delivered');
+                      })
+                      .catchError((e) {
+                        debugPrint('❌ GLOBAL_SYNC: Failed to mark $msgId as delivered: $e');
+                      })
+                  ),
+                  eagerError: false,
+                )
+              );
+            }
           }
         } catch (_) {
           // suppressed error logging per-match to avoid noisy logs

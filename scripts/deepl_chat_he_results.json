@@ -1,0 +1,370 @@
+{
+  "greeting_hey": {
+    "text": "Hey, nice to meet you!",
+    "cases": {
+      "current": {
+        "payload": {
+          "text": [
+            "Hey, nice to meet you!"
+          ],
+          "target_lang": "HE",
+          "source_lang": "EN"
+        },
+        "translation": "היי, נעים להכיר אותך!"
+      }
+    }
+  },
+  "greeting_hi": {
+    "text": "Hi!",
+    "cases": {
+      "current": {
+        "payload": {
+          "text": [
+            "Hi!"
+          ],
+          "target_lang": "HE",
+          "source_lang": "EN"
+        },
+        "translation": "היי!"
+      }
+    }
+  },
+  "compliment": {
+    "text": "You look great!",
+    "cases": {
+      "current": {
+        "payload": {
+          "text": [
+            "You look great!"
+          ],
+          "target_lang": "HE",
+          "source_lang": "EN"
+        },
+        "translation": "את נראית נהדר!"
+      },
+      "context_recipient_gender_female": {
+        "context": "recipient_gender: female",
+        "translation": "את נראית נהדר!"
+      },
+      "explicit_recipient_female": {
+        "explicit": "You (female) look great!",
+        "translation": "את (אישה) נראית נהדר!"
+      },
+      "context_recipient_gender_male": {
+        "context": "recipient_gender: male",
+        "translation": "אתה נראה נהדר!"
+      },
+      "explicit_recipient_male": {
+        "explicit": "You (male) look great!",
+        "translation": "אתה (גבר) נראה נהדר!"
+      },
+      "context_recipient_gender_nonbinary": {
+        "context": "recipient_gender: nonbinary",
+        "translation": "אתה נראה נהדר!"
+      },
+      "explicit_recipient_nonbinary": {
+        "explicit": "You (nonbinary) look great!",
+        "translation": "אתה (לא בינארי) נראה נהדר!"
+      }
+    }
+  },
+  "where_from": {
+    "text": "Where are you from?",
+    "cases": {
+      "current": {
+        "payload": {
+          "text": [
+            "Where are you from?"
+          ],
+          "target_lang": "HE",
+          "source_lang": "EN"
+        },
+        "translation": "מאיפה אתה?"
+      }
+    }
+  },
+  "coffee": {
+    "text": "Do you want to grab coffee sometime?",
+    "cases": {
+      "current": {
+        "payload": {
+          "text": [
+            "Do you want to grab coffee sometime?"
+          ],
+          "target_lang": "HE",
+          "source_lang": "EN"
+        },
+        "translation": "רוצה לקפוץ לקפה מתישהו?"
+      }
+    }
+  },
+  "liked_photos": {
+    "text": "I liked your photos.",
+    "cases": {
+      "current": {
+        "payload": {
+          "text": [
+            "I liked your photos."
+          ],
+          "target_lang": "HE",
+          "source_lang": "EN"
+        },
+        "translation": "אהבתי את התמונות שלך."
+      },
+      "context_speaker_gender_female": {
+        "context": "speaker_gender: female",
+        "translation": "אהבתי את התמונות שלך."
+      },
+      "explicit_speaker_female": {
+        "explicit": "I (female) liked your photos.",
+        "translation": "אני (אישה) אהבתי את התמונות שלך."
+      },
+      "context_speaker_gender_male": {
+        "context": "speaker_gender: male",
+        "translation": "אהבתי את התמונות שלך."
+      },
+      "explicit_speaker_male": {
+        "explicit": "I (male) liked your photos.",
+        "translation": "אני (גבר) אהבתי את התמונות שלך."
+      },
+      "context_speaker_gender_nonbinary": {
+        "context": "speaker_gender: nonbinary",
+        "translation": "אהבתי את התמונות שלך."
+      },
+      "explicit_speaker_nonbinary": {
+        "explicit": "I (nonbinary) liked your photos.",
+        "translation": "אני (לא בינארי) אהבתי את התמונות שלך."
+      }
+    }
+  },
+  "meet_tmr": {
+    "text": "Do you want to meet tomorrow?",
+    "cases": {
+      "current": {
+        "payload": {
+          "text": [
+            "Do you want to meet tomorrow?"
+          ],
+          "target_lang": "HE",
+          "source_lang": "EN"
+        },
+        "translation": "האם אתה רוצה להיפגש מחר?"
+      }
+    }
+  },
+  "sent_message": {
+    "text": "I sent you a message.",
+    "cases": {
+      "current": {
+        "payload": {
+          "text": [
+            "I sent you a message."
+          ],
+          "target_lang": "HE",
+          "source_lang": "EN"
+        },
+        "translation": "שלחתי לך הודעה."
+      },
+      "context_speaker_gender_female": {
+        "context": "speaker_gender: female",
+        "translation": "שלחתי לך הודעה."
+      },
+      "explicit_speaker_female": {
+        "explicit": "I (female) sent you a message.",
+        "translation": "אני (אישה) שלחתי לך הודעה."
+      },
+      "context_speaker_gender_male": {
+        "context": "speaker_gender: male",
+        "translation": "שלחתי לך הודעה."
+      },
+      "explicit_speaker_male": {
+        "explicit": "I (male) sent you a message.",
+        "translation": "אני (זכר) שלחתי לך הודעה."
+      },
+      "context_speaker_gender_nonbinary": {
+        "context": "speaker_gender: nonbinary",
+        "translation": "שלחתי לך הודעה."
+      },
+      "explicit_speaker_nonbinary": {
+        "explicit": "I (nonbinary) sent you a message.",
+        "translation": "אני (לא בינארי) שלחתי לך הודעה."
+      }
+    }
+  },
+  "call": {
+    "text": "Can I call you?",
+    "cases": {
+      "current": {
+        "payload": {
+          "text": [
+            "Can I call you?"
+          ],
+          "target_lang": "HE",
+          "source_lang": "EN"
+        },
+        "translation": "אני יכול להתקשר אליך?"
+      },
+      "context_speaker_gender_female": {
+        "context": "speaker_gender: female",
+        "translation": "האם אוכל להתקשר אליך?"
+      },
+      "explicit_speaker_female": {
+        "explicit": "Can I (female) call you?",
+        "translation": "האם אני (אישה) יכולה להתקשר אליך?"
+      },
+      "context_speaker_gender_male": {
+        "context": "speaker_gender: male",
+        "translation": "האם אני יכול להתקשר אליך?"
+      },
+      "explicit_speaker_male": {
+        "explicit": "Can I (male) call you?",
+        "translation": "האם אני (גבר) יכול להתקשר אליך?"
+      }
+    }
+  },
+  "typing": {
+    "text": "is typing...",
+    "cases": {
+      "current": {
+        "payload": {
+          "text": [
+            "is typing..."
+          ],
+          "target_lang": "HE",
+          "source_lang": "EN"
+        },
+        "translation": "מקליד..."
+      },
+      "context_recipient_gender_female": {
+        "context": "recipient_gender: female",
+        "translation": "מקלידה..."
+      },
+      "context_recipient_gender_male": {
+        "context": "recipient_gender: male",
+        "translation": "מקליד..."
+      },
+      "context_recipient_gender_nonbinary": {
+        "context": "recipient_gender: nonbinary",
+        "translation": "מקליד..."
+      }
+    }
+  },
+  "placeholder_name": {
+    "text": "Hey <name/>, want to meet tonight?",
+    "cases": {
+      "current": {
+        "payload": {
+          "text": [
+            "Hey <name/>, want to meet tonight?"
+          ],
+          "target_lang": "HE",
+          "source_lang": "EN",
+          "tag_handling": "xml",
+          "non_splitting_tags": [
+            "name"
+          ]
+        },
+        "translation": "היי<name/>, רוצה להיפגש הערב?"
+      }
+    }
+  },
+  "messages_count": {
+    "text": "You have {count} new messages.",
+    "cases": {
+      "current_count_1": {
+        "payload": {
+          "text": [
+            "You have 1 new messages."
+          ],
+          "target_lang": "HE",
+          "source_lang": "EN"
+        },
+        "translation": "יש לך הודעה חדשה."
+      },
+      "current_count_2": {
+        "payload": {
+          "text": [
+            "You have 2 new messages."
+          ],
+          "target_lang": "HE",
+          "source_lang": "EN"
+        },
+        "translation": "יש לך 2 הודעות חדשות."
+      },
+      "current_count_5": {
+        "payload": {
+          "text": [
+            "You have 5 new messages."
+          ],
+          "target_lang": "HE",
+          "source_lang": "EN"
+        },
+        "translation": "יש לך 5 הודעות חדשות."
+      },
+      "placeholder_with_tag": {
+        "payload": {
+          "text": [
+            "You have <count/>  new messages."
+          ],
+          "target_lang": "HE",
+          "source_lang": "EN",
+          "tag_handling": "xml",
+          "non_splitting_tags": [
+            "count"
+          ]
+        },
+        "translation": "יש לך   <count/>הודעות חדשות."
+      }
+    }
+  },
+  "ambiguous_they": {
+    "text": "They liked your message.",
+    "cases": {
+      "current": {
+        "payload": {
+          "text": [
+            "They liked your message."
+          ],
+          "target_lang": "HE",
+          "source_lang": "EN"
+        },
+        "translation": "הם אהבו את ההודעה שלך."
+      },
+      "context_ambiguous_antecedent_nonbinary": {
+        "context": "antecedent: nonbinary_person",
+        "translation": "הם אהבו את ההודעה שלך."
+      }
+    }
+  },
+  "on_my_way": {
+    "text": "I'm on my way.",
+    "cases": {
+      "current": {
+        "payload": {
+          "text": [
+            "I'm on my way."
+          ],
+          "target_lang": "HE",
+          "source_lang": "EN"
+        },
+        "translation": "אני בדרך."
+      },
+      "context_speaker_gender_female": {
+        "context": "speaker_gender: female",
+        "translation": "אני בדרך."
+      },
+      "explicit_speaker_female": {
+        "explicit": "I'm on my way.",
+        "translation": "אני בדרך."
+      },
+      "context_speaker_gender_male": {
+        "context": "speaker_gender: male",
+        "translation": "אני בדרך."
+      },
+      "explicit_speaker_male": {
+        "explicit": "I'm on my way.",
+        "translation": "אני בדרך."
+      }
+    }
+  }
+}

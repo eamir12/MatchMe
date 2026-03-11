@@ -35,6 +35,7 @@ class MainNavigationScreen extends ConsumerStatefulWidget {
 
 class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> with WidgetsBindingObserver {
   Timer? _activityTimer;
+  final GlobalKey<NavigatorState> _eventsNavigatorKey = GlobalKey<NavigatorState>();
 
   @override
   void initState() {
@@ -132,10 +133,11 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
       const HomeScreen(),
       const MatchesScreen(),
       const ChatsScreen(),
+      EventsTab(navigatorKey: _eventsNavigatorKey),
       const ProfileScreen(),
     ];
 
-    final List<String> appBarTitleKeys = ['navHome', 'navMatches', 'navChats', 'navProfile'];
+    final List<String> appBarTitleKeys = ['navHome', 'navMatches', 'navChats', 'navEvents', 'navProfile'];
     final safeIndex = currentIndex < 0 ? 0 : (currentIndex >= appBarTitleKeys.length ? appBarTitleKeys.length - 1 : currentIndex);
     final screenName = l10n.getString(appBarTitleKeys[safeIndex]);
 
@@ -344,11 +346,12 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
         ),
         tooltip: l10n.getString('authLogout'),
         onPressed: () async {
+          // Perform logout - the auth state listener in visibility_provider.dart
+          // will automatically handle setting visibility to false after sign out completes.
+          // This ensures the toggle is not touched during the logout process.
           try {
-            await ref.read(isVisibleProvider.notifier).onLogout();
             ref.read(globalSyncManagerProvider).dispose();
-            // BackgroundService.stop() already invoked inside onLogout, but call again to be safe
-            await BackgroundService.stop();
+            // BackgroundService.stop() is called automatically by auth state listener
             await _clearLoginState();
 
             // Revoke all active sessions for this user (best-effort)
@@ -364,7 +367,6 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
             await supabase.auth.signOut();
           } catch (e) {
             debugPrint('Logout error: $e');
-            await ref.read(isVisibleProvider.notifier).onLogout();
             ref.read(globalSyncManagerProvider).dispose();
             await BackgroundService.stop();
             await _clearLoginState();
@@ -411,6 +413,11 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
                 icon: _buildIconWithBadge(Icons.chat_bubble_outline, ref.watch(totalUnreadChatCountProvider)),
                 activeIcon: _buildIconWithBadge(Icons.chat_bubble, ref.watch(totalUnreadChatCountProvider)),
                 label: l10n.getString('navChats'),
+              ),
+              BottomNavigationBarItem(
+                icon: const Icon(Icons.calendar_today_outlined),
+                activeIcon: const Icon(Icons.calendar_today),
+                label: l10n.getString('navEvents'),
               ),
               BottomNavigationBarItem(
                 icon: const Icon(Icons.person_outline),

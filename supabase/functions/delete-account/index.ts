@@ -1,6 +1,7 @@
 // supabase/functions/delete-account/index.ts
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
 
 // Helper function to decode JWT token and extract user ID
 function decodeJWT(token: string): { userId: string } | null {
@@ -30,10 +31,43 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+async function deleteAllProfilePhotos(supabase: ReturnType<typeof createClient>, userId: string) {
+  const bucket = supabase.storage.from('profile-photos');
+  let deleted = 0;
+
+  for (;;) {
+    const { data, error } = await bucket.list(userId, { limit: 1000, offset: 0 });
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+
+    const paths = data
+      .map((o) => (o?.name ? `${userId}/${o.name}` : ''))
+      .filter((p) => p.length > 0);
+
+    if (paths.length === 0) break;
+
+    const { error: removeError } = await bucket.remove(paths);
+    if (removeError) throw removeError;
+
+    deleted += paths.length;
+  }
+
+  return { deleted };
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
+
+  const requestId = crypto.randomUUID();
+  const startedAt = Date.now();
+  const functionName = "delete-account";
+  let success = false;
+  let httpStatus = 500;
+  let errorType: string | null = null;
+  let errorMessage: string | null = null;
+  let userIdForLog: string | null = null;
 
   try {
     console.log('Delete account function called');
@@ -44,6 +78,7 @@ serve(async (req) => {
     
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       console.log('Missing or invalid auth header');
+      httpStatus = 401;
       return new Response(JSON.stringify({ error: 'Unauthorized: missing Authorization header' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 401,
@@ -57,6 +92,7 @@ serve(async (req) => {
     const decoded = decodeJWT(token);
     if (!decoded) {
       console.log('JWT decoding failed');
+      httpStatus = 401;
       return new Response(JSON.stringify({ error: 'Invalid JWT token' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 401,
@@ -64,6 +100,7 @@ serve(async (req) => {
     }
 
     const userId = decoded.userId;
+    userIdForLog = userId;
     console.log('User ID extracted:', userId);
 
     // Create Supabase client with service role for admin operations
@@ -71,6 +108,7 @@ serve(async (req) => {
     const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
     if (!serviceRoleKey) {
+      httpStatus = 500;
       return new Response(JSON.stringify({ error: 'Server configuration error' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 500,
@@ -96,6 +134,8 @@ serve(async (req) => {
     if (userCheckError || !userData.user) {
       console.error('User verification failed:', userCheckError);
       // If user doesn't exist, return success since they're already "deleted"
+      success = true;
+      httpStatus = 200;
       return new Response(JSON.stringify({ 
         success: true, 
         message: 'User already deleted or does not exist',
@@ -109,6 +149,14 @@ serve(async (req) => {
 
     // Delete user data using direct REST API calls to bypass RLS
     try {
+      try {
+        console.log('Deleting profile photos from storage...');
+        const { deleted } = await deleteAllProfilePhotos(supabase, userId);
+        console.log('Profile photos deleted:', deleted);
+      } catch (storageError) {
+        console.error('Failed to delete profile photos from storage:', storageError);
+      }
+
       // Delete in correct order to avoid foreign key constraints
 
       // 1. Delete chat messages (references matches)
@@ -186,6 +234,7 @@ serve(async (req) => {
 
     } catch (apiError) {
       console.error('REST API deletion error:', apiError);
+      httpStatus = 500;
       return new Response(JSON.stringify({
         error: 'Failed to delete user data via REST API',
         details: apiError.message
@@ -202,6 +251,7 @@ serve(async (req) => {
     if (authDeleteError) {
       console.error('Error deleting user from auth:', authDeleteError);
       // This is critical - if we can't delete from auth, the operation partially failed
+      httpStatus = 500;
       return new Response(JSON.stringify({
         error: 'Failed to delete user from authentication system',
         details: authDeleteError.message
@@ -215,6 +265,8 @@ serve(async (req) => {
 
     console.log('Account deletion completed for user:', userId);
 
+    success = true;
+    httpStatus = 200;
     return new Response(JSON.stringify({
       success: true,
       message: 'Account deleted successfully'
@@ -225,9 +277,25 @@ serve(async (req) => {
 
   } catch (error) {
     console.error('Delete account error:', error);
+    errorType = error instanceof Error ? error.name : "Error";
+    errorMessage = error instanceof Error ? error.message : String(error);
+    httpStatus = 500;
     return new Response(JSON.stringify({ error: error.message }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 500,
+    });
+  } finally {
+    await logEdgeFunctionInvocation({
+      requestId,
+      functionName,
+      durationMs: Date.now() - startedAt,
+      success,
+      httpStatus,
+      errorType,
+      errorMessage,
+      userId: userIdForLog,
+      aiUsed: false,
+      meta: { method: req.method },
     });
   }
 });

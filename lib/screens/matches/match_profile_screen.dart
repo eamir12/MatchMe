@@ -9,6 +9,7 @@ import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/new_options_provider.dart';
 import 'package:matchme/providers/main_intents_provider.dart';
+import 'package:matchme/providers/match_notification_provider.dart';
 import 'package:matchme/services/storage_helper.dart';
 import 'package:matchme/widgets/signed_image.dart';
 import 'package:extended_image/extended_image.dart';
@@ -16,7 +17,12 @@ import 'package:matchme/screens/chats/chat_screen.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:matchme/models/event_model.dart';
-import 'package:matchme/screens/events/attendees_screen.dart';
+import 'package:matchme/providers/event_provider.dart';
+import 'package:matchme/providers/home_providers.dart';
+import 'package:matchme/utils/time_format_utils.dart';
+import 'package:matchme/widgets/verified_badge.dart';
+import 'package:matchme/screens/matches/match_rating_screen.dart';
+import 'package:matchme/services/match_rating_service.dart';
 
 final supabase = Supabase.instance.client;
 
@@ -52,11 +58,60 @@ class MatchProfileScreen extends ConsumerStatefulWidget {
 
 class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
   late final ScrollController _scrollController;
+  final _ratingService = MatchRatingService();
+  Future<UserRatingSummary>? _otherRatingSummaryFuture;
+  Future<List<RatingQuestion>>? _ratingQuestionsFuture;
+  Future<bool>? _hasRatedThisMatchFuture;
 
   @override
   void initState() {
     super.initState();
     _scrollController = ScrollController();
+    if (widget.matchId.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ref.read(matchNotificationProvider.notifier).markAsViewed(widget.matchId);
+      });
+    }
+    Future.microtask(() {
+      final currentUserId = supabase.auth.currentUser?.id;
+      if (currentUserId != null && currentUserId.isNotEmpty) {
+        ref.read(profileSyncProvider).syncProfile(currentUserId);
+      }
+      if (widget.otherUserId.isNotEmpty) {
+        ref.read(profileSyncProvider).syncProfile(widget.otherUserId);
+      }
+    });
+
+    if (widget.otherUserId.isNotEmpty) {
+      _otherRatingSummaryFuture = _ratingService.getUserRatingSummary(widget.otherUserId);
+      _ratingQuestionsFuture = _ratingService.getQuestions();
+    }
+    if (widget.matchId.isNotEmpty) {
+      _hasRatedThisMatchFuture = _ratingService.hasUserRatedMatch(widget.matchId);
+    }
+  }
+
+  String _formatScore(double value, {int decimals = 1}) {
+    final s = value.toStringAsFixed(decimals);
+    return s.replaceFirst(RegExp(r'\.?0+$'), '');
+  }
+
+  String _headerKeyForQuestion(RatingQuestion q) {
+    switch (q.id) {
+      case 'communication':
+        return 'ratingHeaderCommunication';
+      case 'reliability':
+        return 'ratingHeaderReliability';
+      case 'respect':
+        return 'ratingHeaderRespect';
+      case 'safety':
+        return 'ratingHeaderSafety';
+      case 'profile_accuracy':
+        return 'ratingHeaderAccuracy';
+      default:
+        return q.translationKey;
+    }
   }
 
   @override
@@ -82,6 +137,71 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
     }
   }
 
+  Future<void> _showUnmatchDialog(BuildContext context, LocalizationState l10n) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(l10n.getString('unmatch')),
+        content: Text(l10n.getString('unmatchConfirm')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: Text(l10n.getString('generalCancel')),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: TextButton.styleFrom(
+              foregroundColor: Colors.red.shade700,
+            ),
+            child: Text(l10n.getString('unmatch')),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && widget.matchId.isNotEmpty) {
+      try {
+        // Call the RPC function to unmatch properly (uses auth.uid() internally)
+        await supabase.rpc('unmatch_from_system_match', params: {
+          'p_match_id': widget.matchId,
+        });
+
+        // Show success message
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(l10n.getString('unmatchSuccess')),
+              backgroundColor: Colors.green.shade700,
+            ),
+          );
+        }
+
+        // Invalidate providers to refresh UI
+        final currentUserId = supabase.auth.currentUser?.id;
+        if (currentUserId != null && currentUserId.isNotEmpty) {
+          ref.invalidate(recentMatchesProvider(currentUserId));
+          ref.invalidate(recentChatsProvider(currentUserId));
+          ref.invalidate(userChatIdsProvider(currentUserId));
+        }
+
+        // Navigate back to matches screen
+        if (context.mounted) {
+          Navigator.of(context).popUntil((route) => route.isFirst);
+          ref.read(navigationIndexProvider.notifier).setIndex(1);
+        }
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(l10n.getString('generalError')),
+              backgroundColor: Colors.red.shade700,
+            ),
+          );
+        }
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final l10n = ref.watch(localizationProvider);
@@ -95,10 +215,13 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
     );
     final currentProfileAsync = ref.watch(userProfileProvider(currentUserId));
 
+    // Get verification status for the badge
+    final isOtherUserVerified = otherProfileAsync.asData?.value?.isVerified ?? false;
+
     // fallback remote intent-specific provider (fetches profile_data for the intent)
     final specificProvider = specificProfileProvider({
       'userId': widget.otherUserId,
-      'intent': widget.matchedIntent,
+      'intentType': widget.matchedIntent,
     });
 
     // This watch MUST be at the top level of the build method to avoid provider creation inside branches.
@@ -110,14 +233,26 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          widget.otherUserName,
-          textDirection:
-              RegExp(r'[a-zA-Z]').hasMatch(widget.otherUserName)
-                  ? ui.TextDirection.ltr
-                  : (widget.otherUserName.isRtl()
-                      ? ui.TextDirection.rtl
-                      : ui.TextDirection.ltr),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Expanded(
+              child: Text(
+                widget.otherUserName,
+                textDirection:
+                    RegExp(r'[a-zA-Z]').hasMatch(widget.otherUserName)
+                        ? ui.TextDirection.ltr
+                        : (widget.otherUserName.isRtl()
+                            ? ui.TextDirection.rtl
+                            : ui.TextDirection.ltr),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            if (isOtherUserVerified) ...[
+              const SizedBox(width: 8),
+              const VerifiedBadge(size: 18, showText: true),
+            ],
+          ],
         ),
         actions: [
           if (!isOnline)
@@ -531,12 +666,9 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
         if (resp != null) {
           final event = EventModel.fromJson(resp);
           if (context.mounted) {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => AttendeesScreen(event: event),
-              ),
-            );
+            ref.read(pendingEventTabRouteProvider.notifier).navigateTo(event);
+            ref.read(navigationIndexProvider.notifier).setIndex(3);
+            Navigator.of(context).popUntil((route) => route.isFirst);
           }
           return;
         }
@@ -572,6 +704,48 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
         seen.add(item);
         out.add(item);
       }
+    }
+    return out;
+  }
+
+  // Public helper used by tests and other modules
+  List<String> intersectLists(List<String> a, List<String> b) => _intersectLists(a, b);
+
+  // Get intersection of sub-intents for a given intent key
+  List<String> intersectSubIntentsForIntent(
+    UserProfile current,
+    IntentProfileData otherIntent,
+    String intent,
+  ) {
+    final curSubs = current.subIntents[intent] ?? [];
+    final otherSubs = otherIntent.subIntents;
+    return _intersectLists(curSubs, otherSubs);
+  }
+
+  // Get intersection of interests for a given intent. The otherIntent keys are treated as base categories.
+  // We consider matches against both the base category (e.g., 'outdoor') and intent-prefixed keys
+  // present in the current user's interests (e.g., 'friendship::outdoor'). The resulting map's keys
+  // are the base category names from otherIntent.
+  Map<String, List<String>> intersectInterestsForIntent(
+    UserProfile current,
+    IntentProfileData otherIntent,
+    String intent,
+  ) {
+    final out = <String, List<String>>{};
+    for (final entry in otherIntent.interests.entries) {
+      final baseCat = entry.key;
+      final otherVals = entry.value;
+
+      // candidates in current profile
+      final candidates = [baseCat, '$intent::$baseCat'];
+      List<String> curVals = [];
+      for (final c in candidates) {
+        curVals = current.interests[c] ?? [];
+        if (curVals.isNotEmpty) break;
+      }
+
+      final inters = _intersectLists(otherVals, curVals);
+      if (inters.isNotEmpty) out[baseCat] = inters;
     }
     return out;
   }
@@ -764,17 +938,15 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // Single-line matched-at display: "Matched at: January 3, 2026, at 21:53"
                   Text(
-                    l10n.getString('matchedAt') != 'matchedAt' && l10n.getString('matchedAt').isNotEmpty ? l10n.getString('matchedAt') : 'Matched at',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    DateFormat('MMMM d, yyyy', l10n.currentLocale.languageCode).format((widget.createdAt ?? DateTime.now()).toLocal()),
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey[600]),
-                  ),
-                  Text(
-                    DateFormat('h:mm a', l10n.currentLocale.languageCode).format((widget.createdAt ?? DateTime.now()).toLocal()),
+                    () {
+                      final label = l10n.getString('matchedAt') != 'matchedAt' && l10n.getString('matchedAt').isNotEmpty ? l10n.getString('matchedAt') : 'Matched at';
+                      final dateText = DateFormat('MMMM d, yyyy', l10n.currentLocale.languageCode).format((widget.createdAt ?? DateTime.now()).toLocal());
+                      final timeText = formatTimeOfDateTimeWithPrefs(context, ref, l10n, (widget.createdAt ?? DateTime.now()).toLocal());
+                      final connector = l10n.getString('at') != 'at' && l10n.getString('at').isNotEmpty ? l10n.getString('at') : 'at';
+                      return '$label: $dateText, $connector $timeText';
+                    }(),
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey[600]),
                   ),
                 ],
@@ -790,7 +962,8 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                       DateTime.now().month > otherProfile.dateOfBirth!.month ||
                       (DateTime.now().month ==
                               otherProfile.dateOfBirth!.month &&
-                          DateTime.now().day >= otherProfile.dateOfBirth!.day);
+                          DateTime.now().day >=
+                              otherProfile.dateOfBirth!.day);
                   final actualAge = hasHadBirthday ? age : age - 1;
 
                   // Get the age label translation from Supabase
@@ -804,38 +977,7 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
 
                   return '$displayLabel: $actualAge';
                 }(),
-                textDirection:
-                    (() {
-                      final age =
-                          DateTime.now().year - otherProfile!.dateOfBirth!.year;
-                      final hasHadBirthday =
-                          DateTime.now().month >
-                              otherProfile.dateOfBirth!.month ||
-                          (DateTime.now().month ==
-                                  otherProfile.dateOfBirth!.month &&
-                              DateTime.now().day >=
-                                  otherProfile.dateOfBirth!.day);
-                      final actualAge = hasHadBirthday ? age : age - 1;
-
-                      // Get the age label translation from Supabase
-                      final ageLabel = l10n.getString('profileAgeLabel');
-
-                      // Use Supabase translation with fallback to English
-                      final displayLabel =
-                          ageLabel != 'profileAgeLabel' && ageLabel.isNotEmpty
-                              ? ageLabel
-                              : 'Age';
-
-                      final ageText = '$displayLabel: $actualAge';
-                      return RegExp(r'[a-zA-Z]').hasMatch(ageText)
-                          ? ui.TextDirection.ltr
-                          : (ageText.isRtl()
-                              ? ui.TextDirection.rtl
-                              : ui.TextDirection.ltr);
-                    })(),
-                style: Theme.of(
-                  context,
-                ).textTheme.bodyMedium?.copyWith(color: Colors.grey[600]),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey[600]),
               ),
             ],
             if (otherProfile != null &&
@@ -877,10 +1019,8 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
               _buildSectionHeader(context, l10n.getString('matchProfileBio')),
               Text(
                 profileData.bio,
-                textDirection: ui.TextDirection.ltr,
-                textAlign: l10n.currentLocale.languageCode == 'he'
-                    ? TextAlign.right
-                    : TextAlign.left,
+                textDirection: RegExp(r'[a-zA-Z]').hasMatch(profileData.bio) ? ui.TextDirection.ltr : ui.TextDirection.rtl,
+                textAlign: profileData.bio.isRtl() ? TextAlign.right : TextAlign.left,
                 style: Theme.of(
                   context,
                 ).textTheme.bodyLarge?.copyWith(height: 1.4),
@@ -1008,31 +1148,204 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
               ),
 
             const SizedBox(height: 40),
-            ElevatedButton.icon(
-              onPressed:
-                  widget.matchId.isNotEmpty
-                      ? () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder:
-                                (context) => ChatScreen(
-                                  matchId: widget.matchId,
-                                  otherUserName: widget.otherUserName,
-                                  otherUserId: widget.otherUserId,
-                                ),
+            if (widget.otherUserId.isNotEmpty) ...[
+              FutureBuilder(
+                future: Future.wait([
+                  _otherRatingSummaryFuture ?? _ratingService.getUserRatingSummary(widget.otherUserId),
+                  _ratingQuestionsFuture ?? _ratingService.getQuestions(),
+                  _hasRatedThisMatchFuture ?? Future.value(false),
+                ]),
+                builder: (context, snapshot) {
+                  if (!snapshot.hasData) {
+                    return const SizedBox.shrink();
+                  }
+                  final data = snapshot.data!;
+                  final summary = data[0] as UserRatingSummary;
+                  final questions = (data[1] as List<RatingQuestion>).take(5).toList();
+                  final hasRatedThisMatch = (data[2] as bool?) ?? false;
+
+                  if (summary.overallAvg == null) {
+                    return const SizedBox.shrink();
+                  }
+
+                  final questionAverages = <double?>[
+                    summary.q1Avg,
+                    summary.q2Avg,
+                    summary.q3Avg,
+                    summary.q4Avg,
+                    summary.q5Avg,
+                  ];
+
+                  Future<void> showQuestion(String headerKey, String questionKey) async {
+                    final header = l10n.getString(headerKey);
+                    final question = l10n.getString(questionKey);
+                    await showDialog<void>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: Text(header),
+                        content: Text(question),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.of(ctx).pop(),
+                            child: Text(l10n.getString('generalCancel')),
                           ),
-                        );
-                      }
-                      : null,
-              icon: const Icon(Icons.chat_bubble_outline),
-              label: Text(l10n.getString('chatButton')),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 24,
-                  vertical: 12,
-                ),
+                        ],
+                      ),
+                    );
+                  }
+
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildSectionHeader(context, l10n.getString('ratingSectionTitle')),
+                      Card(
+                        elevation: 2,
+                        margin: const EdgeInsets.symmetric(vertical: 8),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          side: BorderSide(color: Colors.grey.shade200, width: 1),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              for (var i = 0; i < questions.length && i < questionAverages.length; i++)
+                                if (questionAverages[i] != null)
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 10.0),
+                                    child: Row(
+                                      children: [
+                                        Expanded(
+                                          child: Row(
+                                            children: [
+                                              Flexible(
+                                                child: Text(
+                                                  l10n.getString(_headerKeyForQuestion(questions[i])),
+                                                  style: Theme.of(context).textTheme.bodyMedium,
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                              IconButton(
+                                                visualDensity: VisualDensity.compact,
+                                                padding: EdgeInsets.zero,
+                                                icon: const Icon(Icons.info_outline, size: 18),
+                                                onPressed: () => showQuestion(
+                                                  _headerKeyForQuestion(questions[i]),
+                                                  questions[i].translationKey,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        Text(
+                                          _formatScore(questionAverages[i]!, decimals: 1),
+                                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                              const Divider(height: 18),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      l10n.getString('ratingOverall'),
+                                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                                    ),
+                                  ),
+                                  Text(
+                                    _formatScore(summary.overallAvg!, decimals: 2),
+                                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      if (!hasRatedThisMatch)
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            onPressed: widget.matchId.isEmpty
+                                ? null
+                                : () async {
+                                    final result = await Navigator.of(context).push<bool>(
+                                      MaterialPageRoute(
+                                        builder: (context) => MatchRatingScreen(
+                                          matchId: widget.matchId,
+                                          otherUserId: widget.otherUserId,
+                                          otherUserName: widget.otherUserName,
+                                        ),
+                                      ),
+                                    );
+                                    if (result == true && mounted) {
+                                      setState(() {
+                                        _otherRatingSummaryFuture =
+                                            _ratingService.getUserRatingSummary(widget.otherUserId);
+                                        _hasRatedThisMatchFuture =
+                                            _ratingService.hasUserRatedMatch(widget.matchId);
+                                      });
+                                    }
+                                  },
+                            icon: const Icon(Icons.star_outline),
+                            label: Text(l10n.getString('ratingPromptTitle')),
+                          ),
+                        ),
+                    ],
+                  );
+                },
               ),
+              const SizedBox(height: 24),
+            ],
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed:
+                        widget.matchId.isNotEmpty
+                            ? () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder:
+                                        (context) => ChatScreen(
+                                          matchId: widget.matchId,
+                                          otherUserName: widget.otherUserName,
+                                          otherUserId: widget.otherUserId,
+                                        ),
+                                ),
+                              );
+                            }
+                            : null,
+                    icon: const Icon(Icons.chat_bubble_outline),
+                    label: Text(l10n.getString('chatButton')),
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 24,
+                        vertical: 12,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                OutlinedButton.icon(
+                  onPressed: widget.matchId.isNotEmpty
+                      ? () => _showUnmatchDialog(context, l10n)
+                      : null,
+                  icon: const Icon(Icons.person_remove_outlined),
+                  label: Text(l10n.getString('unmatch')),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 12,
+                    ),
+                    foregroundColor: Colors.red.shade700,
+                    side: BorderSide(color: Colors.red.shade300),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -1548,4 +1861,51 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
         .map((w) => w.isNotEmpty ? w[0].toUpperCase() + w.substring(1) : '')
         .join(' ');
   }
+}
+
+// Top-level helper functions used by tests and other widgets
+List<String> intersectLists(List<String> a, List<String> b) {
+  final setB = b.toSet();
+  final seen = <String>{};
+  final out = <String>[];
+  for (final item in a) {
+    if (setB.contains(item) && !seen.contains(item)) {
+      seen.add(item);
+      out.add(item);
+    }
+  }
+  return out;
+}
+
+List<String> intersectSubIntentsForIntent(
+  UserProfile current,
+  IntentProfileData otherIntent,
+  String intent,
+) {
+  final curSubs = current.subIntents[intent] ?? [];
+  final otherSubs = otherIntent.subIntents;
+  return intersectLists(curSubs, otherSubs);
+}
+
+Map<String, List<String>> intersectInterestsForIntent(
+  UserProfile current,
+  IntentProfileData otherIntent,
+  String intent,
+) {
+  final out = <String, List<String>>{};
+  for (final entry in otherIntent.interests.entries) {
+    final baseCat = entry.key;
+    final otherVals = entry.value;
+
+    final candidates = [baseCat, '$intent::$baseCat'];
+    List<String> curVals = [];
+    for (final c in candidates) {
+      curVals = current.interests[c] ?? [];
+      if (curVals.isNotEmpty) break;
+    }
+
+    final inters = intersectLists(otherVals, curVals);
+    if (inters.isNotEmpty) out[baseCat] = inters;
+  }
+  return out;
 }

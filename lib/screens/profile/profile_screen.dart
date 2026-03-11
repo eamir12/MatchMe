@@ -16,6 +16,9 @@ import 'package:matchme/widgets/signed_image.dart';
 import 'package:extended_image/extended_image.dart';
 import 'package:matchme/services/storage_helper.dart';
 import 'package:matchme/utils/string_extensions.dart';
+import 'package:matchme/widgets/verified_badge.dart';
+import 'package:matchme/providers/match_rating_provider.dart';
+import 'package:matchme/services/match_rating_service.dart';
 
 final supabase = Supabase.instance.client;
 
@@ -279,7 +282,9 @@ class ProfileScreen extends ConsumerWidget {
     }
 
     if (url == null || url.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(l10n.getString('generalImageLoadFailed')))); // ignore: use_build_context_synchronously
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(l10n.getString('generalImageLoadFailed'))));
+      }
       return;
     }
 
@@ -364,6 +369,8 @@ class ProfileScreen extends ConsumerWidget {
       return Scaffold(body: Center(child: Text(_t(l10n, 'generalError', fallbackProvided: 'Error'))));
     }
     final userId = user.id;
+    final ratingSummaryAsync = ref.watch(userRatingSummaryProvider(userId));
+    final ratingQuestionsAsync = ref.watch(ratingQuestionsProvider);
 
     // Watch all providers needed for the page
     final profileAsyncValue = ref.watch(userProfileProvider(userId));
@@ -381,6 +388,7 @@ class ProfileScreen extends ConsumerWidget {
     return Scaffold(
       floatingActionButton: Builder(
         builder: (context) => FloatingActionButton.extended(
+          heroTag: 'profile_edit_fab',
           onPressed: () {
             final currentUser = supabase.auth.currentUser;
             if (currentUser == null) {
@@ -458,19 +466,36 @@ class ProfileScreen extends ConsumerWidget {
                       height: 140,
                       child: Center(child: Text(_t(l10n, 'profileNoPhotos', fallbackProvided: 'No photos'))),
                     ),
-
-                  const SizedBox(height: 12),
+                  
+                  const SizedBox(height: 16),
 
                   // Name
                   (() {
-                    final nameParts = profile.name.split(' ');
-                    final displayName = nameParts.isNotEmpty ? '${nameParts.first} ${nameParts.length > 1 ? '${nameParts.last[0].toUpperCase()}.' : ''}'.trim() : profile.name;
+                    final displayName = profile.name.trim();
                     return _buildProfileItem(
                       context,
                       Icons.person_outline_rounded,
                       _t(l10n, 'profileName', fallbackProvided: 'Name'),
                       displayName,
                       textDirection: RegExp(r'[a-zA-Z]').hasMatch(displayName) ? ui.TextDirection.ltr : (displayName.isRtl() ? ui.TextDirection.rtl : ui.TextDirection.ltr),
+                      trailing: profile.isVerified ? const VerifiedBadge(size: 20, showText: true) : null,
+                    );
+                  })(),
+                  (() {
+                    final displayName = profile.name.trim();
+                    final parts = displayName.split(RegExp(r'\s+')).where((p) => p.trim().isNotEmpty).toList(growable: false);
+                    final hasLastName = parts.length >= 2;
+                    if (!hasLastName) return const SizedBox.shrink();
+                    return Padding(
+                      padding: const EdgeInsetsDirectional.only(start: 16, end: 16, top: 2, bottom: 12),
+                      child: Text(
+                        _t(
+                          l10n,
+                          'profileLastNameNotDisplayed',
+                          fallbackProvided: 'Your last name is never shown to other users.',
+                        ),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey.shade600),
+                      ),
                     );
                   })(),
 
@@ -548,10 +573,8 @@ class ProfileScreen extends ConsumerWidget {
                         padding: const EdgeInsets.all(12.0),
                         child: Text(
                           profile.bio ?? '',
-                          textDirection: ui.TextDirection.ltr,
-                          textAlign: l10n.currentLocale.languageCode == 'he'
-                              ? TextAlign.right
-                              : TextAlign.left,
+                          textDirection: RegExp(r'[a-zA-Z]').hasMatch(profile.bio ?? '') ? ui.TextDirection.ltr : ui.TextDirection.rtl,
+                          textAlign: (profile.bio ?? '').isRtl() ? TextAlign.right : TextAlign.left,
                         ),
                       ),
                     ),
@@ -828,6 +851,7 @@ class ProfileScreen extends ConsumerWidget {
                       final filteredEntries = <MapEntry<String, List<String>>>[];
                       final langs = profile.languagesKnown['languages'] ?? [];
                       for (final lang in langs) {
+                        if (lang == 'languages') continue;
                         final skills = profile.languagesKnown[lang] ?? [];
                         filteredEntries.add(MapEntry(lang, skills));
                       }
@@ -871,6 +895,122 @@ class ProfileScreen extends ConsumerWidget {
                     error: (e, s) => Text(_t(l10n, 'generalError', fallbackProvided: 'Error'), style: const TextStyle(color: Colors.red)),
                   ),
 
+                  ratingSummaryAsync.when(
+                    data: (summary) {
+                      if (summary.overallAvg == null) {
+                        return const SizedBox.shrink();
+                      }
+                      return ratingQuestionsAsync.when(
+                        data: (questions) {
+                          final firstFive = questions.take(5).toList();
+                          final questionAverages = <double?>[
+                            summary.q1Avg,
+                            summary.q2Avg,
+                            summary.q3Avg,
+                            summary.q4Avg,
+                            summary.q5Avg,
+                          ];
+
+                          Future<void> showQuestion(String headerKey, String questionKey) async {
+                            final header = l10n.getString(headerKey);
+                            final question = l10n.getString(questionKey);
+                            await showDialog<void>(
+                              context: context,
+                              builder: (ctx) => AlertDialog(
+                                title: Text(header),
+                                content: Text(question),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () => Navigator.of(ctx).pop(),
+                                    child: Text(l10n.getString('generalCancel')),
+                                  ),
+                                ],
+                              ),
+                            );
+                          }
+
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Divider(height: 30),
+                              Text(
+                                l10n.getString('ratingSectionTitle'),
+                                style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+                              ),
+                              const SizedBox(height: 10),
+                              Card(
+                                elevation: 2,
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(16.0),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      for (var i = 0; i < firstFive.length && i < questionAverages.length; i++)
+                                        if (questionAverages[i] != null)
+                                          Padding(
+                                            padding: const EdgeInsets.only(bottom: 10.0),
+                                            child: Row(
+                                              children: [
+                                                Expanded(
+                                                  child: Row(
+                                                    children: [
+                                                      Flexible(
+                                                        child: Text(
+                                                          l10n.getString(_headerKeyForQuestion(firstFive[i])),
+                                                          style: Theme.of(context).textTheme.bodyMedium,
+                                                          overflow: TextOverflow.ellipsis,
+                                                        ),
+                                                      ),
+                                                      IconButton(
+                                                        visualDensity: VisualDensity.compact,
+                                                        padding: EdgeInsets.zero,
+                                                        icon: const Icon(Icons.info_outline, size: 18),
+                                                        onPressed: () => showQuestion(
+                                                          _headerKeyForQuestion(firstFive[i]),
+                                                          firstFive[i].translationKey,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                                Text(
+                                                  _formatScore(questionAverages[i]!, decimals: 1),
+                                                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                      const Divider(height: 18),
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              l10n.getString('ratingOverall'),
+                                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                                            ),
+                                          ),
+                                          Text(
+                                            _formatScore(summary.overallAvg!, decimals: 2),
+                                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                        loading: () => const SizedBox.shrink(),
+                        error: (e, s) => const SizedBox.shrink(),
+                      );
+                    },
+                    loading: () => const SizedBox.shrink(),
+                    error: (e, s) => const SizedBox.shrink(),
+                  ),
+
                   const SizedBox(height: 60),
                 ],
               ),
@@ -895,7 +1035,7 @@ class ProfileScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildProfileItem(BuildContext context, IconData icon, String label, String value, {ui.TextDirection? textDirection}) {
+  Widget _buildProfileItem(BuildContext context, IconData icon, String label, String value, {ui.TextDirection? textDirection, Widget? trailing}) {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
 
@@ -928,14 +1068,22 @@ class ProfileScreen extends ConsumerWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: colors.onSurface.withValues(alpha: 0.7),
-                    letterSpacing: 0.5,
-                  ),
+                Row(
+                  children: [
+                    Text(
+                      label,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: colors.onSurface.withValues(alpha: 0.7),
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                    if (trailing != null) ...[
+                      const SizedBox(width: 8),
+                      trailing,
+                    ],
+                  ],
                 ),
                 const SizedBox(height: 2),
                 Text(
@@ -954,6 +1102,28 @@ class ProfileScreen extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  String _formatScore(double value, {int decimals = 1}) {
+    final s = value.toStringAsFixed(decimals);
+    return s.replaceFirst(RegExp(r'\.?0+$'), '');
+  }
+
+  String _headerKeyForQuestion(RatingQuestion q) {
+    switch (q.id) {
+      case 'communication':
+        return 'ratingHeaderCommunication';
+      case 'reliability':
+        return 'ratingHeaderReliability';
+      case 'respect':
+        return 'ratingHeaderRespect';
+      case 'safety':
+        return 'ratingHeaderSafety';
+      case 'profile_accuracy':
+        return 'ratingHeaderAccuracy';
+      default:
+        return q.translationKey;
+    }
   }
 
   String _t(LocalizationState l10n, String key, {String? fallbackProvided}) => _resolveDisplayLabel(l10n, key, fallbackProvided: fallbackProvided);

@@ -11,19 +11,36 @@ import 'package:matchme/widgets/signed_image.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/match_reason_formatter.dart';
+import 'package:matchme/utils/map_utils.dart';
 import 'package:matchme/screens/matches/match_profile_screen.dart';
 import 'dart:ui' as ui;
+import 'package:flutter/foundation.dart';
+import 'package:matchme/services/local_db_service.dart';
 
 final supabase = Supabase.instance.client;
 
-// --- Event Matches Provider ---
+// --- Event Matches Provider (with caching) ---
 final eventMatchesProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, EventModel>((ref, event) async {
 
   final userId = supabase.auth.currentUser?.id;
   if (userId == null) return [];
 
+  final localDb = ref.read(localDbProvider);
+
   try {
+    // Try cached attendees first
+    final cachedAttendees = await localDb.getEventAttendees(event.id);
+    if (cachedAttendees != null) {
+      if (kIsWeb) {
+        debugPrint('🔍 [WEB] eventMatchesProvider - Using cached attendees for event: ${event.id}');
+      }
+      return cachedAttendees;
+    }
+
+    if (kIsWeb) {
+      debugPrint('🔍 [WEB] eventMatchesProvider - Fetching fresh attendees for event: ${event.id}');
+    }
     // Check if current user is attending
     final attendanceCheck = await supabase
         .from('event_attendees')
@@ -68,9 +85,13 @@ final eventMatchesProvider = FutureProvider.autoDispose
       }
     }
 
+    // Cache the fetched attendees for future use
+    await localDb.saveEventAttendees(event.id, uniqueMatches);
+
     return uniqueMatches;
 
   } catch (e) {
+    debugPrint('Error fetching event attendees: $e');
     return [];
   }
 });
@@ -78,8 +99,9 @@ final eventMatchesProvider = FutureProvider.autoDispose
 
 class AttendeesScreen extends ConsumerWidget {
   final EventModel event;
-  
-  const AttendeesScreen({super.key, required this.event});
+  final bool showAppBar;
+
+  const AttendeesScreen({super.key, required this.event, this.showAppBar = true});
 
   int? _calculateAge(DateTime? dob) {
     if (dob == null) return null;
@@ -92,6 +114,33 @@ class AttendeesScreen extends ConsumerWidget {
   }
 
   Widget _buildEventDetailRow(BuildContext context, String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '$label:',
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w500,
+            color: Theme.of(context).colorScheme.onSurface,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            value,
+            style: TextStyle(
+              fontSize: 14,
+              color: Theme.of(context).colorScheme.onSurface.withValues(alpha:0.7),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLocationRow(BuildContext context, LocalizationState l10n, String label, String value) {
+    
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -153,11 +202,31 @@ class AttendeesScreen extends ConsumerWidget {
     final matchesAsync = ref.watch(eventMatchesProvider(event));
     
     return Scaffold(
-      appBar: AppBar(
-        title: Text('${event.eventName} ${l10n.getString('matches')}'),
-      ),
+      appBar: showAppBar ? AppBar(title: Text('${event.eventName} ${l10n.getString('matches')}')) : null,
       body: Column(
         children: [
+          if (!showAppBar) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back),
+                    onPressed: () => Navigator.of(context).maybePop(),
+                    tooltip: l10n.getString('backToEvents'),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '${event.eventName} ${l10n.getString('matches')}',
+                      style: Theme.of(context).textTheme.titleMedium,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           // Event details header
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
@@ -190,7 +259,7 @@ class AttendeesScreen extends ConsumerWidget {
                     textDirection: event.eventName.isRtl() ? ui.TextDirection.rtl : ui.TextDirection.ltr,
                   ),
                   const SizedBox(height: 8),
-                  _buildEventDetailRow(context, l10n.getString('eventLocationLabel'), event.eventVenue?.trim().isNotEmpty == true
+                  _buildLocationRow(context, l10n, l10n.getString('eventLocationLabel'), event.eventVenue?.trim().isNotEmpty == true
                       ? event.eventVenue!.trim()
                       : l10n.getString('eventVenueNotSpecified')),
                   const SizedBox(height: 4),
@@ -221,6 +290,42 @@ class AttendeesScreen extends ConsumerWidget {
                             ),
                           ),
                         ],
+                      ),
+                    ),
+                  ],
+                  if (event.eventVenue != null && event.eventVenue!.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: InkWell(
+                        onTap: () async {
+                          final success = await openGoogleMaps(event.eventVenue!);
+                          if (!success && context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(l10n.getString('errorCouldNotOpenMaps')),
+                                backgroundColor: Colors.orange,
+                              ),
+                            );
+                          }
+                        },
+                        borderRadius: BorderRadius.circular(8),
+                        child: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
+                              width: 1,
+                            ),
+                          ),
+                          child: Icon(
+                            Icons.map_outlined,
+                            size: 20,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                        ),
                       ),
                     ),
                   ],
@@ -277,7 +382,7 @@ class AttendeesScreen extends ConsumerWidget {
                       ),
                       title: otherProfileAsync.when(
                         data: (profile) {
-                          final name = profile?.name ?? l10n.getString('generalUnknown');
+                          final name = profile?.name.formatAsFirstNameLastInitial() ?? l10n.getString('generalUnknown');
                           final age = _calculateAge(profile?.dateOfBirth);
                           if (age == null) return Text(name, style: const TextStyle(fontWeight: FontWeight.bold));
                           return Text('$name, $age', style: const TextStyle(fontWeight: FontWeight.bold));
@@ -294,13 +399,12 @@ class AttendeesScreen extends ConsumerWidget {
                       ),
                       onTap: () {
                         // Navigate to existing MatchProfileScreen
-                        Navigator.push(
-                          context,
+                        Navigator.of(context, rootNavigator: true).push(
                           MaterialPageRoute(
                             builder: (context) => MatchProfileScreen(
                               matchId: matchId,
                               otherUserId: otherUserId,
-                              otherUserName: '', // Will be loaded in MatchProfileScreen
+                              otherUserName: '',
                               matchedIntent: matchedIntent,
                               matchType: 'event',
                               eventId: event.id,

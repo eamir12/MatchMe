@@ -1,39 +1,45 @@
 // lib/providers/chat_provider.dart
 import 'dart:async';
 import 'dart:convert'; // For jsonEncode
-import 'package:characters/characters.dart';
-import 'package:flutter/foundation.dart';
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/models/chat_message_model.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/translation_service.dart';
+import 'package:matchme/services/web_notification_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:uuid/uuid.dart';
-import 'package:matchme/providers/profile_provider.dart'; // for userProfileProvider
 import 'package:matchme/providers/translation_version_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/services/global_sync_manager.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:matchme/providers/auth_provider.dart';
-
+import 'package:matchme/web_imports.dart' as html;
 
 final supabase = Supabase.instance.client;
 final uuid = Uuid();
 
-// Throttle map to avoid triggering translation multiple times for the same message
-final Map<String, DateTime> _lastTranslationTriggeredAt = {};
+// Helper function to format sender name: "FirstName LastInitial." e.g., "John S."
+String formatSenderNameForNotification(String fullName) {
+  if (fullName.isEmpty) return 'MatchMe';
+
+  final parts = fullName.trim().split(RegExp(r'\s+'));
+  if (parts.length == 1) {
+    return parts[0]; // Just first name if no last name
+  }
+
+  // First name + first letter of last name with period
+  final firstName = parts[0];
+  final lastInitial = parts[parts.length - 1][0].toUpperCase();
+  return '$firstName $lastInitial.';
+}
 
 // Debouncer for reaction updates to prevent rapid clicks
 final Map<String, Timer> _reactionDebouncer = {};
-
-// Cleanup old entries from throttle map to prevent memory leaks
-void _cleanupTranslationThrottle() {
-  final now = DateTime.now();
-  final cutoff = now.subtract(const Duration(minutes: 5)); // Keep entries for 5 minutes
-  _lastTranslationTriggeredAt.removeWhere((key, value) => value.isBefore(cutoff));
-}
 
 // --- ChatSyncService (Modified to take localDb as parameter) ---
 class ChatSyncService {
@@ -43,199 +49,351 @@ class ChatSyncService {
   Future<void> syncMessages(String matchId) async {
     if (matchId.isEmpty) return;
     try {
+      debugPrint('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
+      debugPrint('ðŸ”„ SYNC START: syncMessages called for matchId=$matchId');
+      debugPrint('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
+      
       final data = await supabase
           .from('chat_messages')
-          .select('id, match_id, sender_id, content_original, content_translated, created_at, edited_at, read_at')
+          .select('id, match_id, sender_id, content_original, content_translated, detected_source_language, translated_target_language, created_at, edited_at, delivered_at, read_at, reply_to_message_id')
           .eq('match_id', matchId)
           .order('created_at', ascending: true);
+      
+      debugPrint('ðŸ”„ SYNC: Retrieved ${data.length} messages from Supabase');
+      for (final msg in data) {
+        debugPrint('   - Message ${msg['id']}: delivered_at=${msg['delivered_at']}, sender=${msg['sender_id']}');
+      }
+      
       // Replace all messages for this match with the current database state
       // This ensures deleted messages are removed from local cache
       await localDb.saveMessages(matchId, data.cast<Map<String, dynamic>>());
-    } catch (e) {
-      debugPrint('syncMessages error: $e');
+      
+      debugPrint('ðŸ”„ SYNC: Saved ${data.length} messages to local database');
+      
+      // Mark undelivered messages from the other user as delivered
+      // (This user just received them by syncing)
+      final currentUserId = supabase.auth.currentUser?.id;
+      debugPrint('ðŸ”„ SYNC: currentUserId=$currentUserId');
+      
+      if (currentUserId != null && data.isNotEmpty) {
+        // Collect message IDs that need to be marked as delivered
+        final messagesToDeliver = <String>[];
+        
+        for (final msg in data as List) {
+          final msgId = msg['id'] as String?;
+          final senderId = msg['sender_id'] as String?;
+          final deliveredAt = msg['delivered_at'];
+          
+          debugPrint('ðŸ”„ SYNC: Checking msg=$msgId (sender=$senderId, delivered=$deliveredAt, isOtherUser=${senderId != currentUserId})');
+          
+          // If this message is from the other user and not yet delivered, mark it
+          if (senderId != null && senderId != currentUserId && (deliveredAt == null || deliveredAt == '')) {
+            messagesToDeliver.add(msgId ?? '');
+            debugPrint('ðŸ”„ SYNC: âž• Added $msgId to delivery list (from other user, not yet delivered)');
+          } else {
+            final reason = senderId == currentUserId ? 'from this user' : 'already delivered';
+            debugPrint('ðŸ”„ SYNC: â­ï¸  Skipped $msgId ($reason)');
+          }
+        }
+        
+        // Batch mark messages as delivered with better error handling
+        if (messagesToDeliver.isNotEmpty) {
+          debugPrint('ðŸ”„ SYNC: Marking ${messagesToDeliver.length} messages as delivered');
+          
+          try {
+            final results = await Future.wait(
+              messagesToDeliver.map((msgId) {
+                debugPrint('ðŸ”„ SYNC: Calling RPC mark_message_delivered for $msgId...');
+                return supabase.rpc('mark_message_delivered', params: {'p_message_id': msgId})
+                  .then((result) {
+                    debugPrint('âœ… SYNC: RPC succeeded for $msgId - result=$result');
+                    return true;
+                  })
+                  .catchError((e, st) {
+                    debugPrint('âŒ SYNC: RPC FAILED for $msgId');
+                    debugPrint('   Error: $e');
+                    debugPrint('   Stack: $st');
+                    return false;
+                  });
+              }),
+              eagerError: false,
+            );
+            
+            final successCount = results.where((r) => r == true).length;
+            debugPrint('ðŸ”„ SYNC: Successfully marked $successCount/${messagesToDeliver.length} messages as delivered');
+          } catch (e, st) {
+            debugPrint('ðŸ”„ SYNC: Error in batch delivery marking: $e\n$st');
+            // Don't throw - marking as delivered is non-critical
+          }
+        } else {
+          debugPrint('ðŸ”„ SYNC: No messages to deliver (either no undelivered messages or no current user)');
+        }
+      }
+    } catch (e, st) {
+      debugPrint('âŒ SYNC ERROR: $e\n$st');
       // Keep the error surfaced but avoid noisy logging here.
     }
+    debugPrint('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
+    debugPrint('ðŸ”„ SYNC END: syncMessages completed');
+    debugPrint('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
   }
+
+  // Diagnostic function to test if RPC function is working
+  Future<void> testRpcFunction(String testMessageId) async {
+    try {
+      debugPrint('ðŸ§ª TEST: Testing RPC mark_message_delivered with messageId=$testMessageId');
+      debugPrint('ðŸ§ª TEST: Current user: ${supabase.auth.currentUser?.id}');
+      
+      final result = await supabase.rpc('mark_message_delivered', params: {'p_message_id': testMessageId});
+      
+      debugPrint('âœ… TEST: RPC call succeeded! Result: $result');
+      debugPrint('ðŸ§ª TEST: Check Supabase to see if delivered_at was updated for this message');
+    } catch (e, st) {
+      debugPrint('âŒ TEST: RPC call FAILED!');
+      debugPrint('   Error: $e');
+      debugPrint('   Type: ${e.runtimeType}');
+      debugPrint('   Stack: $st');
+      
+      // Try to extract more details
+      if (e is PostgrestException) {
+        debugPrint('   PostgrestException details:');
+        debugPrint('   - Code: ${e.code}');
+        debugPrint('   - Message: ${e.message}');
+        debugPrint('   - Details: ${e.details}');
+      }
+    }
+  }
+
 }
 
 final chatSyncProvider = Provider.family<ChatSyncService, String>(
   (ref, matchId) => ChatSyncService(ref.read(localDbProvider)),
 );
 
-
 // --- UPDATED: chatMessagesProvider (Fixes bugs & uses local DB + realtime)
 // Emits a stream of ChatMessageModel lists for a given matchId.
 final chatMessagesProvider = StreamProvider.autoDispose
     .family<List<ChatMessageModel>, String>((ref, matchId) {
 
-  if (matchId.isEmpty) return Stream.value([]);
+  try {
+    if (matchId.isEmpty) return Stream.value([]);
 
-  final localDb = ref.watch(localDbProvider);
-  final localStream = localDb.watchMessages(matchId);
+    final localDb = ref.watch(localDbProvider);
+    final localStream = localDb.watchMessages(matchId);
 
-  // Use syncService for an initial full sync once we subscribe
-  final syncService = ref.read(chatSyncProvider(matchId));
+    final StreamController<List<ChatMessageModel>> streamController = StreamController<List<ChatMessageModel>>.broadcast();
+    bool disposed = false;
+    bool scheduledInitialSync = false;
+    Timer? realtimeSyncDebounce;
+    Timer? reconnectTimer;
 
-  final channel = supabase.channel('public:chat_messages:match_id=eq.$matchId');
 
-  final streamController = StreamController<List<ChatMessageModel>>.broadcast();
-  bool disposed = false;
-
-  // Always emit local cached messages immediately (offline-first).
-  final localSubscription = localStream.listen((messagesData) {
-    if (disposed || streamController.isClosed) return;
+      // Use syncService for an initial full sync once we subscribe
+    ChatSyncService? syncService;
     try {
-      streamController.add(
-        messagesData.map((json) => ChatMessageModel.fromJson(json)).toList(),
-      );
+      syncService = ref.read(chatSyncProvider(matchId));
+    } catch (e, st) {
+      debugPrint('chatSyncProvider init failed for $matchId: $e\n$st');
+      syncService = null; // don't fail the provider; fall back to local-only
+    }
+
+    final channel = (() {
+      try {
+        return supabase.channel('public:chat_messages:match_id=eq.$matchId');
+      } catch (e, st) {
+        debugPrint('Failed to create supabase channel for $matchId: $e\n$st');
+        return null;
+      }
+    })();
+
+// Always emit local cached messages immediately (offline-first).
+    final localSubscription = localStream.listen((messagesData) {
+      if (disposed || streamController.isClosed) return;
+      try {
+        // Normalize incoming local cache items to guard against inconsistent types (web IndexedDB variations).
+        final normalized = messagesData.map((json) {
+          try {
+            // Ensure keys are strings and critical IDs are strings
+            if (json.containsKey('sender_id') && json['sender_id'] != null && json['sender_id'] is! String) {
+              json['sender_id'] = json['sender_id'].toString();
+            }
+            if (json.containsKey('match_id') && json['match_id'] != null && json['match_id'] is! String) {
+              json['match_id'] = json['match_id'].toString();
+            }
+            if (json.containsKey('id') && json['id'] != null && json['id'] is! String) {
+              json['id'] = json['id'].toString();
+            }
+            // Ensure reaction_summary is a Map if present; otherwise coerce to empty map
+            if (json.containsKey('reaction_summary') && json['reaction_summary'] is! Map) {
+              json['reaction_summary'] = <String, int>{};
+            }
+          } catch (_) {}
+          return json;
+        }).toList();
+
+        final models = normalized.map((json) => ChatMessageModel.fromJson(json)).toList();
+        final byId = <String, ChatMessageModel>{};
+        for (final m in models) {
+          byId[m.id] = m;
+        }
+        final resolved = models.map((m) {
+          final replyId = m.replyToMessageId;
+          if (replyId == null) return m;
+          final original = byId[replyId];
+          if (original == null) return m;
+          return m.copyWith(
+            replyToSenderId: original.senderId,
+            replyToContent: original.contentOriginal,
+          );
+        }).toList();
+
+        streamController.add(resolved);
+
+        // If there are no messages locally and we haven't scheduled an initial recovery sync,
+        // schedule a few background sync attempts to cover intermittent failures (e.g., slow IndexedDB).
+        if ((messagesData.isEmpty) && !scheduledInitialSync && syncService != null) {
+          scheduledInitialSync = true;
+          Future(() async {
+            debugPrint('chatMessagesProvider: initial empty local cache for $matchId; scheduling recovery sync attempts');
+            final delays = [const Duration(seconds: 1), const Duration(seconds: 2), const Duration(seconds: 4)];
+            for (var i = 0; i < delays.length; i++) {
+              try {
+                await Future.delayed(delays[i]);
+                debugPrint('chatMessagesProvider: recovery sync attempt #${i + 1} for $matchId');
+                await syncService!.syncMessages(matchId);
+                debugPrint('chatMessagesProvider: recovery sync successful for $matchId on attempt #${i + 1}');
+                break;
+              } catch (e, st) {
+                debugPrint('chatMessagesProvider: recovery sync attempt #${i + 1} failed for $matchId: $e\n$st');
+              }
+            }
+          });
+        }
+      } catch (e, st) {
+        // Log parsing errors so we can see why the stream isn't emitting
+        try {
+          debugPrint('chatMessagesProvider: failed to parse local messages for $matchId: $e\n$st');
+          if (messagesData.isNotEmpty) {
+            debugPrint('chatMessagesProvider: sample problematic message: ${messagesData.first}');
+          }
+        } catch (_) {}
+      }
+    });
+
+  Future<void> handleChanges(PostgresChangePayload payload) async {
+    if (disposed || !ref.mounted || syncService == null) {
+      return;
+    }
+    final event = payload.eventType;
+    if (event != PostgresChangeEvent.insert &&
+        event != PostgresChangeEvent.update &&
+        event != PostgresChangeEvent.delete) {
+      return;
+    }
+    realtimeSyncDebounce?.cancel();
+    realtimeSyncDebounce = Timer(const Duration(milliseconds: 120), () async {
+      if (disposed || !ref.mounted || syncService == null) {
+        return;
+      }
+      try {
+        await syncService.syncMessages(matchId);
+      } catch (e) {
+        debugPrint('Error syncing messages on realtime change for $matchId: $e');
+      }
+    });
+  }
+
+  bool shouldSkipReconnect() {
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    final isBackground = lifecycle == AppLifecycleState.paused ||
+        lifecycle == AppLifecycleState.detached;
+    if (isBackground) return true;
+    if (!kIsWeb) return false;
+    try {
+      return html.document.hidden == true ||
+          html.document.visibilityState == 'hidden';
     } catch (_) {
-      // ignore add-after-close races
+      return false;
     }
-  });
+  }
 
-  // Handler for Postgres realtime changes (insert/update/delete)
-  void handleChanges(dynamic payload) async {
-     try {
-       final eventType = payload.eventType;
-
-       // Check if this event is for our match
-       // For DELETE events, the subscription filter ensures it's for our match
-       if (eventType != PostgresChangeEvent.delete) {
-         final recordMatchId = payload.newRecord['match_id'];
-         if (recordMatchId != matchId) {
-           return;
-         }
-       }
-
-       final currentUserId = supabase.auth.currentUser?.id;
-
-       if (eventType == PostgresChangeEvent.insert) {
-         // Don't add our own messages via real-time, since they're already handled by the send flow
-         final senderId = payload.newRecord['sender_id'];
-         if (senderId != currentUserId) {
-           localDb.addMessages(matchId, [payload.newRecord]);
-
-           // Proactively trigger translation for incoming messages
-           final messageId = payload.newRecord['id'];
-           final contentOriginal = payload.newRecord['content_original'];
-           if (messageId != null && contentOriginal != null && contentOriginal.isNotEmpty) {
-             // Avoid triggering translations repeatedly for the same message in a short window
-             final now = DateTime.now();
-             final last = _lastTranslationTriggeredAt[messageId];
-             if (last != null && now.difference(last) < const Duration(seconds: 2)) {
-               debugPrint('Skipping duplicate translation trigger for incoming message: $messageId');
-             } else {
-               _lastTranslationTriggeredAt[messageId] = now;
-               _cleanupTranslationThrottle(); // Cleanup old entries
-               debugPrint('Triggering translation for incoming message: $messageId');
-               // Trigger translation in background - don't await to avoid blocking realtime handling
-               final translationParams = jsonEncode({
-                 'text': contentOriginal,
-                 'matchId': matchId,
-                 'messageId': messageId,
-                 'otherUserId': senderId,
-               });
-               // This will trigger the translation provider to run and update the database
-               ref.read(translationFamilyProvider(translationParams));
-             }
-           }
-         } else {
-           debugPrint('Ignoring INSERT for own message');
-         }
-       } else if (eventType == PostgresChangeEvent.update) {
-         final oldRecord = payload.oldRecord;
-         final newRecord = payload.newRecord;
-         
-         localDb.mergeMessages(matchId, [newRecord]);
-
-         // Invalidate reactor cache if reaction_summary changed
-         if (oldRecord['reaction_summary'] != newRecord['reaction_summary']) {
-           final messageId = newRecord['id'];
-           if (messageId != null) {
-             try {
-               // Clear all cached reactors for this message since summary changed
-               await localDb.clearMessageReactorCache(matchId, messageId);
-             } catch (e) {
-               debugPrint('Failed to clear reactor cache for message $messageId: $e');
-             }
-           }
-         }
-
-         // Check if this update includes content that needs translation
-         final messageId = payload.newRecord['id'];
-         final contentOriginal = payload.newRecord['content_original'];
-         final senderId = payload.newRecord['sender_id'];
-         final currentUserId = supabase.auth.currentUser?.id;
-
-         // Trigger translation if this is an incoming message with content that might need translation
-         if (messageId != null && contentOriginal != null && contentOriginal.isNotEmpty &&
-             senderId != null && senderId != currentUserId) {
-           final now = DateTime.now();
-           final last = _lastTranslationTriggeredAt[messageId];
-           if (last != null && now.difference(last) < const Duration(seconds: 2)) {
-             debugPrint('Skipping duplicate translation trigger for updated message: $messageId');
-           } else {
-             _lastTranslationTriggeredAt[messageId] = now;
-             _cleanupTranslationThrottle(); // Cleanup old entries
-             debugPrint('Triggering translation for updated incoming message: $messageId');
-             final translationParams = jsonEncode({
-               'text': contentOriginal,
-               'matchId': matchId,
-               'messageId': messageId,
-               'otherUserId': senderId,
-             });
-             // This will trigger the translation provider to run and update the database
-             ref.read(translationFamilyProvider(translationParams));
-           }
-         }
-       } else if (eventType == PostgresChangeEvent.delete) {
-         final deletedId = payload.oldRecord['id'];
-         // For DELETE events, oldRecord may only contain the primary key (id)
-         // The channel filter ensures this event is for our match
-         if (deletedId != null) {
-           await localDb.deleteMessage(matchId, deletedId);
-
-           // If there are no messages left for this match, remove the recent chat
-           try {
-             final remaining = await localDb.getMessages(matchId);
-             final currentUserId = supabase.auth.currentUser?.id;
-             if ((remaining.isEmpty) && (currentUserId != null && currentUserId.isNotEmpty)) {
-               await localDb.deleteChat(matchId, userId: currentUserId);
-             }
-           } catch (e) {
-             // Ignore local DB errors – we don't want realtime handling to crash
-           }
-         }
-       }
-     } catch (e) {
-       // Swallow handler errors to avoid noisy logs; local DB operations should surface errors where appropriate.
-     }
-   }
-
-  channel.onPostgresChanges(
-    event: PostgresChangeEvent.all, // Catches INSERTs, UPDATEs, and DELETEs
-    schema: 'public',
-    table: 'chat_messages',
-    callback: handleChanges,
-  ).subscribe((status, err) async {
-    if (status == RealtimeSubscribeStatus.subscribed) {
-      // Run a full sync ONCE on subscribe, to catch up
-      await syncService.syncMessages(matchId);
-    } else if (err != null) {
-      // suppress noisy logging here
+  Future<void> reconnectChannel() async {
+    if (disposed || !ref.mounted || shouldSkipReconnect()) {
+      return;
     }
-  });
+    try {
+      // ignore: invalid_use_of_internal_member
+      supabase.realtime.connect();
+    } catch (e) {
+      debugPrint('Error reconnecting realtime socket for $matchId: $e');
+    }
+    try {
+      ref.invalidateSelf();
+    } catch (e) {
+      debugPrint('Error recreating chat subscription for $matchId: $e');
+      if (syncService != null) {
+        try {
+          await syncService.syncMessages(matchId);
+        } catch (syncError) {
+          debugPrint('Error syncing messages after reconnect failure for $matchId: $syncError');
+        }
+      }
+    }
+  }
+
+  if (channel != null) {
+    channel.onPostgresChanges(
+      event: PostgresChangeEvent.all, // Catches INSERTs, UPDATEs, and DELETEs
+      schema: 'public',
+      table: 'chat_messages',
+      callback: handleChanges,
+    ).subscribe((status, err) async {
+      if (!ref.mounted || disposed) {
+        // Provider no longer active - ignore subscription callbacks
+        return;
+      }
+      if (status == RealtimeSubscribeStatus.subscribed) {
+        reconnectTimer?.cancel();
+        // Run a full sync ONCE on subscribe, to catch up (guarded)
+        try {
+          if (syncService != null) await syncService.syncMessages(matchId);
+        } catch (e) {
+          debugPrint('Error syncing messages on subscribe for $matchId: $e');
+        }
+      } else if (status == RealtimeSubscribeStatus.closed || status == RealtimeSubscribeStatus.channelError) {
+        debugPrint('âš ï¸ Chat messages subscription disconnected for $matchId - status: $status, error: $err');
+
+        if (shouldSkipReconnect()) {
+          debugPrint('Skipping auto-reconnect for chat $matchId due to app visibility/lifecycle');
+          return;
+        }
+        reconnectTimer?.cancel();
+        reconnectTimer = Timer(const Duration(seconds: 2), () {
+          unawaited(reconnectChannel());
+        });
+      } else if (err != null) {
+        debugPrint('Realtime subscription error for $matchId: $err');
+      }
+    });
+  }
 
   ref.onDispose(() {
     disposed = true;
+    realtimeSyncDebounce?.cancel();
+    reconnectTimer?.cancel();
     localSubscription.cancel();
-    supabase.removeChannel(channel);
+    try {
+      if (channel != null) supabase.removeChannel(channel);
+    } catch (_) {}
     streamController.close();
   });
 
   return streamController.stream;
+  } catch (e, st) {
+    debugPrint('chatMessagesProvider failed to initialize for $matchId: $e\n$st');
+    return Stream.value(<ChatMessageModel>[]);
+  }
 });
-
 
 // --- chatServiceProvider (Unchanged) ---
 final chatServiceProvider = Provider((ref) => ChatService(ref));
@@ -247,21 +405,24 @@ class ChatService {
   Future<void> sendMessage({
     required String matchId,
     required String text,
+    String? replyToMessageId,
   }) async {
     final user = supabase.auth.currentUser;
     if (user == null) throw Exception('User not logged in');
     final localDb = _ref.read(localDbProvider);
     final tempId = uuid.v4();
     final optimisticMessage = ChatMessageModel(
-      id: tempId, 
+      id: tempId,
       matchId: matchId,
       senderId: user.id,
       contentOriginal: text,
-      createdAt: DateTime.now(), 
-      isPending: true, 
+      createdAt: DateTime.now(),
+      isPending: true,
+      replyToMessageId: replyToMessageId,
     );
     try {
       await localDb.addMessages(matchId, [optimisticMessage.toJson()]);
+      // Ignore returned delivery messages since this is our own message
     } catch (e) {
       // Keep higher-level error handling; avoid extra logs here.
     }
@@ -271,6 +432,10 @@ class ChatService {
       'match_id': matchId,
       'sender_id': user.id,
       'content_original': text,
+      ...?(switch (replyToMessageId) {
+        final id? => {'reply_to_message_id': id},
+        _ => null,
+      }),
     };
     if (isOnline) {
       try {
@@ -283,6 +448,31 @@ class ChatService {
         }
         final firstItem = data[0];
         await localDb.replaceMessage(matchId, tempId, firstItem);
+
+        // Immediately invalidate recent chats to update the last message preview
+        final currentUserId = supabase.auth.currentUser?.id;
+        if (currentUserId != null) {
+          _ref.invalidate(recentChatsProvider(currentUserId));
+        }
+
+        try {
+          final messageId = (firstItem['id'] as String?)?.trim();
+          if (messageId != null && messageId.isNotEmpty) {
+            unawaited(() async {
+              try {
+                await supabase.functions.invoke(
+                  'push-message',
+                  body: {
+                    'message_id': messageId,
+                    'match_id': matchId,
+                  },
+                );
+              } catch (_) {
+              }
+            }());
+          }
+        } catch (_) {
+        }
       } catch (e) {
         await _saveToOutbox(supabasePayload);
       }
@@ -305,9 +495,11 @@ class ChatService {
     // Debounce rapid clicks
     final key = '$matchId:$messageId';
     _reactionDebouncer[key]?.cancel();
-    
+    debugPrint('setReaction: scheduling debounced update for $key (reaction=$reaction)');
+
     final completer = Completer<void>();
     _reactionDebouncer[key] = Timer(const Duration(milliseconds: 300), () async {
+      debugPrint('setReaction: debounced timer fired for $key (reaction=$reaction)');
       try {
         await _performSetReaction(matchId, messageId, reaction, user, localDb);
         completer.complete();
@@ -317,7 +509,7 @@ class ChatService {
         _reactionDebouncer.remove(key);
       }
     });
-    
+
     return completer.future;
   }
 
@@ -327,7 +519,9 @@ class ChatService {
 
     try {
       // Optimistic update
+      debugPrint('performSetReaction: starting optimistic update for message $messageId (reaction=$reaction)');
       await _applyOptimisticUpdate(matchId, messageId, reaction, user, localDb);
+      debugPrint('performSetReaction: optimistic update applied for message $messageId');
 
       // Server call
       final payload = {
@@ -340,34 +534,218 @@ class ChatService {
       debugPrint('set_message_reaction response: $res');
 
       // Apply server result (may differ from optimistic)
-      final newSummary = res as Map<String, dynamic>?;
-      if (newSummary != null) {
-        debugPrint('Applying new reaction_summary for message $messageId: $newSummary');
-        await localDb.mergeMessages(matchId, [{'id': messageId, 'reaction_summary': newSummary, 'my_reaction': reaction}]);
+      final Map<String, dynamic> newSummary = Map<String, dynamic>.from(res as Map);
+      debugPrint('Applying new reaction_summary for message $messageId: $newSummary');
+      await localDb.mergeMessages(matchId, [{'id': messageId, 'reaction_summary': newSummary, 'my_reaction': reaction}]);
+      debugPrint('performSetReaction: merge from server applied for message $messageId');
 
-        // Force provider refresh
-        try {
-          _ref.invalidate(chatMessagesProvider(matchId));
-        } catch (e) {
-          // ignore if invalidation fails
+      // Force provider refresh
+      try {
+        _ref.invalidate(chatMessagesProvider(matchId));
+      } catch (e) {
+        // ignore if invalidation fails
+      }
+
+      // Refresh per-reaction cached reactors from the server for affected keys so
+      // local cache matches the authoritative server state immediately.
+      try {
+        final keys = <String>{};
+        keys.addAll(newSummary.keys.map((k) => k.toString()));
+
+        // Also include the previous my_reaction (if any) to ensure it is updated when clearing.
+        final prevMy = originalMessages.firstWhere((m) => m['id']?.toString() == messageId, orElse: () => {})['my_reaction'] as String?;
+        if (prevMy != null && prevMy.isNotEmpty) keys.add(prevMy);
+
+        if (keys.isNotEmpty) {
+          await _refreshCachedReactors(matchId, messageId, keys, localDb);
         }
+      } catch (e) {
+        debugPrint('Failed to refresh cached reactors after setReaction: $e');
       }
 
     } catch (e, st) {
       debugPrint('set_message_reaction failed for message $messageId with error: $e\n$st');
       // Rollback optimistic update
+      debugPrint('performSetReaction: rolling back optimistic update for message $messageId');
       await _rollbackOptimisticUpdate(matchId, originalMessages, localDb);
       rethrow;
     }
   }
 
+  /// Edit a message. Only the message sender may edit; server-side RPC enforces this.
+  Future<void> editMessage({required String matchId, required String messageId, required String newText}) async {
+    final user = supabase.auth.currentUser;
+    if (user == null) throw Exception('User not logged in');
+    final localDb = _ref.read(localDbProvider);
+    final currentUserId = user.id;
+
+    // Store original messages for rollback
+    final originalMessages = await localDb.getMessages(matchId);
+
+    try {
+      // Optimistic update locally
+      final nowIso = DateTime.now().toIso8601String();
+      await localDb.mergeMessages(matchId, [
+        {
+          'id': messageId,
+          'content_original': newText,
+          'edited_at': nowIso,
+        }
+      ]);
+      // Recompute the chat's last message preview since we edited the current last message
+      await localDb.recomputeChatLastMessagePreviewFromMessages(currentUserId, matchId);
+      // Call server RPC to perform secure edit (enforces sender == auth.uid())
+      final payload = {
+        'p_message_id': messageId,
+        'p_new_content': newText,
+      };
+      debugPrint('Calling supabase.rpc edit_chat_message with payload: $payload');
+
+      dynamic res;
+      try {
+        res = await supabase.rpc('edit_chat_message', params: payload).single();
+        debugPrint('edit_chat_message response: $res');
+      } catch (e, st) {
+        debugPrint('edit_chat_message failed for message $messageId with error: $e\n$st');
+        // Some deployments may expose the RPC under a different name or signature.
+        // Attempt a few fallbacks to maximize compatibility.
+        // 1) Try historical name `edit_message` with (p_message_id, p_new_content)
+        try {
+          debugPrint('Attempting fallback RPC edit_message(p_message_id, p_new_content) for message $messageId');
+          res = await supabase.rpc('edit_message', params: payload).single();
+          debugPrint('edit_message response: $res');
+        } catch (e2, st2) {
+          debugPrint('edit_message(p_message_id, p_new_content) failed for message $messageId: $e2\n$st2');
+          // 2) Try alternative signature edit_message(p_message_id, p_new_content, p_user_id)
+          try {
+            final payloadWithUser = Map<String, dynamic>.from(payload);
+            payloadWithUser['p_user_id'] = user.id;
+            debugPrint('Attempting fallback RPC edit_message(p_message_id, p_new_content, p_user_id) for message $messageId');
+            res = await supabase.rpc('edit_message', params: payloadWithUser).single();
+            debugPrint('edit_message(p_user_id) response: $res');
+          } catch (e3, st3) {
+            debugPrint('edit_message with p_user_id failed for message $messageId: $e3\n$st3');
+            // 3) Final fallback: attempt direct table update (will be subject to RLS/policies)
+            try {
+              debugPrint('Attempting direct table UPDATE fallback for message $messageId');
+              final nowIsoFinal = DateTime.now().toIso8601String();
+              final updateRes = await supabase
+                  .from('chat_messages')
+                  .update({'content_original': newText, 'edited_at': nowIsoFinal})
+                  .eq('id', messageId)
+                  .select()
+                  .single();
+              debugPrint('Direct UPDATE response: $updateRes');
+              res = updateRes;
+            } catch (e4, st4) {
+              debugPrint('Direct UPDATE fallback failed for message $messageId: $e4\n$st4');
+              // Exhausted fallbacks
+              rethrow;
+            }
+          }
+        }
+      }
+
+      // Normalize RPC response to a message row Map. The RPC may return different shapes across deployments
+      // (a Map row, a List wrapping a row, or simply `true`/boolean on success). Handle gracefully by
+      // fetching the authoritative row when needed.
+      Map<String, dynamic> resMap;
+      try {
+        if (res is Map) {
+          resMap = Map<String, dynamic>.from(res);
+        } else if (res is List) {
+          if (res.isNotEmpty && res[0] is Map) {
+            resMap = Map<String, dynamic>.from(res[0]);
+          } else {
+            debugPrint('RPC returned empty List, fetching row for $messageId');
+            final rows = await supabase.from('chat_messages').select().eq('id', messageId).limit(1);
+            if (rows.isNotEmpty) {
+              resMap = Map<String, dynamic>.from(rows[0]);
+            } else {
+              throw Exception('RPC returned empty list and failed to find row for $messageId');
+            }
+          }
+        } else if (res is bool && res == true) {
+          // Some RPCs simply return true on success; fetch the updated row.
+          debugPrint('RPC returned boolean true for edit; fetching authoritative row for $messageId');
+          final rows = await supabase.from('chat_messages').select().eq('id', messageId).limit(1);
+          if (rows.isNotEmpty) {
+            resMap = Map<String, dynamic>.from(rows[0]);
+          } else {
+            throw Exception('RPC returned success but row not found for $messageId');
+          }
+        } else {
+          throw Exception('Unexpected RPC response type for edit: ${res.runtimeType}');
+        }
+      } catch (e, st) {
+        debugPrint('Failed to normalize RPC response for message $messageId: $e\n$st');
+        rethrow;
+      }
+
+      await localDb.mergeMessages(matchId, [resMap]);
+      // Recompute the chat's last message preview after the server confirms the edit
+      await localDb.recomputeChatLastMessagePreviewFromMessages(currentUserId, matchId);
+      try {
+        _ref.invalidate(chatMessagesProvider(matchId));
+        _ref.invalidate(recentChatsProvider(currentUserId));
+      } catch (e) {
+        debugPrint('Failed to invalidate providers after edit: $e');
+      }
+    } catch (e, st) {
+      debugPrint('edit_chat_message failed for message $messageId with error: $e\n$st');
+      // Rollback optimistic update
+      await _rollbackOptimisticUpdate(matchId, originalMessages, localDb);
+      await localDb.recomputeChatLastMessagePreviewFromMessages(currentUserId, matchId);
+      rethrow;
+    }
+  }
+
+  /// Delete a message. The server will enforce permissions via RLS/policies.
+  Future<void> deleteMessage({required String matchId, required String messageId}) async {
+    final user = supabase.auth.currentUser;
+    if (user == null) throw Exception('User not logged in');
+    final localDb = _ref.read(localDbProvider);
+    final currentUserId = user.id;
+
+    // Store original messages for rollback
+    final originalMessages = await localDb.getMessages(matchId);
+
+    try {
+      // Optimistic local delete
+      await localDb.deleteMessage(matchId, messageId);
+      // Recompute the chat's last message preview after deletion
+      await localDb.recomputeChatLastMessagePreviewFromMessages(currentUserId, matchId);
+
+      // Server delete
+      await supabase.from('chat_messages').delete().eq('id', messageId);
+
+      try {
+        _ref.invalidate(chatMessagesProvider(matchId));
+        // Invalidate recent chats to update the last message preview immediately
+        _ref.invalidate(recentChatsProvider(currentUserId));
+      } catch (e) {
+        debugPrint('Failed to invalidate providers after delete: $e');
+      }
+    } catch (e) {
+      debugPrint('deleteMessage failed: $e');
+      // Rollback
+      await _rollbackOptimisticUpdate(matchId, originalMessages, localDb);
+      await localDb.recomputeChatLastMessagePreviewFromMessages(currentUserId, matchId);
+      rethrow;
+    }
+  }
+
   Future<void> _applyOptimisticUpdate(String matchId, String messageId, String? reaction, User user, LocalDbService localDb) async {
+    debugPrint('applyOptimisticUpdate START for message $messageId (reaction=$reaction)');
     final messages = await localDb.getMessages(matchId);
     final idx = messages.indexWhere((m) => m['id']?.toString() == messageId);
-    if (idx == -1) return;
+    if (idx == -1) {
+      debugPrint('applyOptimisticUpdate: message $messageId not found in local cache');
+      return;
+    }
 
     final msg = Map<String, dynamic>.from(messages[idx]);
-    
+
     // Update my_reaction
     if (reaction == null) {
       msg.remove('my_reaction');
@@ -378,7 +756,7 @@ class ChatService {
     // Update reaction_summary counts optimistically
     final Map<String, dynamic> summary = (msg['reaction_summary'] is Map) ? Map<String, dynamic>.from(msg['reaction_summary']) : {};
     final prev = messages[idx]['my_reaction'] as String?;
-    
+
     // Decrement previous reaction
     if (prev != null) {
       final int prevCount = (summary[prev] as int?) ?? 0;
@@ -388,16 +766,18 @@ class ChatService {
         summary[prev] = prevCount - 1;
       }
     }
-    
+
     // Increment new reaction
     if (reaction != null) {
       final int cur = (summary[reaction] as int?) ?? 0;
       summary[reaction] = cur + 1;
     }
-    
+
     msg['reaction_summary'] = summary;
     messages[idx] = msg;
     await localDb.saveMessages(matchId, messages);
+
+    debugPrint('applyOptimisticUpdate DONE for message $messageId -> summary: ${summary.toString()} prev: ${prev ?? 'none'}');
 
     // Update cached reactors
     await _updateCachedReactors(matchId, messageId, reaction, prev, user.id, localDb);
@@ -422,13 +802,13 @@ class ChatService {
           final photos = profile['photos'];
           if (photos is List && photos.isNotEmpty) photoUrl = photos[0] as String?;
         }
-        
+
         final newEntry = {
           'user_id': currentUserId,
           'display_name': displayName,
           'photo': photoUrl,
         };
-        
+
         final curList = await localDb.getCachedReactors(matchId, messageId, reaction);
         final exists = curList.any((r) => r['user_id'] == currentUserId);
         if (!exists) {
@@ -442,8 +822,21 @@ class ChatService {
     }
   }
 
+  Future<void> _refreshCachedReactors(String matchId, String messageId, Iterable<String> keys, LocalDbService localDb) async {
+    for (final k in keys) {
+      try {
+        final serverList = await getReactors(messageId: messageId, reaction: k);
+        // Save whatever the server returns (including empty lists) so local cache matches server state.
+        await localDb.saveCachedReactors(matchId, messageId, k, serverList);
+      } catch (e) {
+        final _ = e;
+      }
+    }
+  }
+
   Future<void> _rollbackOptimisticUpdate(String matchId, List<Map<String, dynamic>> originalMessages, LocalDbService localDb) async {
     try {
+      debugPrint('rollbackOptimisticUpdate: restoring original messages for match $matchId');
       await localDb.saveMessages(matchId, originalMessages);
       // Also invalidate provider to refresh UI
       _ref.invalidate(chatMessagesProvider(matchId));
@@ -485,12 +878,11 @@ class ChatService {
                     final idx = initial.indexWhere((e) => e['user_id'] == id);
                     if (idx >= 0) {
                       initial[idx]['photo'] = photos[0];
-                      debugPrint('getReactors: filled photo from users.photos for user $id -> ${photos[0]}');
                     }
                   }
                 }
               } catch (e) {
-                debugPrint('getReactors: failed to fetch photos for user $id: $e');
+                final _ = e;
               }
             }
           }
@@ -499,7 +891,6 @@ class ChatService {
         }
       } catch (e) {
         // RPC may not exist or be restricted; fall back to client-side fetching
-        debugPrint('getReactors rpc failed, falling back: $e');
       }
 
       final rows = await supabase
@@ -549,18 +940,43 @@ class ChatService {
 
       return result;
     } catch (e) {
-      debugPrint('getReactors failed: $e');
       return [];
     }
   }
 }
 // --- END chatServiceProvider ---
 
-
 // ---
 // --- UPDATED: Translation State Management (listens to locale changes)
 // ---
 typedef TranslationStates = Map<String, String>;
+
+/* Notification payload sent when translations are auto-disabled for a match. */
+class TranslationNotification {
+  final String matchId;
+  final String text;
+  TranslationNotification({required this.matchId, required this.text});
+}
+
+class TranslationNotificationNotifier extends Notifier<TranslationNotification?> {
+  @override
+  TranslationNotification? build() => null;
+
+  void notify(TranslationNotification n) {
+    state = n;
+    Future.delayed(const Duration(seconds: 4), () {
+      if (ref.mounted) state = null;
+    });
+  }
+
+  void clear() {
+    if (ref.mounted) state = null;
+  }
+}
+
+final translationNotificationProvider = NotifierProvider<TranslationNotificationNotifier, TranslationNotification?>(() {
+  return TranslationNotificationNotifier();
+});
 
 class TranslationNotifier extends Notifier<TranslationStates> {
   // Base prefs key - actual stored key is namespaced per-user: '${_prefsKeyBase}_<userId>'
@@ -576,13 +992,70 @@ class TranslationNotifier extends Notifier<TranslationStates> {
       _loadFromPrefsForCurrentUser();
     });
 
+    // When the UI language changes, remove any cached translations whose target
+    // language is now the same as the UI â€” they are redundant and should be cleared.
+    ref.listen(localizationProvider, (previous, next) {
+      try {
+        final newLang = next.currentLocale.languageCode;
+        // For each match where the user currently has translations enabled, clear cached translated
+        // content only if the messages were originally written in the new UI language. We do NOT
+        // change the user's translation setting â€” the system will never toggle it automatically.
+        final matchesWithTranslation = state.keys.toList();
+        if (matchesWithTranslation.isEmpty) return;
+
+        // Schedule cleanup after a small delay to allow the localization change to settle
+        Future.delayed(const Duration(milliseconds: 250), () async {
+          if (!ref.mounted) return; // provider disposed
+          try {
+            String? userId;
+            try {
+              userId = Supabase.instance.client.auth.currentUser?.id;
+            } catch (_) {
+              userId = null;
+            }
+
+            final localDb = ref.read(localDbProvider);
+            for (final matchId in matchesWithTranslation) {
+              if (!ref.mounted) return;
+
+              // Check messages for any that have detected source language == newLang
+              try {
+                final messages = await localDb.getMessages(matchId);
+                final shouldClear = messages.any((m) {
+                  final detected = (m['detected_source_language'] ?? m['source_language'] ?? m['language']) as String?;
+                  return detected != null && detected.toString().toLowerCase().startsWith(newLang.toLowerCase());
+                });
+
+                if (shouldClear) {
+                  await localDb.clearCachedTranslationsForMatch(matchId, userId: userId);
+                  // Trigger UI refresh for translations
+                  if (ref.mounted) ref.read(translationVersionProvider.notifier).increment();
+                }
+              } catch (_) {
+                // ignore per-match errors - best-effort
+              }
+            }
+          } catch (_) {
+            // ignore errors - cleanup is best-effort
+          }
+        });
+      } catch (_) {}
+    });
+
     return {}; // Return empty state initially, will be updated when loaded
   }
 
   String _prefsKeyForUser(String? userId) => '$_prefsKeyBase${userId == null ? '' : '_$userId'}';
 
   Future<void> _loadFromPrefsForCurrentUser() async {
-    final userId = Supabase.instance.client.auth.currentUser?.id;
+    // Supabase.instance may not be initialized in test environments; guard against that.
+    String? userId;
+    try {
+      userId = Supabase.instance.client.auth.currentUser?.id;
+    } catch (_) {
+      // Supabase not initialized (e.g., in tests); skip loading from prefs for now.
+      return;
+    }
     await _loadFromPrefsForUser(userId);
   }
 
@@ -694,6 +1167,21 @@ class TranslationNotifier extends Notifier<TranslationStates> {
       rethrow;
     }
   }
+
+  /// Silent update to translation state - used during sync to match server state
+  /// Does NOT save to prefs or database - just updates in-memory state
+  void setTranslationSilent(String matchId, String targetLang) {
+    state = {
+      ...state,
+      matchId: targetLang,
+    };
+  }
+
+  /// Silent removal from translation state - used during sync
+  /// Does NOT save to prefs or database - just updates in-memory state
+  void clearTranslationSilent(String matchId) {
+    state = {...state}..remove(matchId);
+  }
 }
 
 final translationProvider = NotifierProvider<TranslationNotifier, TranslationStates>(() {
@@ -701,11 +1189,29 @@ final translationProvider = NotifierProvider<TranslationNotifier, TranslationSta
 });
 // --- END Translation State ---
 
+// --- Translation Batch State (Prevents multiple simultaneous batch calls per match) ---
+final translationBatchStateProvider = NotifierProvider<TranslationBatchNotifier, Map<String, bool>>(() => TranslationBatchNotifier());
+
+class TranslationBatchNotifier extends Notifier<Map<String, bool>> {
+  @override
+  Map<String, bool> build() => {};
+
+  bool isRunning(String matchId) => state[matchId] ?? false;
+
+  void setRunning(String matchId, bool running) {
+    state = {...state, matchId: running};
+  }
+}
+// --- END Translation Batch State ---
 
 // ---
 // --- *** UPDATED: translationFamilyProvider (translates to current UI language)
 // --- Translates incoming messages to the current app UI language when translation is enabled.
 // --- Only translates messages from other users, not outgoing messages.
+// --- Uses smart Case A/B/C logic based on server-side translation data:
+// --- - Case A: UI != source AND UI != target -> Call translate-proxy
+// --- - Case B: UI == source -> Show original (no AI)
+// --- - Case C: UI == target -> Reuse existing translation (no AI)
 // ---
 final translationFamilyProvider = FutureProvider.autoDispose
     .family<String, String>((ref, paramsString) async {
@@ -716,17 +1222,13 @@ final translationFamilyProvider = FutureProvider.autoDispose
   try {
     params = jsonDecode(paramsString) as Map<String, dynamic>;
   } catch (e) {
-  
+
     return 'Error parsing params';
   }
 
   final text = params['text'] as String?;
   final matchId = params['matchId'] as String?;
   final messageId = params['messageId'] as String?;
-  final otherUserId = params['otherUserId'] as String?;
-
-
-
 
   if (text == null || matchId == null || messageId == null || text.isEmpty) {
     return text ?? 'Error: invalid params';
@@ -739,14 +1241,12 @@ final translationFamilyProvider = FutureProvider.autoDispose
 
   if (!translationEnabled) {
     // Translation is off for this chat.
-
     return text;
   }
 
   // 2. Get the current UI language as the target language
   final currentUILocale = ref.watch(localizationProvider).currentLocale;
-  final targetLanguage = currentUILocale.languageCode;
-
+  final targetLanguage = normalizeLanguageCode(currentUILocale.languageCode);
 
   // 2. Load message data once from local DB for both sender check and cache check
   if (matchId.isEmpty) return text;
@@ -754,8 +1254,11 @@ final translationFamilyProvider = FutureProvider.autoDispose
   final messages = await localDb.getMessages(matchId);
   final message = messages.firstWhere((m) => m['id'].toString() == messageId, orElse: () => {});
   final senderId = message['sender_id'] as String?;
-  final cachedTranslation = message['translated_text'] as String?;
-  final cachedLang = message['translated_lang'] as String?;
+  
+  // Get server-side translation data (set by translate-proxy edge function)
+  final serverSourceLang = message['detected_source_language'] as String?;
+  final serverTargetLang = message['translated_target_language'] as String?;
+  final serverTranslation = message['content_translated'] as String?;
 
   // Check if this is an outgoing message (from current user) - don't translate those
   final currentUserId = supabase.auth.currentUser?.id;
@@ -764,130 +1267,207 @@ final translationFamilyProvider = FutureProvider.autoDispose
     return text;
   }
 
-  // 3. Identify source language first. If source is same as target, do NOT translate or cache.
-  final translator = ref.watch(translationServiceProvider);
-  String sourceLanguage;
-  try {
-    // Language identification can fail for very short texts or emoji-heavy messages.
-    // Use a sanitized string for identification but translate the original to preserve emojis.
-    final textForLangId = _stripEmojisForLanguageId(text);
+  // 3. Case A/B/C Logic using server-side translation data
+  // Normalize language codes for comparison
+  final normalizedSource = serverSourceLang != null ? normalizeLanguageCode(serverSourceLang) : null;
+  final normalizedTarget = serverTargetLang != null ? normalizeLanguageCode(serverTargetLang) : null;
 
-    sourceLanguage = await translator.identifyLanguage(textForLangId.isEmpty ? text : textForLangId);
-    // Fallback: If detection fails, try to guess based on common patterns
-    if (sourceLanguage == 'und') {
-      final fallbackLang = _guessLanguageFromText(text);
+  debugPrint('ðŸ”„ Translation Provider: Case A/B/C check - UI=$targetLanguage, source=$normalizedSource, target=$normalizedTarget');
 
-      sourceLanguage = fallbackLang;
-    }
-  } catch (e) {
-    // Fallback language detection if API fails
-    sourceLanguage = _guessLanguageFromText(text);
-
-  }
-
-
-  if (sourceLanguage == targetLanguage) {
-    // Already in target language — return original, don't cache.
-
+  // Case B: UI language == source language -> Show original (no AI needed)
+  if (normalizedSource != null && normalizedSource == targetLanguage) {
+    debugPrint('ðŸ”„ Translation Provider: Case B - UI matches source, showing original');
     return text;
   }
 
-  // Convert 'und' to 'auto' for API calls
-  final apiSourceLang = sourceLanguage == 'und' ? 'auto' : sourceLanguage;
-
-
-  // 4. Check local DB cache for existing translation (only meaningful now because source != target)
-  // Only return the cache if it's not empty AND it matches our target language
-  if (cachedTranslation != null && cachedTranslation.isNotEmpty && cachedLang == targetLanguage) {
-    return cachedTranslation;
+  // Case C: UI language == target language -> Reuse existing translation (no AI needed)
+  if (normalizedTarget != null && normalizedTarget == targetLanguage && 
+      serverTranslation != null && serverTranslation.isNotEmpty) {
+    debugPrint('ðŸ”„ Translation Provider: Case C - UI matches target, reusing existing translation');
+    return serverTranslation;
   }
 
-  // 5. Otherwise, fetch from API and save
-  // Get recipient's gender for gender-aware translation
-  String? recipientGender;
-  if (otherUserId != null && otherUserId.isNotEmpty) {
+  // Case A: UI != source AND UI != target -> Need to translate
+  // Use batch mode to translate ALL incoming messages (not just this one)
+  // This ensures all messages are translated and saved to Supabase for sync
+  debugPrint('ðŸ”„ Translation Provider: Case A - Using batch translate for incoming messages');
+
+  // Try to detect source language locally if not available from server
+  String? sourceLanguage = normalizedSource;
+  if (sourceLanguage == null) {
     try {
-      final otherUserProfile = await ref.watch(userProfileProvider(otherUserId).future);
-      recipientGender = otherUserProfile?.gender;
+      final translationService = ref.read(translationServiceProvider);
+      final textForLangId = _stripEmojisForLanguageId(text);
+      if (textForLangId.replaceAll(RegExp(r'\s+'), '').length >= 2) {
+        sourceLanguage = await translationService.identifyLanguage(textForLangId);
+        debugPrint('ðŸ”„ Translation Provider: Locally detected source language: $sourceLanguage');
+      }
     } catch (e) {
-      // If we can't get the profile, continue without gender context
-      recipientGender = null;
+      debugPrint('ðŸ”„ Translation Provider: Local language detection failed: $e');
+      sourceLanguage = null;
     }
   }
 
-  String translatedText;
+  // Always retranslate when in Case A - we need translations for a different language
+  // Case A means: UI != source AND UI != target, so we definitely need new translations
+  final doRetranslation = true;
+
+  // Call translate-proxy in BATCH mode to translate ALL incoming messages
+  // This ensures proper sync with Supabase and uses exclude_sender_id to only
+  // translate messages from OTHER users (incoming messages)
+  final batchState = ref.read(translationBatchStateProvider.notifier);
   try {
-
-    translatedText = await translator.translateText(text, apiSourceLang, targetLanguage, recipientGender: recipientGender);
-
-
-
-  } catch (e) {
-
-    return text; // Return original text on failure
-  }
-
-  translatedText = _ensureEmojisPreserved(original: text, translated: translatedText);
-
-  // Save the new translation AND the language to the local DB
-
-  await localDb.saveTranslation(matchId, messageId, translatedText, targetLanguage);
-
-  // Also update the chat record with the translated last message if this was the last message
-  try {
-    final currentUserId = supabase.auth.currentUser?.id;
-    if (currentUserId == null) {
-      // Can't update chat record without user ID, but translation is still saved
-      return translatedText;
+    if (batchState.isRunning(matchId)) {
+      debugPrint('ðŸ”„ Translation Provider: Batch already running for $matchId, skipping');
+      return text;
     }
+    batchState.setRunning(matchId, true);
 
-    final messages = await localDb.getMessages(matchId);
-    if (messages.isNotEmpty) {
-      // Sort by created_at descending to find the latest message
-      messages.sort((a, b) {
-        final aDate = DateTime.tryParse(a['created_at'] ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
-        final bDate = DateTime.tryParse(b['created_at'] ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
-        return bDate.compareTo(aDate);
-      });
-
-      final latestMessage = messages.first;
-      if (latestMessage['id'] == messageId) {
-        // This translated message is the latest message, update the chat record
-
-        await localDb.updateChatLastMessageTranslation(currentUserId, matchId, messageId, translatedText);
+    final requestBody = {
+      'match_id': matchId,
+      'target_language': targetLanguage,
+      // translate-proxy expects snake_case: retranslate_all
+      'retranslate_all': doRetranslation,
+      // IMPORTANT: Only translate messages from OTHER users (incoming messages)
+      // This prevents translating our own messages when we change our UI language
+      'exclude_sender_id': currentUserId,
+    };
+    
+    // BUG FIX: Do NOT pass source_language - edge function auto-detects
+    // if (sourceLanguage != null && sourceLanguage.isNotEmpty) {
+    //   requestBody['source_language'] = sourceLanguage;
+    // }
+    
+    debugPrint('ðŸ”„ Translation Provider: Calling translate-proxy batch for match $matchId, target=$targetLanguage, exclude $currentUserId');
+    
+    final response = await supabase.functions.invoke('translate-proxy', body: requestBody);
+    
+    // Check if provider is still mounted before using ref
+    if (!ref.mounted) {
+      debugPrint('ðŸ”„ Translation Provider: Provider disposed, returning original text');
+      batchState.setRunning(matchId, false);
+      return text;
+    }
+    
+    if (response.data != null) {
+      final translated = response.data['translated'] ?? 0;
+      debugPrint('ðŸ”„ Translation Provider: Batch translate response - translated: $translated');
+      
+      // Invalidate to refresh data from Supabase - only if still mounted
+      if (ref.mounted) {
+        ref.invalidate(translationVersionProvider);
+      }
+      
+      // After batch translation, the NEW translation should be in Supabase
+      // IMPORTANT: Fetch directly from Supabase, not from local cache, to get fresh data
+      if (ref.mounted) {
+        // Fetch fresh data directly from Supabase to bypass local cache
+        final freshData = await supabase
+            .from('chat_messages')
+            .select('id, content_translated, translated_target_language')
+            .eq('match_id', matchId)
+            .eq('id', messageId)
+            .maybeSingle();
+        
+        final newTranslation = freshData?['content_translated'] as String?;
+        final newTargetLang = freshData?['translated_target_language'] as String?;
+        
+        debugPrint('ðŸ”„ Translation Provider: After batch - fresh newTranslation: $newTranslation, newTargetLang: $newTargetLang');
+        
+        // Return the fresh translation if it matches our target language
+        if (newTranslation != null && 
+            newTranslation.isNotEmpty && 
+            newTranslation != 'null' &&
+            newTargetLang == targetLanguage) {
+          debugPrint('ðŸ”„ Translation Provider: Returning fresh translation from DB');
+          
+          // Update chat preview with translated message
+          try {
+            final currentUserId = supabase.auth.currentUser?.id;
+            if (currentUserId != null) {
+              await localDb.updateChatLastMessageTranslation(
+                currentUserId,
+                matchId,
+                messageId,
+                newTranslation,
+              );
+              debugPrint('ðŸ”„ Translation Provider: Updated chat preview with translation');
+              
+              // Show notification for newly translated message
+              try {
+                // Get message details to determine if this was an incoming message
+                final messages = await localDb.getMessages(matchId);
+                final messageData = messages.firstWhere((m) => m['id'].toString() == messageId, orElse: () => {});
+                final senderId = messageData['sender_id'] as String?;
+                final originalContent = messageData['content_original'] as String?;
+                
+                // Only show notification for incoming messages (not our own)
+                if (senderId != null && senderId != currentUserId && originalContent != null) {
+                  // Fetch sender name
+                  String senderName = 'MatchMe';
+                  try {
+                    final userData = await supabase
+                        .from('users')
+                        .select('name')
+                        .eq('id', senderId)
+                        .single();
+                    senderName = formatSenderNameForNotification(userData['name'] as String? ?? 'MatchMe');
+                  } catch (e) {
+                    debugPrint('Failed to fetch sender name for delayed notification: $e');
+                  }
+                  
+                  // Show delayed notification with translated content
+                  if (kIsWeb) {
+                    WebNotificationService.showMessageNotification(
+                      chatId: matchId,
+                      senderName: senderName,
+                      messageContent: newTranslation,
+                      matchId: matchId,
+                    );
+                  } else if (Platform.isAndroid) {
+                    await MobileLocalNotificationService.showMessageNotification(
+                      chatId: matchId,
+                      senderName: senderName,
+                      messageContent: newTranslation,
+                      matchId: matchId,
+                    );
+                  }
+                  debugPrint('ðŸ”„ Translation Provider: Showed delayed notification with translation');
+                }
+              } catch (e) {
+                debugPrint('ðŸ”„ Translation Provider: Failed to show delayed notification: $e');
+              }
+            }
+          } catch (e) {
+            debugPrint('ðŸ”„ Translation Provider: Failed to update chat preview: $e');
+          }
+          
+          return newTranslation;
+        }
       }
     }
   } catch (e) {
-    // Intentionally ignoring errors: failing to update chat record is non-critical.
+    debugPrint('ðŸ”„ Translation Provider: Batch translate call failed: $e');
+    batchState.setRunning(matchId, false);
   }
 
-  // Also update the message in Supabase with the translation
-  try {
-
-    await supabase
-        .from('chat_messages')
-        .update({'content_translated': translatedText})
-        .eq('id', messageId);
-
-  } catch (e) {
-
-    // If Supabase update fails, the translation is still saved locally
-    // This is not critical since local cache takes precedence
+  // Check mounted again before returning
+  if (!ref.mounted) {
+    return text;
   }
 
+  // Reset batch state if not already reset
+  batchState.setRunning(matchId, false);
 
-
-  // Notify that a translation has completed to trigger UI updates
-  ref.read(translationVersionProvider.notifier).increment();
-
-  return translatedText;
+  // Return original text if no fresh translation available
+  return text;
 });
 
-/// Strip emojis and most non-letter characters to improve language identification.
+// Strip emojis and most non-letter characters to improve language identification.
 String _stripEmojisForLanguageId(String input) {
   final buf = StringBuffer();
-  for (final ch in input.characters) {
-    final s = ch.toString();
+  for (final rune in input.runes) {
+    final s = String.fromCharCodes([rune]);
     if (_looksLikeEmoji(s)) continue;
     if (RegExp(r'[\p{L}\p{N}\s]', unicode: true).hasMatch(s)) {
       buf.write(s);
@@ -898,104 +1478,115 @@ String _stripEmojisForLanguageId(String input) {
   return buf.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
 }
 
-/// Simple fallback language detection based on character patterns
-String _guessLanguageFromText(String text) {
-  if (text.trim().isEmpty) return 'und';
-
-  debugPrint('_guessLanguageFromText: Analyzing text: "$text"');
-
-  // Count different types of characters
-  int latinLetters = 0;
-  int cyrillicLetters = 0;
-  int arabicLetters = 0;
-  int hebrewLetters = 0;
-  int chineseChars = 0;
-  int japaneseChars = 0;
-  int koreanChars = 0;
-
-  for (int i = 0; i < text.length; i++) {
-    final char = text[i];
-    final code = char.codeUnitAt(0);
-
-    // Latin (English, Spanish, French, etc.)
-    if ((code >= 65 && code <= 90) || (code >= 97 && code <= 122)) {
-      latinLetters++;
-    }
-    // Cyrillic (Russian, etc.)
-    else if ((code >= 1040 && code <= 1103) || code == 1025 || code == 1105) {
-      cyrillicLetters++;
-    }
-    // Arabic
-    else if (code >= 1536 && code <= 1791) {
-      arabicLetters++;
-    }
-    // Hebrew
-    else if (code >= 1424 && code <= 1535) {
-      hebrewLetters++;
-    }
-    // Chinese/Japanese/Korean
-    else if (code >= 19968 && code <= 40959) {
-      chineseChars++;
-    }
-    else if (code >= 12352 && code <= 12543) {
-      japaneseChars++;
-    }
-    else if (code >= 44032 && code <= 55215) {
-      koreanChars++;
-    }
-  }
-
-  // Find the most common script
-  final counts = {
-    'en': latinLetters,    // English (most common Latin)
-    'ru': cyrillicLetters,
-    'ar': arabicLetters,
-    'he': hebrewLetters,
-    'zh': chineseChars,
-    'ja': japaneseChars,
-    'ko': koreanChars,
-  };
-
-  final maxEntry = counts.entries.reduce((a, b) => a.value > b.value ? a : b);
-  debugPrint('_guessLanguageFromText: Max script count: ${maxEntry.key}=${maxEntry.value}');
-  if (maxEntry.value > 0) {
-    debugPrint('_guessLanguageFromText: Returning script-based language: ${maxEntry.key}');
-    return maxEntry.key;
-  }
-
-  // If no specific script detected, assume English for common words
-  final lowerText = text.toLowerCase();
-  final commonEnglishWords = ['the', 'is', 'and', 'this', 'that', 'with', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his', 'how', 'its', 'may', 'new', 'now', 'old', 'see', 'two', 'way', 'who', 'boy', 'did', 'has', 'let', 'put', 'say', 'she', 'too', 'use'];
-  final words = lowerText.split(RegExp(r'\s+'));
-  final englishWordCount = words.where((word) => commonEnglishWords.contains(word)).length;
-
-  debugPrint('_guessLanguageFromText: English word count: $englishWordCount, words: $words');
-  if (englishWordCount > 0 || RegExp(r'\b(the|is|and|this|that|with|for|are|but|not|you|all|can|had|her|was|one|our|out|day|get|has|him|his|how|its|may|new|now|old|see|two|way|who|boy|did|has|let|put|say|she|too|use)\b', caseSensitive: false).hasMatch(text)) {
-    debugPrint('_guessLanguageFromText: Returning English based on common words');
-    return 'en';
-  }
-
-  debugPrint('_guessLanguageFromText: Returning undetermined');
-  return 'und';
-}
+// Simple fallback language detection based on character patterns
+// NOTE: This function is kept for potential future use but is not currently needed
+// as we rely on server-side translation data (detected_source_language, translated_target_language)
+// String _guessLanguageFromText(String text) {
+//   if (text.trim().isEmpty) return 'und';
+//   ... (omitted for brevity)
+//   return 'und';
+// }
 
 bool _looksLikeEmoji(String grapheme) {
   // Broad, best-effort emoji/pictographic range match.
   return RegExp(r'[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]', unicode: true).hasMatch(grapheme);
 }
 
-String _ensureEmojisPreserved({required String original, required String translated}) {
-  final originalEmojis = <String>[];
-  for (final ch in original.characters) {
-    final s = ch.toString();
-    if (_looksLikeEmoji(s)) originalEmojis.add(s);
+/// Provider to ensure incoming chat messages are aligned with the current UI language.
+/// On app run/resume, this re-checks translation-enabled chats and applies
+/// the existing batch translation logic for incoming messages where needed.
+final pendingMessageTranslationProvider = FutureProvider<void>((ref) async {
+  final authState = ref.watch(authStateProvider).value;
+  if (authState == null) return;
+
+  final session = authState.session;
+  if (session == null) return;
+
+  final userId = session.user.id;
+  if (userId.isEmpty) return;
+
+  try {
+    final targetLanguage = normalizeLanguageCode(
+      ref.read(localizationProvider).currentLocale.languageCode,
+    );
+
+    debugPrint('🔄 Startup translation sync: target=$targetLanguage');
+
+    final chats = await supabase
+        .from('chats')
+        .select('match_id')
+        .eq('user_id', userId)
+        .eq('translation_enabled', true);
+
+    if (chats.isEmpty) {
+      debugPrint('✅ Startup translation sync: no translation-enabled chats');
+      return;
+    }
+
+    final localDb = ref.read(localDbProvider);
+    int syncedChats = 0;
+
+    for (final rawChat in chats as List) {
+      try {
+        final matchId = rawChat['match_id']?.toString() ?? '';
+        if (matchId.isEmpty) {
+          continue;
+        }
+
+        await supabase.functions.invoke(
+          'translate-proxy',
+          body: {
+            'match_id': matchId,
+            'target_language': targetLanguage,
+            'retranslate_all': true,
+            'exclude_sender_id': userId,
+          },
+        );
+
+        final latestIncoming = await supabase
+            .from('chat_messages')
+            .select('id, content_translated, translated_target_language')
+            .eq('match_id', matchId)
+            .neq('sender_id', userId)
+            .order('created_at', ascending: false)
+            .limit(1)
+            .maybeSingle();
+
+        final latestMessageId = latestIncoming?['id']?.toString();
+        final latestTranslated = latestIncoming?['content_translated'] as String?;
+        final latestTarget = latestIncoming?['translated_target_language']?.toString();
+        final hasTranslated = latestTranslated != null &&
+            latestTranslated.isNotEmpty &&
+            latestTranslated != 'null';
+        final matchesTarget = latestTarget != null &&
+            latestTarget.isNotEmpty &&
+            normalizeLanguageCode(latestTarget) == targetLanguage;
+
+        if (latestMessageId != null &&
+            latestMessageId.isNotEmpty &&
+            hasTranslated &&
+            matchesTarget) {
+          await localDb.updateChatLastMessageTranslation(
+            userId,
+            matchId,
+            latestMessageId,
+            latestTranslated,
+          );
+        }
+
+        syncedChats++;
+      } catch (e) {
+        debugPrint('⚠️ Startup translation sync failed for a chat: $e');
+      }
+    }
+
+    if (ref.mounted) {
+      await ref.read(globalSyncManagerProvider).syncChatsNow(userId);
+      ref.read(translationVersionProvider.notifier).increment();
+    }
+
+    debugPrint('✅ Startup translation sync complete for $syncedChats chats');
+  } catch (e) {
+    debugPrint('⚠️ Startup translation sync error: $e');
   }
-  if (originalEmojis.isEmpty) return translated;
-
-  final missing = originalEmojis.where((e) => !translated.contains(e)).toList();
-  if (missing.isEmpty) return translated;
-
-  final suffix = missing.join('');
-  final needsSpace = translated.isNotEmpty && !translated.endsWith(' ') && !translated.endsWith('\n');
-  return needsSpace ? '$translated $suffix' : '$translated$suffix';
-}
+});

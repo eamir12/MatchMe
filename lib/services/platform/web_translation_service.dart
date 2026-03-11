@@ -3,7 +3,6 @@
 // This is the WEB implementation.
 // It uses Supabase Edge Function proxy to call DeepL (avoids CORS issues).
 
-import 'dart:developer' as developer;
 import 'package:matchme/services/translation_service.dart';
 import 'package:matchme/services/text_formatter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -19,22 +18,35 @@ class WebTranslationService implements TranslationService {
 
   @override
   Future<String> identifyLanguage(String text) async {
-    // For web, we'll let the proxy function handle auto-detection
-    return 'auto';
+    return normalizeLanguageCode(guessLanguageCode(text));
+  }
+
+  // Helper: map app language codes to DeepL language codes
+  String _mapToDeepLLanguage(String appLangCode) {
+    const langMap = {
+      'iw': 'he', // Hebrew
+      'he': 'he', // Hebrew
+      'in': 'id', // Indonesian
+      'id': 'id', // Indonesian
+      'zh': 'zh', // Chinese
+      'zh-cn': 'zh', // Chinese Simplified
+      'zh-tw': 'zh', // Chinese Traditional
+    };
+
+    final lowerCode = appLangCode.toLowerCase();
+    return langMap[lowerCode] ?? appLangCode;
   }
 
   @override
   Future<String> translateText(String text, String sourceLang, String targetLang, {String? recipientGender}) async {
-    developer.log('WebTranslationService: translateText called with text="$text", source="$sourceLang", target="$targetLang", gender="$recipientGender"');
+    // Map target language to DeepL format
+    final deepLTargetLang = _mapToDeepLLanguage(targetLang);
 
     if (text.trim().isEmpty) {
-      developer.log('WebTranslationService: Text is empty, returning as-is');
       return text;
     }
 
     try {
-      developer.log('WebTranslationService: Calling Supabase Edge Function with DeepL');
-
       // For now, don't add gender prefixes to avoid confusing DeepL's language detection
       // We'll handle gender-specific translations differently in the future
       String textToTranslate = text;
@@ -44,7 +56,7 @@ class WebTranslationService implements TranslationService {
         'translate-proxy', // The Edge Function that calls DeepL
         body: {
           'text': textToTranslate,
-          'target_lang': targetLang,
+          'target_lang': deepLTargetLang, // Already mapped to DeepL format
           'source_lang': sourceLang != 'und' ? sourceLang : 'auto',
         },
       );
@@ -63,7 +75,6 @@ class WebTranslationService implements TranslationService {
         throw Exception(errorMessage);
       }
     } catch (e) {
-      developer.log('WebTranslationService: Translation failed: $e');
       // Return original text on error
       return text;
     }

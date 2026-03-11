@@ -1,4 +1,5 @@
 // lib/widgets/match_notification_overlay.dart
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,8 +7,12 @@ import 'package:matchme/providers/match_notification_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/new_options_provider.dart';
+import 'package:matchme/providers/user_preferences_provider.dart';
+import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/screens/matches/match_profile_screen.dart';
+import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/widgets/signed_image.dart';
+import 'package:matchme/web_imports.dart' as html;
 
 class MatchNotificationOverlay extends ConsumerStatefulWidget {
   const MatchNotificationOverlay({super.key});
@@ -43,19 +48,34 @@ class _MatchNotificationOverlayState extends ConsumerState<MatchNotificationOver
     super.dispose();
   }
 
-  void _showNotification(MatchNotification notification) {
+  void _showNotification(MatchNotification notification) async {
+    final notifs = ref.read(userPreferencesProvider).notifications;
+    if (notifs.isPausedNow) return;
+    if (!notifs.isMethodEnabled(NotificationType.newMatch, NotificationMethod.inApp)) return;
+
     setState(() {
       _currentNotification = notification;
     });
     
     // Play haptic feedback
-    HapticFeedback.mediumImpact();
+    final allowVibrate = notifs.isMethodEnabled(NotificationType.newMatch, NotificationMethod.vibrate);
+    if (allowVibrate) {
+      if (kIsWeb) {
+        html.safeVibrate(20);
+      } else {
+        HapticFeedback.mediumImpact();
+      }
+    }
     
     // Animate in
     _animationController?.forward();
 
-    // Auto-dismiss after 5 seconds
-    Future.delayed(const Duration(seconds: 5), () {
+    // Auto-dismiss after configured duration
+    final dismissDuration = await appConfigService.getDuration(
+      'notification.match_auto_dismiss_seconds',
+      defaultValue: const Duration(seconds: 5)
+    );
+    Future.delayed(dismissDuration, () {
       _dismissNotification();
     });
   }
@@ -75,6 +95,8 @@ class _MatchNotificationOverlayState extends ConsumerState<MatchNotificationOver
     
     final match = _currentNotification!.match;
     final l10n = ref.read(localizationProvider);
+    final cachedProfile = ref.read(userProfileProvider(match.otherUserId)).asData?.value;
+    final otherName = cachedProfile?.name.formatAsFirstNameLastInitial() ?? l10n.getString('newMatchPlaceholderName');
     
     // Mark as viewed
     ref.read(matchNotificationProvider.notifier).markAsViewed(match.id);
@@ -88,7 +110,7 @@ class _MatchNotificationOverlayState extends ConsumerState<MatchNotificationOver
         builder: (context) => MatchProfileScreen(
           matchId: match.id,
           otherUserId: match.otherUserId,
-          otherUserName: l10n.getString('newMatchPlaceholderName'), // Will be loaded from profile
+          otherUserName: otherName,
           matchedIntent: match.matchedIntent,
           eventId: match.eventId,
           eventName: match.eventName,
@@ -101,8 +123,13 @@ class _MatchNotificationOverlayState extends ConsumerState<MatchNotificationOver
 
   @override
   Widget build(BuildContext context) {
+    final notifs = ref.watch(userPreferencesProvider).notifications;
+
     // Listen for new notifications
     ref.listen<MatchNotificationState>(matchNotificationProvider, (previous, next) {
+      final currentNotifs = ref.read(userPreferencesProvider).notifications;
+      if (currentNotifs.isPausedNow) return;
+      if (!currentNotifs.isMethodEnabled(NotificationType.newMatch, NotificationMethod.inApp)) return;
       // Check if there's a new unviewed notification
       final newNotification = next.notifications.firstOrNull;
       if (newNotification != null && 
@@ -111,6 +138,13 @@ class _MatchNotificationOverlayState extends ConsumerState<MatchNotificationOver
         _showNotification(newNotification);
       }
     });
+
+    if (notifs.isPausedNow) {
+      return const SizedBox.shrink();
+    }
+    if (!notifs.isMethodEnabled(NotificationType.newMatch, NotificationMethod.inApp)) {
+      return const SizedBox.shrink();
+    }
 
     if (_currentNotification == null) {
       return const SizedBox.shrink();
@@ -186,8 +220,13 @@ class _MatchNotificationOverlayState extends ConsumerState<MatchNotificationOver
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisSize: MainAxisSize.min,
                         children: [
+                          // Use gender-aware translation for the title if the other user's gender is known
                           Text(
-                            '🎉 ${l10n.getString('newMatchTitle')}',
+                            () {
+                              final profileSync = profileAsync.asData?.value;
+                              final title = l10n.getString('newMatchTitle', gender: profileSync?.gender);
+                              return '🎉 $title';
+                            }(),
                             style: TextStyle(
                               color: Theme.of(context).colorScheme.onPrimary,
                               fontSize: 16,
@@ -197,7 +236,7 @@ class _MatchNotificationOverlayState extends ConsumerState<MatchNotificationOver
                           const SizedBox(height: 4),
                           profileAsync.when(
                             data: (profile) => Text(
-                              profile?.name ?? l10n.getString('generalUnknown'),
+                              profile?.name.formatAsFirstNameLastInitial() ?? l10n.getString('generalUnknown'),
                               style: TextStyle(
                                 color: Theme.of(context).colorScheme.onPrimary,
                                 fontSize: 14,

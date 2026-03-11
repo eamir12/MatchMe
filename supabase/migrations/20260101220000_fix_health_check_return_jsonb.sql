@@ -1,6 +1,8 @@
 -- Replace health_check to return JSONB to avoid client-side type errors
 -- Idempotent: overwrites any prior definition
 
+DROP FUNCTION IF EXISTS public.health_check();
+
 CREATE OR REPLACE FUNCTION public.health_check()
 RETURNS jsonb
 LANGUAGE plpgsql

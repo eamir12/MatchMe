@@ -1,0 +1,368 @@
+C:\App\MatchMeGPT5.21\MatchMe4>flutter run
+Launching lib\main.dart on moto g54 5G in debug mode...
+Running Gradle task 'assembleDebug'...                             40.9s
+√ Built build\app\outputs\flutter-apk\app-debug.apk
+Installing build\app\outputs\flutter-apk\app-debug.apk...           6.7s
+D/FlutterJNI(21021): Beginning load of flutter...
+D/FlutterJNI(21021): flutter (null) was loaded normally!
+I/flutter (21021): [IMPORTANT:flutter/shell/platform/android/android_context_vk_impeller.cc(62)] Using the Impeller rendering backend (Vulkan).
+D/FlutterGeolocator(21021): Attaching Geolocator to activity
+D/MatchMeMainActivity(21021): applySystemUiColors attempt=0 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=1280
+I/FA      (21021): Tag Manager is not found and thus will not be used
+D/MatchMeBootReceiver(21021): Received android.intent.action.BOOT_COMPLETED, checking if background service should start
+Syncing files to device moto g54 5G...                             320ms
+
+Flutter run key commands.
+r Hot reload.
+R Hot restart.
+h List all available interactive commands.
+d Detach (terminate "flutter run" but leave application running).
+c Clear the screen
+q Quit (terminate the application on the device).
+
+A Dart VM Service on moto g54 5G is available at: http://127.0.0.1:56915/hcLyvECdRkM=/
+The Flutter DevTools debugger and profiler on moto g54 5G is available at:
+http://127.0.0.1:56915/hcLyvECdRkM=/devtools/?uri=ws://127.0.0.1:56915/hcLyvECdRkM=/ws
+D/MatchMeBootReceiver(21021): Starting background service after android.intent.action.BOOT_COMPLETED (isVisible=false)
+I/Choreographer(21021): Skipped 279 frames!  The application may be doing too much work on its main thread.
+I/WindowExtensionsImpl(21021): Initializing Window Extensions, vendor API level=6, activity embedding enabled=true
+D/BufferQueueConsumer(21021): [](id:521d00000000,api:0,p:-1,c:21021) connect: controlledByApp=false
+D/BLASTBufferQueue(21021): [VRI[MainActivity]#0](f:0,a:0) constructor()
+D/BLASTBufferQueue(21021): [VRI[MainActivity]#0](f:0,a:0) update width=1080 height=2400 format=-3 mTransformHint=0
+E/FBI     (21021): Can't load library: dlopen failed: library "libmagtsync.so" not found
+D/libMEOW (21021): meow new tls: 0xb400007aa5b22dc0
+D/libMEOW (21021): applied 1 plugins for [com.example.matchme]:
+D/libMEOW (21021):   plugin 1: [libMEOW_gift.so]: 0xb400007affcdef80
+D/libMEOW (21021): rebuild call chain: 0xb400007aa5b31400
+D/BufferQueueConsumer(21021): [](id:521d00000001,api:0,p:-1,c:21021) connect: controlledByApp=false
+D/BLASTBufferQueue(21021): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity]#1](f:0,a:0) constructor()
+D/BLASTBufferQueue(21021): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity]#1](f:0,a:0) update width=1080 height=2400 format=4 mTransformHint=0
+W/libc    (21021): Access denied finding property "vendor.product.pvr.debug_level"
+E/IMGSRV  (21021): :1501: GrallocTestAlloc: Invalid color format (56)
+W/libc    (21021): Access denied finding property "vendor.product.pvr.debug_level"
+E/IMGSRV  (21021): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  (21021): :220:        width -> 1
+E/IMGSRV  (21021): :221:       height -> 1
+E/IMGSRV  (21021): :222:       format -> 56
+E/IMGSRV  (21021): :223:        usage -> 0x0b00
+E/IMGSRV  (21021): :1501: GrallocTestAlloc: Invalid color format (59)
+E/IMGSRV  (21021): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  (21021): :220:        width -> 1
+E/IMGSRV  (21021): :221:       height -> 1
+E/IMGSRV  (21021): :222:       format -> 59
+E/IMGSRV  (21021): :223:        usage -> 0x0b00
+E/IMGSRV  (21021): :1501: GrallocTestAlloc: Invalid color format (56)
+E/IMGSRV  (21021): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  (21021): :220:        width -> 1
+E/IMGSRV  (21021): :221:       height -> 1
+E/IMGSRV  (21021): :222:       format -> 56
+E/IMGSRV  (21021): :223:        usage -> 0x0b00
+E/IMGSRV  (21021): :1501: GrallocTestAlloc: Invalid color format (59)
+E/IMGSRV  (21021): :219: Invalid BufferDescriptorInfo
+E/IMGSRV  (21021): :220:        width -> 1
+E/IMGSRV  (21021): :221:       height -> 1
+E/IMGSRV  (21021): :222:       format -> 59
+E/IMGSRV  (21021): :223:        usage -> 0x0b00
+D/example.matchme(21021): Can't load libmbrainSDK
+I/HWUI    (21021): setGrContext nullptr-->validptr
+I/example.matchme(21021): Compiler allocated 5189KB to compile void android.view.ViewRootImpl.performTraversals()
+D/FlutterGeolocator(21021): Creating service.
+D/FlutterGeolocator(21021): Binding to location service.
+W/libc    (21021): Access denied finding property "persist.vendor.debug.gpud.init"
+I/GrallocExtra(21021): gralloc_extra_query:is_SW3D 0
+D/BLASTBufferQueue(21021): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity]#1](f:0,a:1) acquireNextBufferLocked size=1080x2400 mFrameNumber=1 applyTransaction=true mTimestamp=47881681264699(auto) mPendingTransactions.size=0 graphicBufferId=90284507529226 transform=0
+D/example.matchme(21021): Can't load libmbrainSDK
+D/MatchMeBackgroundService(21021): Background service created
+D/MatchMeBackgroundService(21021): Synchronously restored state: highAccuracyMode=true, isVisible=false, userId=true
+D/MatchMeBackgroundService(21021): [NATIVE] Delaying restoreCredentialsAndConnect by 1500ms to reduce startup contention
+D/MatchMeBackgroundService(21021): Successfully updated user activity
+W/MatchMeBackgroundService(21021): Realtime connection stale or missing (last activity: 1770617658805ms ago). Reconnecting...
+D/MatchMeBackgroundService(21021): Realtime WebSocket Disconnected
+D/MatchMeBackgroundService(21021): [NATIVE] connectToRealtime: start
+D/MatchMeBackgroundService(21021): Connecting to Supabase Realtime...
+D/MatchMeBackgroundService(21021): Background service started with action: START
+D/MatchMeBackgroundService(21021): Starting service with userId: ffc20046-a777-463b-922a-547151aa1455, highAccuracy: false, isVisible: true, isOnline: true
+D/MatchMeBackgroundService(21021): Credentials and config saved for boot recovery
+D/MatchMeBackgroundService(21021): Standard Mode active & App in background -> Stopping Service
+D/MatchMeBackgroundService(21021): Scheduling periodic location work (Standard Mode)
+D/MatchMeBackgroundService(21021): Starting BACKGROUND (Standard Mode) location updates (PendingIntent)
+D/MatchMeBackgroundService(21021): Starting BACKGROUND (Standard Mode) location updates (PendingIntent)
+D/MatchMeBackgroundService(21021): Skipping Realtime connect (already connecting)
+D/MatchMeBackgroundService(21021): [NATIVE] Realtime WebSocket Connected (elapsed=498ms)
+D/MatchMeBackgroundService(21021): Sent Realtime Join: topic=realtime:public:chat_messages token=null
+D/MatchMeBackgroundService(21021): Sent Realtime Join: topic=realtime:public:matches token=null
+D/MatchMeBackgroundService(21021): Realtime: Joined channel successfully
+D/MatchMeBackgroundService(21021): Realtime: Joined channel successfully
+D/MatchMeBackgroundService(21021): [NATIVE] restoreCredentialsAndConnect: start
+D/MatchMeBackgroundService(21021): Restored credentials from storage. Connecting to Realtime immediately.
+D/MatchMeBackgroundService(21021): Starting BACKGROUND (Standard Mode) location updates (PendingIntent)
+D/MatchMeBackgroundService(21021): [NATIVE] restoreCredentialsAndConnect: finished (elapsed=109ms)
+D/MatchMeBackgroundService(21021): [NATIVE] restoreCredentialsAndConnect completed (elapsed=109ms)
+I/Choreographer(21021): Skipped 235 frames!  The application may be doing too much work on its main thread.
+D/BLASTBufferQueue(21021): [VRI[MainActivity]#0](f:0,a:1) acquireNextBufferLocked size=1080x2400 mFrameNumber=1 applyTransaction=true mTimestamp=47885182938161(auto) mPendingTransactions.size=0 graphicBufferId=90284507529232 transform=0
+I/HWUI    (21021): Davey! duration=3936ms; Flags=1, FrameTimelineVsyncId=31085650, IntendedVsync=47881246281334, Vsync=47885162948079, InputEventId=0, HandleInputStart=47885163853007, AnimationStart=47885163854469, PerformTraversalsStart=47885163855084, DrawStart=47885171776930, FrameDeadline=47881260281335, FrameInterval=47885163504930, FrameStartTime=16666667, SyncQueued=47885172688084, SyncStart=47885174394238, IssueDrawCommandsStart=47885174917238, SwapBuffers=47885181803392, FrameCompleted=47885184824315, DequeueBufferDuration=0, QueueBufferDuration=406847, GpuCompleted=47885184824315, SwapBuffersCompleted=47885183550854, DisplayPresentTime=0, CommandSubmissionCompleted=47885181803392,
+W/example.matchme(21021): userfaultfd: MOVE ioctl seems unsupported: Connection timed out
+D/MatchMeMainActivity(21021): applySystemUiColors attempt=1 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+D/FlutterGeolocator(21021): Geolocator foreground service connected
+D/FlutterGeolocator(21021): Initializing Geolocator services
+D/FlutterGeolocator(21021): Flutter engine connected. Connected engine count 1
+D/MatchMeBackgroundService(21021): Background service started with action: UPDATE_APP_FOREGROUND
+D/MatchMeBackgroundService(21021): App foreground state updated: true
+D/MatchMeBackgroundService(21021): Cancelling periodic location work (High Accuracy Mode or Foreground)
+D/MatchMeBackgroundService(21021): Background service destroyed
+D/MatchMeBackgroundService(21021): Realtime WebSocket Disconnected
+D/MatchMeBackgroundService(21021): Realtime WebSocket Closing: 1000 /
+D/MatchMeBackgroundService(21021): Realtime WebSocket Closed: 1000 /
+D/MatchMeBackgroundService(21021): Skipping Realtime reconnect (intentional close)
+I/ImeTracker(21021): com.example.matchme:eca38dcf: onRequestShow at ORIGIN_CLIENT reason SHOW_SOFT_INPUT fromUser false
+I/ImeTracker(21021): com.example.matchme:eca38dcf: onFailed at PHASE_CLIENT_VIEW_SERVED
+W/InputMethodManager(21021): Ignoring showSoftInput() as view=io.flutter.embedding.android.FlutterView{167bc0c VFED..... .F....ID 0,0-1080,2400 #2} is not served. servedView = null
+W/InputMethodManager(21021): Ignoring showSoftInput() as view=io.flutter.embedding.android.FlutterView{167bc0c VFED..... .F....ID 0,0-1080,2400 #2} is not served.
+I/ImeTracker(21021): com.example.matchme:9b0f92b7: onRequestShow at ORIGIN_CLIENT reason SHOW_SOFT_INPUT fromUser false
+I/ImeTracker(21021): com.example.matchme:9b0f92b7: onFailed at PHASE_CLIENT_VIEW_SERVED
+W/InputMethodManager(21021): Ignoring showSoftInput() as view=io.flutter.embedding.android.FlutterView{167bc0c VFED..... .F....ID 0,0-1080,2400 #2} is not served. servedView = null
+W/InputMethodManager(21021): Ignoring showSoftInput() as view=io.flutter.embedding.android.FlutterView{167bc0c VFED..... .F....ID 0,0-1080,2400 #2} is not served.
+I/ImeTracker(21021): com.example.matchme:7be4770: onRequestHide at ORIGIN_CLIENT reason HIDE_SOFT_INPUT fromUser false
+I/ImeTracker(21021): com.example.matchme:7be4770: onFailed at PHASE_CLIENT_VIEW_SERVED
+I/Choreographer(21021): Skipped 156 frames!  The application may be doing too much work on its main thread.
+I/HWUI    (21021): Davey! duration=2609ms; Flags=0, FrameTimelineVsyncId=31088569, IntendedVsync=47885772997755, Vsync=47888362536603, InputEventId=0, HandleInputStart=47888370238161, AnimationStart=47888370247469, PerformTraversalsStart=47888370252623, DrawStart=47888375481238, FrameDeadline=47885786997756, FrameInterval=47888368627469, FrameStartTime=16599608, SyncQueued=47888375754854, SyncStart=47888375897854, IssueDrawCommandsStart=47888376118854, SwapBuffers=47888379729623, FrameCompleted=47888382926777, DequeueBufferDuration=2489846, QueueBufferDuration=471000, GpuCompleted=47888382534854, SwapBuffersCompleted=47888382926777, DisplayPresentTime=0, CommandSubmissionCompleted=47888379729623,
+D/MatchMeBackgroundService(21021): Background service created
+D/MatchMeBackgroundService(21021): Synchronously restored state: highAccuracyMode=false, isVisible=true, userId=true
+D/MatchMeBackgroundService(21021): [NATIVE] Delaying restoreCredentialsAndConnect by 1500ms to reduce startup contention
+D/MatchMeBackgroundService(21021): User token missing but refresh token available. Refreshing...
+D/MatchMeBackgroundService(21021): Background service started with action: PROCESS_LOCATION_UPDATE
+D/MatchMeBackgroundService(21021): Received background location update intent
+D/MatchMeBackgroundService(21021): Background location received: 6.2664805, -75.5634809
+D/MatchMeBackgroundService(21021): handleLocationUpdate called: isVisible=true, isOnline=true, userId=ffc20046-a777-463b-922a-547151aa1455, location=6.2664805,-75.5634809
+D/MatchMeBackgroundService(21021): Standard Mode background update processed -> Stopping Service
+D/MatchMeBackgroundService(21021): Processing full location update for user ffc20046-a777-463b-922a-547151aa1455
+D/MatchMeBackgroundService(21021): User token missing but refresh token available. Refreshing...
+D/MatchMeBackgroundService(21021): Background service started with action: PROCESS_LOCATION_UPDATE
+D/MatchMeBackgroundService(21021): Received background location update intent
+D/MatchMeBackgroundService(21021): Background location received: 6.2664805, -75.5634809
+D/MatchMeBackgroundService(21021): handleLocationUpdate called: isVisible=true, isOnline=true, userId=ffc20046-a777-463b-922a-547151aa1455, location=6.2664805,-75.5634809
+D/MatchMeBackgroundService(21021): Standard Mode background update processed -> Stopping Service
+D/MatchMeBackgroundService(21021): Processing full location update for user ffc20046-a777-463b-922a-547151aa1455
+D/MatchMeBackgroundService(21021): User token missing but refresh token available. Refreshing...
+D/MatchMeBackgroundService(21021): Background service started with action: PROCESS_LOCATION_UPDATE
+D/MatchMeBackgroundService(21021): Received background location update intent
+D/MatchMeBackgroundService(21021): Background location received: 6.2664805, -75.5634809
+D/MatchMeBackgroundService(21021): handleLocationUpdate called: isVisible=true, isOnline=true, userId=ffc20046-a777-463b-922a-547151aa1455, location=6.2664805,-75.5634809
+D/MatchMeBackgroundService(21021): Standard Mode background update processed -> Stopping Service
+D/MatchMeBackgroundService(21021): Processing full location update for user ffc20046-a777-463b-922a-547151aa1455
+D/MatchMeBackgroundService(21021): User token missing but refresh token available. Refreshing...
+I/flutter (21021): [L10N] Fetched 1085 rows for en (in 1 batches)
+I/flutter (21021): Missing DB translation keys for en: (count=1) [romantic::casual] (elapsed=1282ms)
+D/ProfileInstaller(21021): Installing profile for com.example.matchme
+D/MatchMeMainActivity(21021): applySystemUiColors attempt=2 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+I/flutter (21021): [L10N] Background init completed for en
+D/MatchMeBackgroundService(21021): Background service destroyed
+D/MatchMeBackgroundService(21021): Realtime WebSocket Disconnected
+I/FLTFireBGExecutor(21021): Creating background FlutterEngine instance, with args: [--enable-dart-profiling]
+D/vulkan  (21021): searching for layers in '/data/app/~~OoNpIzDt0-6ffYYdRkpDIw==/com.example.matchme-xFjcaaDWcpXYQW0_hwb8lA==/lib/arm64'
+D/vulkan  (21021): searching for layers in '/data/app/~~OoNpIzDt0-6ffYYdRkpDIw==/com.example.matchme-xFjcaaDWcpXYQW0_hwb8lA==/base.apk!/lib/arm64-v8a'
+D/FLTFireContextHolder(21021): received application context.
+I/flutter (21021): [IMPORTANT:flutter/shell/platform/android/android_context_vk_impeller.cc(62)] Using the Impeller rendering backend (Vulkan).
+D/MatchMeBackgroundService(21021): Realtime WebSocket Disconnected
+D/MatchMeBackgroundService(21021): [NATIVE] connectToRealtime: start
+D/MatchMeBackgroundService(21021): Connecting to Supabase Realtime...
+D/MatchMeBackgroundService(21021): JWT refreshed successfully; Realtime reconnected
+D/MatchMeBackgroundService(21021): Updating location in Supabase: lat=6.2664805, lng=-75.5634809
+D/MatchMeBackgroundService(21021): Realtime WebSocket Disconnected
+D/MatchMeBackgroundService(21021): [NATIVE] connectToRealtime: start
+D/MatchMeBackgroundService(21021): Connecting to Supabase Realtime...
+D/MatchMeBackgroundService(21021): JWT refreshed successfully; Realtime reconnected
+D/MatchMeBackgroundService(21021): Updating location in Supabase: lat=6.2664805, lng=-75.5634809
+D/MatchMeBackgroundService(21021): Realtime WebSocket Disconnected
+D/MatchMeBackgroundService(21021): [NATIVE] connectToRealtime: start
+D/MatchMeBackgroundService(21021): Connecting to Supabase Realtime...
+D/MatchMeBackgroundService(21021): JWT refreshed successfully; Realtime reconnected
+D/MatchMeBackgroundService(21021): Updating location in Supabase: lat=6.2664805, lng=-75.5634809
+D/MatchMeBackgroundService(21021): Realtime WebSocket Disconnected
+D/MatchMeBackgroundService(21021): [NATIVE] connectToRealtime: start
+D/MatchMeBackgroundService(21021): Connecting to Supabase Realtime...
+D/MatchMeBackgroundService(21021): JWT refreshed successfully; Realtime reconnected
+D/MatchMeBackgroundService(21021): Successfully updated location:
+D/MatchMeBackgroundService(21021): Checking for notifications via RPC... (Message ID: null)
+D/MatchMeBackgroundService(21021): Successfully updated location:
+D/MatchMeBackgroundService(21021): Skipping notification check - throttled (last check: 14ms ago)
+D/MatchMeBackgroundService(21021): Successfully updated location:
+D/MatchMeBackgroundService(21021): Skipping notification check - throttled (last check: 53ms ago)
+D/MatchMeBackgroundService(21021): Successfully updated user activity
+D/MatchMeBackgroundService(21021): Notification check response: [{"unread_matches_count":0,"unread_messages_count":0,"latest_match_name":null,"latest_message_sender":null,"latest_message_content":null,"latest_message_id":null,"latest_match_id":null,"latest_message_sender_id":null,"translation_enabled":null,"translation_language":null,"translation_available":null}]
+D/MatchMeBackgroundService(21021): No new notifications found
+D/MatchMeBackgroundService(21021): [NATIVE] Realtime WebSocket Connected (elapsed=303ms)
+D/MatchMeBackgroundService(21021): Sent Realtime Join: topic=realtime:public:chat_messages token=present
+D/MatchMeBackgroundService(21021): Sent Realtime Join: topic=realtime:public:matches token=present
+D/MatchMeBackgroundService(21021): [NATIVE] Realtime WebSocket Connected (elapsed=347ms)
+D/MatchMeBackgroundService(21021): Sent Realtime Join: topic=realtime:public:chat_messages token=present
+D/MatchMeBackgroundService(21021): Sent Realtime Join: topic=realtime:public:matches token=present
+D/MatchMeBackgroundService(21021): [NATIVE] Realtime WebSocket Connected (elapsed=409ms)
+D/MatchMeBackgroundService(21021): Sent Realtime Join: topic=realtime:public:chat_messages token=present
+D/MatchMeBackgroundService(21021): Sent Realtime Join: topic=realtime:public:matches token=present
+D/MatchMeBackgroundService(21021): Realtime WebSocket Closing: 1000 /
+D/MatchMeBackgroundService(21021): Realtime WebSocket Closed: 1000 /
+D/MatchMeBackgroundService(21021): Skipping Realtime reconnect (intentional close)
+D/MatchMeBackgroundService(21021): [NATIVE] Realtime WebSocket Connected (elapsed=414ms)
+D/MatchMeBackgroundService(21021): Sent Realtime Join: topic=realtime:public:chat_messages token=present
+D/MatchMeBackgroundService(21021): Sent Realtime Join: topic=realtime:public:matches token=present
+D/MatchMeBackgroundService(21021): Realtime WebSocket Closing: 1000 /
+D/MatchMeBackgroundService(21021): Realtime WebSocket Closed: 1000 /
+D/MatchMeBackgroundService(21021): Skipping Realtime reconnect (intentional close)
+D/MatchMeBackgroundService(21021): Realtime: Joined channel successfully
+D/MatchMeBackgroundService(21021): Realtime WebSocket Closing: 1000 /
+D/MatchMeBackgroundService(21021): Realtime WebSocket Closed: 1000 /
+D/MatchMeBackgroundService(21021): Skipping Realtime reconnect (intentional close)
+D/MatchMeBackgroundService(21021): Realtime: Joined channel successfully
+D/FlutterGeolocator(21021): Geolocator foreground service connected
+D/FlutterGeolocator(21021): Initializing Geolocator services
+D/FlutterGeolocator(21021): Flutter engine connected. Connected engine count 2
+I/FLTFireMsgService(21021): FlutterFirebaseMessagingBackgroundService started!
+D/MatchMeMainActivity(21021): applySystemUiColors attempt=0 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+D/MatchMeMainActivity(21021): applySystemUiColors attempt=1 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+D/MatchMeBackgroundService(21021): Background service created
+D/MatchMeBackgroundService(21021): Synchronously restored state: highAccuracyMode=false, isVisible=true, userId=true
+D/MatchMeBackgroundService(21021): [NATIVE] Delaying restoreCredentialsAndConnect by 1500ms to reduce startup contention
+D/MatchMeBackgroundService(21021): Background service started with action: UPDATE_APP_FOREGROUND
+D/MatchMeBackgroundService(21021): App foreground state updated: true
+D/MatchMeBackgroundService(21021): Cancelling periodic location work (High Accuracy Mode or Foreground)
+D/MatchMeBackgroundService(21021): Successfully updated user activity
+W/MatchMeBackgroundService(21021): Realtime connection stale or missing (last activity: 1770617668245ms ago). Reconnecting...
+D/MatchMeBackgroundService(21021): Realtime WebSocket Disconnected
+D/MatchMeBackgroundService(21021): [NATIVE] connectToRealtime: start
+D/MatchMeBackgroundService(21021): Connecting to Supabase Realtime...
+D/MatchMeMainActivity(21021): applySystemUiColors attempt=3 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+D/MatchMeBackgroundService(21021): [NATIVE] Realtime WebSocket Connected (elapsed=453ms)
+D/MatchMeBackgroundService(21021): Sent Realtime Join: topic=realtime:public:chat_messages token=present
+D/MatchMeBackgroundService(21021): Sent Realtime Join: topic=realtime:public:matches token=present
+D/MatchMeBackgroundService(21021): Realtime: Joined channel successfully
+D/MatchMeBackgroundService(21021): Realtime: Joined channel successfully
+D/MatchMeMainActivity(21021): applySystemUiColors attempt=2 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+D/MatchMeBackgroundService(21021): [NATIVE] restoreCredentialsAndConnect: start
+D/MatchMeBackgroundService(21021): Restored credentials from storage. Connecting to Realtime immediately.
+D/MatchMeBackgroundService(21021): Starting periodic location updates loop (will wait 1000ms before first request)
+D/MatchMeBackgroundService(21021): [NATIVE] restoreCredentialsAndConnect: finished (elapsed=149ms)
+D/MatchMeBackgroundService(21021): [NATIVE] restoreCredentialsAndConnect completed (elapsed=149ms)
+D/MatchMeBackgroundService(21021): startLocationUpdates: initial delay completed (2000ms)
+D/MatchMeBackgroundService(21021): Requesting single location update...
+D/MatchMeMainActivity(21021): applySystemUiColors attempt=3 applied: statusBarColor=0, navigationBarColor=0, systemUiVisibility=9488
+E/MatchMeBackgroundService(21021): Realtime WebSocket Failure: Software caused connection abort
+E/MatchMeBackgroundService(21021): java.net.SocketException: Software caused connection abort
+E/MatchMeBackgroundService(21021):      at java.net.SocketInputStream.socketRead0(Native Method)
+E/MatchMeBackgroundService(21021):      at java.net.SocketInputStream.socketRead(SocketInputStream.java:118)
+E/MatchMeBackgroundService(21021):      at java.net.SocketInputStream.read(SocketInputStream.java:173)
+E/MatchMeBackgroundService(21021):      at java.net.SocketInputStream.read(SocketInputStream.java:143)
+E/MatchMeBackgroundService(21021):      at com.android.org.conscrypt.ConscryptEngineSocket$SSLInputStream.readFromSocket(ConscryptEngineSocket.java:994)
+E/MatchMeBackgroundService(21021):      at com.android.org.conscrypt.ConscryptEngineSocket$SSLInputStream.processDataFromSocket(ConscryptEngineSocket.java:958)
+E/MatchMeBackgroundService(21021):      at com.android.org.conscrypt.ConscryptEngineSocket$SSLInputStream.readUntilDataAvailable(ConscryptEngineSocket.java:873)
+E/MatchMeBackgroundService(21021):      at com.android.org.conscrypt.ConscryptEngineSocket$SSLInputStream.read(ConscryptEngineSocket.java:846)
+E/MatchMeBackgroundService(21021):      at okio.InputStreamSource.read(JvmOkio.kt:93)
+E/MatchMeBackgroundService(21021):      at okio.AsyncTimeout$source$1.read(AsyncTimeout.kt:153)
+E/MatchMeBackgroundService(21021):      at okio.RealBufferedSource.request(RealBufferedSource.kt:211)
+E/MatchMeBackgroundService(21021):      at okio.RealBufferedSource.require(RealBufferedSource.kt:204)
+E/MatchMeBackgroundService(21021):      at okio.RealBufferedSource.readByte(RealBufferedSource.kt:214)
+E/MatchMeBackgroundService(21021):      at okhttp3.internal.ws.WebSocketReader.readHeader(WebSocketReader.kt:119)
+E/MatchMeBackgroundService(21021):      at okhttp3.internal.ws.WebSocketReader.processNextFrame(WebSocketReader.kt:102)
+E/MatchMeBackgroundService(21021):      at okhttp3.internal.ws.RealWebSocket.loopReader(RealWebSocket.kt:293)
+E/MatchMeBackgroundService(21021):      at okhttp3.internal.ws.RealWebSocket$connect$1.onResponse(RealWebSocket.kt:195)
+E/MatchMeBackgroundService(21021):      at okhttp3.internal.connection.RealCall$AsyncCall.run(RealCall.kt:519)
+E/MatchMeBackgroundService(21021):      at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1154)
+E/MatchMeBackgroundService(21021):      at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:652)
+E/MatchMeBackgroundService(21021):      at java.lang.Thread.run(Thread.java:1563)
+E/MatchMeBackgroundService(21021): Realtime WebSocket Failure: Software caused connection abort
+E/MatchMeBackgroundService(21021): java.net.SocketException: Software caused connection abort
+E/MatchMeBackgroundService(21021):      at java.net.SocketInputStream.socketRead0(Native Method)
+E/MatchMeBackgroundService(21021):      at java.net.SocketInputStream.socketRead(SocketInputStream.java:118)
+E/MatchMeBackgroundService(21021):      at java.net.SocketInputStream.read(SocketInputStream.java:173)
+E/MatchMeBackgroundService(21021):      at java.net.SocketInputStream.read(SocketInputStream.java:143)
+E/MatchMeBackgroundService(21021):      at com.android.org.conscrypt.ConscryptEngineSocket$SSLInputStream.readFromSocket(ConscryptEngineSocket.java:994)
+E/MatchMeBackgroundService(21021):      at com.android.org.conscrypt.ConscryptEngineSocket$SSLInputStream.processDataFromSocket(ConscryptEngineSocket.java:958)
+E/MatchMeBackgroundService(21021):      at com.android.org.conscrypt.ConscryptEngineSocket$SSLInputStream.readUntilDataAvailable(ConscryptEngineSocket.java:873)
+E/MatchMeBackgroundService(21021):      at com.android.org.conscrypt.ConscryptEngineSocket$SSLInputStream.read(ConscryptEngineSocket.java:846)
+E/MatchMeBackgroundService(21021):      at okio.InputStreamSource.read(JvmOkio.kt:93)
+E/MatchMeBackgroundService(21021):      at okio.AsyncTimeout$source$1.read(AsyncTimeout.kt:153)
+E/MatchMeBackgroundService(21021):      at okio.RealBufferedSource.request(RealBufferedSource.kt:211)
+E/MatchMeBackgroundService(21021):      at okio.RealBufferedSource.require(RealBufferedSource.kt:204)
+E/MatchMeBackgroundService(21021):      at okio.RealBufferedSource.readByte(RealBufferedSource.kt:214)
+E/MatchMeBackgroundService(21021):      at okhttp3.internal.ws.WebSocketReader.readHeader(WebSocketReader.kt:119)
+E/MatchMeBackgroundService(21021):      at okhttp3.internal.ws.WebSocketReader.processNextFrame(WebSocketReader.kt:102)
+E/MatchMeBackgroundService(21021):      at okhttp3.internal.ws.RealWebSocket.loopReader(RealWebSocket.kt:293)
+E/MatchMeBackgroundService(21021):      at okhttp3.internal.ws.RealWebSocket$connect$1.onResponse(RealWebSocket.kt:195)
+E/MatchMeBackgroundService(21021):      at okhttp3.internal.connection.RealCall$AsyncCall.run(RealCall.kt:519)
+E/MatchMeBackgroundService(21021):      at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1154)
+E/MatchMeBackgroundService(21021):      at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:652)
+E/MatchMeBackgroundService(21021):      at java.lang.Thread.run(Thread.java:1563)
+D/MatchMeBackgroundService(21021): [NATIVE] connectToRealtime: start
+D/MatchMeBackgroundService(21021): Connecting to Supabase Realtime...
+D/MatchMeBackgroundService(21021): [NATIVE] Realtime WebSocket Connected (elapsed=670ms)
+D/MatchMeBackgroundService(21021): Sent Realtime Join: topic=realtime:public:chat_messages token=present
+D/MatchMeBackgroundService(21021): Sent Realtime Join: topic=realtime:public:matches token=present
+D/MatchMeBackgroundService(21021): Realtime: Joined channel successfully
+D/MatchMeBackgroundService(21021): Realtime: Joined channel successfully
+D/MatchMeBackgroundService(21021): Location received: ${location.latitude}, ${location.longitude} (elapsed=14826ms)
+D/MatchMeBackgroundService(21021): handleLocationUpdate called: isVisible=true, isOnline=true, userId=ffc20046-a777-463b-922a-547151aa1455, location=6.2664805,-75.5634809
+D/MatchMeBackgroundService(21021): Using configured interval: 20s
+D/MatchMeBackgroundService(21021): Processing full location update for user ffc20046-a777-463b-922a-547151aa1455
+D/MatchMeBackgroundService(21021): Updating location in Supabase: lat=6.2664805, lng=-75.5634809
+D/MatchMeBackgroundService(21021): Successfully updated location:
+D/MatchMeBackgroundService(21021): Checking for notifications via RPC... (Message ID: null)
+D/MatchMeBackgroundService(21021): Notification check response: [{"unread_matches_count":0,"unread_messages_count":0,"latest_match_name":null,"latest_message_sender":null,"latest_message_content":null,"latest_message_id":null,"latest_match_id":null,"latest_message_sender_id":null,"translation_enabled":null,"translation_language":null,"translation_available":null}]
+D/MatchMeBackgroundService(21021): No new notifications found
+D/MatchMeBackgroundService(21021): Successfully updated user activity
+D/MatchMeBackgroundService(21021): Requesting single location update...
+D/MatchMeBackgroundService(21021): Realtime: Joined channel successfully
+D/MatchMeBackgroundService(21021): Location received: ${location.latitude}, ${location.longitude} (elapsed=10006ms)
+D/MatchMeBackgroundService(21021): handleLocationUpdate called: isVisible=true, isOnline=true, userId=ffc20046-a777-463b-922a-547151aa1455, location=6.2664805,-75.5634809
+D/MatchMeBackgroundService(21021): Using configured interval: 20s
+D/MatchMeBackgroundService(21021): Processing full location update for user ffc20046-a777-463b-922a-547151aa1455
+D/MatchMeBackgroundService(21021): Updating location in Supabase: lat=6.2664805, lng=-75.5634809
+D/MatchMeBackgroundService(21021): Successfully updated location:
+D/MatchMeBackgroundService(21021): Checking for notifications via RPC... (Message ID: null)
+D/MatchMeBackgroundService(21021): Notification check response: [{"unread_matches_count":0,"unread_messages_count":0,"latest_match_name":null,"latest_message_sender":null,"latest_message_content":null,"latest_message_id":null,"latest_match_id":null,"latest_message_sender_id":null,"translation_enabled":null,"translation_language":null,"translation_available":null}]
+D/MatchMeBackgroundService(21021): No new notifications found
+D/MatchMeBackgroundService(21021): Successfully updated user activity
+D/VRI[MainActivity](21021): visibilityChanged oldVisibility=true newVisibility=false
+D/Surface (21021): Surface::disconnect
+D/Surface (21021): Surface::disconnect
+D/BLASTBufferQueue(21021): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity]#1](f:0,a:2) destructor()
+D/BufferQueueConsumer(21021): [SurfaceView[com.example.matchme/com.example.matchme.MainActivity](BLAST)#30879(BLAST Consumer)pid:21021](id:521d00000001,api:0,p:-1,c:21021) disconnect
+D/Surface (21021): Surface::disconnect
+D/BLASTBufferQueue(21021): [VRI[MainActivity]#0](f:0,a:2) destructor()
+D/BufferQueueConsumer(21021): [com.example.matchme/com.example.matchme.MainActivity#30874(BLAST Consumer)pid:21021](id:521d00000000,api:0,p:-1,c:21021) disconnect
+D/MatchMeBackgroundService(21021): Background service started with action: UPDATE_APP_FOREGROUND
+D/MatchMeBackgroundService(21021): App foreground state updated: false
+D/MatchMeBackgroundService(21021): Standard Mode active & App in background -> Stopping Service
+D/MatchMeBackgroundService(21021): Scheduling periodic location work (Standard Mode)
+D/MatchMeBackgroundService(21021): Starting BACKGROUND (Standard Mode) location updates (PendingIntent)
+D/MatchMeBackgroundService(21021): Background service destroyed
+D/MatchMeBackgroundService(21021): Realtime WebSocket Disconnected
+D/MatchMeBackgroundService(21021): Background service created
+D/MatchMeBackgroundService(21021): Realtime WebSocket Closing: 1000 /
+D/MatchMeBackgroundService(21021): Realtime WebSocket Closed: 1000 /
+D/MatchMeBackgroundService(21021): Skipping Realtime reconnect (intentional close)
+D/MatchMeBackgroundService(21021): Synchronously restored state: highAccuracyMode=false, isVisible=true, userId=true
+D/MatchMeBackgroundService(21021): [NATIVE] Delaying restoreCredentialsAndConnect by 1500ms to reduce startup contention
+D/MatchMeBackgroundService(21021): Background service started with action: PROCESS_LOCATION_UPDATE
+D/MatchMeBackgroundService(21021): Received background location update intent
+D/MatchMeBackgroundService(21021): Background location received: 6.2664805, -75.5634809
+D/MatchMeBackgroundService(21021): handleLocationUpdate called: isVisible=true, isOnline=true, userId=ffc20046-a777-463b-922a-547151aa1455, location=6.2664805,-75.5634809
+D/MatchMeBackgroundService(21021): Standard Mode background update processed -> Stopping Service
+D/MatchMeBackgroundService(21021): Processing full location update for user ffc20046-a777-463b-922a-547151aa1455
+D/MatchMeBackgroundService(21021): Updating location in Supabase: lat=6.2664805, lng=-75.5634809
+D/MatchMeBackgroundService(21021): Background service destroyed
+D/MatchMeBackgroundService(21021): Realtime WebSocket Disconnected
+D/MatchMeBackgroundService(21021): Successfully updated location:
+D/MatchMeBackgroundService(21021): Checking for notifications via RPC... (Message ID: null)
+D/MatchMeBackgroundService(21021): Successfully updated user activity
+W/MatchMeBackgroundService(21021): Realtime connection stale or missing (last activity: 1770617731865ms ago). Reconnecting...
+D/MatchMeBackgroundService(21021): Realtime WebSocket Disconnected
+D/MatchMeBackgroundService(21021): [NATIVE] connectToRealtime: start
+D/MatchMeBackgroundService(21021): Connecting to Supabase Realtime...
+D/MatchMeBackgroundService(21021): Notification check response: [{"unread_matches_count":0,"unread_messages_count":0,"latest_match_name":null,"latest_message_sender":null,"latest_message_content":null,"latest_message_id":null,"latest_match_id":null,"latest_message_sender_id":null,"translation_enabled":null,"translation_language":null,"translation_available":null}]
+D/MatchMeBackgroundService(21021): No new notifications found
+D/MatchMeBackgroundService(21021): [NATIVE] Realtime WebSocket Connected (elapsed=674ms)
+D/MatchMeBackgroundService(21021): Sent Realtime Join: topic=realtime:public:chat_messages token=present
+D/MatchMeBackgroundService(21021): Sent Realtime Join: topic=realtime:public:matches token=present
+D/MatchMeBackgroundService(21021): Realtime: Joined channel successfully
+D/MatchMeBackgroundService(21021): Realtime: Joined channel successfully
+I/FA      (21021): Application backgrounded at: timestamp_millis: 1770617731024
