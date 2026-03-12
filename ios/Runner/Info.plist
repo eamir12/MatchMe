@@ -22,36 +22,55 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
-	<key>LSRequiresIPhoneOS</key>
-	<true/>
-	<!-- Camera permissions -->
 	<key>NSCameraUsageDescription</key>
 	<string>MatchMe needs access to your camera to take profile photos and selfies.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>MatchMe needs access to your photo library to select profile photos.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>MatchMe uses your location in the background to find potential matches nearby, even when the app is closed.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>MatchMe uses your location to find potential matches nearby while you're using the app.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>MatchMe needs to save photos to your library.</string>
-	
-	<!-- Location permissions -->
-	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-    <string>MatchMe uses your location in the background to find potential matches nearby, even when the app is closed.</string>
-    <key>NSLocationWhenInUseUsageDescription</key>
-    <string>MatchMe uses your location to find potential matches nearby while you're using the app.</string>
-
-    <key>UIBackgroundModes</key>
-    <array>
-        <string>fetch</string>
-        <string>location</string>
-        <string>processing</string>
-        <string>remote-notification</string>
-    </array>
-
-    <key>BGTaskSchedulerPermittedIdentifiers</key>
-    <array>
-        <string>com.matchme.backgroundsync</string>
-        <string>com.matchme.locationupdate</string>
-    </array>
-
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>MatchMe needs access to your photo library to select profile photos.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>MatchMe needs full access to your calendar to sync events.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>MatchMe needs access to your calendar to sync events.</string>
+	<key>NSUserNotificationsUsageDescription</key>
+	<string>MatchMe uses notifications to alert you about new messages and matches.</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+		<key>UISceneConfigurations</key>
+		<dict>
+			<key>UIWindowSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneConfigurationName</key>
+					<string>Default Configuration</string>
+					<key>UISceneDelegateClassName</key>
+					<string>FlutterSceneDelegate</string>
+					<key>UISceneStoryboardFile</key>
+					<string>Main</string>
+				</dict>
+			</array>
+		</dict>
+	</dict>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.matchme.backgroundsync</string>
+		<string>com.matchme.locationupdate</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>location</string>
+		<string>processing</string>
+		<string>remote-notification</string>
+	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -92,20 +111,5 @@
             </array>
         </dict>
     </array>
-
-    <key>NSPhotoLibraryUsageDescription</key>
-	<string>Allow access to photo library to upload event tickets.</string>
-	<key>NSCameraUsageDescription</key>
-	<string>Allow access to camera to take photos of event tickets.</string>
-
-    <!-- Notification Permissions -->
-    <key>NSUserNotificationsUsageDescription</key>
-    <string>MatchMe uses notifications to alert you about new messages and matches.</string>
-
-    <key>NSCalendarsUsageDescription</key>
-    <string>MatchMe needs access to your calendar to sync events.</string>
-    <key>NSCalendarsFullAccessUsageDescription</key>
-    <string>MatchMe needs full access to your calendar to sync events.</string>
-
 </dict>
 </plist>
