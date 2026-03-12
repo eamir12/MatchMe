@@ -1,0 +1,29 @@
+workflows:
+  ios_unsigned_for_sideloadly:
+    name: iOS Unsigned IPA (Sideloadly)
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Flutter clean/get
+        script: |
+          flutter clean
+          flutter pub get
+      - name: Install CocoaPods
+        script: |
+          cd ios
+          pod install --repo-update
+          cd ..
+      - name: Build iOS without codesign
+        script: |
+          flutter build ios --no-codesign
+      - name: Create unsigned IPA
+        script: |
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R build/ios/iphoneos/Runner.app Payload/
+          zip -r -y Runner-unsigned.ipa Payload
+    artifacts:
+      - Runner-unsigned.ipa
