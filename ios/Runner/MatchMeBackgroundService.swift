@@ -11,6 +11,7 @@ import UIKit
 import CoreLocation
 import UserNotifications
 import BackgroundTasks
+import Security
 
 public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManagerDelegate, UNUserNotificationCenterDelegate {
     private let channel: FlutterMethodChannel
@@ -204,6 +205,9 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
     }
 
     private func requestNotificationPermissions() {
+        if !hasApsEnvironmentEntitlement() {
+            return
+        }
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
@@ -250,32 +254,42 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
 
     private func updateLocationTracking() {
         let shouldTrack = isVisible && isOnline
-        
-        if shouldTrack && CLLocationManager.locationServicesEnabled() {
-            locationManager.requestAlwaysAuthorization()
-            
-            if highAccuracyMode {
-                // High Accuracy: Continuous updates with background execution
-                locationManager.allowsBackgroundLocationUpdates = true
-                locationManager.desiredAccuracy = kCLLocationAccuracyBest
-                locationManager.distanceFilter = 10.0 // 10 meters
-                locationManager.pausesLocationUpdatesAutomatically = false
-
-                locationManager.startMonitoringSignificantLocationChanges()
-                locationManager.startUpdatingLocation()
-            } else {
-                // Standard Mode: Significant changes only (battery saving)
-                // This allows the app to be suspended but woken up for major moves (500m+)
-                locationManager.allowsBackgroundLocationUpdates = false // Let app suspend
-                locationManager.pausesLocationUpdatesAutomatically = true
-                
-                locationManager.stopUpdatingLocation()
-                locationManager.startMonitoringSignificantLocationChanges()
-            }
-        } else {
+        if !shouldTrack {
             locationManager.stopUpdatingLocation()
             locationManager.stopMonitoringSignificantLocationChanges()
             locationManager.allowsBackgroundLocationUpdates = false
+            return
+        }
+
+        let authorizationStatus = locationManager.authorizationStatus
+        if authorizationStatus == .restricted || authorizationStatus == .denied {
+            locationManager.stopUpdatingLocation()
+            locationManager.stopMonitoringSignificantLocationChanges()
+            locationManager.allowsBackgroundLocationUpdates = false
+            return
+        }
+
+        if authorizationStatus == .notDetermined {
+            locationManager.requestAlwaysAuthorization()
+            return
+        }
+
+        if highAccuracyMode {
+            if authorizationStatus == .authorizedWhenInUse {
+                locationManager.requestAlwaysAuthorization()
+            }
+            locationManager.allowsBackgroundLocationUpdates = true
+            locationManager.desiredAccuracy = kCLLocationAccuracyBest
+            locationManager.distanceFilter = 10.0
+            locationManager.pausesLocationUpdatesAutomatically = false
+
+            locationManager.startMonitoringSignificantLocationChanges()
+            locationManager.startUpdatingLocation()
+        } else {
+            locationManager.allowsBackgroundLocationUpdates = false
+            locationManager.pausesLocationUpdatesAutomatically = true
+            locationManager.stopUpdatingLocation()
+            locationManager.startMonitoringSignificantLocationChanges()
         }
     }
 
@@ -438,6 +452,10 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
         }
     }
 
+    public func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        updateLocationTracking()
+    }
+
     private func updateLocationInSupabase(location: CLLocation) {
         guard let userId = userId,
               let supabaseUrl = supabaseUrl,
@@ -487,5 +505,19 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
     public func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         // Handle silent notifications
         completionHandler([])
+    }
+
+    private func hasApsEnvironmentEntitlement() -> Bool {
+        let entitlementKey = "aps-environment" as CFString
+        guard let task = SecTaskCreateFromSelf(nil) else {
+            return false
+        }
+        guard let value = SecTaskCopyValueForEntitlement(task, entitlementKey, nil) else {
+            return false
+        }
+        if let text = value as? String {
+            return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return true
     }
 }

@@ -1,5 +1,6 @@
 import Flutter
 import FirebaseCore
+import Security
 import UIKit
 
 @main
@@ -72,21 +73,23 @@ import UIKit
     let channel = FlutterMethodChannel(name: "matchme/app_info", binaryMessenger: controller.binaryMessenger)
     self.appInfoChannel = channel
     channel.setMethodCallHandler { call, result in
-      if call.method != "getAppInfo" {
+      switch call.method {
+      case "getAppInfo":
+        let info = Bundle.main.infoDictionary
+        let appName = (info?["CFBundleDisplayName"] as? String) ?? (info?["CFBundleName"] as? String)
+        let version = info?["CFBundleShortVersionString"] as? String
+        let build = info?["CFBundleVersion"] as? String
+
+        result([
+          "appName": appName as Any,
+          "version": version as Any,
+          "buildNumber": build as Any
+        ])
+      case "hasApsEnvironmentEntitlement":
+        result(self.hasApsEnvironmentEntitlement())
+      default:
         result(FlutterMethodNotImplemented)
-        return
       }
-
-      let info = Bundle.main.infoDictionary
-      let appName = (info?["CFBundleDisplayName"] as? String) ?? (info?["CFBundleName"] as? String)
-      let version = info?["CFBundleShortVersionString"] as? String
-      let build = info?["CFBundleVersion"] as? String
-
-      result([
-        "appName": appName as Any,
-        "version": version as Any,
-        "buildNumber": build as Any
-      ])
     }
 
     channelsConfigured = true
@@ -108,5 +111,19 @@ import UIKit
     }
 
     return nil
+  }
+
+  private func hasApsEnvironmentEntitlement() -> Bool {
+    let entitlementKey = "aps-environment" as CFString
+    guard let task = SecTaskCreateFromSelf(nil) else {
+      return false
+    }
+    guard let value = SecTaskCopyValueForEntitlement(task, entitlementKey, nil) else {
+      return false
+    }
+    if let text = value as? String {
+      return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    return true
   }
 }

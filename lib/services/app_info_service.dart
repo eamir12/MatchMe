@@ -47,4 +47,15 @@ class AppInfoService {
       return const AppInfo(appName: _defaultAppName, version: _defaultVersion, buildNumber: _defaultBuild);
     }
   }
+
+  static Future<bool> hasApsEnvironmentEntitlement() async {
+    if (kIsWeb) return false;
+
+    try {
+      final value = await _channel.invokeMethod<bool>('hasApsEnvironmentEntitlement');
+      return value ?? false;
+    } catch (_) {
+      return true;
+    }
+  }
 }

@@ -43,6 +43,7 @@ import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/calendar_sync_service.dart';
 import 'package:matchme/services/local_db_service.dart'; // Added for explicit init
 import 'package:matchme/services/session_service.dart';
+import 'package:matchme/services/app_info_service.dart';
 import 'package:matchme/services/outlook_web_auth.dart'
     if (dart.library.io) 'package:matchme/services/outlook_web_auth_stub.dart';
 import 'package:matchme/utils/permission_helper.dart';
@@ -466,12 +467,20 @@ Future<void> _initializeFcmForCurrentUser() async {
     }
 
     if (defaultTargetPlatform == TargetPlatform.iOS) {
+      var hasApsEntitlement = true;
       try {
-        await FirebaseMessaging.instance.requestPermission(
-          alert: true,
-          badge: true,
-          sound: true,
-        );
+        hasApsEntitlement = await AppInfoService.hasApsEnvironmentEntitlement();
+      } catch (_) {
+      }
+
+      try {
+        if (hasApsEntitlement) {
+          await FirebaseMessaging.instance.requestPermission(
+            alert: true,
+            badge: true,
+            sound: true,
+          );
+        }
       } catch (_) {
       }
       try {
