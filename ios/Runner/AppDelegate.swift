@@ -1,6 +1,5 @@
 import Flutter
 import FirebaseCore
-import Security
 import UIKit
 
 @main
@@ -86,7 +85,7 @@ import UIKit
           "buildNumber": build as Any
         ])
       case "hasApsEnvironmentEntitlement":
-        result(self.hasApsEnvironmentEntitlement())
+        result(true)
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -111,19 +110,5 @@ import UIKit
     }
 
     return nil
-  }
-
-  private func hasApsEnvironmentEntitlement() -> Bool {
-    let entitlementKey = "aps-environment" as CFString
-    guard let task = SecTaskCreateFromSelf(nil) else {
-      return false
-    }
-    guard let value = SecTaskCopyValueForEntitlement(task, entitlementKey, nil) else {
-      return false
-    }
-    if let text = value as? String {
-      return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-    return true
   }
 }

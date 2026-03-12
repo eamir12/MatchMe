@@ -11,7 +11,6 @@ import UIKit
 import CoreLocation
 import UserNotifications
 import BackgroundTasks
-import Security
 
 public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManagerDelegate, UNUserNotificationCenterDelegate {
     private let channel: FlutterMethodChannel
@@ -205,9 +204,6 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
     }
 
     private func requestNotificationPermissions() {
-        if !hasApsEnvironmentEntitlement() {
-            return
-        }
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
@@ -505,19 +501,5 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
     public func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         // Handle silent notifications
         completionHandler([])
-    }
-
-    private func hasApsEnvironmentEntitlement() -> Bool {
-        let entitlementKey = "aps-environment" as CFString
-        guard let task = SecTaskCreateFromSelf(nil) else {
-            return false
-        }
-        guard let value = SecTaskCopyValueForEntitlement(task, entitlementKey, nil) else {
-            return false
-        }
-        if let text = value as? String {
-            return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
-        return true
     }
 }
