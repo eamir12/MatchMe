@@ -523,9 +523,13 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
                       tooltip: l10n.getString('backToEvents'),
                     ),
                     const SizedBox(width: 8),
-                    Text(
-                      widget.existingEvent != null ? l10n.getString('editEventTitle') : l10n.getString('addEventTitle'),
-                      style: Theme.of(context).textTheme.titleMedium,
+                    Expanded(
+                      child: Text(
+                        widget.existingEvent != null ? l10n.getString('editEventTitle') : l10n.getString('addEventTitle'),
+                        style: Theme.of(context).textTheme.titleMedium,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                   ],
                 ),

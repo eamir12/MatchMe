@@ -32,6 +32,8 @@ PreferredSizeWidget buildCustomAppBar(BuildContext context, WidgetRef ref, Local
         Flexible(
           child: Text(
             screenName,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: TextStyle(
               fontWeight: FontWeight.w600,
               color: Theme.of(context).appBarTheme.foregroundColor ?? Theme.of(context).colorScheme.onSurface,
@@ -46,11 +48,16 @@ PreferredSizeWidget buildCustomAppBar(BuildContext context, WidgetRef ref, Local
         ? null
         : PreferredSize(
             preferredSize: const Size.fromHeight(40),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-              child: Align(
-                alignment: Alignment.center,
-                child: centerWidget,
+            child: LayoutBuilder(
+              builder: (context, constraints) => Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                child: Align(
+                  alignment: Alignment.center,
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: constraints.maxWidth),
+                    child: centerWidget,
+                  ),
+                ),
               ),
             ),
           ),

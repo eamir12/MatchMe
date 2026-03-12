@@ -127,6 +127,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
     final screenWidth = MediaQuery.of(context).size.width;
     final isSmallScreen = screenWidth < 400;
     final isVerySmallScreen = screenWidth < 350;
+    final useCompactStatusText = screenWidth < 460;
     final iconPadding = isSmallScreen ? 6.0 : 8.0;
 
     final List<Widget> screens = [
@@ -201,18 +202,25 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
           );
         } else {
           if (isVisible) {
-            text = isVerySmallScreen ? l10n.getString('generalOnShort') : (isSmallScreen ? l10n.getString('homeOnline') : l10n.getString('youAreCurrentlyOnlineAndVisible'));
+            text = isVerySmallScreen
+                ? l10n.getString('generalOnShort')
+                : (useCompactStatusText
+                    ? '${l10n.getString('homeOnline')} ${l10n.getString('homeStatusVisible')}'
+                    : l10n.getString('youAreCurrentlyOnlineAndVisible'));
             final semantic = Theme.of(context).extension<SemanticColors>();
             final Color color = semantic?.success ?? const Color(0xFF10B981);
             final Color bg = semantic?.successContainer ?? const Color(0xFFDCFCE7);
-            switchWidget = Switch(
-              value: isVisible,
-              onChanged: (value) {
-                ref.read(isVisibleProvider.notifier).setVisibility(value);
-              },
-              activeThumbColor: color,
-              inactiveThumbColor: Theme.of(context).colorScheme.error,
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            switchWidget = Transform.scale(
+              scale: isSmallScreen ? 0.8 : 0.88,
+              child: Switch(
+                value: isVisible,
+                onChanged: (value) {
+                  ref.read(isVisibleProvider.notifier).setVisibility(value);
+                },
+                activeThumbColor: color,
+                inactiveThumbColor: Theme.of(context).colorScheme.error,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
             );
             centerWidget = Container(
               padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 2.0),
@@ -230,6 +238,9 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
                   Flexible(
                     child: Text(
                       text,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      softWrap: false,
                       style: TextStyle(
                         color: color,
                         fontSize: 11,
@@ -245,18 +256,21 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
           } else {
             text = isVerySmallScreen
                 ? l10n.getString('generalOnInvisibleShort')
-                : (isSmallScreen
+                : (useCompactStatusText
                     ? '${l10n.getString('homeOnline')} ${l10n.getString('homeStatusInvisible')}'
                     : '${l10n.getString('youAreCurrentlyOnline')} ${l10n.getString('andInvisible')}');
             color = Theme.of(context).colorScheme.error;
-            switchWidget = Switch(
-              value: isVisible,
-              onChanged: (value) {
-                ref.read(isVisibleProvider.notifier).setVisibility(value);
-              },
-              activeThumbColor: Theme.of(context).colorScheme.secondary,
-              inactiveThumbColor: Theme.of(context).colorScheme.error,
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            switchWidget = Transform.scale(
+              scale: isSmallScreen ? 0.8 : 0.88,
+              child: Switch(
+                value: isVisible,
+                onChanged: (value) {
+                  ref.read(isVisibleProvider.notifier).setVisibility(value);
+                },
+                activeThumbColor: Theme.of(context).colorScheme.secondary,
+                inactiveThumbColor: Theme.of(context).colorScheme.error,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
             );
             centerWidget = Container(
               padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 2.0),
@@ -274,6 +288,9 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
                   Flexible(
                     child: Text(
                       text,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      softWrap: false,
                       style: TextStyle(
                         color: color,
                         fontSize: 11,
@@ -509,6 +526,9 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
               Flexible(
                 child: Text(
                   l10n.getString('youAreCurrentlyOnlineAnd').replaceAll('{reason}', reasonText),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  softWrap: false,
                   style: TextStyle(
                     color: color,
                     fontSize: 11,
@@ -544,6 +564,9 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
               Flexible(
                 child: Text(
                   l10n.getString('youAreCurrentlyOnlineAndVisible'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  softWrap: false,
                   style: TextStyle(
                     color: color,
                     fontSize: 11,
@@ -551,14 +574,15 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
                   ),
                 ),
               ),
-              Switch(
-                value: isVisible,
-                onChanged: (value) {
-                  // ref.read(isVisibleProvider.notifier).setVisibility(value);
-                },
-                activeThumbColor: color,
-                inactiveTrackColor: Colors.grey.shade300,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              Transform.scale(
+                scale: isSmallScreen ? 0.8 : 0.88,
+                child: Switch(
+                  value: isVisible,
+                  onChanged: onVisibilityChanged,
+                  activeThumbColor: color,
+                  inactiveTrackColor: Colors.grey.shade300,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
               ),
             ],
           ),
@@ -605,14 +629,15 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
                   ),
                 ),
               ),
-              Switch(
-                value: isVisible,
-                onChanged: (value) {
-                  // ref.read(isVisibleProvider.notifier).setVisibility(value);
-                },
-                activeThumbColor: onlineColor,
-                inactiveTrackColor: Colors.grey.shade300,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              Transform.scale(
+                scale: isSmallScreen ? 0.8 : 0.88,
+                child: Switch(
+                  value: isVisible,
+                  onChanged: onVisibilityChanged,
+                  activeThumbColor: onlineColor,
+                  inactiveTrackColor: Colors.grey.shade300,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
               ),
             ],
           ),

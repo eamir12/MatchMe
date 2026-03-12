@@ -980,12 +980,19 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen> {
                   ),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    child: Text(
-                      l10n.getString(
-                        'onlineMapTotalOnline',
-                        params: {'count': _totalOnline.toString()},
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth: MediaQuery.of(context).size.width * 0.34,
                       ),
-                      style: Theme.of(context).textTheme.labelLarge,
+                      child: Text(
+                        l10n.getString(
+                          'onlineMapTotalOnline',
+                          params: {'count': _totalOnline.toString()},
+                        ),
+                        style: Theme.of(context).textTheme.labelLarge,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                   ),
                 ),

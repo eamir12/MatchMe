@@ -201,103 +201,136 @@ class _InvisibilityRulesScreenState
                 ]
                 : null,
       ),
-      child: ListTile(
-        leading: Stack(
-          clipBehavior: Clip.none,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(
-              icon,
-              color: isPast ? Theme.of(context).disabledColor : color,
-              size: 20,
-            ),
-            if (isActive && !isPast)
-              Positioned(
-                right: -4,
-                top: -4,
-                child: Container(
-                  width: 10,
-                  height: 10,
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.secondary,
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: Theme.of(context).colorScheme.surface,
-                      width: 1.5,
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Icon(
+                      icon,
+                      color: isPast ? Theme.of(context).disabledColor : color,
+                      size: 20,
+                    ),
+                    if (isActive && !isPast)
+                      Positioned(
+                        right: -4,
+                        top: -4,
+                        child: Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.secondary,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: Theme.of(context).colorScheme.surface,
+                              width: 1.5,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    title,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color:
+                          isPast
+                              ? Theme.of(context).disabledColor
+                              : Theme.of(context).colorScheme.onSurface,
+                      decoration: isPast ? TextDecoration.lineThrough : null,
                     ),
                   ),
                 ),
+              ],
+            ),
+            if (isPast) ...[
+              const SizedBox(height: 4),
+              Text(
+                l10n.getString('settingsRuleExpired'),
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Theme.of(context).disabledColor,
+                ),
               ),
-          ],
-        ),
-        title: Text(
-          title,
-          style: TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w500,
-            color:
-                isPast
-                    ? Theme.of(context).disabledColor
-                    : Theme.of(context).colorScheme.onSurface,
-            decoration: isPast ? TextDecoration.lineThrough : null,
-          ),
-        ),
-        subtitle:
-            isPast
-                ? Text(
-                  l10n.getString('settingsRuleExpired'),
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: Theme.of(context).disabledColor,
+            ],
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                if (onToggle != null)
+                  Transform.scale(
+                    scale: 0.85,
+                    child: Switch(
+                      value: enabled,
+                      onChanged: onToggle,
+                      activeThumbColor: color,
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
                   ),
-                )
-                : null,
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (onToggle != null)
-              Switch(
-                value: enabled,
-                onChanged: onToggle,
-                activeThumbColor: color,
-              ),
-            if (canEdit && onEdit != null)
-              IconButton(
-                icon: const Icon(Icons.edit, size: 18),
-                color: color,
-                onPressed: onEdit,
-              ),
-            IconButton(
-              icon: const Icon(Icons.delete, size: 18),
-              color: Theme.of(context).colorScheme.error,
-              onPressed: () async {
-                final confirmed = await showDialog<bool>(
-                  context: context,
-                  builder:
-                      (context) => AlertDialog(
-                        title: Text(l10n.getString('confirmDelete')),
-                        content: Text(
-                          l10n.getString('confirmDeleteInvisibilityRule'),
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(context, false),
-                            child: Text(l10n.getString('generalCancel')),
-                          ),
-                          ElevatedButton(
-                            onPressed: () => Navigator.pop(context, true),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor:
-                                  Theme.of(context).colorScheme.error,
+                if (canEdit && onEdit != null)
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 32,
+                      minHeight: 32,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.edit, size: 18),
+                    color: color,
+                    onPressed: onEdit,
+                  ),
+                IconButton(
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 32,
+                    minHeight: 32,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.delete, size: 18),
+                  color: Theme.of(context).colorScheme.error,
+                  onPressed: () async {
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder:
+                          (context) => AlertDialog(
+                            title: Text(l10n.getString('confirmDelete')),
+                            content: Text(
+                              l10n.getString('confirmDeleteInvisibilityRule'),
                             ),
-                            child: Text(l10n.getString('generalDelete')),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(context, false),
+                                child: Text(l10n.getString('generalCancel')),
+                              ),
+                              ElevatedButton(
+                                onPressed: () => Navigator.pop(context, true),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor:
+                                      Theme.of(context).colorScheme.error,
+                                ),
+                                child: Text(l10n.getString('generalDelete')),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
-                );
-                if (confirmed == true) {
-                  onDelete();
-                }
-              },
+                    );
+                    if (confirmed == true) {
+                      onDelete();
+                    }
+                  },
+                ),
+              ],
             ),
           ],
         ),

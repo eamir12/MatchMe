@@ -13,13 +13,26 @@ class PleaseWaitDialog extends ConsumerWidget {
     final message = localization.getString('pleaseWait');
 
     return AlertDialog(
-      content: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const CircularProgressIndicator(),
-          const SizedBox(width: 16),
-          Text(message),
-        ],
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 320),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2.4),
+            ),
+            const SizedBox(width: 16),
+            Flexible(
+              child: Text(
+                message,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
