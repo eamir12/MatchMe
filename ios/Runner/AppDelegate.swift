@@ -85,7 +85,7 @@ import UIKit
           "buildNumber": build as Any
         ])
       case "hasApsEnvironmentEntitlement":
-        result(hasApsEnvironmentEntitlement())
+        result(self.hasApsEnvironmentEntitlement())
       default:
         result(FlutterMethodNotImplemented)
       }
