@@ -114,11 +114,11 @@ import UIKit
 
   private func hasApsEnvironmentEntitlement() -> Bool {
     guard let path = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision") else {
-      return true
+      return false
     }
     guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
           let profile = String(data: data, encoding: .ascii) else {
-      return true
+      return false
     }
     return profile.contains("<key>aps-environment</key>")
   }
