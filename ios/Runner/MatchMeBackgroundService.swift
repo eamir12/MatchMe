@@ -24,6 +24,7 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
     private var highAccuracyMode = false
     private var heartbeatTimer: Timer?
     private var backgroundTaskIdentifier: UIBackgroundTaskIdentifier = .invalid
+    private var backgroundTaskTimeoutTimer: Timer?
     private var pendingBackgroundTask: BGAppRefreshTask?
     private var lastHeartbeatTime: Date?
 
@@ -45,6 +46,7 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
         locationManager.distanceFilter = 10.0 // 10 meters
         locationManager.allowsBackgroundLocationUpdates = true
         locationManager.pausesLocationUpdatesAutomatically = false
+        UNUserNotificationCenter.current().delegate = self
 
         // Load saved state
         loadState()
@@ -52,9 +54,6 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
         // Register background tasks
         registerBackgroundTasks()
 
-        // Request notification permissions for silent notifications
-        requestNotificationPermissions()
-        
         // Resume service if we have state
         if userId != nil {
             startBackgroundService()
@@ -203,18 +202,6 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
         }
     }
 
-    private func requestNotificationPermissions() {
-        let center = UNUserNotificationCenter.current()
-        center.delegate = self
-        center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
-            if granted {
-                DispatchQueue.main.async {
-                    UIApplication.shared.registerForRemoteNotifications()
-                }
-            }
-        }
-    }
-
     private func startBackgroundService() {
         // Start heartbeat
         startHeartbeat()
@@ -224,9 +211,6 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
 
         // Schedule background tasks
         scheduleBackgroundTasks()
-
-        // Start background task to keep app alive longer
-        beginBackgroundTask()
     }
 
     private func stopBackgroundService() {
@@ -401,12 +385,21 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
     }
 
     private func beginBackgroundTask() {
+        if backgroundTaskIdentifier != .invalid {
+            return
+        }
         backgroundTaskIdentifier = UIApplication.shared.beginBackgroundTask(withName: "MatchMeBackground") {
             self.endBackgroundTask()
+        }
+        backgroundTaskTimeoutTimer?.invalidate()
+        backgroundTaskTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: false) { [weak self] _ in
+            self?.endBackgroundTask()
         }
     }
 
     private func endBackgroundTask() {
+        backgroundTaskTimeoutTimer?.invalidate()
+        backgroundTaskTimeoutTimer = nil
         if backgroundTaskIdentifier != .invalid {
             UIApplication.shared.endBackgroundTask(backgroundTaskIdentifier)
             backgroundTaskIdentifier = .invalid

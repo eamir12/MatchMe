@@ -85,7 +85,7 @@ import UIKit
           "buildNumber": build as Any
         ])
       case "hasApsEnvironmentEntitlement":
-        result(true)
+        result(hasApsEnvironmentEntitlement())
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -110,5 +110,16 @@ import UIKit
     }
 
     return nil
+  }
+
+  private func hasApsEnvironmentEntitlement() -> Bool {
+    guard let path = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision") else {
+      return true
+    }
+    guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+          let profile = String(data: data, encoding: .ascii) else {
+      return true
+    }
+    return profile.contains("<key>aps-environment</key>")
   }
 }
