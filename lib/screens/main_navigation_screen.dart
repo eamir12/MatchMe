@@ -127,7 +127,6 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
     final screenWidth = MediaQuery.of(context).size.width;
     final isSmallScreen = screenWidth < 400;
     final isVerySmallScreen = screenWidth < 350;
-    final useCompactStatusText = screenWidth < 460;
     final iconPadding = isSmallScreen ? 6.0 : 8.0;
 
     final List<Widget> screens = [
@@ -204,9 +203,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
           if (isVisible) {
             text = isVerySmallScreen
                 ? l10n.getString('generalOnShort')
-                : (useCompactStatusText
-                    ? '${l10n.getString('homeOnline')} ${l10n.getString('homeStatusVisible')}'
-                    : l10n.getString('youAreCurrentlyOnlineAndVisible'));
+                : l10n.getString('youAreCurrentlyOnlineAndVisible');
             final semantic = Theme.of(context).extension<SemanticColors>();
             final Color color = semantic?.success ?? const Color(0xFF10B981);
             final Color bg = semantic?.successContainer ?? const Color(0xFFDCFCE7);
@@ -238,9 +235,9 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
                   Flexible(
                     child: Text(
                       text,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      softWrap: false,
+                      maxLines: 2,
+                      overflow: TextOverflow.visible,
+                      softWrap: true,
                       style: TextStyle(
                         color: color,
                         fontSize: 11,
@@ -256,9 +253,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
           } else {
             text = isVerySmallScreen
                 ? l10n.getString('generalOnInvisibleShort')
-                : (useCompactStatusText
-                    ? '${l10n.getString('homeOnline')} ${l10n.getString('homeStatusInvisible')}'
-                    : '${l10n.getString('youAreCurrentlyOnline')} ${l10n.getString('andInvisible')}');
+                : '${l10n.getString('youAreCurrentlyOnline')} ${l10n.getString('andInvisible')}';
             color = Theme.of(context).colorScheme.error;
             switchWidget = Transform.scale(
               scale: isSmallScreen ? 0.8 : 0.88,
@@ -288,9 +283,9 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
                   Flexible(
                     child: Text(
                       text,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      softWrap: false,
+                      maxLines: 2,
+                      overflow: TextOverflow.visible,
+                      softWrap: true,
                       style: TextStyle(
                         color: color,
                         fontSize: 11,

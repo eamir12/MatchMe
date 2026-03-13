@@ -2114,10 +2114,11 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
             final bool isAndroid = defaultTargetPlatform == TargetPlatform.android;
             final EdgeInsets padding = MediaQuery.of(context).padding;
             final Color barColor = Theme.of(context).scaffoldBackgroundColor;
+            final Widget content = child ?? const SizedBox.shrink();
 
             return Stack(
               children: [
-                SafeArea(child: child!),
+                if (isAndroid) SafeArea(child: content) else content,
                 if (isAndroid && padding.top > 0)
                   Positioned(
                     left: 0,

@@ -150,19 +150,16 @@ class PermissionManager {
     if (kIsWeb) return true; // Web handles camera permission via browser
     
     const key = 'camera';
-    if (hasBeenRequestedThisRun(key)) {
-      final status = await Permission.camera.status;
-      return status.isGranted;
-    }
-
-    markRequested(key);
-
     try {
       final status = await Permission.camera.status;
       if (status.isGranted) return true;
       if (status.isDenied) {
         final result = await Permission.camera.request();
+        markRequested(key);
         return result.isGranted;
+      }
+      if (!hasBeenRequestedThisRun(key)) {
+        markRequested(key);
       }
       return false;
     } catch (e) {

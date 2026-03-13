@@ -47,7 +47,7 @@ PreferredSizeWidget buildCustomAppBar(BuildContext context, WidgetRef ref, Local
     bottom: centerWidget == null
         ? null
         : PreferredSize(
-            preferredSize: const Size.fromHeight(40),
+            preferredSize: const Size.fromHeight(56),
             child: LayoutBuilder(
               builder: (context, constraints) => Padding(
                 padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
