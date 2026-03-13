@@ -80,7 +80,11 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
     if (widget.inputImageBytes == null) {
       var cameraStatus = await Permission.camera.status;
       if (!cameraStatus.isGranted) {
-        cameraStatus = await Permission.camera.request();
+        if (cameraStatus.isDenied || cameraStatus.isPermanentlyDenied || cameraStatus.isRestricted) {
+          // Don't bother requesting, just go to show settings
+        } else {
+          cameraStatus = await Permission.camera.request();
+        }
       }
       if (!cameraStatus.isGranted) {
         final l10n = ref.read(localizationProvider);
