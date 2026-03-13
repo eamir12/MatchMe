@@ -7,10 +7,19 @@ workflows:
       xcode: latest
       cocoapods: default
     scripts:
+      - name: Pre-clean workspace
+        script: |
+          rm -rf build Payload Runner-unsigned.ipa
+          rm -rf ~/Library/Developer/Xcode/DerivedData/*
       - name: Flutter clean/get
         script: |
           flutter clean
           flutter pub get
+      - name: Verify iOS fullscreen keys
+        script: |
+          /usr/libexec/PlistBuddy -c "Print :UILaunchStoryboardName" ios/Runner/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :UISupportedInterfaceOrientations" ios/Runner/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :UIApplicationSceneManifest" ios/Runner/Info.plist
       - name: Install CocoaPods
         script: |
           cd ios
@@ -21,9 +30,9 @@ workflows:
           flutter build ios --no-codesign
       - name: Create unsigned IPA
         script: |
-          rm -rf Payload
           mkdir -p Payload
           cp -R build/ios/iphoneos/Runner.app Payload/
           zip -r -y Runner-unsigned.ipa Payload
     artifacts:
       - Runner-unsigned.ipa
+      - build/ios/iphoneos/Runner.app
