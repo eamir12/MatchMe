@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/locale_provider.dart';
-import 'package:matchme/utils/permission_manager.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
@@ -62,6 +62,7 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
   bool _sent = false;
   WebViewController? _controller;
   String? _loadError;
+  bool _cameraPermissionDenied = false;
 
   void _onPhotoReceived(Uint8List? bytes) {
     if (_sent) return;
@@ -72,12 +73,18 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
   }
 
   Future<void> _initController() async {
-    final hasCamera = await PermissionManager.requestCameraPermission();
-    if (!hasCamera) {
+    var cameraStatus = await Permission.camera.status;
+    if (!cameraStatus.isGranted) {
+      cameraStatus = await Permission.camera.request();
+    }
+    if (!cameraStatus.isGranted) {
       final l10n = ref.read(localizationProvider);
       if (mounted) {
         setState(
-          () => _loadError = l10n.getString('verificationCaptureCameraPermissionDenied'),
+          () {
+            _cameraPermissionDenied = true;
+            _loadError = l10n.getString('verificationCaptureCameraPermissionDenied');
+          },
         );
       }
       return;
@@ -156,6 +163,17 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
             ),
           ),
         ),
+        bottomNavigationBar: _cameraPermissionDenied
+            ? SafeArea(
+                minimum: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: FilledButton(
+                  onPressed: () async {
+                    await openAppSettings();
+                  },
+                  child: Text(l10n.getString('permActionOpenSettings')),
+                ),
+              )
+            : null,
       );
     }
     if (_controller == null) {

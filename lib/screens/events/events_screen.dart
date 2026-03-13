@@ -55,6 +55,10 @@ class _EventsTabState extends ConsumerState<EventsTab> {
               showAppBar: false,
               onAddEvent: () => Navigator.of(context).pushNamed('/add'),
               onOpenEvent: (event) => Navigator.of(context).pushNamed('/attendees', arguments: event),
+              onImportGoogleCalendar:
+                  () => widget.navigatorKey.currentState?.pushNamed('/sync', arguments: CalendarProvider.google),
+              onImportOutlookCalendar:
+                  () => widget.navigatorKey.currentState?.pushNamed('/sync', arguments: CalendarProvider.outlook),
             ),
           );
         }
@@ -98,12 +102,16 @@ class EventsScreen extends ConsumerWidget {
   final bool showAppBar;
   final VoidCallback? onAddEvent;
   final void Function(EventModel event)? onOpenEvent;
+  final VoidCallback? onImportGoogleCalendar;
+  final VoidCallback? onImportOutlookCalendar;
 
   const EventsScreen({
     super.key,
     this.showAppBar = true,
     this.onAddEvent,
     this.onOpenEvent,
+    this.onImportGoogleCalendar,
+    this.onImportOutlookCalendar,
   });
 
   @override
@@ -212,7 +220,14 @@ class EventsScreen extends ConsumerWidget {
                     children: [
                       Expanded(
                         child: OutlinedButton.icon(
-                          onPressed: () => Navigator.of(context).pushNamed('/sync', arguments: CalendarProvider.google),
+                          onPressed: () {
+                            final handler = onImportGoogleCalendar;
+                            if (handler != null) {
+                              handler();
+                              return;
+                            }
+                            Navigator.of(context).pushNamed('/sync', arguments: CalendarProvider.google);
+                          },
                           icon: const Icon(Icons.calendar_month),
                           label: Text(l10n.getString('eventsImportGoogle')),
                         ),
@@ -221,6 +236,11 @@ class EventsScreen extends ConsumerWidget {
                       Expanded(
                         child: OutlinedButton.icon(
                           onPressed: () async {
+                            final handler = onImportOutlookCalendar;
+                            if (handler != null) {
+                              handler();
+                              return;
+                            }
                             if (kIsWeb) {
                               final service = ref.read(calendarSyncServiceProvider);
                               try {

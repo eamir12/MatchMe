@@ -308,7 +308,7 @@ final recentChatsProvider = StreamProvider.family<
                     final iosTime = DateTime.now();
                     final iosTimestamp = '${iosTime.hour.toString().padLeft(2, '0')}:${iosTime.minute.toString().padLeft(2, '0')}:${iosTime.second.toString().padLeft(2, '0')}.${(iosTime.millisecond ~/ 10).toString().padLeft(2, '0')}';
                     debugPrint('🔔 [IOS_NOTIFY] $iosTimestamp | Local notification');
-                    MobileLocalNotificationService.showMessageNotification(
+                    await MobileLocalNotificationService.showMessageNotification(
                       chatId: matchId,
                       senderName: senderName,
                       messageContent: displayContent,
@@ -440,37 +440,38 @@ final recentChatsProvider = StreamProvider.family<
 
   // Handle translation display for Recent Chats and detect new messages via sync
   return localStream.asyncMap((list) async {
-    debugPrint('🔄 Recent Chats Provider: Processing ${list.length} chats from local DB');
+    try {
+      debugPrint('🔄 Recent Chats Provider: Processing ${list.length} chats from local DB');
 
-    // FIRST: Save OLD state to snapshots BEFORE processing new data
-    // This ensures we have previous state available to detect new messages
-    for (final json in list) {
-      final matchId = json['match_id'] as String?;
-      if (matchId != null && matchId.isNotEmpty) {
-        final snapshotKey = '$userId|$matchId';
-        final existingChat = _recentChatSnapshots[snapshotKey];
-        if (existingChat != null) {
-          // Existing chat: keep the OLD snapshot for comparison
-          // The new data will be compared against this old snapshot to detect new messages
-          continue;
+      for (final json in list) {
+        final matchId = json['match_id']?.toString();
+        if (matchId != null && matchId.isNotEmpty) {
+          final snapshotKey = '$userId|$matchId';
+          final existingChat = _recentChatSnapshots[snapshotKey];
+          if (existingChat != null) {
+            continue;
+          }
+          try {
+            final chat = ChatModel.fromJsonRpc(json);
+            _recentChatSnapshots[snapshotKey] = chat;
+          } catch (e) {
+            debugPrint('Recent chats snapshot parse failed for $snapshotKey: $e');
+          }
         }
-        // New chat: create initial snapshot from current data
-        try {
-          final chat = ChatModel.fromJsonRpc(json);
-          _recentChatSnapshots[snapshotKey] = chat;
-        } catch (_) {}
       }
-    }
 
-    final chats = await Future.wait(list
-        .map((json) async {
-          // Create the base chat model
-          final chat = ChatModel.fromJsonRpc(json);
-          final matchId = json['match_id'] as String?;
-          final unreadCount = json['unread_count'] as int? ?? 0;
-          final lastMessageSenderId = json['last_message_sender_id'] as String?;
+      final chats = await Future.wait(list
+          .map((json) async {
+            try {
+              final chat = ChatModel.fromJsonRpc(json);
+              final matchId = json['match_id']?.toString();
+              final unreadRaw = json['unread_count'];
+              final unreadCount = unreadRaw is int
+                  ? unreadRaw
+                  : int.tryParse(unreadRaw?.toString() ?? '') ?? 0;
+              final lastMessageSenderId = json['last_message_sender_id']?.toString();
 
-          debugPrint('🔄 Recent Chats Provider: Chat $matchId - unreadCount: $unreadCount');
+              debugPrint('🔄 Recent Chats Provider: Chat $matchId - unreadCount: $unreadCount');
 
           // Skip notifications for own messages
           if (lastMessageSenderId == userId && matchId != null) {
@@ -589,7 +590,7 @@ final recentChatsProvider = StreamProvider.family<
 
                 } else if (Platform.isIOS) {
                   debugPrint('🔄 [SYNC FALLBACK] Platform: iOS - showing local notification');
-                  MobileLocalNotificationService.showMessageNotification(
+                  await MobileLocalNotificationService.showMessageNotification(
                     chatId: matchId,
                     senderName: senderName,
                     messageContent: displayContent,
@@ -772,19 +773,28 @@ final recentChatsProvider = StreamProvider.family<
             return chat;
           }
 
-          return chat;
-        })
-        .toList());
+              return chat;
+            } catch (e) {
+              final matchId = json['match_id']?.toString() ?? 'unknown_match';
+              debugPrint('Recent chats item processing failed for $matchId: $e');
+              return null;
+            }
+          })
+          .toList());
 
-    final visibleChats = chats
-        .whereType<ChatModel>()
-        .where((chat) => chat.otherUserId != userId) // Filter out self-chats
-        .toList()
-      ..sort((a, b) => b.lastMessageAt.compareTo(a.lastMessageAt));
-    for (final chat in visibleChats) {
-      _recentChatSnapshots['$userId|${chat.matchId}'] = chat;
+      final visibleChats = chats
+          .whereType<ChatModel>()
+          .where((chat) => chat.otherUserId != userId)
+          .toList()
+        ..sort((a, b) => b.lastMessageAt.compareTo(a.lastMessageAt));
+      for (final chat in visibleChats) {
+        _recentChatSnapshots['$userId|${chat.matchId}'] = chat;
+      }
+      return visibleChats;
+    } catch (e, st) {
+      debugPrint('Recent chats stream mapping failed for user $userId: $e\n$st');
+      return <ChatModel>[];
     }
-    return visibleChats;
   });
 });
 

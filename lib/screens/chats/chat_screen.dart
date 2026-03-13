@@ -580,6 +580,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       textDirection: l10n.textDirection,
       child: Scaffold(
         appBar: AppBar(
+          toolbarHeight: 76,
           title: GestureDetector(
             onTap: _navigateToProfile,
             child: Row(
@@ -603,16 +604,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
                         chattingCaption,
+                        maxLines: 2,
+                        softWrap: true,
+                        overflow: TextOverflow.visible,
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                               color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
                             ),
                       ),
                       const SizedBox(height: 2),
-                      Text(displayName, style: Theme.of(context).textTheme.titleMedium),
+                      Text(
+                        displayName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
                     ],
                   ),
                 ),
