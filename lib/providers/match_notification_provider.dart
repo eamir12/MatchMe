@@ -82,33 +82,36 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
     ref.onDispose(cleanup);
     final userId = supabase.auth.currentUser?.id;
     developer.log('🧩 MatchNotificationProvider build: user=$userId', name: 'MatchMeTrace');
-    _setupRealtimeSubscription();
-    if (userId != null && userId.trim().isNotEmpty) {
-      ref.listen<AsyncValue<List<MatchModel>>>(recentMatchesProvider(userId), (previous, next) {
-        final matches = next.asData?.value ?? const <MatchModel>[];
-
-        final activeIds = matches.map((m) => m.id).toSet();
-        final updatedNotifications =
-            state.notifications.where((n) => activeIds.contains(n.match.id)).toList();
-
-        if (updatedNotifications.length == state.notifications.length) return;
-
-        final newUnreadCount = updatedNotifications.where((n) => !n.viewed).length;
-        state = state.copyWith(
-          notifications: updatedNotifications,
-          unreadCount: newUnreadCount,
-        );
-      });
-
-      ref.listen<AsyncValue<List<MatchModel>>>(recentMatchesProvider(userId), (previous, next) {
-        final matches = next.asData?.value ?? const <MatchModel>[];
-        final otherUserIds = matches
-            .map((m) => m.otherUserId.trim())
-            .where((id) => id.isNotEmpty && id != userId)
-            .toSet();
-        _updateMatchedUserProfileSubscription(userId, otherUserIds);
-      }, fireImmediately: true);
+    if (userId == null || userId.trim().isEmpty) {
+      cleanup();
+      _matchedOtherUserIds = <String>{};
+      return MatchNotificationState();
     }
+    _setupRealtimeSubscription();
+    ref.listen<AsyncValue<List<MatchModel>>>(recentMatchesProvider(userId), (previous, next) {
+      final matches = next.asData?.value ?? const <MatchModel>[];
+
+      final activeIds = matches.map((m) => m.id).toSet();
+      final updatedNotifications =
+          state.notifications.where((n) => activeIds.contains(n.match.id)).toList();
+
+      if (updatedNotifications.length == state.notifications.length) return;
+
+      final newUnreadCount = updatedNotifications.where((n) => !n.viewed).length;
+      state = state.copyWith(
+        notifications: updatedNotifications,
+        unreadCount: newUnreadCount,
+      );
+    });
+
+    ref.listen<AsyncValue<List<MatchModel>>>(recentMatchesProvider(userId), (previous, next) {
+      final matches = next.asData?.value ?? const <MatchModel>[];
+      final otherUserIds = matches
+          .map((m) => m.otherUserId.trim())
+          .where((id) => id.isNotEmpty && id != userId)
+          .toSet();
+      _updateMatchedUserProfileSubscription(userId, otherUserIds);
+    }, fireImmediately: true);
     return MatchNotificationState();
   }
 
@@ -147,6 +150,7 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
           table: 'users',
           callback: (payload) async {
             if (!ref.mounted) return;
+            if (supabase.auth.currentSession == null) return;
             final newRecord = payload.newRecord;
             final changedUserId = newRecord['id']?.toString();
             if (changedUserId == null || changedUserId.isEmpty) return;
@@ -205,12 +209,14 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
 
             Future.delayed(const Duration(seconds: 2), () {
               if (!ref.mounted) return;
+              if (supabase.auth.currentSession == null) return;
               ref.invalidateSelf();
             });
           }
         });
 
     for (final id in _matchedOtherUserIds) {
+      if (supabase.auth.currentSession == null) break;
       if (_shouldSyncProfileFromRealtime(id, const Duration(milliseconds: 300))) {
         ref.read(profileSyncProvider).syncProfile(id);
       }
@@ -218,6 +224,7 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
 
     _matchedProfilePollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       if (!ref.mounted) return;
+      if (supabase.auth.currentSession == null) return;
       for (final id in _matchedOtherUserIds) {
         if (_shouldSyncProfileFromRealtime(id, const Duration(seconds: 5))) {
           ref.read(profileSyncProvider).syncProfile(id);
@@ -294,6 +301,9 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
               Future.delayed(const Duration(seconds: 2), () async {
                 if (!ref.mounted) {
                   debugPrint('🔄 Not reconnecting match notifications - notifier unmounted');
+                  return;
+                }
+                if (supabase.auth.currentSession == null) {
                   return;
                 }
                 if (_matchChannel == null) {
@@ -553,14 +563,17 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
 
   void cleanup() {
     _channelSubscription?.cancel();
+    _channelSubscription = null;
     _matchChannel?.unsubscribe();
     if (_matchChannel != null) {
       supabase.removeChannel(_matchChannel!);
     }
+    _matchChannel = null;
     _profileChannel?.unsubscribe();
     if (_profileChannel != null) {
       supabase.removeChannel(_profileChannel!);
     }
+    _profileChannel = null;
     _matchedProfilePollTimer?.cancel();
     _matchedProfilePollTimer = null;
   }

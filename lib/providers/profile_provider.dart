@@ -711,6 +711,10 @@ class ProfileSyncService {
 
   Future<void> syncProfile(String userId) async {
     if (userId.isEmpty) return;
+    final session = supabase.auth.currentSession;
+    if (session == null) {
+      return;
+    }
 
     debugPrint('ProfileSyncService.syncProfile START for user=$userId');
 

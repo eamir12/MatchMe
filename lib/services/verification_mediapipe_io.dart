@@ -18,6 +18,7 @@ void openMediaPipeVerificationCapture({
   required void Function(Uint8List?) onPhoto,
   String? gestureLabel,
   Map<String, String>? captureStrings,
+  Uint8List? inputImageBytes,
   BuildContext? context,
 }) {
   final ctx = context;
@@ -32,6 +33,7 @@ void openMediaPipeVerificationCapture({
         gestureCode: gestureCode,
         gestureLabel: gestureLabel,
         captureStrings: captureStrings,
+        inputImageBytes: inputImageBytes,
         onPhoto: onPhoto,
       ),
     ),
@@ -46,12 +48,14 @@ class _MediaPipeCapturePage extends ConsumerStatefulWidget {
     required this.gestureCode,
     required this.gestureLabel,
     required this.captureStrings,
+    required this.inputImageBytes,
     required this.onPhoto,
   });
 
   final String gestureCode;
   final String? gestureLabel;
   final Map<String, String>? captureStrings;
+  final Uint8List? inputImageBytes;
   final void Function(Uint8List?) onPhoto;
 
   @override
@@ -73,21 +77,23 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
   }
 
   Future<void> _initController() async {
-    var cameraStatus = await Permission.camera.status;
-    if (!cameraStatus.isGranted) {
-      cameraStatus = await Permission.camera.request();
-    }
-    if (!cameraStatus.isGranted) {
-      final l10n = ref.read(localizationProvider);
-      if (mounted) {
-        setState(
-          () {
-            _cameraPermissionDenied = true;
-            _loadError = l10n.getString('verificationCaptureCameraPermissionDenied');
-          },
-        );
+    if (widget.inputImageBytes == null) {
+      var cameraStatus = await Permission.camera.status;
+      if (!cameraStatus.isGranted) {
+        cameraStatus = await Permission.camera.request();
       }
-      return;
+      if (!cameraStatus.isGranted) {
+        final l10n = ref.read(localizationProvider);
+        if (mounted) {
+          setState(
+            () {
+              _cameraPermissionDenied = true;
+              _loadError = l10n.getString('verificationCaptureCameraPermissionDenied');
+            },
+          );
+        }
+        return;
+      }
     }
 
     final html = await rootBundle.loadString('assets/verification_capture/index.html');
@@ -97,6 +103,12 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
         .replaceFirst(
           '__CAPTURE_STRINGS_JSON__',
           jsonEncode(widget.captureStrings ?? <String, String>{}),
+        )
+        .replaceFirst(
+          '__INPUT_IMAGE_BASE64_JSON__',
+          jsonEncode(
+            widget.inputImageBytes == null ? '' : base64Encode(widget.inputImageBytes!),
+          ),
         );
     if (!mounted) return;
 

@@ -45,6 +45,7 @@
     window.__REQUIRED_GESTURE_CODE__ = __GESTURE_CODE_JSON__;
     window.__REQUIRED_GESTURE_LABEL__ = __GESTURE_LABEL_JSON__;
     window.__CAPTURE_STRINGS__ = __CAPTURE_STRINGS_JSON__;
+    window.__INPUT_IMAGE_BASE64__ = __INPUT_IMAGE_BASE64_JSON__;
   </script>
   <script type="module">
 (function() {
@@ -85,6 +86,8 @@
   var stream = null;
   var hasCaptured = false;
   var tickTimer = null;
+  var inputImageBase64 = (typeof window.__INPUT_IMAGE_BASE64__ === 'string') ? window.__INPUT_IMAGE_BASE64__ : '';
+  var usingInputImage = !!(inputImageBase64 && inputImageBase64.length > 0);
   var strings = (window.__CAPTURE_STRINGS__ && typeof window.__CAPTURE_STRINGS__ === 'object') ? window.__CAPTURE_STRINGS__ : {};
 
   window.sendVerificationPhoto = function(base64) {
@@ -104,7 +107,9 @@
       feedback.classList.add('ready');
       captureBtn.classList.add('ready');
       captureBtn.disabled = false;
-      statusEl.textContent = t('verificationCaptureStatusGestureDetected', 'Ready! Tap to capture');
+      statusEl.textContent = usingInputImage
+        ? t('verificationCaptureStatusGestureDetected', 'Gesture detected. Tap to continue')
+        : t('verificationCaptureStatusGestureDetected', 'Ready! Tap to capture');
     } else {
       feedback.classList.remove('ready');
       captureBtn.classList.remove('ready');
@@ -228,6 +233,45 @@
     }
   }
 
+  function evaluateRecognition(faceLandmarks, gestureResults) {
+    var facePresent = !!faceLandmarks;
+    var fullFaceVisible = facePresent && isFullFaceVisible(faceLandmarks);
+    var handLandmarks = getHandLandmarks(gestureResults);
+    var faceObstructed = facePresent && handLandmarks && isFaceObstructed(faceLandmarks, handLandmarks);
+    var faceOk = fullFaceVisible && !faceObstructed;
+    var name = detectGesture(gestureResults);
+    var hand = detectHandedness(gestureResults);
+    var matchesGesture = name === requiredGesture;
+    var matchesHand = !requiredHand || hand === requiredHand;
+    var gestureOk = matchesGesture && matchesHand;
+    return {
+      faceOk: faceOk,
+      matchesGesture: matchesGesture,
+      matchesHand: matchesHand,
+      gestureOk: gestureOk,
+      hand: hand
+    };
+  }
+
+  function applyStatusFromEval(e) {
+    if (!e.faceOk) {
+      setStatus(t('verificationCaptureStatusShowFace', 'Make sure your face is visible'));
+      return;
+    }
+    if (e.matchesGesture && requiredHand && e.hand && !e.matchesHand) {
+      var handKey = requiredHand === 'Right' ? 'verificationCaptureHandRight' : 'verificationCaptureHandLeft';
+      var handLabel = t(handKey, requiredHand.toLowerCase());
+      setStatus(
+        t('verificationCaptureStatusUseCorrectHand', 'Use your {hand} hand').replace(
+          '{hand}',
+          handLabel,
+        ),
+      );
+      return;
+    }
+    setStatus(t('verificationCaptureStatusShowGesture', 'Show the required gesture'));
+  }
+
   function tick() {
     if (!gestureRecognizer || !faceLandmarker || video.readyState < 2) return;
     frameIndex++;
@@ -243,26 +287,18 @@
           }
         } catch (_) {}
       }
-      var facePresent = (now - lastFaceSeenAt) < 900 && !!lastFaceLandmarks;
-      var fullFaceVisible = facePresent && isFullFaceVisible(lastFaceLandmarks);
-
       var gestureResults = gestureRecognizer.recognizeForVideo(video, now);
-      var name = detectGesture(gestureResults);
-      var hand = detectHandedness(gestureResults);
-      var handLandmarks = getHandLandmarks(gestureResults);
-      var faceObstructed = facePresent && handLandmarks && isFaceObstructed(lastFaceLandmarks, handLandmarks);
-      var faceOk = fullFaceVisible && !faceObstructed;
+      var facePresent = (now - lastFaceSeenAt) < 900 && !!lastFaceLandmarks;
+      var e = evaluateRecognition(facePresent ? lastFaceLandmarks : null, gestureResults);
       var gestureOk = false;
-      var matchesGesture = name === requiredGesture;
-      var matchesHand = !requiredHand || hand === requiredHand;
-      if (matchesGesture && matchesHand) {
+      if (e.gestureOk) {
         if (!holdStart) holdStart = now;
         if ((now - holdStart) >= HOLD_MS) gestureOk = true;
       } else {
         holdStart = null;
       }
 
-      var newReady = faceOk && gestureOk;
+      var newReady = e.faceOk && gestureOk;
       if (newReady !== ready) {
         ready = newReady;
         setReady(ready);
@@ -273,20 +309,7 @@
       }
 
       if (!ready) {
-        if (!faceOk) {
-          setStatus(t('verificationCaptureStatusShowFace', 'Make sure your face is visible'));
-        } else if (matchesGesture && requiredHand && hand && hand !== requiredHand) {
-          var handKey = requiredHand === 'Right' ? 'verificationCaptureHandRight' : 'verificationCaptureHandLeft';
-          var handLabel = t(handKey, requiredHand.toLowerCase());
-          setStatus(
-            t('verificationCaptureStatusUseCorrectHand', 'Use your {hand} hand').replace(
-              '{hand}',
-              handLabel,
-            ),
-          );
-        } else {
-          setStatus(t('verificationCaptureStatusShowGesture', 'Show the required gesture'));
-        }
+        applyStatusFromEval(e);
       }
     } catch (e) {}
   }
@@ -321,6 +344,10 @@
   }
 
   function capture() {
+    if (usingInputImage) {
+      window.sendVerificationPhoto(inputImageBase64);
+      return;
+    }
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     ctx.save();
@@ -344,7 +371,68 @@
     capture();
   });
 
+  function analyzeInputPhoto(vision) {
+    setInstruction(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
+    setStatus(t('verificationCaptureStatusShowGesture', 'Show the required gesture'));
+
+    vision.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm')
+      .then(function(resolver) {
+        return Promise.all([
+          vision.GestureRecognizer.createFromOptions(resolver, {
+            baseOptions: {
+              modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task'
+            },
+            runningMode: 'IMAGE',
+            numHands: 1
+          }),
+          vision.FaceLandmarker.createFromOptions(resolver, {
+            baseOptions: {
+              modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task'
+            },
+            runningMode: 'IMAGE',
+            numFaces: 1,
+            outputFaceBlendshapes: false,
+            outputFacialTransformationMatrixes: false
+          }),
+        ]);
+      }).then(function(recognizer) {
+        gestureRecognizer = recognizer[0];
+        faceLandmarker = recognizer[1];
+        return createImageBitmap(
+          (function() {
+            var bytes = atob(inputImageBase64);
+            var arr = new Uint8Array(bytes.length);
+            for (var i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+            return new Blob([arr], { type: 'image/jpeg' });
+          })(),
+        );
+      }).then(function(bitmap) {
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        ctx.drawImage(bitmap, 0, 0);
+        var faceResults = faceLandmarker.detect(bitmap);
+        var gestureResults = gestureRecognizer.recognize(bitmap);
+        var faceLandmarks = (faceResults && faceResults.faceLandmarks && faceResults.faceLandmarks.length > 0)
+          ? faceResults.faceLandmarks[0]
+          : null;
+        var e = evaluateRecognition(faceLandmarks, gestureResults);
+        ready = e.faceOk && e.gestureOk;
+        setReady(ready);
+        setInstruction(t('verificationCaptureInstruction', 'Show: {gesture}').replace('{gesture}', gestureLabel));
+        if (!ready) {
+          applyStatusFromEval(e);
+        }
+      }).catch(function(err) {
+        setInstruction(t('verificationCaptureCameraOrModelError', 'Camera or model error: {error}').replace('{error}', (err && (err.message || err)) || 'Unknown error'));
+        console.error(err);
+      });
+  }
+
   function run(vision) {
+    if (usingInputImage) {
+      analyzeInputPhoto(vision);
+      return;
+    }
     setInstruction(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
     setStatus(t('verificationCaptureStatusShowGesture', 'Show the required gesture'));
 

@@ -13,6 +13,7 @@ void openMediaPipeVerificationCapture({
   required void Function(Uint8List?) onPhoto,
   String? gestureLabel,
   Map<String, String>? captureStrings,
+  Uint8List? inputImageBytes,
   BuildContext? context,
 }) {
   final base = html.window.location;
