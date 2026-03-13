@@ -9,10 +9,9 @@ import Foundation
 import Flutter
 import UIKit
 import CoreLocation
-import UserNotifications
 import BackgroundTasks
 
-public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManagerDelegate, UNUserNotificationCenterDelegate {
+public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManagerDelegate {
     private let channel: FlutterMethodChannel
     private let locationManager = CLLocationManager()
     private var userId: String?
@@ -46,8 +45,6 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
         locationManager.distanceFilter = 10.0 // 10 meters
         locationManager.allowsBackgroundLocationUpdates = true
         locationManager.pausesLocationUpdatesAutomatically = false
-        UNUserNotificationCenter.current().delegate = self
-
         // Load saved state
         loadState()
 
@@ -489,10 +486,4 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
         endBackgroundTask()
     }
 
-    // MARK: - UNUserNotificationCenterDelegate
-
-    public func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        // Handle silent notifications
-        completionHandler([])
-    }
 }

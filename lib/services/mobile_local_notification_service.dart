@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/user_preferences_provider.dart';
@@ -113,6 +114,15 @@ class MobileLocalNotificationService {
     required String messageContent,
     required String matchId,
   }) async {
+    if (kIsWeb) return;
+    await ensureInitialized();
+
+    if (defaultTargetPlatform == TargetPlatform.iOS &&
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+      debugPrint('Skipping iOS foreground local notification for chat: $chatId');
+      return;
+    }
+
     // Check if chat notifications are enabled
     if (!_shouldShowChatNotification()) {
       debugPrint('Chat notifications disabled - skipping notification for chat: $chatId');
