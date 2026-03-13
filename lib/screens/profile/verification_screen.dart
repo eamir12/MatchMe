@@ -139,8 +139,6 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
 
   Future<void> _pickImage() async {
     _selectRandomGestureIfNeeded();
-
-    // All platforms: MediaPipe gesture-guided capture (green check when gesture is correct)
     if (_currentGesture == null) return;
     final l10n = ref.read(localizationProvider);
     final gestureLabel = l10n.getString(_currentGesture!.titleKey);
