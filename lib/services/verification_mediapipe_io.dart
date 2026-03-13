@@ -1,5 +1,6 @@
 // Mobile/desktop: MediaPipe gesture capture via WebView (same flow as web).
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -77,13 +78,29 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
   }
 
   Future<void> _initController() async {
-    if (widget.inputImageBytes == null) {
+    // Skip native camera permission check on iOS - let WebView handle its own camera permission
+    // On iOS, the WebView has its own permission system and will prompt for camera access
+    // The native permission check can fail incorrectly due to permission_handler limitations
+    if (Platform.isIOS) {
+      debugPrint('iOS detected - letting WebView handle camera permission');
+    } else {
+      // For Android, check native camera permission first
       var cameraStatus = await Permission.camera.status;
+      debugPrint('Camera permission status: $cameraStatus');
+      debugPrint('Camera status isGranted: ${cameraStatus.isGranted}');
+      debugPrint('Camera status isDenied: ${cameraStatus.isDenied}');
+      debugPrint('Camera status isPermanentlyDenied: ${cameraStatus.isPermanentlyDenied}');
+      debugPrint('Camera status isRestricted: ${cameraStatus.isRestricted}');
+      debugPrint('Camera status isLimited: ${cameraStatus.isLimited}');
+      
       if (!cameraStatus.isGranted) {
         if (cameraStatus.isDenied || cameraStatus.isPermanentlyDenied || cameraStatus.isRestricted) {
           // Don't bother requesting, just go to show settings
+          debugPrint('Camera permission not granted and cannot request - showing settings');
         } else {
+          debugPrint('Requesting camera permission...');
           cameraStatus = await Permission.camera.request();
+          debugPrint('After request, camera status: $cameraStatus');
         }
       }
       if (!cameraStatus.isGranted) {
@@ -96,63 +113,106 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
             },
           );
         }
+        debugPrint('Camera permission denied, showing error UI');
         return;
       }
     }
-
-    final html = await rootBundle.loadString('assets/verification_capture/index.html');
-    final htmlWithParams = html
-        .replaceFirst('__GESTURE_CODE_JSON__', jsonEncode(widget.gestureCode))
-        .replaceFirst('__GESTURE_LABEL_JSON__', jsonEncode(widget.gestureLabel ?? ''))
-        .replaceFirst(
-          '__CAPTURE_STRINGS_JSON__',
-          jsonEncode(widget.captureStrings ?? <String, String>{}),
+    
+    debugPrint('Loading WebView...');
+    
+    try {
+      final html = await rootBundle.loadString('assets/verification_capture/index.html');
+      debugPrint('Loaded HTML successfully, length: ${html.length}');
+      
+      final htmlWithParams = html
+          .replaceFirst('__GESTURE_CODE_JSON__', jsonEncode(widget.gestureCode))
+          .replaceFirst('__GESTURE_LABEL_JSON__', jsonEncode(widget.gestureLabel ?? ''))
+          .replaceFirst(
+            '__CAPTURE_STRINGS_JSON__',
+            jsonEncode(widget.captureStrings ?? <String, String>{}),
+          )
+          .replaceFirst(
+            '__INPUT_IMAGE_BASE64_JSON__',
+            jsonEncode(
+              widget.inputImageBytes == null ? '' : base64Encode(widget.inputImageBytes!),
+            ),
+          );
+      debugPrint('HTML with params prepared');
+      
+      if (!mounted) return;
+      
+      PlatformWebViewControllerCreationParams params =
+          const PlatformWebViewControllerCreationParams();
+      if (WebViewPlatform.instance is WebKitWebViewPlatform) {
+        params = WebKitWebViewControllerCreationParams.fromPlatformWebViewControllerCreationParams(
+          params,
+          allowsInlineMediaPlayback: true,
+          mediaTypesRequiringUserAction: const <PlaybackMediaTypes>{},
+        );
+      } else if (WebViewPlatform.instance is AndroidWebViewPlatform) {
+        params = AndroidWebViewControllerCreationParams.fromPlatformWebViewControllerCreationParams(
+          params,
+        );
+      }
+      
+      debugPrint('Creating WebView controller with platform: ${WebViewPlatform.instance}');
+      
+      final c = WebViewController.fromPlatformCreationParams(
+        params,
+        onPermissionRequest: (request) => request.grant(),
+      )
+        ..setJavaScriptMode(JavaScriptMode.unrestricted)
+        ..addJavaScriptChannel(
+          'PhotoCapture',
+          onMessageReceived: (JavaScriptMessage message) {
+            try {
+              final bytes = Uint8List.fromList(base64Decode(message.message));
+              debugPrint('Received photo from WebView, length: ${bytes.length}');
+              _onPhotoReceived(bytes);
+            } catch (e) {
+              debugPrint('Error decoding photo from WebView: $e');
+              _onPhotoReceived(null);
+            }
+          },
         )
-        .replaceFirst(
-          '__INPUT_IMAGE_BASE64_JSON__',
-          jsonEncode(
-            widget.inputImageBytes == null ? '' : base64Encode(widget.inputImageBytes!),
+        ..loadHtmlString(
+          htmlWithParams,
+          baseUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/',
+        )
+        ..setNavigationDelegate(
+          NavigationDelegate(
+            onPageStarted: (String url) {
+              debugPrint('WebView page started: $url');
+            },
+            onPageFinished: (String url) {
+              debugPrint('WebView page finished: $url');
+            },
+            onWebResourceError: (WebResourceError error) {
+              debugPrint('WebView resource error: $error');
+            },
+            onNavigationRequest: (NavigationRequest request) {
+              if (request.url.startsWith('https://cdn.jsdelivr.net')) {
+                return NavigationDecision.navigate;
+              }
+              debugPrint('Blocking navigation to: ${request.url}');
+              return NavigationDecision.prevent;
+            },
           ),
         );
-    if (!mounted) return;
-
-    PlatformWebViewControllerCreationParams params =
-        const PlatformWebViewControllerCreationParams();
-    if (WebViewPlatform.instance is WebKitWebViewPlatform) {
-      params = WebKitWebViewControllerCreationParams.fromPlatformWebViewControllerCreationParams(
-        params,
-        allowsInlineMediaPlayback: true,
-        mediaTypesRequiringUserAction: const <PlaybackMediaTypes>{},
-      );
-    } else if (WebViewPlatform.instance is AndroidWebViewPlatform) {
-      params = AndroidWebViewControllerCreationParams.fromPlatformWebViewControllerCreationParams(
-        params,
-      );
+      
+      debugPrint('WebView controller created');
+      
+      if (!mounted) return;
+      setState(() {
+        _controller = c;
+      });
+      debugPrint('WebView controller set in state');
+    } catch (e) {
+      debugPrint('Error initializing WebView controller: $e');
+      if (mounted) {
+        setState(() => _loadError = e.toString());
+      }
     }
-
-    final c = WebViewController.fromPlatformCreationParams(
-      params,
-      onPermissionRequest: (request) => request.grant(),
-    )
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..addJavaScriptChannel(
-        'PhotoCapture',
-        onMessageReceived: (JavaScriptMessage message) {
-          try {
-            final bytes = Uint8List.fromList(base64Decode(message.message));
-            _onPhotoReceived(bytes);
-          } catch (_) {
-            _onPhotoReceived(null);
-          }
-        },
-      )
-      ..loadHtmlString(
-        htmlWithParams,
-        baseUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/',
-      );
-    setState(() {
-      _controller = c;
-    });
   }
 
   @override

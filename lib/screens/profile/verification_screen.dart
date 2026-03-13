@@ -137,37 +137,47 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
     }
   }
 
-  Future<void> _pickImage() async {
-    _selectRandomGestureIfNeeded();
-    if (_currentGesture == null) return;
-    final l10n = ref.read(localizationProvider);
-    final gestureLabel = l10n.getString(_currentGesture!.titleKey);
+   Future<void> _pickImage() async {
+     debugPrint('VERIFICATION SCREEN: _pickImage called');
+     _selectRandomGestureIfNeeded();
+     if (_currentGesture == null) {
+       debugPrint('VERIFICATION SCREEN: _currentGesture is null');
+       return;
+     }
+     debugPrint('VERIFICATION SCREEN: Gesture selected: ${_currentGesture!.code}');
+     final l10n = ref.read(localizationProvider);
+     final gestureLabel = l10n.getString(_currentGesture!.titleKey);
+     debugPrint('VERIFICATION SCREEN: Gesture label: $gestureLabel');
 
-    openMediaPipeVerificationCapture(
-      gestureCode: _currentGesture!.code,
-      gestureLabel: gestureLabel,
-      captureStrings: <String, String>{
-        'verificationCaptureLoading': l10n.getString('verificationCaptureLoading'),
-        'verificationCaptureInstruction': l10n.getString('verificationCaptureInstruction'),
-        'verificationCaptureStatusShowGesture': l10n.getString('verificationCaptureStatusShowGesture'),
-        'verificationCaptureStatusShowFace': l10n.getString('verificationCaptureStatusShowFace'),
-        'verificationCaptureStatusGestureDetected': l10n.getString('verificationCaptureStatusGestureDetected'),
-        'verificationCaptureStatusUseCorrectHand': l10n.getString('verificationCaptureStatusUseCorrectHand'),
-        'verificationCaptureHandLeft': l10n.getString('verificationCaptureHandLeft'),
-        'verificationCaptureHandRight': l10n.getString('verificationCaptureHandRight'),
-        'verificationCaptureCameraOrModelError': l10n.getString('verificationCaptureCameraOrModelError'),
-        'verificationCaptureFailedToLoad': l10n.getString('verificationCaptureFailedToLoad'),
-      },
-      context: context,
-      onPhoto: (Uint8List? bytes) {
-        if (bytes != null && mounted) {
-          setState(() {
-            _selectedImage = bytes;
-          });
-        }
-      },
-    );
-  }
+     openMediaPipeVerificationCapture(
+       gestureCode: _currentGesture!.code,
+       gestureLabel: gestureLabel,
+       captureStrings: <String, String>{
+         'verificationCaptureLoading': l10n.getString('verificationCaptureLoading'),
+         'verificationCaptureInstruction': l10n.getString('verificationCaptureInstruction'),
+         'verificationCaptureStatusShowGesture': l10n.getString('verificationCaptureStatusShowGesture'),
+         'verificationCaptureStatusShowFace': l10n.getString('verificationCaptureStatusShowFace'),
+         'verificationCaptureStatusGestureDetected': l10n.getString('verificationCaptureStatusGestureDetected'),
+         'verificationCaptureStatusUseCorrectHand': l10n.getString('verificationCaptureStatusUseCorrectHand'),
+         'verificationCaptureHandLeft': l10n.getString('verificationCaptureHandLeft'),
+         'verificationCaptureHandRight': l10n.getString('verificationCaptureHandRight'),
+         'verificationCaptureCameraOrModelError': l10n.getString('verificationCaptureCameraOrModelError'),
+         'verificationCaptureFailedToLoad': l10n.getString('verificationCaptureFailedToLoad'),
+       },
+       context: context,
+       onPhoto: (Uint8List? bytes) {
+         debugPrint('VERIFICATION SCREEN: onPhoto called with bytes: ${bytes != null ? bytes.length : 'null'}');
+         if (bytes != null && mounted) {
+           setState(() {
+             _selectedImage = bytes;
+           });
+         } else {
+           debugPrint('VERIFICATION SCREEN: No bytes received or not mounted');
+         }
+       },
+     );
+     debugPrint('VERIFICATION SCREEN: openMediaPipeVerificationCapture called');
+   }
 
   Future<void> _submitVerification() async {
     if (_selectedImage == null) return;
