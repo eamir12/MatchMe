@@ -762,7 +762,7 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
         } else if (_selectedProvider == CalendarProvider.google) {
           calendars = await service.retrieveCalendars();
         } else if (_selectedProvider == CalendarProvider.device) {
-          throw CalendarSyncException('calendarSyncDeviceWebNotSupported');
+          calendars = <ExternalCalendar>[];
         } else {
           calendars = await _loadOnlineCalendars(service);
         }
@@ -1594,6 +1594,10 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
     final selectedDuplicates = _selectedEventIds
         .intersection(_duplicateEventIds)
         .length;
+    final groupedDeviceEvents = _groupDeviceEventsByAccount(l10n);
+    final showDeviceAccountGrouping =
+        _selectedProvider == CalendarProvider.device &&
+        groupedDeviceEvents.length > 1;
 
     return Column(
       children: [
@@ -1681,28 +1685,101 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
             ),
           ),
         Expanded(
-          child: ListView.builder(
-            itemCount: _events.length,
-            itemBuilder: (context, index) {
-              final event = _events[index];
-              final isSelected = _selectedEventIds.contains(event.id);
-              final isDuplicate = _duplicateEventIds.contains(event.id);
-              final enabled = !isDuplicate || !_isDuplicateCheckEnabled;
+          child: showDeviceAccountGrouping
+              ? ListView(
+                  children: [
+                    for (final entry in groupedDeviceEvents.entries) ...[
+                      Container(
+                        width: double.infinity,
+                        margin: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .secondaryContainer
+                              .withValues(alpha: 0.45),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          entry.key,
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSecondaryContainer,
+                          ),
+                        ),
+                      ),
+                      for (final event in entry.value)
+                        _buildImportEventListItem(
+                          context,
+                          ref,
+                          l10n,
+                          event,
+                          isSelected: _selectedEventIds.contains(event.id),
+                          enabled:
+                              !_duplicateEventIds.contains(event.id) ||
+                              !_isDuplicateCheckEnabled,
+                          isDuplicate: _duplicateEventIds.contains(event.id),
+                        ),
+                    ],
+                  ],
+                )
+              : ListView.builder(
+                  itemCount: _events.length,
+                  itemBuilder: (context, index) {
+                    final event = _events[index];
+                    final isSelected = _selectedEventIds.contains(event.id);
+                    final isDuplicate = _duplicateEventIds.contains(event.id);
+                    final enabled = !isDuplicate || !_isDuplicateCheckEnabled;
 
-              return _buildImportEventListItem(
-                context,
-                ref,
-                l10n,
-                event,
-                isSelected: isSelected,
-                enabled: enabled,
-                isDuplicate: isDuplicate,
-              );
-            },
-          ),
+                    return _buildImportEventListItem(
+                      context,
+                      ref,
+                      l10n,
+                      event,
+                      isSelected: isSelected,
+                      enabled: enabled,
+                      isDuplicate: isDuplicate,
+                    );
+                  },
+                ),
         ),
       ],
     );
+  }
+
+  Map<String, List<ExternalEvent>> _groupDeviceEventsByAccount(dynamic l10n) {
+    if (_selectedProvider != CalendarProvider.device) {
+      return <String, List<ExternalEvent>>{};
+    }
+    final grouped = <String, List<ExternalEvent>>{};
+    for (final event in _events) {
+      final accountLabel = _resolveAccountLabelForEvent(event, l10n);
+      grouped.putIfAbsent(accountLabel, () => <ExternalEvent>[]).add(event);
+    }
+    return grouped;
+  }
+
+  String _resolveAccountLabelForEvent(ExternalEvent event, dynamic l10n) {
+    final calendar = _calendars.cast<ExternalCalendar?>().firstWhere(
+      (c) => c?.id == event.calendarId,
+      orElse: () => null,
+    );
+    if (calendar != null) {
+      final accountName = calendar.accountName?.trim();
+      if (accountName != null && accountName.isNotEmpty) {
+        return accountName;
+      }
+      final calendarName = calendar.name.trim();
+      if (calendarName.isNotEmpty) {
+        return calendarName;
+      }
+    }
+    return l10n.getString('calendarSyncDeviceUnknownAccount');
   }
 
   Uri _applePublicCalendarHelpUriForLocale(LocalizationState l10n) {

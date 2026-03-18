@@ -213,14 +213,6 @@ class EventsScreen extends ConsumerWidget {
     CalendarProvider provider,
   ) async {
     if (kIsWeb) {
-      if (provider == CalendarProvider.device) {
-        if (!context.mounted) return;
-        final l10n = ref.read(localizationProvider);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(l10n.getString('calendarSyncDeviceWebNotSupported'))),
-        );
-        return;
-      }
       if (provider == CalendarProvider.outlook) {
         final service = ref.read(calendarSyncServiceProvider);
         try {

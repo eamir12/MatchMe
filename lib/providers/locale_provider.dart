@@ -513,8 +513,6 @@ class LocalizationState {
     'signIn': 'Sign In',
     'calendarSyncOutlookWebOnly':
         'Outlook calendar sync is currently only available on the web version.',
-    'calendarSyncDeviceWebNotSupported':
-        'Import from Device Calendar is not available on web. Use Android, iOS, Windows, or macOS.',
     'calendarSyncOutlookExpired':
         'Your Outlook session has expired. Please sign in again.',
     'calendarSyncOutlookFailed':
@@ -581,6 +579,7 @@ class LocalizationState {
     'calendarSyncConnectOutlook': 'Connect Outlook Calendar',
     'calendarSyncConnectApple': 'Connect Apple Calendar',
     'calendarSyncConnectDevice': 'Connect Device Calendar',
+    'calendarSyncDeviceUnknownAccount': 'Unknown account',
     'calendarSyncNoCalendarsDevice':
         'No device calendars were found on this device.',
     'calendarSyncNoCalendarsApple':
