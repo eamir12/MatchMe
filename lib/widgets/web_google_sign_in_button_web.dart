@@ -2,8 +2,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:google_sign_in/google_sign_in.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/services/web_calendar_service.dart';
 
 class WebGoogleSignInButton extends ConsumerStatefulWidget {
   final Future<void> Function()? onSignIn;
@@ -27,7 +27,7 @@ class _WebGoogleSignInButtonState extends ConsumerState<WebGoogleSignInButton> {
     _clientId = envClientId.isNotEmpty ? envClientId : dotEnvClientId;
     _initFuture = _clientId.isEmpty
         ? Future.value()
-        : GoogleSignIn.instance.initialize(clientId: _clientId);
+        : WebCalendarService.ensureGoogleSignInInitialized(clientId: _clientId);
   }
 
   @override

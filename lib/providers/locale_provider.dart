@@ -213,16 +213,16 @@ class LocalizationState {
     'calendarSyncPermissionTitle': 'Calendar permission required',
     'calendarSyncPermissionActionOpenAppSettings': 'Open App Settings',
     'calendarSyncPermissionActionImportOnline':
-        'Import Events from Online Account',
+        'Import from Online Providers',
     'calendarSyncPermissionActionClose': 'Close',
     'calendarSyncPermissionSettingsGuide':
-        'To import events from your device calendar, tap Open App Settings. In MatchMe settings, open Permissions, open Calendar, then move the dot to Allow.',
+        'To import from your device calendar, tap Open App Settings and enable Calendar permission for MatchMe.',
     'calendarSyncPermissionBlockedSettingsGuide':
-        'Calendar permission is currently blocked by your device. Tap Open App Settings. In MatchMe settings, open Permissions, open Calendar, then move the dot to Allow.',
+        'Calendar permission is currently blocked. Tap Open App Settings and enable Calendar permission for MatchMe.',
     'calendarSyncPermissionBlockedSettingsGuideAndroid':
-        'Calendar permission is currently blocked by your device. Tap Open App Settings. In MatchMe settings, open Permissions, open Calendar, then move the dot to Allow.',
+        'Calendar permission is currently blocked on Android. Tap Open App Settings, then Permissions → Calendar, and choose Allow.',
     'calendarSyncPermissionBlockedSettingsGuideIos':
-        'Calendar permission is currently blocked by your device. Tap Open App Settings. In MatchMe settings, open Permissions, open Calendar, then move the dot to Allow.',
+        'Calendar permission is currently blocked on iOS. Tap Open App Settings, then Calendars, and enable access for MatchMe.',
     // Password reset screen translations
     'authSetNewPassword': 'Set New Password',
     'authSetNewPasswordMessage': 'Please enter your new password below.',
@@ -586,6 +586,7 @@ class LocalizationState {
         'No Apple calendars found on this device. Make sure iCloud Calendar is enabled in your device account settings.',
     'calendarSyncAppleWebNotSupported':
         'Apple Calendar import on web is not available yet. Use iOS, macOS, or another device with Apple calendars enabled.',
+    'calendarSyncAppleOnlineImportTitle': 'Apple Online Events Import',
     'calendarSyncApplePublicUrlLabel': 'Apple public calendar URL',
     'calendarSyncApplePublicUrlHint': 'webcal://p01-calendarws.icloud.com/...',
     'calendarSyncApplePublicUrlHelp':
@@ -614,9 +615,10 @@ class LocalizationState {
     'calendarSyncSyncSelected': 'Sync Selected',
     'calendarSyncTitle': 'Sync Calendar',
     'calendarSyncChangeCalendars': 'Change Calendars',
-    'eventsImportGoogle': 'Import Google Events',
-    'eventsImportOutlook': 'Import Outlook Events',
-    'eventsImportApple': 'Import Apple Events',
+    'eventsImportOnlineProviders': 'Import from Online Providers',
+    'eventsImportGoogle': 'Import from Google',
+    'eventsImportOutlook': 'Import from Outlook',
+    'eventsImportApple': 'Import from Apple',
     'eventsImportDeviceCalendar': 'Import from Device Calendar',
     'timeNight': 'Night',
     'eventLocationLabel': 'Location',

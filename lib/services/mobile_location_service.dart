@@ -2,7 +2,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'location_service.dart';
 import 'package:matchme/services/local_db_service.dart';
@@ -47,10 +47,8 @@ class MobileLocationService implements LocationService {
       return;
     }
 
-    // Check connectivity
-    final connectivityResult = await Connectivity().checkConnectivity();
-    final isOnline = connectivityResult.any((r) => r != ConnectivityResult.none);
-    if (!isOnline) {
+    final health = await getCurrentConnectivityHealth();
+    if (!health.isOnline) {
       debugPrint('[${_ts()}] 📍 Mobile location service: Device is offline - skipping location handling');
       // We don't necessarily stop the stream here, as connectivity might come back,
       // but we definitely don't want to process this location or try to send it.

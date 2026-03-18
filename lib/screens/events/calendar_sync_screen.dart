@@ -26,11 +26,13 @@ enum CalendarSource { device, api }
 class CalendarSyncScreen extends ConsumerStatefulWidget {
   final CalendarProvider? initialProvider;
   final CalendarSource? initialSource;
+  final List<ExternalCalendar>? initialCalendars;
 
   const CalendarSyncScreen({
     super.key,
     this.initialProvider,
     this.initialSource,
+    this.initialCalendars,
   });
 
   @override
@@ -434,6 +436,34 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
     return content;
   }
 
+  List<ExternalCalendar> _prepareInitialCalendars(
+    List<ExternalCalendar> calendars,
+  ) {
+    var filtered = calendars
+        .where((calendar) => !_isHolidayOrSpecialCalendar(calendar))
+        .toList();
+    if (filtered.isNotEmpty) {
+      filtered.sort((a, b) {
+        if (a.isDefault == b.isDefault) return 0;
+        return a.isDefault ? -1 : 1;
+      });
+    } else {
+      filtered = <ExternalCalendar>[];
+    }
+    final isOnlineImport = kIsWeb || _selectedSource == CalendarSource.api;
+    if (isOnlineImport && filtered.isNotEmpty) {
+      ExternalCalendar mainCalendar = filtered.first;
+      for (final calendar in filtered) {
+        if (calendar.isDefault) {
+          mainCalendar = calendar;
+          break;
+        }
+      }
+      return [mainCalendar];
+    }
+    return filtered;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -449,6 +479,35 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
     _loadSavedApplePublicCalendarUrl();
     _loadExistingEvents();
     _checkOutlookInstallation();
+
+    final initialCalendars = widget.initialCalendars;
+    if (kIsWeb && initialCalendars != null) {
+      final preparedCalendars = _prepareInitialCalendars(initialCalendars);
+      _calendars = preparedCalendars;
+      _hasFetched =
+          preparedCalendars.isNotEmpty ||
+          _selectedProvider != CalendarProvider.apple;
+      if (widget.initialProvider != null && preparedCalendars.isNotEmpty) {
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          if (!mounted) return;
+          if (_isLoading || _currentStep != 0 || _selectedCalendarIds.isNotEmpty) {
+            return;
+          }
+          final ids = preparedCalendars
+              .map((calendar) => calendar.id)
+              .where((id) => id.isNotEmpty)
+              .toList();
+          if (ids.isEmpty) return;
+          setState(() {
+            _selectedCalendarIds
+              ..clear()
+              ..addAll(ids);
+          });
+          await _fetchEvents();
+        });
+      }
+      return;
+    }
 
     if (kIsWeb) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1246,10 +1305,18 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
   @override
   Widget build(BuildContext context) {
     final l10n = ref.watch(localizationProvider);
+    final isAppleOnlineImportTitle =
+        _currentStep == 0 &&
+        _selectedProvider == CalendarProvider.apple &&
+        (_selectedSource == CalendarSource.api || kIsWeb);
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(l10n.getString('calendarSyncTitle')),
+        title: Text(
+          isAppleOnlineImportTitle
+              ? l10n.getString('calendarSyncAppleOnlineImportTitle')
+              : l10n.getString('calendarSyncTitle'),
+        ),
         leading: _currentStep == 1
             ? IconButton(
                 icon: const Icon(Icons.arrow_back),
@@ -1309,12 +1376,36 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
         : null;
     final userGender = userProfile?.gender;
 
-    if (kIsWeb && widget.initialProvider != null && !_hasFetched) {
+    if (kIsWeb &&
+        widget.initialProvider != null &&
+        _selectedProvider != CalendarProvider.apple &&
+        !_hasFetched) {
       return const Center(child: CircularProgressIndicator());
     }
 
     if (!_hasFetched) {
       if (kIsWeb) {
+        if (_selectedProvider == CalendarProvider.apple) {
+          return Center(
+            child: SizedBox(
+              width: 360,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _buildApplePublicCalendarUrlField(l10n),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: () async {
+                      await _fetchCalendars();
+                    },
+                    icon: const Icon(Icons.phone_iphone),
+                    label: Text(l10n.getString('calendarSyncConnectApple')),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
         // For web, we already handled the signed-in case above
         // This remaining case should not happen, but keep as fallback
         return Center(
@@ -1794,22 +1885,19 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        TextField(
-          controller: _applePublicCalendarUrlController,
-          keyboardType: TextInputType.url,
-          textInputAction: TextInputAction.done,
-          autocorrect: false,
-          enableSuggestions: false,
-          onSubmitted: (_) => _fetchCalendars(),
-          decoration: InputDecoration(
-            labelText: l10n.getString('calendarSyncApplePublicUrlLabel'),
-            hintText: l10n.getString('calendarSyncApplePublicUrlHint'),
-            helperText: l10n.getString('calendarSyncApplePublicUrlHelp'),
-            border: const OutlineInputBorder(),
-          ),
+        Text(
+          l10n.getString('calendarSyncAppleOnlineImportTitle'),
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
         ),
-        const SizedBox(height: 6),
-        TextButton.icon(
+        const SizedBox(height: 8),
+        Text(
+          l10n.getString('calendarSyncApplePublicUrlHelp'),
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+        const SizedBox(height: 4),
+        TextButton(
           onPressed: () async {
             final helpUri = _applePublicCalendarHelpUriForLocale(l10n);
             final launched = await launchUrl(
@@ -1826,8 +1914,36 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
               );
             }
           },
-          icon: const Icon(Icons.help_outline),
-          label: Text(l10n.getString('calendarSyncApplePublicHelpLinkLabel')),
+          style: TextButton.styleFrom(
+            padding: EdgeInsets.zero,
+            alignment: Alignment.centerLeft,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.help_outline),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  l10n.getString('calendarSyncApplePublicHelpLinkLabel'),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _applePublicCalendarUrlController,
+          keyboardType: TextInputType.url,
+          textInputAction: TextInputAction.done,
+          autocorrect: false,
+          enableSuggestions: false,
+          onSubmitted: (_) => _fetchCalendars(),
+          decoration: InputDecoration(
+            labelText: l10n.getString('calendarSyncApplePublicUrlLabel'),
+            hintText: l10n.getString('calendarSyncApplePublicUrlHint'),
+            border: const OutlineInputBorder(),
+          ),
         ),
       ],
     );

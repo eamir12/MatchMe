@@ -62,6 +62,7 @@ class WebCalendarService {
   static const String _googleAccessTokenExpiryKey =
       'google_calendar_access_token_expiry';
   static const String _googleUserEmailKey = 'google_calendar_user_email';
+  static Future<void>? _sharedGoogleSignInInitFuture;
 
   final GoogleSignIn _googleSignIn = GoogleSignIn.instance;
   final StreamController<GoogleSignInAccount?> _userController =
@@ -76,6 +77,34 @@ class WebCalendarService {
   bool _didLoadTokenCache = false;
 
   WebCalendarService();
+
+  static Future<void> ensureGoogleSignInInitialized({
+    required String clientId,
+  }) async {
+    final normalizedClientId = clientId.trim();
+    if (kIsWeb && normalizedClientId.isEmpty) {
+      return;
+    }
+    final pendingInit = _sharedGoogleSignInInitFuture;
+    if (pendingInit != null) {
+      await pendingInit;
+      return;
+    }
+    final initFuture = () async {
+      if (kIsWeb || normalizedClientId.isNotEmpty) {
+        await GoogleSignIn.instance.initialize(clientId: normalizedClientId);
+      } else {
+        await GoogleSignIn.instance.initialize();
+      }
+    }();
+    _sharedGoogleSignInInitFuture = initFuture;
+    try {
+      await initFuture;
+    } catch (_) {
+      _sharedGoogleSignInInitFuture = null;
+      rethrow;
+    }
+  }
 
   Future<void> ensureInitialized() async {
     await _init();
@@ -111,11 +140,7 @@ class WebCalendarService {
         return;
       }
 
-      if (kIsWeb || clientId.isNotEmpty) {
-        await _googleSignIn.initialize(clientId: clientId);
-      } else {
-        await _googleSignIn.initialize();
-      }
+      await ensureGoogleSignInInitialized(clientId: clientId);
       _googleSignIn.authenticationEvents
           .listen((event) {
             if (event is GoogleSignInAuthenticationEventSignIn) {
@@ -247,6 +272,15 @@ class WebCalendarService {
         text.contains('clientconfiguration');
   }
 
+  bool _isPopupClosedError(Object e) {
+    final text = e.toString().toLowerCase();
+    return text.contains('popup') ||
+        text.contains('window.closed') ||
+        text.contains('closed_by_user') ||
+        text.contains('cancel') ||
+        text.contains('canceled');
+  }
+
   Future<void> _invalidateGoogleAuth() async {
     _activeClient?.close();
     _activeClient = null;
@@ -268,7 +302,7 @@ class WebCalendarService {
         return _activeClient;
       }
 
-      if (allowInteractive && _currentUser == null) {
+      if (!kIsWeb && allowInteractive && _currentUser == null) {
         try {
           final signedInUser = await _googleSignIn.authenticate();
           _currentUser = signedInUser;
@@ -385,6 +419,7 @@ class WebCalendarService {
         final errorText = e.toString().toLowerCase();
         final shouldRetryInteractively =
             allowInteractive &&
+            !_isPopupClosedError(e) &&
             !errorText.contains('failed to get authenticated client') &&
             !errorText.contains('authentication failed');
         await _invalidateGoogleAuth();
@@ -435,6 +470,9 @@ class WebCalendarService {
               );
             }
           }
+        }
+        if (_isPopupClosedError(e)) {
+          throw Exception('Sign-in was cancelled. Please try again.');
         }
         throw Exception(
           'Authentication failed. Please sign in with your Google account to continue.',

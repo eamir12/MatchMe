@@ -3,11 +3,11 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/session_service.dart';
 import 'package:matchme/services/web_notification_service.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Background service that maintains app functionality when UI is closed
@@ -97,7 +97,7 @@ class BackgroundService {
   static bool _isOnline = true;
   static Timer? _heartbeatTimer;
   static Timer? _syncTimer;
-  static StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  static StreamSubscription<ConnectivityHealth>? _connectivitySubscription;
   static int? _lastSentGpsInterval;
   static bool? _lastSentSmartThrottlingEnabled;
 
@@ -291,17 +291,14 @@ class BackgroundService {
         // Check initial connectivity
         bool isOnline = true;
         try {
-          final connectivityResult = await Connectivity().checkConnectivity();
-          isOnline = connectivityResult.any((r) => r != ConnectivityResult.none);
+          final health = await getCurrentConnectivityHealth();
+          isOnline = health.isOnline;
           _isOnline = isOnline;
           debugPrint('[BG] BackgroundService.start: initial isOnline=$isOnline');
           
-          // Start monitoring connectivity
           _connectivitySubscription?.cancel();
-          _connectivitySubscription = Connectivity().onConnectivityChanged.listen((results) {
-            if (results.isNotEmpty) {
-              _handleConnectivityChange(results.first);
-            }
+          _connectivitySubscription = createConnectivityHealthStream().listen((health) {
+            _handleConnectivityChange(health);
           });
         } catch (e) {
           debugPrint('[BG] BackgroundService.start: failed to check connectivity: $e');
@@ -653,10 +650,8 @@ class BackgroundService {
 
     // Monitor connectivity
     _connectivitySubscription?.cancel();
-    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((results) {
-      if (results.isNotEmpty) {
-        _handleConnectivityChange(results.first);
-      }
+    _connectivitySubscription = createConnectivityHealthStream().listen((health) {
+      _handleConnectivityChange(health);
     });
 
     debugPrint('Fallback background service started');
@@ -716,8 +711,8 @@ class BackgroundService {
   }
 
   /// Handle connectivity changes
-  static void _handleConnectivityChange(ConnectivityResult result) {
-    final isOnline = result != ConnectivityResult.none;
+  static void _handleConnectivityChange(ConnectivityHealth health) {
+    final isOnline = health.isOnline;
     if (_isOnline == isOnline) {
       return;
     }

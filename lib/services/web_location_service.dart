@@ -4,7 +4,7 @@ import 'dart:async';
 import '../web_imports.dart' as html;
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:matchme/providers/connectivity_provider.dart';
 import 'location_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'gps_kalman_filter.dart';
@@ -383,10 +383,8 @@ class WebLocationService implements LocationService {
         return;
       }
 
-      // Check connectivity
-      final connectivityResult = await Connectivity().checkConnectivity();
-      final isOnline = connectivityResult.any((r) => r != ConnectivityResult.none);
-      if (!isOnline) {
+      final health = await getCurrentConnectivityHealth();
+      if (!health.isOnline) {
         debugPrint('[${_ts()}] 🌍 Web location service: Device is offline, skipping location update');
         return;
       }

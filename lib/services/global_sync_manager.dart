@@ -40,8 +40,8 @@ class GlobalHomeSyncManager {
       Future.microtask(() => _runFullSync(userId, checkConnectivity: false));
     }
 
-    _ref.listen<AsyncValue<bool>>(connectivityProvider, (previous, next) {
-      if (next.value == true) {
+    _ref.listen<AsyncValue<ConnectivityHealth>>(connectivityHealthProvider, (previous, next) {
+      if (next.value?.isBackendHealthy == true) {
         _startPeriodicSync(); // Start sync when online
         _startHeartbeat(); // Start periodic activity updates when online
       } else {
@@ -68,8 +68,8 @@ class GlobalHomeSyncManager {
     });
 
     _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) {
-      final isOnline = _ref.read(connectivityProvider).value ?? false;
-      if (!isOnline) return;
+      final health = _ref.read(connectivityHealthProvider).value;
+      if (health?.isBackendHealthy != true) return;
       final userId = supabase.auth.currentUser?.id;
       if (userId == null) return;
       supabase.rpc('update_user_activity', params: {'p_user_id': userId}).catchError((e) {});
@@ -106,8 +106,8 @@ class GlobalHomeSyncManager {
 
   Future<void> _runFullSync(String userId, {bool checkConnectivity = true}) async {
     if (checkConnectivity) {
-      final isOnline = _ref.read(connectivityProvider).value ?? false;
-      if (!isOnline) return;
+      final health = _ref.read(connectivityHealthProvider).value;
+      if (health?.isBackendHealthy != true) return;
     }
 
     // Core sync tasks

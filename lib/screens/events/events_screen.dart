@@ -9,6 +9,7 @@ import 'package:matchme/providers/calendar_sync_provider.dart';
 import 'package:matchme/providers/event_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
+import 'package:matchme/services/web_calendar_service.dart';
 import 'package:matchme/screens/events/add_event_screen.dart'; // <-- CORRECTED PATH
 import 'package:matchme/screens/events/attendees_screen.dart'; // <-- CORRECTED PATH
 import 'package:matchme/screens/events/calendar_sync_screen.dart';
@@ -213,22 +214,21 @@ class EventsScreen extends ConsumerWidget {
     CalendarProvider provider,
   ) async {
     if (kIsWeb) {
-      if (provider == CalendarProvider.outlook) {
-        final service = ref.read(calendarSyncServiceProvider);
-        try {
-          final token = await service.signInOutlook();
-          if (token == null) return;
-          if (!context.mounted) return;
-        } catch (_) {
-          return;
-        }
+      final initialCalendars = await _loadWebImportCalendars(ref, provider);
+      if (provider != CalendarProvider.apple && initialCalendars == null) {
+        return;
       }
       if (!context.mounted) return;
-      _openCalendarSync(context, provider, CalendarSource.api);
+      _openCalendarSync(
+        context,
+        provider,
+        CalendarSource.api,
+        initialCalendars: initialCalendars,
+      );
       return;
     }
 
-    if (provider == CalendarProvider.apple) {
+    if (provider != CalendarProvider.device) {
       _openCalendarSync(context, provider, CalendarSource.api);
       return;
     }
@@ -260,7 +260,46 @@ class EventsScreen extends ConsumerWidget {
       return;
     }
 
-    _openCalendarSync(context, provider, CalendarSource.api);
+    _openOnlineProvidersScreen(context);
+  }
+
+  Future<List<ExternalCalendar>?> _loadWebImportCalendars(
+    WidgetRef ref,
+    CalendarProvider provider,
+  ) async {
+    if (!kIsWeb) return <ExternalCalendar>[];
+    final service = ref.read(calendarSyncServiceProvider);
+    try {
+      if (provider == CalendarProvider.outlook) {
+        final token = await service.signInOutlook();
+        if (token == null) return null;
+        return await service.retrieveOutlookCalendars();
+      }
+      if (provider == CalendarProvider.google) {
+        return await service.retrieveCalendars();
+      }
+      return <ExternalCalendar>[];
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _startOnlineProviderImportFlow(
+    BuildContext context,
+    WidgetRef ref,
+    CalendarProvider provider,
+  ) async {
+    final initialCalendars = await _loadWebImportCalendars(ref, provider);
+    if (provider != CalendarProvider.apple && initialCalendars == null) {
+      return;
+    }
+    if (!context.mounted) return;
+    _openCalendarSync(
+      context,
+      provider,
+      CalendarSource.api,
+      initialCalendars: initialCalendars,
+    );
   }
 
   bool _isCalendarPermissionError(Object error) {
@@ -274,13 +313,85 @@ class EventsScreen extends ConsumerWidget {
     BuildContext context,
     CalendarProvider provider,
     CalendarSource source,
+    {List<ExternalCalendar>? initialCalendars}
   ) {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => CalendarSyncScreen(
           initialProvider: provider,
           initialSource: source,
+          initialCalendars: initialCalendars,
         ),
+      ),
+    );
+  }
+
+  void _openOnlineProvidersScreen(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) {
+          return Consumer(
+            builder: (context, routeRef, _) {
+              final l10n = routeRef.watch(localizationProvider);
+              return Scaffold(
+                appBar: AppBar(
+                  title: Text(l10n.getString('eventsImportOnlineProviders')),
+                ),
+                body: SafeArea(
+                  child: Align(
+                    alignment: Alignment.topCenter,
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(16),
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 460),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            _buildImportProviderButton(
+                              label: l10n.getString('eventsImportGoogle'),
+                              assetPath: 'assets/images/providers/google.png',
+                              onPressed: () async {
+                                await _startOnlineProviderImportFlow(
+                                  context,
+                                  routeRef,
+                                  CalendarProvider.google,
+                                );
+                              },
+                            ),
+                            const SizedBox(height: 10),
+                            _buildImportProviderButton(
+                              label: l10n.getString('eventsImportOutlook'),
+                              assetPath: 'assets/images/providers/microsoft.png',
+                              onPressed: () async {
+                                await _startOnlineProviderImportFlow(
+                                  context,
+                                  routeRef,
+                                  CalendarProvider.outlook,
+                                );
+                              },
+                            ),
+                            const SizedBox(height: 10),
+                            _buildImportProviderButton(
+                              label: l10n.getString('eventsImportApple'),
+                              assetPath: 'assets/images/providers/apple.png',
+                              onPressed: () async {
+                                await _startOnlineProviderImportFlow(
+                                  context,
+                                  routeRef,
+                                  CalendarProvider.apple,
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          );
+        },
       ),
     );
   }
@@ -476,73 +587,7 @@ class EventsScreen extends ConsumerWidget {
                     spacing: 8,
                     runSpacing: 8,
                     children: [
-                      SizedBox(
-                        width: importButtonWidth,
-                        child: _buildImportProviderButton(
-                          label: l10n.getString('eventsImportGoogle'),
-                          assetPath: 'assets/images/providers/google.png',
-                          onPressed: () async {
-                            debugPrint(
-                              'CalendarSync EventsScreen import tap provider=google',
-                            );
-                            final handler = onImportGoogleCalendar;
-                            if (handler != null) {
-                              handler();
-                              return;
-                            }
-                            await _startImportFlow(
-                              context,
-                              ref,
-                              CalendarProvider.google,
-                            );
-                          },
-                        ),
-                      ),
-                      SizedBox(
-                        width: importButtonWidth,
-                        child: _buildImportProviderButton(
-                          label: l10n.getString('eventsImportOutlook'),
-                          assetPath: 'assets/images/providers/microsoft.png',
-                          onPressed: () async {
-                            debugPrint(
-                              'CalendarSync EventsScreen import tap provider=outlook',
-                            );
-                            final handler = onImportOutlookCalendar;
-                            if (handler != null) {
-                              handler();
-                              return;
-                            }
-                            await _startImportFlow(
-                              context,
-                              ref,
-                              CalendarProvider.outlook,
-                            );
-                          },
-                        ),
-                      ),
-                      SizedBox(
-                        width: importButtonWidth,
-                        child: _buildImportProviderButton(
-                          label: l10n.getString('eventsImportApple'),
-                          assetPath: 'assets/images/providers/apple.png',
-                          onPressed: () async {
-                            debugPrint(
-                              'CalendarSync EventsScreen import tap provider=apple',
-                            );
-                            final handler = onImportAppleCalendar;
-                            if (handler != null) {
-                              handler();
-                              return;
-                            }
-                            await _startImportFlow(
-                              context,
-                              ref,
-                              CalendarProvider.apple,
-                            );
-                          },
-                        ),
-                      ),
-                      if (_enableDeviceCalendarImportOption && !kIsWeb)
+                      if (!kIsWeb && _enableDeviceCalendarImportOption)
                         SizedBox(
                           width: importButtonWidth,
                           child: _buildImportProviderButton(
@@ -560,6 +605,85 @@ class EventsScreen extends ConsumerWidget {
                             },
                           ),
                         ),
+                      if (!kIsWeb)
+                        SizedBox(
+                          width: importButtonWidth,
+                          child: _buildImportProviderButton(
+                            label: l10n.getString('eventsImportOnlineProviders'),
+                            iconData: Icons.cloud_outlined,
+                            onPressed: () async {
+                              _openOnlineProvidersScreen(context);
+                            },
+                          ),
+                        ),
+                      if (kIsWeb) ...[
+                        SizedBox(
+                          width: importButtonWidth,
+                          child: _buildImportProviderButton(
+                            label: l10n.getString('eventsImportGoogle'),
+                            assetPath: 'assets/images/providers/google.png',
+                            onPressed: () async {
+                              debugPrint(
+                                'CalendarSync EventsScreen import tap provider=google',
+                              );
+                              final handler = onImportGoogleCalendar;
+                              if (handler != null) {
+                                handler();
+                                return;
+                              }
+                              await _startImportFlow(
+                                context,
+                                ref,
+                                CalendarProvider.google,
+                              );
+                            },
+                          ),
+                        ),
+                        SizedBox(
+                          width: importButtonWidth,
+                          child: _buildImportProviderButton(
+                            label: l10n.getString('eventsImportOutlook'),
+                            assetPath: 'assets/images/providers/microsoft.png',
+                            onPressed: () async {
+                              debugPrint(
+                                'CalendarSync EventsScreen import tap provider=outlook',
+                              );
+                              final handler = onImportOutlookCalendar;
+                              if (handler != null) {
+                                handler();
+                                return;
+                              }
+                              await _startImportFlow(
+                                context,
+                                ref,
+                                CalendarProvider.outlook,
+                              );
+                            },
+                          ),
+                        ),
+                        SizedBox(
+                          width: importButtonWidth,
+                          child: _buildImportProviderButton(
+                            label: l10n.getString('eventsImportApple'),
+                            assetPath: 'assets/images/providers/apple.png',
+                            onPressed: () async {
+                              debugPrint(
+                                'CalendarSync EventsScreen import tap provider=apple',
+                              );
+                              final handler = onImportAppleCalendar;
+                              if (handler != null) {
+                                handler();
+                                return;
+                              }
+                              await _startImportFlow(
+                                context,
+                                ref,
+                                CalendarProvider.apple,
+                              );
+                            },
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ],
