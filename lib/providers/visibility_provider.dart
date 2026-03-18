@@ -149,7 +149,15 @@ class IsVisible extends _$IsVisible {
 
       // 3. Ensure rules are loaded and effective visibility is correct
       try {
-        await ref.read(invisibilityRulesProvider.notifier).waitForInitialization();
+        final rulesNotifier = ref.read(invisibilityRulesProvider.notifier);
+        await rulesNotifier.waitForInitialization();
+        await rulesNotifier.syncFromSupabase();
+        final syncedRules = ref.read(invisibilityRulesProvider);
+        if (syncedRules.locationRules.any((rule) => rule.enabled)) {
+          try {
+            await ref.read(currentLocationProvider.notifier).refreshLocation();
+          } catch (_) {}
+        }
         await _updateEffectiveVisibility();
       } catch (e) {
         debugPrint('⚠️ [IsVisible] Error waiting for rules: $e');
@@ -332,6 +340,14 @@ class IsVisible extends _$IsVisible {
              final dbVisible = response['user_visibility_setting'] == true;
              _manualVisibility = dbVisible;
              await _saveManualVisibility(dbVisible);
+             final rulesNotifier = ref.read(invisibilityRulesProvider.notifier);
+             await rulesNotifier.syncFromSupabase();
+             final syncedRules = ref.read(invisibilityRulesProvider);
+             if (syncedRules.locationRules.any((rule) => rule.enabled)) {
+               try {
+                 await ref.read(currentLocationProvider.notifier).refreshLocation();
+               } catch (_) {}
+             }
              await _updateEffectiveVisibility();
            }
          } catch (_) {}

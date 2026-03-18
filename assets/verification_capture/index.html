@@ -17,6 +17,7 @@
     #feedback svg { width: 48px; height: 48px; opacity: 0.6; }
     #feedback.ready svg { opacity: 1; }
     #captureBar { position: absolute; bottom: 0; left: 0; right: 0; padding: 24px; background: linear-gradient(transparent, rgba(0,0,0,0.8)); display: flex; justify-content: center; }
+    #captureWrap { display: flex; flex-direction: column; align-items: center; }
     #captureBtn { width: 72px; height: 72px; border-radius: 50%; border: 4px solid #fff; background: rgba(255,255,255,0.3); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: opacity 0.2s, background 0.2s; }
     #captureBtn:disabled { opacity: 0.5; cursor: not-allowed; }
     #captureBtn.ready { background: rgba(0, 200, 83, 0.9); }
@@ -32,7 +33,7 @@
       <div id="instruction"></div>
       <div id="feedback"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg></div>
       <div id="captureBar">
-        <div>
+        <div id="captureWrap">
           <button id="captureBtn" disabled><svg viewBox="0 0 24 24" fill="white"><circle cx="12" cy="12" r="4"/></svg></button>
           <div id="status"></div>
         </div>
@@ -87,7 +88,10 @@
   var hasCaptured = false;
   var tickTimer = null;
   var inputImageBase64 = (typeof window.__INPUT_IMAGE_BASE64__ === 'string') ? window.__INPUT_IMAGE_BASE64__ : '';
-  var usingInputImage = !!(inputImageBase64 && inputImageBase64.length > 0);
+  if (inputImageBase64 === '__INPUT_IMAGE_BASE64_JSON__' || inputImageBase64 === 'null') {
+    inputImageBase64 = '';
+  }
+  var usingInputImage = !!(inputImageBase64 && inputImageBase64.trim().length > 0);
   var strings = (window.__CAPTURE_STRINGS__ && typeof window.__CAPTURE_STRINGS__ === 'object') ? window.__CAPTURE_STRINGS__ : {};
 
   window.sendVerificationPhoto = function(base64) {
@@ -130,8 +134,9 @@
     statusEl.textContent = text;
   }
 
-  setInstruction(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
-  setStatus(t('verificationCaptureStatusShowGesture', 'Show the required gesture'));
+  var gestureInstruction = t('verificationCaptureInstruction', 'Show: {gesture}').replace('{gesture}', gestureLabel);
+  setInstruction(gestureInstruction);
+  setStatus(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
 
   function detectGesture(results) {
     if (!results || !results.gestures || results.gestures.length === 0) return null;
@@ -372,8 +377,8 @@
   });
 
   function analyzeInputPhoto(vision) {
-    setInstruction(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
-    setStatus(t('verificationCaptureStatusShowGesture', 'Show the required gesture'));
+    setInstruction(gestureInstruction);
+    setStatus(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
 
     vision.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm')
       .then(function(resolver) {
@@ -418,7 +423,7 @@
         var e = evaluateRecognition(faceLandmarks, gestureResults);
         ready = e.faceOk && e.gestureOk;
         setReady(ready);
-        setInstruction(t('verificationCaptureInstruction', 'Show: {gesture}').replace('{gesture}', gestureLabel));
+        setInstruction(gestureInstruction);
         if (!ready) {
           applyStatusFromEval(e);
         }
@@ -428,21 +433,38 @@
       });
   }
 
+  function startCameraPreview(cameraStream) {
+    stream = cameraStream;
+    video.srcObject = stream;
+    video.muted = true;
+    var playPromise = null;
+    try {
+      playPromise = video.play();
+    } catch (_) {}
+    if (playPromise && typeof playPromise.then === 'function') {
+      return playPromise.catch(function() {});
+    }
+    return Promise.resolve();
+  }
+
   function run(vision) {
     if (usingInputImage) {
       analyzeInputPhoto(vision);
       return;
     }
-    setInstruction(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
-    setStatus(t('verificationCaptureStatusShowGesture', 'Show the required gesture'));
+    setInstruction(gestureInstruction);
+    setStatus(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
 
-    Promise.all([
-      vision.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'),
-      navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
-    ]).then(function(arr) {
+    var resolverPromise = vision.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm');
+    var cameraPromise = navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    }).then(function(cameraStream) {
+      return startCameraPreview(cameraStream);
+    });
+
+    Promise.all([resolverPromise, cameraPromise]).then(function(arr) {
       var resolver = arr[0];
-      stream = arr[1];
-      video.srcObject = stream;
       return Promise.all([
         vision.GestureRecognizer.createFromOptions(resolver, {
           baseOptions: {
@@ -464,7 +486,8 @@
     }).then(function(recognizer) {
       gestureRecognizer = recognizer[0];
       faceLandmarker = recognizer[1];
-      setInstruction(t('verificationCaptureInstruction', 'Show: {gesture}').replace('{gesture}', gestureLabel));
+      setInstruction(gestureInstruction);
+      setStatus(t('verificationCaptureStatusShowGesture', 'Show the required gesture'));
       tickTimer = setInterval(tick, 1000 / FPS);
     }).catch(function(err) {
       setInstruction(t('verificationCaptureCameraOrModelError', 'Camera or model error: {error}').replace('{error}', (err && (err.message || err)) || 'Unknown error'));

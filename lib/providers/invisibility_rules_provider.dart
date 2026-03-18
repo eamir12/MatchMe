@@ -37,11 +37,14 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
         if (response != null && response['rules_data'] != null) {
           final rulesJson = response['rules_data'] as String;
           final rules = InvisibilityRules.fromJson(jsonDecode(rulesJson));
-          state = rules.copyWith(isLoaded: true);
-
-          // Also save to SharedPreferences as backup
+          final normalizedRules = _pruneExpiredRules(rules).copyWith(isLoaded: true);
+          final normalizedRulesJson = jsonEncode(normalizedRules.toJson());
+          state = normalizedRules;
           final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('invisibility_rules', rulesJson);
+          await prefs.setString('invisibility_rules', normalizedRulesJson);
+          if (normalizedRulesJson != rulesJson) {
+            await _syncRulesToSupabase(normalizedRulesJson);
+          }
           await ref.read(isVisibleProvider.notifier).updateEffectiveVisibility();
           return;
         }
@@ -52,7 +55,13 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
       final rulesJson = prefs.getString('invisibility_rules');
       if (rulesJson != null) {
         final rules = InvisibilityRules.fromJson(jsonDecode(rulesJson));
-        state = rules.copyWith(isLoaded: true);
+        final normalizedRules = _pruneExpiredRules(rules).copyWith(isLoaded: true);
+        final normalizedRulesJson = jsonEncode(normalizedRules.toJson());
+        state = normalizedRules;
+        if (normalizedRulesJson != rulesJson) {
+          await prefs.setString('invisibility_rules', normalizedRulesJson);
+          await _syncRulesToSupabase(normalizedRulesJson);
+        }
         await ref.read(isVisibleProvider.notifier).updateEffectiveVisibility();
       }
     } catch (e) {
@@ -62,7 +71,13 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
         final rulesJson = prefs.getString('invisibility_rules');
         if (rulesJson != null) {
           final rules = InvisibilityRules.fromJson(jsonDecode(rulesJson));
-          state = rules.copyWith(isLoaded: true);
+          final normalizedRules = _pruneExpiredRules(rules).copyWith(isLoaded: true);
+          final normalizedRulesJson = jsonEncode(normalizedRules.toJson());
+          state = normalizedRules;
+          if (normalizedRulesJson != rulesJson) {
+            await prefs.setString('invisibility_rules', normalizedRulesJson);
+            await _syncRulesToSupabase(normalizedRulesJson);
+          }
         }
       } catch (e2) {
         await ref.read(isVisibleProvider.notifier).updateEffectiveVisibility();
@@ -76,10 +91,11 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
   }
 
   Future<void> _saveRules(InvisibilityRules rules) async {
-    final rulesJson = jsonEncode(rules.toJson());
+    final normalizedRules = _pruneExpiredRules(rules);
+    final rulesJson = jsonEncode(normalizedRules.toJson());
 
     // Update state immediately
-    state = rules;
+    state = normalizedRules;
 
     // Save to SharedPreferences
     try {
@@ -94,6 +110,22 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
 
     // Update effective visibility based on new rules
     await ref.read(isVisibleProvider.notifier).updateEffectiveVisibility();
+  }
+
+  InvisibilityRules _pruneExpiredRules(InvisibilityRules rules) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final prunedDateRangeRules = rules.dateRangeRules.where((rule) {
+      final endDate = DateTime(rule.endDate.year, rule.endDate.month, rule.endDate.day);
+      return !today.isAfter(endDate);
+    }).toList();
+    final prunedDateTimeRangeRules = rules.dateTimeRangeRules.where((rule) {
+      return !rule.endDateTime.isBefore(now);
+    }).toList();
+    return rules.copyWith(
+      dateRangeRules: prunedDateRangeRules,
+      dateTimeRangeRules: prunedDateTimeRangeRules,
+    );
   }
 
   Future<void> _syncRulesToSupabase(String rulesJson) async {
@@ -447,13 +479,16 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
         if (response != null && response['rules_data'] != null) {
           final rulesJson = response['rules_data'] as String;
           final rules = InvisibilityRules.fromJson(jsonDecode(rulesJson));
-          state = rules.copyWith(isLoaded: true);
- 
-            // Also save to SharedPreferences as backup
-            final prefs = await SharedPreferences.getInstance();
-            await prefs.setString('invisibility_rules', rulesJson);
-            await ref.read(isVisibleProvider.notifier).updateEffectiveVisibility();
-            return;
+          final normalizedRules = _pruneExpiredRules(rules).copyWith(isLoaded: true);
+          final normalizedRulesJson = jsonEncode(normalizedRules.toJson());
+          state = normalizedRules;
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('invisibility_rules', normalizedRulesJson);
+          if (normalizedRulesJson != rulesJson) {
+            await _syncRulesToSupabase(normalizedRulesJson);
+          }
+          await ref.read(isVisibleProvider.notifier).updateEffectiveVisibility();
+          return;
         }
       }
     } catch (e) {

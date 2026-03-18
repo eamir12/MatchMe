@@ -104,6 +104,11 @@ class OutlookWebAuth {
   /// Check if MSAL is initialized (for external checking)
   bool get isInitialized => _isInitialized;
 
+  Future<void> reset() async {
+    _msalInstance = null;
+    _isInitialized = false;
+  }
+
   Future<void> initialize({
     required String clientId,
     required String tenantId,
@@ -196,7 +201,7 @@ class OutlookWebAuth {
       }
     } catch (e) {
       debugPrint('❌ Outlook sign-in error: $e');
-      return null;
+      rethrow;
     }
   }
 

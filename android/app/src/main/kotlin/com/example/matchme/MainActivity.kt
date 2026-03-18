@@ -3,19 +3,17 @@ package com.example.matchme
 import com.baseflow.geolocator.MatchMeBackgroundPlugin
 import android.content.Context
 import android.content.Intent
-import android.app.PendingIntent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.graphics.Color
 import android.util.Log
-import android.content.pm.ShortcutManager
-import android.content.ComponentName
 import android.provider.OpenableColumns
-import androidx.core.content.pm.ShortcutInfoCompat
-import androidx.core.content.pm.ShortcutManagerCompat
-import androidx.core.graphics.drawable.IconCompat
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import io.flutter.embedding.android.FlutterFragmentActivity
+import io.flutter.embedding.android.RenderMode
 import io.flutter.embedding.engine.FlutterEngine
 
 import io.flutter.plugin.common.MethodChannel
@@ -34,6 +32,8 @@ class MainActivity : FlutterFragmentActivity() {
     private var mainChannel: MethodChannel? = null
     private var appInfoChannel: MethodChannel? = null
     private var appCheckChannel: MethodChannel? = null
+
+    override fun getRenderMode(): RenderMode = RenderMode.texture
 
     private fun copySharedUriToCache(uri: Uri): String? {
         return try {
@@ -310,6 +310,70 @@ class MainActivity : FlutterFragmentActivity() {
                         result.error("FAILED", "Could not open app settings", e.message)
                     }
                 }
+                "openCalendarPermissionSettings" -> {
+                    val packageName = call.argument<String>("packageName") ?: applicationContext.packageName
+                    try {
+                        val intents = listOf(
+                            Intent("android.intent.action.MANAGE_APP_PERMISSION").apply {
+                                putExtra("android.intent.extra.PACKAGE_NAME", packageName)
+                                putExtra("android.intent.extra.PERMISSION_NAME", android.Manifest.permission.READ_CALENDAR)
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            },
+                            Intent("android.intent.action.MANAGE_APP_PERMISSIONS").apply {
+                                putExtra("android.intent.extra.PACKAGE_NAME", packageName)
+                                putExtra("extra_pkgname", packageName)
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            },
+                            Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = android.net.Uri.parse("package:$packageName")
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            }
+                        )
+                        var opened = false
+                        for (intent in intents) {
+                            if (intent.resolveActivity(packageManager) != null) {
+                                startActivity(intent)
+                                opened = true
+                                break
+                            }
+                        }
+                        result.success(opened)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to open calendar permission settings: $e")
+                        result.error("FAILED", "Could not open calendar permission settings", e.message)
+                    }
+                }
+                "getCalendarPermissionRequestState" -> {
+                    try {
+                        val readGranted = ContextCompat.checkSelfPermission(
+                            this,
+                            android.Manifest.permission.READ_CALENDAR
+                        ) == PackageManager.PERMISSION_GRANTED
+                        val writeGranted = ContextCompat.checkSelfPermission(
+                            this,
+                            android.Manifest.permission.WRITE_CALENDAR
+                        ) == PackageManager.PERMISSION_GRANTED
+                        val shouldShowReadRationale = ActivityCompat.shouldShowRequestPermissionRationale(
+                            this,
+                            android.Manifest.permission.READ_CALENDAR
+                        )
+                        val shouldShowWriteRationale = ActivityCompat.shouldShowRequestPermissionRationale(
+                            this,
+                            android.Manifest.permission.WRITE_CALENDAR
+                        )
+                        result.success(
+                            mapOf(
+                                "readGranted" to readGranted,
+                                "writeGranted" to writeGranted,
+                                "shouldShowReadRationale" to shouldShowReadRationale,
+                                "shouldShowWriteRationale" to shouldShowWriteRationale
+                            )
+                        )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to inspect calendar permission request state: $e")
+                        result.error("FAILED", "Could not inspect calendar permission request state", e.message)
+                    }
+                }
                 "launchOutlookApp" -> {
                     val packageName = "com.microsoft.office.outlook"
                     try {
@@ -407,63 +471,7 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
-    private fun maybeRequestPinnedShortcut() {
-        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O) return
-
-        val prefs = getSharedPreferences("matchme_prefs", Context.MODE_PRIVATE)
-        if (prefs.getBoolean("pinned_shortcut_requested", false)) return
-
-        // If it's already pinned, mark done.
-        try {
-            val shortcutManager = getSystemService(ShortcutManager::class.java)
-            val alreadyPinned = shortcutManager?.pinnedShortcuts?.any { it.id == "matchme_open" } == true
-            if (alreadyPinned) {
-                prefs.edit().putBoolean("pinned_shortcut_requested", true).apply()
-                return
-            }
-        } catch (_: Exception) {
-        }
-
-        // Note: You cannot silently add a home-screen icon during installation. Pinned shortcuts
-        // always require user confirmation and depend on launcher support.
-        if (!ShortcutManagerCompat.isRequestPinShortcutSupported(this)) {
-            // Launcher doesn't support pinned shortcuts; do not permanently disable attempts.
-            // User can still access the static shortcut via long-press on the app icon.
-            return
-        }
-
-        // Try to make the pinned shortcut behave like the real launcher icon.
-        // Some launchers will then show the same long-press quick actions on the pinned icon.
-        val launcherComponent = ComponentName(this, MainActivity::class.java)
-        val shortcutIntent = Intent(Intent.ACTION_MAIN).apply {
-            addCategory(Intent.CATEGORY_LAUNCHER)
-            component = launcherComponent
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
-        }
-
-        val shortcut = ShortcutInfoCompat.Builder(this, "matchme_open")
-            .setShortLabel(getString(R.string.shortcut_open_short))
-            .setLongLabel(getString(R.string.shortcut_open_long))
-            .setIcon(IconCompat.createWithResource(this, R.mipmap.ic_launcher))
-            .setActivity(launcherComponent)
-            .setIntent(shortcutIntent)
-            .build()
-
-        val callback = PendingIntent.getBroadcast(
-            this,
-            4242,
-            Intent(this, PinnedShortcutReceiver::class.java).apply {
-                action = "com.example.matchme.PINNED_SHORTCUT_RESULT"
-                putExtra("shortcut_id", "matchme_open")
-            },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val requested = ShortcutManagerCompat.requestPinShortcut(this, shortcut, callback.intentSender)
-        Log.d(TAG, "requestPinShortcut supported=true requested=$requested")
-    }
-
-    private fun applySystemUiColors(attempt: Int = 0) {
+    private fun applySystemUiColors() {
         try {
             window.statusBarColor = Color.WHITE
             window.navigationBarColor = Color.WHITE
@@ -486,38 +494,18 @@ class MainActivity : FlutterFragmentActivity() {
                 window.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
             }
 
-            Log.d(TAG, "applySystemUiColors attempt=$attempt applied: statusBarColor=${window.statusBarColor}, navigationBarColor=${window.navigationBarColor}, systemUiVisibility=${window.decorView.systemUiVisibility}")
+            Log.d(TAG, "applySystemUiColors applied: statusBarColor=${window.statusBarColor}, navigationBarColor=${window.navigationBarColor}, systemUiVisibility=${window.decorView.systemUiVisibility}")
         } catch (e: Exception) {
-            Log.w(TAG, "applySystemUiColors failed on attempt=$attempt: $e")
-        }
-
-        // Retry a few times to handle OEM or system overrides
-        if (attempt < 3) {
-            val delayMs = when (attempt) {
-                0 -> 250L
-                1 -> 1000L
-                else -> 3000L
-            }
-            window.decorView.postDelayed({ applySystemUiColors(attempt + 1) }, delayMs)
+            Log.w(TAG, "applySystemUiColors failed: $e")
         }
     }
 
     override fun onResume() {
         super.onResume()
 
-        // Best-effort: request a pinned home screen shortcut once (Android 8+).
-        // Doing this on resume (not onCreate) is more reliable across OEM launchers.
-        window.decorView.postDelayed({
-            try {
-                maybeRequestPinnedShortcut()
-            } catch (e: Exception) {
-                Log.w(TAG, "Pinned shortcut request failed: $e")
-            }
-        }, 750L)
-
         // Re-apply and log window attributes when activity resumes
         try {
-            applySystemUiColors(0)
+            applySystemUiColors()
         } catch (e: Exception) {
             Log.w(TAG, "onResume logging failed: $e")
         }

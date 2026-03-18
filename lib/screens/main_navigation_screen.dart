@@ -120,9 +120,6 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
     final currentInvisibilityReasons = ref.watch(currentInvisibilityReasonsProvider);
     final currentInvisibilityReason = ref.watch(currentInvisibilityReasonProvider);
     final hasActiveRules = currentInvisibilityReasons.isNotEmpty;
-    final currentLocation = ref.watch(currentLocationProvider);
-    final hasLocationRules = rules.locationRules.isNotEmpty;
-    final locationLoading = currentLocation == null && hasLocationRules;
 
     final screenWidth = MediaQuery.of(context).size.width;
     final isSmallScreen = screenWidth < 400;
@@ -143,15 +140,12 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen> wit
 
     Widget? centerWidget;
     if (isLoaded) {
-      if (hasActiveRules || locationLoading) {
-        final reasonText = locationLoading
-            ? '${l10n.getString('invisibleDueTo')} ${l10n.getString('settingsLocationRules').toLowerCase()}'
-            : currentInvisibilityReason;
+      if (hasActiveRules) {
         centerWidget = _buildVisibilityWidget(
           context,
           l10n,
-          hasActiveRules || locationLoading,
-          reasonText,
+          hasActiveRules,
+          currentInvisibilityReason,
           isOnline,
           isVisible,
           isLoaded,

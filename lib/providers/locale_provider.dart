@@ -188,7 +188,8 @@ class LocalizationState {
     'authEmailInvalid': 'Invalid email address',
     'authUnexpectedError': 'Unexpected error',
     'authInvalidCredentials': 'Invalid email or password',
-    'authInvalidCredentialsTryOAuth': 'Please check your credentials or sign in with Google, Microsoft, Apple, or Facebook.',
+    'authInvalidCredentialsTryOAuth':
+        'Please check your credentials or sign in with Google, Microsoft, Apple, or Facebook.',
     'authResetPasswordTitle': 'Reset Password',
     'authResetPasswordMessage':
         'Enter your email to receive a password reset link',
@@ -209,6 +210,19 @@ class LocalizationState {
         'To stay always-on like WhatsApp, please allow MatchMe to run in the background and exclude it from battery optimizations.',
     'permActionOpenSettings': 'Open settings',
     'permActionNotNow': 'Not now',
+    'calendarSyncPermissionTitle': 'Calendar permission required',
+    'calendarSyncPermissionActionOpenAppSettings': 'Open App Settings',
+    'calendarSyncPermissionActionImportOnline':
+        'Import Events from Online Account',
+    'calendarSyncPermissionActionClose': 'Close',
+    'calendarSyncPermissionSettingsGuide':
+        'To import events from your device calendar, tap Open App Settings. In MatchMe settings, open Permissions, open Calendar, then move the dot to Allow.',
+    'calendarSyncPermissionBlockedSettingsGuide':
+        'Calendar permission is currently blocked by your device. Tap Open App Settings. In MatchMe settings, open Permissions, open Calendar, then move the dot to Allow.',
+    'calendarSyncPermissionBlockedSettingsGuideAndroid':
+        'Calendar permission is currently blocked by your device. Tap Open App Settings. In MatchMe settings, open Permissions, open Calendar, then move the dot to Allow.',
+    'calendarSyncPermissionBlockedSettingsGuideIos':
+        'Calendar permission is currently blocked by your device. Tap Open App Settings. In MatchMe settings, open Permissions, open Calendar, then move the dot to Allow.',
     // Password reset screen translations
     'authSetNewPassword': 'Set New Password',
     'authSetNewPasswordMessage': 'Please enter your new password below.',
@@ -470,6 +484,16 @@ class LocalizationState {
     'eventsNoUpcomingFound': 'No upcoming events found',
     'calendarSyncSwitchToGoogle': 'Switch to Google',
     'calendarSyncSwitchToOutlook': 'Switch to Outlook',
+    'calendarSyncProviderTitle': 'Choose calendar provider',
+    'calendarSyncSourceTitle': 'Choose import source',
+    'calendarSyncProviderGoogle': 'Google',
+    'calendarSyncProviderOutlook': 'Outlook',
+    'calendarSyncProviderApple': 'Apple',
+    'calendarSyncPreferredBadge': 'Preferred',
+    'calendarSyncSourceDevice': 'Device calendar',
+    'calendarSyncSourceOnline': 'Online calendar',
+    'calendarSyncSourceWebOnly':
+        'Web uses online calendar sign-in. Choose a provider and connect.',
     'calendarSyncOutlookNotConfigured':
         'Outlook is not configured. Please contact support or configure OUTLOOK_TENANT_ID, OUTLOOK_CLIENT_ID, and OUTLOOK_REDIRECT_URI in settings.',
     'calendarSyncOutlookSignIn': 'Please sign in to Outlook to continue.',
@@ -477,6 +501,16 @@ class LocalizationState {
         'Calendar access is required. Please grant permission in your device settings.',
     'calendarSyncPermissionFailed':
         'Failed to request calendar permissions. Please try again.',
+    'calendarSyncPermissionBlocked':
+        'Calendar permission is blocked by your device settings.',
+    'calendarSyncGoogleAuthRequired': 'Google Sign-In Required',
+    'calendarSyncGoogleAuthRequiredMessage':
+        'To access your Google calendars, you need to sign in with your Google account.',
+    'calendarSyncGoogleSignInCancelled':
+        'Sign-in was cancelled. Please try again.',
+    'calendarSyncGoogleConfigError':
+        'Google Sign-In is not configured correctly for this app build. Please contact support.',
+    'signIn': 'Sign In',
     'calendarSyncOutlookWebOnly':
         'Outlook calendar sync is currently only available on the web version.',
     'calendarSyncOutlookExpired':
@@ -530,14 +564,10 @@ class LocalizationState {
         'No Google calendars found on this device.',
     'calendarSyncNoCalendarsGoogle_non_binary':
         'No Google calendars found on this device.',
-    'calendarSyncNoCalendarsOutlook':
-        'No Outlook calendars found.',
-    'calendarSyncNoCalendarsOutlook_male':
-        'No Outlook calendars found.',
-    'calendarSyncNoCalendarsOutlook_female':
-        'No Outlook calendars found.',
-    'calendarSyncNoCalendarsOutlook_non_binary':
-        'No Outlook calendars found.',
+    'calendarSyncNoCalendarsOutlook': 'No Outlook calendars found.',
+    'calendarSyncNoCalendarsOutlook_male': 'No Outlook calendars found.',
+    'calendarSyncNoCalendarsOutlook_female': 'No Outlook calendars found.',
+    'calendarSyncNoCalendarsOutlook_non_binary': 'No Outlook calendars found.',
     'calendarSyncOpenOutlookSettings': 'Open Outlook App',
     'calendarSyncOutlookNotInstalled':
         'Outlook is not installed on this device. You can still connect via Outlook Web to import your calendars.',
@@ -547,12 +577,42 @@ class LocalizationState {
     'calendarSyncConnectMessage': 'Connect your calendar to sync events',
     'calendarSyncConnectGoogle': 'Connect Google Calendar',
     'calendarSyncConnectOutlook': 'Connect Outlook Calendar',
+    'calendarSyncConnectApple': 'Connect Apple Calendar',
+    'calendarSyncNoCalendarsApple':
+        'No Apple calendars found on this device. Make sure iCloud Calendar is enabled in your device account settings.',
+    'calendarSyncAppleWebNotSupported':
+        'Apple Calendar import on web is not available yet. Use iOS, macOS, or another device with Apple calendars enabled.',
+    'calendarSyncApplePublicUrlLabel': 'Apple public calendar URL',
+    'calendarSyncApplePublicUrlHint': 'webcal://p01-calendarws.icloud.com/...',
+    'calendarSyncApplePublicUrlHelp':
+        'Paste your public Apple calendar link to import events in read-only mode.',
+    'calendarSyncApplePublicHelpLinkLabel':
+        'How to get my Apple public calendar link',
+    'calendarSyncApplePublicHelpLinkOpenFailed':
+        'Unable to open Apple help page right now.',
+    'calendarSyncApplePublicUrlRequired':
+        'Please paste your Apple public calendar URL.',
+    'calendarSyncApplePublicUrlInvalid':
+        'Invalid Apple public calendar URL. Use a webcal:// or https:// link.',
+    'calendarSyncApplePublicFetchFailed':
+        'Failed to fetch events from the Apple public calendar URL.',
+    'calendarSyncApplePublicNoCalendars':
+        'No events were found for this Apple public calendar URL.',
+    'calendarSyncApplePublicNoCalendars_male':
+        'No events were found for this Apple public calendar URL.',
+    'calendarSyncApplePublicNoCalendars_female':
+        'No events were found for this Apple public calendar URL.',
+    'calendarSyncApplePublicNoCalendars_non_binary':
+        'No events were found for this Apple public calendar URL.',
     'calendarSyncLoadOutlookCalendars': 'Load Outlook Calendars',
     'calendarSyncLoadCalendars': 'Load Calendars',
     'calendarSyncNext': 'Next',
     'calendarSyncSyncSelected': 'Sync Selected',
     'calendarSyncTitle': 'Sync Calendar',
     'calendarSyncChangeCalendars': 'Change Calendars',
+    'eventsImportGoogle': 'Import Google Events',
+    'eventsImportOutlook': 'Import Outlook Events',
+    'eventsImportApple': 'Import Apple Events',
     'timeNight': 'Night',
     'eventLocationLabel': 'Location',
     'showPastEvents': 'Show past events',
@@ -691,8 +751,8 @@ class Localization extends _$Localization {
             WidgetsBinding.instance.platformDispatcher.locale;
         langCode =
             supported.any((lang) => lang.code == deviceLocale.languageCode)
-                ? deviceLocale.languageCode
-                : 'en';
+            ? deviceLocale.languageCode
+            : 'en';
       } catch (e) {
         langCode = 'en';
       }
@@ -700,24 +760,23 @@ class Localization extends _$Localization {
 
     final AppLanguage initialLang = supported.firstWhere(
       (l) => l.code == langCode,
-      orElse:
-          () => supported.firstWhere(
-            (l) => l.code == 'en',
-            orElse: () => AppLanguage(code: 'en', displayName: 'English'),
-          ),
+      orElse: () => supported.firstWhere(
+        (l) => l.code == 'en',
+        orElse: () => AppLanguage(code: 'en', displayName: 'English'),
+      ),
     );
 
     // CRITICAL: Fetch from DB FIRST before setting state with non-loading
     // This ensures translations are loaded BEFORE showing the screen
     try {
       final strings = await _fetchTranslationsFromDB(initialLang.code);
-      
+
       // Save to cache for future sessions
       await _saveTranslationsToCache(initialLang.code, strings);
-      
+
       // Only update state if provider is still mounted
       if (!ref.mounted) return;
-      
+
       state = LocalizationState(
         currentLocale: Locale(initialLang.code),
         textDirection: initialLang.direction,
@@ -725,12 +784,14 @@ class Localization extends _$Localization {
         supportedLanguages: supported,
         isLoading: false,
       );
-      debugPrint('[L10N] Translations loaded from DB for $langCode (${strings.length} strings)');
+      debugPrint(
+        '[L10N] Translations loaded from DB for $langCode (${strings.length} strings)',
+      );
     } catch (e) {
       // If DB fetch fails, try cached strings
       final cachedStrings = await _loadTranslationsFromCache(initialLang.code);
       if (!ref.mounted) return;
-      
+
       if (cachedStrings.isNotEmpty) {
         state = LocalizationState(
           currentLocale: Locale(initialLang.code),
@@ -739,14 +800,13 @@ class Localization extends _$Localization {
           supportedLanguages: supported,
           isLoading: false,
         );
-        debugPrint('[L10N] Translations loaded from cache for $langCode (${cachedStrings.length} strings)');
+        debugPrint(
+          '[L10N] Translations loaded from cache for $langCode (${cachedStrings.length} strings)',
+        );
       } else {
         // Use defaults - this should rarely happen if DB is working
         if (!ref.mounted) return;
-        state = state.copyWith(
-          supportedLanguages: supported,
-          isLoading: false,
-        );
+        state = state.copyWith(supportedLanguages: supported, isLoading: false);
         debugPrint('[L10N] Using default translations (DB and cache failed)');
       }
     }
@@ -763,10 +823,9 @@ class Localization extends _$Localization {
         return AppLanguage(
           code: item['language_code'],
           displayName: item['display_name'],
-          direction:
-              (item['text_direction'] == 'RTL')
-                  ? TextDirection.rtl
-                  : TextDirection.ltr,
+          direction: (item['text_direction'] == 'RTL')
+              ? TextDirection.rtl
+              : TextDirection.ltr,
         );
       }).toList();
     } catch (e) {
@@ -807,8 +866,9 @@ class Localization extends _$Localization {
       } else {
         final defaultKeys = LocalizationState._defaultTranslations.keys.toSet();
         final missing = defaultKeys.difference(_lastFetchedDbKeys);
-        final newlyMissing =
-            missing.where((k) => !_missingDbKeysWarned.contains(k)).toList();
+        final newlyMissing = missing
+            .where((k) => !_missingDbKeysWarned.contains(k))
+            .toList();
         if (newlyMissing.isNotEmpty) {
           _missingDbKeysWarned.addAll(newlyMissing);
           debugPrint(
@@ -898,22 +958,26 @@ class Localization extends _$Localization {
     // First check cache - if we already have translations for this language, use them
     final cachedStrings = await _loadTranslationsFromCache(lang.code);
     Map<String, String> strings;
-    
+
     if (cachedStrings.isNotEmpty) {
       // Use cached translations - they're faster and avoid DB round-trip
       strings = cachedStrings;
-      debugPrint('[L10N] Using cached translations for $langCode (${strings.length} strings)');
+      debugPrint(
+        '[L10N] Using cached translations for $langCode (${strings.length} strings)',
+      );
     } else {
       // No cache - fetch from DB
       strings = await _fetchTranslationsFromDB(lang.code);
       // Save to cache for future use
       await _saveTranslationsToCache(lang.code, strings);
-      debugPrint('[L10N] Fetched translations from DB for $langCode (${strings.length} strings)');
+      debugPrint(
+        '[L10N] Fetched translations from DB for $langCode (${strings.length} strings)',
+      );
     }
-    
+
     // Respect provider lifecycle: if disposed while awaiting, bail out safely.
     if (!ref.mounted) return;
-    
+
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('user_language_code', lang.code);
     if (!ref.mounted) return;
@@ -924,7 +988,9 @@ class Localization extends _$Localization {
     if (currentUserId != null) {
       await _updateLanguageInDatabase(lang.code);
     } else {
-      debugPrint('[L10N] Skipping DB language update: user not authenticated (login screen)');
+      debugPrint(
+        '[L10N] Skipping DB language update: user not authenticated (login screen)',
+      );
     }
     if (!ref.mounted) return;
 
@@ -982,7 +1048,9 @@ class Localization extends _$Localization {
   /// - Case C: newUI == translated_target -> Reuse existing (no AI call)
   Future<void> _retranslateAllMessages(String userId, String langCode) async {
     try {
-      debugPrint('[L10N] Starting smart retranslation of last messages to $langCode');
+      debugPrint(
+        '[L10N] Starting smart retranslation of last messages to $langCode',
+      );
       final localDb = await LocalDbService.instance;
 
       // Get all the user's chats with translation enabled
@@ -999,7 +1067,9 @@ class Localization extends _$Localization {
         return;
       }
 
-      debugPrint('[L10N] Found ${chats.length} translation-enabled chats, checking last messages');
+      debugPrint(
+        '[L10N] Found ${chats.length} translation-enabled chats, checking last messages',
+      );
 
       int translatedCount = 0;
       int skippedCaseB = 0; // source matches UI
@@ -1031,7 +1101,9 @@ class Localization extends _$Localization {
           // Get the last incoming message (not from current user)
           final messagesResponse = await Supabase.instance.client
               .from('chat_messages')
-              .select('id, content_original, sender_id, detected_source_language, translated_target_language, content_translated')
+              .select(
+                'id, content_original, sender_id, detected_source_language, translated_target_language, content_translated',
+              )
               .eq('match_id', matchId)
               .neq('sender_id', userId) // Only incoming messages
               .order('created_at', ascending: false)
@@ -1049,26 +1121,37 @@ class Localization extends _$Localization {
           // skip it - it will be translated when the user enters the chat
           final isAlsoAbsoluteLast = lastMessageId == absoluteLastMessageId;
 
-          debugPrint('[L10N] Chat $matchId: last incoming message id=$lastMessageId, absolute last id=$absoluteLastMessageId, isAlsoAbsoluteLast=$isAlsoAbsoluteLast');
+          debugPrint(
+            '[L10N] Chat $matchId: last incoming message id=$lastMessageId, absolute last id=$absoluteLastMessageId, isAlsoAbsoluteLast=$isAlsoAbsoluteLast',
+          );
 
           if (!isAlsoAbsoluteLast) {
-            debugPrint('[L10N] Skipping: last incoming message is not the absolute last message in chat $matchId - will translate when user enters chat');
+            debugPrint(
+              '[L10N] Skipping: last incoming message is not the absolute last message in chat $matchId - will translate when user enters chat',
+            );
             continue;
           }
-          final detectedSource = lastMessage['detected_source_language'] as String?;
-          final translatedTarget = lastMessage['translated_target_language'] as String?;
-          final existingTranslation = lastMessage['content_translated'] as String?;
+          final detectedSource =
+              lastMessage['detected_source_language'] as String?;
+          final translatedTarget =
+              lastMessage['translated_target_language'] as String?;
+          final existingTranslation =
+              lastMessage['content_translated'] as String?;
 
           // Normalize language codes for comparison
           final uiLang = langCode.toLowerCase();
           final sourceLang = detectedSource?.toLowerCase();
           final targetLang = translatedTarget?.toLowerCase();
 
-          debugPrint('[L10N] Chat $matchId: last message source=$sourceLang, target=$targetLang, ui=$uiLang');
+          debugPrint(
+            '[L10N] Chat $matchId: last message source=$sourceLang, target=$targetLang, ui=$uiLang',
+          );
 
           // Case B: UI language matches source language -> Show original, don't translate
           if (sourceLang != null && sourceLang == uiLang) {
-            debugPrint('[L10N] Case B: Source matches UI ($sourceLang), showing original');
+            debugPrint(
+              '[L10N] Case B: Source matches UI ($sourceLang), showing original',
+            );
             await localDb.updateChatLastMessageTranslation(
               userId,
               matchId,
@@ -1085,7 +1168,9 @@ class Localization extends _$Localization {
               existingTranslation != null &&
               existingTranslation.isNotEmpty &&
               existingTranslation != 'null') {
-            debugPrint('[L10N] Case C: Already translated to $targetLang, reusing');
+            debugPrint(
+              '[L10N] Case C: Already translated to $targetLang, reusing',
+            );
             await localDb.updateChatLastMessageTranslation(
               userId,
               matchId,
@@ -1116,7 +1201,8 @@ class Localization extends _$Localization {
               .eq('id', lastMessageId)
               .maybeSingle();
           final translatedText = refreshed?['content_translated'] as String?;
-          final refreshedTarget = refreshed?['translated_target_language'] as String?;
+          final refreshedTarget =
+              refreshed?['translated_target_language'] as String?;
 
           if (translatedText != null &&
               translatedText.isNotEmpty &&
@@ -1139,7 +1225,9 @@ class Localization extends _$Localization {
         }
       }
 
-      debugPrint('[L10N] Smart retranslation complete: $translatedCount translated, $skippedCaseB (show original), $skippedCaseC (reuse)');
+      debugPrint(
+        '[L10N] Smart retranslation complete: $translatedCount translated, $skippedCaseB (show original), $skippedCaseC (reuse)',
+      );
     } catch (e) {
       debugPrint('[L10N] Error in smart retranslation: $e');
       // Don't throw - retranslation is not critical

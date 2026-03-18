@@ -3,6 +3,10 @@ class OutlookWebAuth {
   static OutlookWebAuth get instance => OutlookWebAuth();
   
   bool get isInitialized => false;
+
+  Future<void> reset() async {
+    throw UnsupportedError('OutlookWebAuth is only available on web platform');
+  }
   
   Future<void> initialize({
     required String clientId,

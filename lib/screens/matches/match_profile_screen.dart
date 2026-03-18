@@ -866,29 +866,52 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                     final source = otherProfile.photos[i];
                     return GestureDetector(
                       onTap: () => _openPhotoPreview(context, l10n, source),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: SignedImage(
-                          source: source,
-                          width: 140,
-                          height: 140,
-                          fit: BoxFit.cover,
-                          placeholder: Container(
-                            width: 140,
-                            height: 140,
-                            color: Colors.grey.shade100,
-                          ),
-                          errorWidget: Container(
-                            width: 140,
-                            height: 140,
-                            color: Colors.grey.shade200,
-                            child: const Icon(
-                              Icons.broken_image,
-                              size: 36,
-                              color: Colors.grey,
+                      child: Stack(
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: SignedImage(
+                              source: source,
+                              width: 140,
+                              height: 140,
+                              fit: BoxFit.cover,
+                              placeholder: Container(
+                                width: 140,
+                                height: 140,
+                                color: Colors.grey.shade100,
+                              ),
+                              errorWidget: Container(
+                                width: 140,
+                                height: 140,
+                                color: Colors.grey.shade200,
+                                child: const Icon(
+                                  Icons.broken_image,
+                                  size: 36,
+                                  color: Colors.grey,
+                                ),
+                              ),
                             ),
                           ),
-                        ),
+                          if (i == 0)
+                            Positioned(
+                              left: 0,
+                              right: 0,
+                              bottom: 0,
+                              child: Container(
+                                color: Colors.black54,
+                                padding: const EdgeInsets.symmetric(vertical: 2),
+                                child: Text(
+                                  l10n.getString('profileWizardPrimaryPhotoBadge'),
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
                       ),
                     );
                   },

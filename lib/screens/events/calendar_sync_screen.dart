@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'dart:developer' as developer;
 import 'dart:ui' as ui;
 import 'package:intl/intl.dart';
 import 'package:matchme/models/event_model.dart';
@@ -13,18 +14,23 @@ import 'package:matchme/services/web_calendar_service.dart';
 import 'package:matchme/utils/map_utils.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/time_format_utils.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'dart:async';
 
-enum CalendarProvider { google, outlook }
+enum CalendarProvider { google, outlook, apple }
+
+enum CalendarSource { device, api }
 
 class CalendarSyncScreen extends ConsumerStatefulWidget {
   final CalendarProvider? initialProvider;
+  final CalendarSource? initialSource;
 
   const CalendarSyncScreen({
     super.key,
     this.initialProvider,
+    this.initialSource,
   });
 
   @override
@@ -48,7 +54,24 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
   bool _isOutlookInstalled = false;
   bool _hasCheckedOutlookInstallation = false;
   bool _useOutlookOAuthFallback = false;
+  bool _isUsingPermissionFallbackOnline = false;
   int _emptyCalendarsAutoRetryCount = 0;
+  late CalendarSource _selectedSource;
+  final TextEditingController _applePublicCalendarUrlController =
+      TextEditingController();
+  static const String _applePublicCalendarUrlPrefKey =
+      'calendar_sync_apple_public_url';
+  static final Uri _applePublicCalendarHelpUriEn = Uri.parse(
+    'https://support.apple.com/en-us/guide/icloud/share-a-calendar-mm6b1a9479/icloud',
+  );
+  static final Uri _applePublicCalendarHelpUriEs = Uri.parse(
+    'https://support.apple.com/es-es/guide/icloud/share-a-calendar-mm6b1a9479/icloud',
+  );
+
+  void _trace(String message) {
+    debugPrint(message);
+    developer.log(message, name: 'CalendarSyncScreen');
+  }
 
   bool _isVirtualMeetingLocation(String raw) {
     final s = raw.toLowerCase().trim();
@@ -125,7 +148,9 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
           style: TextStyle(
             fontSize: 14,
             fontWeight: FontWeight.w500,
-            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.85),
+            color: Theme.of(
+              context,
+            ).colorScheme.onSurface.withValues(alpha: 0.85),
           ),
         ),
         const SizedBox(width: 8),
@@ -134,7 +159,9 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
             value,
             style: TextStyle(
               fontSize: 14,
-              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+              color: Theme.of(
+                context,
+              ).colorScheme.onSurface.withValues(alpha: 0.7),
             ),
           ),
         ),
@@ -152,7 +179,9 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
     required bool isDuplicate,
   }) {
     final start = event.start;
-    final title = event.title.trim().isNotEmpty ? event.title.trim() : 'No Title';
+    final title = event.title.trim().isNotEmpty
+        ? event.title.trim()
+        : 'No Title';
     final location = event.location?.trim();
     final hasLocation = location != null && location.isNotEmpty;
     final showMap = hasLocation && !_isVirtualMeetingLocation(location);
@@ -199,17 +228,25 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                         Expanded(
                           child: Text(
                             title,
-                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            style: Theme.of(context).textTheme.titleLarge
+                                ?.copyWith(
                                   fontSize: 18,
                                   fontWeight: FontWeight.w600,
                                 ),
-                            textAlign: title.isRtl() ? TextAlign.right : TextAlign.left,
-                            textDirection: title.isRtl() ? ui.TextDirection.rtl : ui.TextDirection.ltr,
+                            textAlign: title.isRtl()
+                                ? TextAlign.right
+                                : TextAlign.left,
+                            textDirection: title.isRtl()
+                                ? ui.TextDirection.rtl
+                                : ui.TextDirection.ltr,
                           ),
                         ),
                         if (isDuplicate)
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
                             decoration: BoxDecoration(
                               color: Colors.orange.shade100,
                               borderRadius: BorderRadius.circular(4),
@@ -229,20 +266,29 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                     _buildDetailRow(
                       context,
                       l10n.getString('eventLocationLabel'),
-                      hasLocation ? location : l10n.getString('eventVenueNotSpecified'),
+                      hasLocation
+                          ? location
+                          : l10n.getString('eventVenueNotSpecified'),
                     ),
                     const SizedBox(height: 4),
                     _buildDetailRow(
                       context,
                       l10n.getString('eventDateLabel'),
-                      start != null ? _formatDateOnly(start, l10n) : l10n.getString('calendarSyncNoDate'),
+                      start != null
+                          ? _formatDateOnly(start, l10n)
+                          : l10n.getString('calendarSyncNoDate'),
                     ),
                     if (start != null && !event.isAllDay) ...[
                       const SizedBox(height: 4),
                       _buildDetailRow(
                         context,
                         l10n.getString('eventTimeLabel'),
-                        formatTimeOfDateTimeWithPrefs(context, ref, l10n, start),
+                        formatTimeOfDateTimeWithPrefs(
+                          context,
+                          ref,
+                          l10n,
+                          start,
+                        ),
                       ),
                     ],
                     const SizedBox(height: 8),
@@ -256,20 +302,31 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                                       final url = event.url;
                                       if (url == null) return;
                                       if (await canLaunchUrl(url)) {
-                                        await launchUrl(url, mode: LaunchMode.externalApplication);
+                                        await launchUrl(
+                                          url,
+                                          mode: LaunchMode.externalApplication,
+                                        );
                                       }
                                     }
                                   : null,
                               child: Row(
                                 children: [
-                                  Icon(Icons.link, size: 14, color: Theme.of(context).colorScheme.primary),
+                                  Icon(
+                                    Icons.link,
+                                    size: 14,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.primary,
+                                  ),
                                   const SizedBox(width: 4),
                                   Flexible(
                                     child: Text(
                                       l10n.getString('eventViewDetails'),
                                       style: TextStyle(
                                         fontSize: 13,
-                                        color: Theme.of(context).colorScheme.primary,
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.primary,
                                         decoration: TextDecoration.underline,
                                       ),
                                     ),
@@ -285,11 +342,19 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                           InkWell(
                             onTap: enabled
                                 ? () async {
-                                    final success = await openGoogleMaps(location);
+                                    final success = await openGoogleMaps(
+                                      location,
+                                    );
                                     if (!success && context.mounted) {
-                                      ScaffoldMessenger.of(context).showSnackBar(
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
                                         SnackBar(
-                                          content: Text(l10n.getString('errorCouldNotOpenMaps')),
+                                          content: Text(
+                                            l10n.getString(
+                                              'errorCouldNotOpenMaps',
+                                            ),
+                                          ),
                                           backgroundColor: Colors.orange,
                                         ),
                                       );
@@ -301,10 +366,15 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                               padding: const EdgeInsets.all(8),
                               margin: const EdgeInsets.only(right: 8),
                               decoration: BoxDecoration(
-                                color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .primaryContainer
+                                    .withValues(alpha: 0.3),
                                 borderRadius: BorderRadius.circular(8),
                                 border: Border.all(
-                                  color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.primary.withValues(alpha: 0.5),
                                   width: 1,
                                 ),
                               ),
@@ -318,10 +388,13 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                         ],
                         IconButton(
                           icon: Icon(
-                            isSelected ? Icons.check_box : Icons.check_box_outline_blank,
+                            isSelected
+                                ? Icons.check_box
+                                : Icons.check_box_outline_blank,
                             color: enabled
                                 ? Theme.of(context).colorScheme.primary
-                                : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.4),
+                                : Theme.of(context).colorScheme.onSurface
+                                      .withValues(alpha: 0.4),
                           ),
                           onPressed: enabled
                               ? () {
@@ -335,7 +408,9 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                                 }
                               : null,
                           style: IconButton.styleFrom(
-                            backgroundColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.1),
+                            backgroundColor: Theme.of(
+                              context,
+                            ).colorScheme.primary.withValues(alpha: 0.1),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(8),
                             ),
@@ -363,6 +438,15 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
   void initState() {
     super.initState();
     _selectedProvider = widget.initialProvider ?? CalendarProvider.google;
+    _selectedSource =
+        widget.initialSource ??
+        (kIsWeb || _selectedProvider == CalendarProvider.apple
+            ? CalendarSource.api
+            : CalendarSource.device);
+    _trace(
+      'CalendarSyncScreen initState initialProvider=${widget.initialProvider} selectedProvider=$_selectedProvider selectedSource=$_selectedSource',
+    );
+    _loadSavedApplePublicCalendarUrl();
     _loadExistingEvents();
     _checkOutlookInstallation();
 
@@ -374,8 +458,6 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
         _fetchCalendars();
       });
     } else {
-      // On mobile, fetch to detect available providers
-      // If a provider was explicitly selected, we can still fetch all but default to the selected one
       Future.delayed(Duration.zero, _fetchCalendars);
     }
   }
@@ -400,9 +482,7 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
           ): event,
       };
     } catch (e, st) {
-      FlutterError.reportError(
-        FlutterErrorDetails(exception: e, stack: st),
-      );
+      FlutterError.reportError(FlutterErrorDetails(exception: e, stack: st));
     }
   }
 
@@ -443,16 +523,13 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
           });
         }
       } catch (e, st) {
-        FlutterError.reportError(
-          FlutterErrorDetails(exception: e, stack: st),
-        );
+        FlutterError.reportError(FlutterErrorDetails(exception: e, stack: st));
       }
     }
   }
 
   bool _isDuplicate(ExternalEvent deviceEvent) {
-    if (!_isDuplicateCheckEnabled ||
-        deviceEvent.start == null) {
+    if (!_isDuplicateCheckEnabled || deviceEvent.start == null) {
       return false;
     }
     final key = _createEventKey(
@@ -475,11 +552,191 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
 
   @override
   void dispose() {
+    _applePublicCalendarUrlController.dispose();
     super.dispose();
   }
 
+  Future<List<ExternalCalendar>> _loadOnlineCalendars(
+    CalendarSyncService service,
+  ) async {
+    if (_selectedProvider == CalendarProvider.outlook) {
+      return service.retrieveOutlookCalendarsNonWebOAuth();
+    }
+    if (_selectedProvider == CalendarProvider.google) {
+      return service.retrieveGoogleCalendarsNonWebOAuth();
+    }
+    return service.retrieveApplePublicCalendars(
+      _applePublicCalendarUrlController.text,
+    );
+  }
+
+  Future<void> _loadSavedApplePublicCalendarUrl() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedUrl = prefs.getString(_applePublicCalendarUrlPrefKey)?.trim();
+      if (!mounted || savedUrl == null || savedUrl.isEmpty) return;
+      if (_applePublicCalendarUrlController.text.trim().isNotEmpty) return;
+      _applePublicCalendarUrlController.text = savedUrl;
+    } catch (_) {}
+  }
+
+  Future<void> _saveApplePublicCalendarUrlIfAny() async {
+    final url = _applePublicCalendarUrlController.text.trim();
+    if (url.isEmpty) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_applePublicCalendarUrlPrefKey, url);
+    } catch (_) {}
+  }
+
+  bool _isCalendarPermissionError(CalendarSyncException error) {
+    final key = error.toString();
+    return key == 'calendarSyncPermissionDenied' ||
+        key == 'calendarSyncPermissionFailed' ||
+        key == 'calendarSyncPermissionBlocked';
+  }
+
+  bool _isGoogleAuthError(CalendarSyncException error) {
+    final key = error.toString();
+    return key == 'calendarSyncGoogleAuthRequired' || error.isAuthError;
+  }
+
+  Future<bool> _promptBlockedCalendarPermissionSettings() async {
+    if (!mounted) return true;
+    final l10n = ref.read(localizationProvider);
+    final settingsGuideKey = switch (defaultTargetPlatform) {
+      TargetPlatform.android =>
+        'calendarSyncPermissionBlockedSettingsGuideAndroid',
+      TargetPlatform.iOS => 'calendarSyncPermissionBlockedSettingsGuideIos',
+      _ => 'calendarSyncPermissionBlockedSettingsGuide',
+    };
+    final selection = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        final isRtl = Directionality.of(dialogContext) == ui.TextDirection.rtl;
+        final contentAlignment = isRtl
+            ? CrossAxisAlignment.end
+            : CrossAxisAlignment.start;
+        final textAlign = isRtl ? TextAlign.right : TextAlign.left;
+        final buttonAlignment = isRtl
+            ? Alignment.centerRight
+            : Alignment.centerLeft;
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+          ),
+          title: Text(l10n.getString('calendarSyncPermissionTitle')),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: contentAlignment,
+            children: [
+              Text(l10n.getString(settingsGuideKey), textAlign: textAlign),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: () =>
+                      Navigator.of(dialogContext).pop('open_settings'),
+                  style: FilledButton.styleFrom(alignment: buttonAlignment),
+                  child: Text(
+                    l10n.getString(
+                      'calendarSyncPermissionActionOpenAppSettings',
+                    ),
+                    textAlign: textAlign,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton(
+                  onPressed: () =>
+                      Navigator.of(dialogContext).pop('import_online'),
+                  style: OutlinedButton.styleFrom(alignment: buttonAlignment),
+                  child: Text(
+                    l10n.getString('calendarSyncPermissionActionImportOnline'),
+                    textAlign: textAlign,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              SizedBox(
+                width: double.infinity,
+                child: TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop('close'),
+                  style: TextButton.styleFrom(alignment: buttonAlignment),
+                  child: Text(
+                    l10n.getString('calendarSyncPermissionActionClose'),
+                    textAlign: textAlign,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (selection == 'open_settings') {
+      final service = ref.read(calendarSyncServiceProvider);
+      await service.openCalendarPermissionSettings();
+      return false;
+    }
+    if (selection == 'import_online') {
+      return true;
+    }
+    return false;
+  }
+
+  Future<bool> _handleGoogleAuthError() async {
+    if (!mounted) return true;
+    final l10n = ref.read(localizationProvider);
+
+    final signInSelected = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Text(l10n.getString('calendarSyncGoogleAuthRequired')),
+          content: Text(
+            l10n.getString('calendarSyncGoogleAuthRequiredMessage'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: Text(l10n.getString('cancel')),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: Text(l10n.getString('signIn')),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (signInSelected == true) {
+      // The Google sign-in will be triggered automatically when we retry
+      // the calendar retrieval with allowInteractive=true
+      return true;
+    }
+
+    return false;
+  }
+
+  Future<bool> _handleBlockedCalendarPermission() async {
+    _trace(
+      'CalendarSyncScreen blocked permission, showing guidance before settings',
+    );
+    return await _promptBlockedCalendarPermissionSettings();
+  }
+
   Future<void> _fetchCalendars() async {
-    if (_isLoading) return; // Prevent concurrent fetches
+    if (_isLoading) {
+      _trace('CalendarSyncScreen fetchCalendars skipped isLoading=true');
+      return;
+    }
+    _trace(
+      'CalendarSyncScreen fetchCalendars start provider=$_selectedProvider source=$_selectedSource',
+    );
 
     if (kIsWeb) {
       FocusManager.instance.primaryFocus?.unfocus();
@@ -493,26 +750,45 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
     try {
       final service = ref.read(calendarSyncServiceProvider);
       List<ExternalCalendar> calendars;
+      var usedPermissionFallbackOnline = false;
+      var useApplePublicCalendarOnline = false;
 
       if (kIsWeb) {
-        // On web, always use OAuth API methods
-        calendars =
-            _selectedProvider == CalendarProvider.outlook
-                ? await service.retrieveOutlookCalendars()
-                : await service.retrieveCalendars();
-      } else {
-        // On mobile/desktop, retrieve all device calendars
-        // Always refresh to pick up newly synced calendars from Outlook/Google
-        _allCalendars = await service.retrieveCalendars();
-
-        // Filter device calendars based on selected provider
         if (_selectedProvider == CalendarProvider.outlook) {
-          calendars =
-              _allCalendars.where((calendar) {
+          calendars = await service.retrieveOutlookCalendars();
+        } else if (_selectedProvider == CalendarProvider.google) {
+          calendars = await service.retrieveCalendars();
+        } else {
+          calendars = await _loadOnlineCalendars(service);
+        }
+      } else {
+        useApplePublicCalendarOnline =
+            _selectedProvider == CalendarProvider.apple &&
+            _applePublicCalendarUrlController.text.trim().isNotEmpty;
+        if (useApplePublicCalendarOnline) {
+          await _saveApplePublicCalendarUrlIfAny();
+        }
+        if (_selectedSource == CalendarSource.api ||
+            useApplePublicCalendarOnline) {
+          calendars = await _loadOnlineCalendars(service);
+        } else {
+          try {
+            await service.requestPermissions();
+            _allCalendars = await service.retrieveCalendars();
+            _trace(
+              'CalendarSync device calendars total=${_allCalendars.length} provider=$_selectedProvider source=$_selectedSource',
+            );
+            for (final c in _allCalendars) {
+              _trace(
+                'CalendarSync device calendar id=${c.id} name=${c.name} accountName=${c.accountName ?? ''} accountType=${c.accountType ?? ''} isDefault=${c.isDefault}',
+              );
+            }
+
+            if (_selectedProvider == CalendarProvider.outlook) {
+              calendars = _allCalendars.where((calendar) {
                 final accountType = calendar.accountType?.toLowerCase() ?? '';
                 final accountName = calendar.accountName?.toLowerCase() ?? '';
                 final name = calendar.name.toLowerCase();
-                // Broader detection: check account type, account name, and calendar name
                 final isOutlook =
                     accountType.contains('outlook') ||
                     accountType.contains('exchange') ||
@@ -531,9 +807,8 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                     name.contains('office');
                 return isOutlook;
               }).toList();
-        } else {
-          calendars =
-              _allCalendars.where((calendar) {
+            } else if (_selectedProvider == CalendarProvider.google) {
+              calendars = _allCalendars.where((calendar) {
                 final accountType = calendar.accountType?.toLowerCase() ?? '';
                 final accountName = calendar.accountName?.toLowerCase() ?? '';
                 return accountType.contains('google') ||
@@ -541,33 +816,113 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                     accountName.contains('google') ||
                     accountName.contains('gmail');
               }).toList();
+            } else {
+              calendars = _allCalendars.where((calendar) {
+                final accountType = calendar.accountType?.toLowerCase() ?? '';
+                final accountName = calendar.accountName?.toLowerCase() ?? '';
+                final name = calendar.name.toLowerCase();
+                return accountType.contains('icloud') ||
+                    accountType.contains('caldav') ||
+                    accountType.contains('apple') ||
+                    accountType.contains('mac') ||
+                    accountName.contains('icloud') ||
+                    accountName.contains('apple') ||
+                    accountName.contains('me.com') ||
+                    accountName.contains('icloud.com') ||
+                    name.contains('icloud') ||
+                    name.contains('apple');
+              }).toList();
+            }
+
+            if (calendars.isEmpty &&
+                (_selectedProvider == CalendarProvider.google ||
+                    _selectedProvider == CalendarProvider.outlook)) {
+              calendars = _allCalendars;
+            }
+          } on CalendarSyncException catch (e) {
+            if (!_isCalendarPermissionError(e)) {
+              rethrow;
+            }
+            if (e.toString() == 'calendarSyncPermissionBlocked') {
+              final shouldFallbackOnline =
+                  await _handleBlockedCalendarPermission();
+              if (!shouldFallbackOnline) {
+                if (!mounted) return;
+                setState(() {
+                  _isLoading = false;
+                });
+                return;
+              }
+            }
+            _trace(
+              'CalendarSyncScreen permission denied, switching to online provider=$_selectedProvider',
+            );
+            try {
+              calendars = await _loadOnlineCalendars(service);
+              usedPermissionFallbackOnline = true;
+            } on CalendarSyncException catch (e) {
+              if (_selectedProvider == CalendarProvider.google &&
+                  _isGoogleAuthError(e)) {
+                final shouldRetry = await _handleGoogleAuthError();
+                if (shouldRetry && mounted) {
+                  try {
+                    calendars = await _loadOnlineCalendars(service);
+                    usedPermissionFallbackOnline = true;
+                  } catch (retryError) {
+                    _trace('CalendarSyncScreen retry failed: $retryError');
+                    rethrow;
+                  }
+                } else {
+                  rethrow;
+                }
+              } else {
+                rethrow;
+              }
+            }
+          }
         }
       }
 
       // Filter out holiday and special calendars
-      final nonHolidayCalendars =
-          calendars.where((c) => !_isHolidayOrSpecialCalendar(c)).toList();
-
-      // Try to find primary calendars
-      final primaryCalendars =
-          nonHolidayCalendars.where((c) => _isPrimaryCalendar(c)).toList();
-
-      if (primaryCalendars.isNotEmpty) {
-        calendars = primaryCalendars;
-      } else if (nonHolidayCalendars.isNotEmpty) {
-        // Fallback: If no primary calendar is explicitly detected,
-        // assume the first non-holiday calendar is the main one.
-        // This ensures we don't show an empty list when a valid calendar exists.
-        calendars = [nonHolidayCalendars.first];
+      final nonHolidayCalendars = calendars
+          .where((c) => !_isHolidayOrSpecialCalendar(c))
+          .toList();
+      if (nonHolidayCalendars.isNotEmpty) {
+        nonHolidayCalendars.sort((a, b) {
+          if (a.isDefault == b.isDefault) return 0;
+          return a.isDefault ? -1 : 1;
+        });
+        calendars = nonHolidayCalendars;
       } else {
         calendars = [];
       }
+
+      final isOnlineImport =
+          kIsWeb ||
+          _selectedSource == CalendarSource.api ||
+          usedPermissionFallbackOnline ||
+          useApplePublicCalendarOnline;
+      if (isOnlineImport && calendars.isNotEmpty) {
+        ExternalCalendar mainCalendar = calendars.first;
+        for (final calendar in calendars) {
+          if (calendar.isDefault) {
+            mainCalendar = calendar;
+            break;
+          }
+        }
+        calendars = [mainCalendar];
+      }
+
+      _trace(
+        'CalendarSync filtered calendars count=${calendars.length} provider=$_selectedProvider source=$_selectedSource',
+      );
 
       setState(() {
         _calendars = calendars;
         _isLoading = false;
         _hasFetched = true;
         _useOutlookOAuthFallback = false;
+        _isUsingPermissionFallbackOnline = usedPermissionFallbackOnline;
       });
 
       if (!kIsWeb && calendars.isEmpty && _emptyCalendarsAutoRetryCount < 2) {
@@ -585,8 +940,10 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
       if (widget.initialProvider != null &&
           _currentStep == 0 &&
           _selectedCalendarIds.isEmpty) {
-        final ids =
-            calendars.map((c) => c.id).where((id) => id.isNotEmpty).toList();
+        final ids = calendars
+            .map((c) => c.id)
+            .where((id) => id.isNotEmpty)
+            .toList();
         if (ids.isNotEmpty) {
           setState(() {
             _selectedCalendarIds
@@ -597,6 +954,9 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
         }
       }
     } on CalendarSyncException catch (e) {
+      _trace(
+        'CalendarSyncScreen fetchCalendars CalendarSyncException=${e.message}',
+      );
       setState(() {
         // e.toString() now returns a translation key
         _errorMessage = e.toString();
@@ -604,6 +964,7 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
         _hasFetched = true;
       });
     } catch (e) {
+      _trace('CalendarSyncScreen fetchCalendars error=$e');
       setState(() {
         _errorMessage = 'calendarSyncFailedLoadCalendars';
         _isLoading = false;
@@ -613,7 +974,13 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
   }
 
   Future<void> _fetchEvents() async {
-    if (_isLoading) return; // Prevent concurrent fetches
+    if (_isLoading) {
+      _trace('CalendarSyncScreen fetchEvents skipped isLoading=true');
+      return;
+    }
+    _trace(
+      'CalendarSyncScreen fetchEvents start provider=$_selectedProvider source=$_selectedSource selectedCalendars=${_selectedCalendarIds.length}',
+    );
 
     if (kIsWeb) {
       FocusManager.instance.primaryFocus?.unfocus();
@@ -630,27 +997,65 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
 
       final service = ref.read(calendarSyncServiceProvider);
       final allEvents = <ExternalEvent>[];
+      final now = DateTime.now();
+      final startDate = now.subtract(const Duration(days: 7));
+      final endDate = now.add(const Duration(days: 90));
+      final fallbackStartDate = now.subtract(const Duration(days: 365));
+      final fallbackEndDate = now.add(const Duration(days: 365));
 
       for (final calendarId in _selectedCalendarIds) {
-        final events =
-            (kIsWeb || _useOutlookOAuthFallback) &&
-                    _selectedProvider == CalendarProvider.outlook
-                ? await service.retrieveOutlookEvents(
-                  calendarId,
-                  startDate: DateTime.now(),
-                  endDate: DateTime.now().add(const Duration(days: 30)),
-                  allowNonWeb: _useOutlookOAuthFallback,
-                )
-                : await service.retrieveEvents(
-                  calendarId,
-                  startDate: DateTime.now(),
-                  endDate: DateTime.now().add(const Duration(days: 30)),
-                );
+        final useOnlineApi =
+            kIsWeb ||
+            _selectedSource == CalendarSource.api ||
+            (_selectedProvider == CalendarProvider.apple &&
+                _applePublicCalendarUrlController.text.trim().isNotEmpty) ||
+            _isUsingPermissionFallbackOnline;
+        var events =
+            useOnlineApi && _selectedProvider == CalendarProvider.outlook
+            ? await service.retrieveOutlookEvents(
+                calendarId,
+                startDate: startDate,
+                endDate: endDate,
+                allowNonWeb: !kIsWeb || _useOutlookOAuthFallback,
+              )
+            : useOnlineApi && _selectedProvider == CalendarProvider.google
+            ? await service.retrieveGoogleEventsNonWebOAuth(
+                calendarId,
+                startDate: startDate,
+                endDate: endDate,
+              )
+            : useOnlineApi && _selectedProvider == CalendarProvider.apple
+            ? await service.retrieveApplePublicEvents(
+                calendarId,
+                startDate: startDate,
+                endDate: endDate,
+              )
+            : await service.retrieveEvents(
+                calendarId,
+                startDate: startDate,
+                endDate: endDate,
+              );
+        if (!useOnlineApi && events.isEmpty) {
+          _trace(
+            'CalendarSync fallback event window calendarId=$calendarId provider=$_selectedProvider source=$_selectedSource',
+          );
+          events = await service.retrieveEvents(
+            calendarId,
+            startDate: fallbackStartDate,
+            endDate: fallbackEndDate,
+          );
+        }
+        _trace(
+          'CalendarSync fetched events calendarId=$calendarId count=${events.length} provider=$_selectedProvider source=$_selectedSource online=$useOnlineApi',
+        );
         allEvents.addAll(events);
       }
 
-      final newEvents =
-          allEvents.where((event) => !_isDuplicate(event)).toList();
+      final newEvents = allEvents.where((event) {
+        final start = event.start;
+        if (start == null || start.isBefore(now)) return false;
+        return !_isDuplicate(event);
+      }).toList();
 
       // Sort by date
       newEvents.sort((a, b) {
@@ -664,17 +1069,24 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
         _isLoading = false;
         _currentStep = 1;
       });
+      _trace(
+        'CalendarSync total events imported=${newEvents.length} selectedCalendars=${_selectedCalendarIds.length}',
+      );
 
       // Check for duplicates after fetching events (should be none now)
       _checkForDuplicates();
       setState(() {}); // Refresh UI with duplicate info
     } on CalendarSyncException catch (e) {
+      _trace(
+        'CalendarSyncScreen fetchEvents CalendarSyncException=${e.message}',
+      );
       setState(() {
         // e.toString() now returns a translation key
         _errorMessage = e.toString();
         _isLoading = false;
       });
     } catch (e) {
+      _trace('CalendarSyncScreen fetchEvents error=$e');
       setState(() {
         _errorMessage = 'calendarSyncFailedLoadEvents';
         _isLoading = false;
@@ -691,18 +1103,6 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
         name.contains('week numbers');
   }
 
-  bool _isPrimaryCalendar(ExternalCalendar calendar) {
-    final name = calendar.name.toLowerCase();
-    final accountName = (calendar.accountName ?? '').toLowerCase();
-    // Include calendars that match account name or are explicitly primary
-    return calendar.isDefault ||
-        name == accountName ||
-        name.contains('primary') ||
-        name == 'calendar';
-  }
-
-
-
   Future<void> _syncSelectedEvents() async {
     if (_isLoading) return;
 
@@ -713,20 +1113,20 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
 
     try {
       final l10n = ref.read(localizationProvider);
-      final eventsToSync =
-          _events
-              .where((e) => _selectedEventIds.contains(e.id))
-              .where(
-                (e) =>
-                    !_duplicateEventIds.contains(e.id) ||
-                    !_isDuplicateCheckEnabled,
-              )
-              .toList();
+      final eventsToSync = _events
+          .where((e) => _selectedEventIds.contains(e.id))
+          .where(
+            (e) =>
+                !_duplicateEventIds.contains(e.id) || !_isDuplicateCheckEnabled,
+          )
+          .toList();
 
       if (eventsToSync.isEmpty) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(l10n.getString('calendarSyncNoEventsToSync'))),
+            SnackBar(
+              content: Text(l10n.getString('calendarSyncNoEventsToSync')),
+            ),
           );
         }
         setState(() => _isLoading = false);
@@ -736,14 +1136,14 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
       final eventManager = ref.read(eventManagerProvider.notifier);
       int successCount = 0;
       int skippedCount = 0;
-      final Map<String, List<String>> failedByReasonKey = <String, List<String>>{};
+      final Map<String, List<String>> failedByReasonKey =
+          <String, List<String>>{};
 
       String joinTitles(List<String> titles) {
-        final cleaned =
-            titles
-                .map((t) => t.trim())
-                .where((t) => t.isNotEmpty)
-                .toList();
+        final cleaned = titles
+            .map((t) => t.trim())
+            .where((t) => t.isNotEmpty)
+            .toList();
         if (cleaned.isEmpty) {
           return l10n.getString('calendarSyncUnknownEventTitle');
         }
@@ -759,11 +1159,13 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
       }
 
       for (final deviceEvent in eventsToSync) {
-        if (deviceEvent.start == null ||
-            deviceEvent.end == null) {
+        if (deviceEvent.start == null || deviceEvent.end == null) {
           skippedCount++;
           failedByReasonKey
-              .putIfAbsent('calendarSyncSkipReasonMissingDate', () => <String>[])
+              .putIfAbsent(
+                'calendarSyncSkipReasonMissingDate',
+                () => <String>[],
+              )
               .add(deviceEvent.title);
           continue;
         }
@@ -792,30 +1194,24 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
 
       if (mounted) {
         if (failedByReasonKey.isNotEmpty) {
-          final failureLines =
-              failedByReasonKey.entries.map((entry) {
-                final titles = joinTitles(entry.value);
-                final reason = l10n.getString(entry.key);
-                return l10n.getString(
-                  'calendarSyncEventImportFailed',
-                  params: {'title': titles, 'reason': reason},
-                );
-              }).toList();
+          final failureLines = failedByReasonKey.entries.map((entry) {
+            final titles = joinTitles(entry.value);
+            final reason = l10n.getString(entry.key);
+            return l10n.getString(
+              'calendarSyncEventImportFailed',
+              params: {'title': titles, 'reason': reason},
+            );
+          }).toList();
 
           final failuresText = failureLines.join('\n');
-          final message =
-              successCount > 0
-                  ? '${l10n.getString(
-                    'calendarSyncSyncedEventsSuccessWithSkipped',
-                    params: {
-                      'count': '$successCount',
-                      'skipped': '$skippedCount',
-                    },
-                  )}\n$failuresText'
-                  : failuresText;
+          final message = successCount > 0
+              ? '${l10n.getString('calendarSyncSyncedEventsSuccessWithSkipped', params: {'count': '$successCount', 'skipped': '$skippedCount'})}\n$failuresText'
+              : failuresText;
 
           setState(() => _isLoading = false);
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(message)));
           return;
         }
 
@@ -824,7 +1220,9 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
           'calendarSyncSyncedEventsSuccess',
           params: {'count': '$successCount'},
         );
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(message)));
         Navigator.of(context).pop();
       }
     } catch (e) {
@@ -842,68 +1240,65 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(l10n.getString('calendarSyncTitle')),
-        leading:
-            _currentStep == 1
-                ? IconButton(
-                  icon: const Icon(Icons.arrow_back),
-                  onPressed: () {
-                    Navigator.of(context).popUntil((route) => route.isFirst);
-                  },
-                )
-                : null,
+        leading: _currentStep == 1
+            ? IconButton(
+                icon: const Icon(Icons.arrow_back),
+                onPressed: () {
+                  Navigator.of(context).popUntil((route) => route.isFirst);
+                },
+              )
+            : null,
       ),
-      body:
-          _isLoading
-              ? const Center(child: CircularProgressIndicator())
-              : Column(
-                children: [
-                  if (_errorMessage != null)
-                    Padding(
-                      padding: const EdgeInsets.all(8.0),
-                      child: Text(
-                        // Resolve translation key from error message
-                        l10n.getString(_errorMessage!),
-                        style: const TextStyle(color: Colors.red),
-                      ),
-                    ),
-                  Expanded(
-                    child:
-                        _currentStep == 0
-                            ? _buildCalendarList(l10n)
-                            : _buildEventList(l10n),
-                  ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : Column(
+              children: [
+                if (_errorMessage != null)
                   Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: SizedBox(
-                      width: double.infinity,
-                      child: FilledButton(
-                        onPressed:
-                            _currentStep == 0
-                                ? (_selectedCalendarIds.isNotEmpty
-                                    ? _fetchEvents
-                                    : null)
-                                : (_selectedEventIds.isNotEmpty
-                                    ? _syncSelectedEvents
-                                    : null),
-                        child: Text(
-                          _currentStep == 0
-                              ? l10n.getString('calendarSyncNext')
-                              : l10n.getString('calendarSyncSyncSelected'),
-                        ),
+                    padding: const EdgeInsets.all(8.0),
+                    child: Text(
+                      l10n.getString(_errorMessage!),
+                      style: const TextStyle(color: Colors.red),
+                    ),
+                  ),
+                Expanded(
+                  child: _currentStep == 0
+                      ? _buildCalendarList(l10n)
+                      : _buildEventList(l10n),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: _currentStep == 0
+                          ? (_selectedCalendarIds.isNotEmpty
+                                ? _fetchEvents
+                                : null)
+                          : (_selectedEventIds.isNotEmpty
+                                ? _syncSelectedEvents
+                                : null),
+                      child: Text(
+                        _currentStep == 0
+                            ? l10n.getString('calendarSyncNext')
+                            : l10n.getString('calendarSyncSyncSelected'),
                       ),
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
+            ),
     );
   }
 
   Widget _buildCalendarList(dynamic l10n) {
     // Get user gender for gender-aware messages
     final userId = Supabase.instance.client.auth.currentUser?.id;
-    final userProfile = userId != null ? ref.watch(userProfileProvider(userId)).asData?.value : null;
+    final userProfile = userId != null
+        ? ref.watch(userProfileProvider(userId)).asData?.value
+        : null;
     final userGender = userProfile?.gender;
-    
+
     if (kIsWeb && widget.initialProvider != null && !_hasFetched) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -923,15 +1318,18 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
           ),
         );
       } else {
-        // Mobile initial state
         return Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Icon(
-                _selectedProvider == CalendarProvider.outlook ? Icons.mail_outline : Icons.calendar_month,
-                size: 64, 
-                color: Colors.blue
+                _selectedProvider == CalendarProvider.outlook
+                    ? Icons.mail_outline
+                    : _selectedProvider == CalendarProvider.apple
+                    ? Icons.phone_iphone
+                    : Icons.calendar_month,
+                size: 64,
+                color: Colors.blue,
               ),
               const SizedBox(height: 24),
               Text(
@@ -964,6 +1362,23 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                   icon: const Icon(Icons.mail_outline),
                   label: Text(l10n.getString('calendarSyncConnectOutlook')),
                 ),
+              if (_selectedProvider == CalendarProvider.apple)
+                SizedBox(
+                  width: 360,
+                  child: Column(
+                    children: [
+                      _buildApplePublicCalendarUrlField(l10n),
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        onPressed: () async {
+                          await _fetchCalendars();
+                        },
+                        icon: const Icon(Icons.phone_iphone),
+                        label: Text(l10n.getString('calendarSyncConnectApple')),
+                      ),
+                    ],
+                  ),
+                ),
             ],
           ),
         );
@@ -982,6 +1397,8 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                 Icon(
                   _selectedProvider == CalendarProvider.outlook
                       ? Icons.mail_outline
+                      : _selectedProvider == CalendarProvider.apple
+                      ? Icons.phone_iphone
                       : Icons.calendar_today,
                   size: 64,
                   color: Colors.grey,
@@ -998,17 +1415,45 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                 Text(
                   _selectedProvider == CalendarProvider.outlook
                       ? (kIsWeb
-                          ? l10n.getString('calendarSyncNoCalendarsOutlook', gender: userGender)
-                          : (_isOutlookInstalled
-                              ? l10n.getString('calendarSyncOutlookDetected', gender: userGender)
-                              : l10n.getString('calendarSyncNoOutlookOnDevice', gender: userGender)))
-                      : l10n.getString('calendarSyncNoCalendarsGoogle', gender: userGender),
+                            ? l10n.getString(
+                                'calendarSyncNoCalendarsOutlook',
+                                gender: userGender,
+                              )
+                            : (_isOutlookInstalled
+                                  ? l10n.getString(
+                                      'calendarSyncOutlookDetected',
+                                      gender: userGender,
+                                    )
+                                  : l10n.getString(
+                                      'calendarSyncNoOutlookOnDevice',
+                                      gender: userGender,
+                                    )))
+                      : _selectedProvider == CalendarProvider.apple
+                      ? ((_selectedSource == CalendarSource.api || kIsWeb)
+                            ? l10n.getString(
+                                'calendarSyncApplePublicNoCalendars',
+                                gender: userGender,
+                              )
+                            : l10n.getString(
+                                'calendarSyncNoCalendarsApple',
+                                gender: userGender,
+                              ))
+                      : l10n.getString(
+                          'calendarSyncNoCalendarsGoogle',
+                          gender: userGender,
+                        ),
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    color: _isOutlookInstalled && !kIsWeb && _selectedProvider == CalendarProvider.outlook
+                    color:
+                        _isOutlookInstalled &&
+                            !kIsWeb &&
+                            _selectedProvider == CalendarProvider.outlook
                         ? Colors.orange
                         : Colors.grey,
-                    fontWeight: _isOutlookInstalled && !kIsWeb && _selectedProvider == CalendarProvider.outlook
+                    fontWeight:
+                        _isOutlookInstalled &&
+                            !kIsWeb &&
+                            _selectedProvider == CalendarProvider.outlook
                         ? FontWeight.w500
                         : FontWeight.normal,
                   ),
@@ -1022,15 +1467,19 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                     child: Column(
                       children: [
                         Text(
-                          l10n.getString('calendarSyncOpenOutlookGuidance', gender: userGender),
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            fontSize: 14,
+                          l10n.getString(
+                            'calendarSyncOpenOutlookGuidance',
+                            gender: userGender,
                           ),
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 14),
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          l10n.getString('calendarSyncWaitForSync', gender: userGender),
+                          l10n.getString(
+                            'calendarSyncWaitForSync',
+                            gender: userGender,
+                          ),
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             fontSize: 12,
@@ -1059,6 +1508,14 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                   onPressed: _fetchCalendars,
                   child: Text(l10n.getString('calendarSyncRetry')),
                 ),
+                if (_selectedProvider == CalendarProvider.apple &&
+                    (_selectedSource == CalendarSource.api || kIsWeb)) ...[
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: 420,
+                    child: _buildApplePublicCalendarUrlField(l10n),
+                  ),
+                ],
               ],
             ),
           ),
@@ -1068,6 +1525,12 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
 
     return Column(
       children: [
+        if (_selectedProvider == CalendarProvider.apple &&
+            (_selectedSource == CalendarSource.api || kIsWeb))
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: _buildApplePublicCalendarUrlField(l10n),
+          ),
         Expanded(
           child: ListView.builder(
             itemCount: _calendars.length,
@@ -1076,14 +1539,12 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
               final isSelected = _selectedCalendarIds.contains(calendar.id);
 
               return CheckboxListTile(
-                title: Text(
-                  calendar.accountName ?? calendar.name,
-                ),
+                title: Text(calendar.accountName ?? calendar.name),
                 subtitle:
                     calendar.accountName != null &&
-                            calendar.name != calendar.accountName
-                        ? Text(calendar.name)
-                        : null,
+                        calendar.name != calendar.accountName
+                    ? Text(calendar.name)
+                    : null,
                 value: isSelected,
                 onChanged: (value) {
                   setState(() {
@@ -1108,8 +1569,9 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
     }
 
     final duplicateCount = _duplicateEventIds.length;
-    final selectedDuplicates =
-        _selectedEventIds.intersection(_duplicateEventIds).length;
+    final selectedDuplicates = _selectedEventIds
+        .intersection(_duplicateEventIds)
+        .length;
 
     return Column(
       children: [
@@ -1125,9 +1587,7 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                       _selectedEventIds.clear();
                     } else {
                       _selectedEventIds.addAll(
-                        _events
-                            .map((e) => e.id)
-                            .where((id) => id.isNotEmpty),
+                        _events.map((e) => e.id).where((id) => id.isNotEmpty),
                       );
                     }
                   });
@@ -1218,6 +1678,57 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
               );
             },
           ),
+        ),
+      ],
+    );
+  }
+
+  Uri _applePublicCalendarHelpUriForLocale(LocalizationState l10n) {
+    final languageCode = l10n.currentLocale.languageCode.toLowerCase();
+    if (languageCode.startsWith('es')) {
+      return _applePublicCalendarHelpUriEs;
+    }
+    return _applePublicCalendarHelpUriEn;
+  }
+
+  Widget _buildApplePublicCalendarUrlField(dynamic l10n) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          controller: _applePublicCalendarUrlController,
+          keyboardType: TextInputType.url,
+          textInputAction: TextInputAction.done,
+          autocorrect: false,
+          enableSuggestions: false,
+          onSubmitted: (_) => _fetchCalendars(),
+          decoration: InputDecoration(
+            labelText: l10n.getString('calendarSyncApplePublicUrlLabel'),
+            hintText: l10n.getString('calendarSyncApplePublicUrlHint'),
+            helperText: l10n.getString('calendarSyncApplePublicUrlHelp'),
+            border: const OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 6),
+        TextButton.icon(
+          onPressed: () async {
+            final helpUri = _applePublicCalendarHelpUriForLocale(l10n);
+            final launched = await launchUrl(
+              helpUri,
+              mode: LaunchMode.externalApplication,
+            );
+            if (!launched && mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    l10n.getString('calendarSyncApplePublicHelpLinkOpenFailed'),
+                  ),
+                ),
+              );
+            }
+          },
+          icon: const Icon(Icons.help_outline),
+          label: Text(l10n.getString('calendarSyncApplePublicHelpLinkLabel')),
         ),
       ],
     );

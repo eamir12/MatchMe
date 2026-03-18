@@ -94,9 +94,8 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
       debugPrint('Camera status isLimited: ${cameraStatus.isLimited}');
       
       if (!cameraStatus.isGranted) {
-        if (cameraStatus.isDenied || cameraStatus.isPermanentlyDenied || cameraStatus.isRestricted) {
-          // Don't bother requesting, just go to show settings
-          debugPrint('Camera permission not granted and cannot request - showing settings');
+        if (cameraStatus.isPermanentlyDenied || cameraStatus.isRestricted) {
+          debugPrint('Camera permission permanently denied/restricted - showing settings');
         } else {
           debugPrint('Requesting camera permission...');
           cameraStatus = await Permission.camera.request();

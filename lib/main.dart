@@ -30,7 +30,6 @@ import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/theme_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/visibility_provider.dart';
-import 'package:matchme/providers/calendar_sync_provider.dart';
 import 'package:matchme/utils/resume_diagnostics.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/theme/semantic_colors.dart';
@@ -49,7 +48,6 @@ import 'package:matchme/services/outlook_web_auth.dart'
 import 'package:matchme/utils/permission_helper.dart';
 import 'package:matchme/utils/permission_coordinator.dart';
 import 'package:matchme/utils/permission_manager.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:quick_actions/quick_actions.dart';
 // (flutter/services.dart already imported above)
 
@@ -116,7 +114,8 @@ Future<void> main() async {
     if (!lower.contains('translation') &&
         !lower.contains('l10n') &&
         !lower.contains('missing message') &&
-        !lower.contains('missing translation')) {
+        !lower.contains('missing translation') &&
+        !lower.contains('calendarsync')) {
       return;
     }
     originalDebugPrint(message, wrapWidth: wrapWidth);
@@ -1870,14 +1869,26 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
         WidgetsBinding.instance.addPostFrameCallback((_) async {
           try {
             // Initialize MSAL first if not already initialized
-            final clientId =
-                const String.fromEnvironment('OUTLOOK_CLIENT_ID', defaultValue: '');
-            final tenantId =
-                const String.fromEnvironment('OUTLOOK_TENANT_ID', defaultValue: '');
-            final redirectUri = const String.fromEnvironment(
+            var clientId =
+                const String.fromEnvironment('OUTLOOK_CLIENT_ID', defaultValue: '').trim();
+            var tenantId =
+                const String.fromEnvironment('OUTLOOK_TENANT_ID', defaultValue: '').trim();
+            var redirectUri = const String.fromEnvironment(
               'OUTLOOK_REDIRECT_URI',
-              defaultValue: 'http://localhost:5000',
-            );
+              defaultValue: '',
+            ).trim();
+            if (clientId.isEmpty) {
+              clientId = (dotenv.env['OUTLOOK_CLIENT_ID'] ?? '').trim();
+            }
+            if (tenantId.isEmpty) {
+              tenantId = (dotenv.env['OUTLOOK_TENANT_ID'] ?? '').trim();
+            }
+            if (redirectUri.isEmpty) {
+              redirectUri = (dotenv.env['OUTLOOK_REDIRECT_URI'] ?? '').trim();
+            }
+            if (redirectUri.isEmpty) {
+              redirectUri = 'http://localhost:5000';
+            }
             
             if (clientId.isNotEmpty && tenantId.isNotEmpty) {
               if (!OutlookWebAuth.instance.isInitialized) {
@@ -2434,43 +2445,6 @@ class _DeepLinkChatHandlerState extends ConsumerState<_DeepLinkChatHandler> with
         try {
           await PermissionCoordinator.checkAndPromptIfNeeded(context, ref);
         } catch (_) {}
-      }());
-      unawaited(() async {
-        try {
-          final calendarService = ref.read(calendarSyncServiceProvider);
-          final granted = await calendarService.requestPermissions();
-          if (!granted) {
-            throw Exception('calendar_permissions_not_granted');
-          }
-        } catch (_) {
-          if (!mounted) return;
-          final l10n = ref.read(localizationProvider);
-          final body = l10n.getString('calendarSyncPermissionDenied');
-          final open = l10n.getString('permActionOpenSettings');
-          final later = l10n.getString('permActionNotNow');
-          await showDialog<void>(
-            context: context,
-            barrierDismissible: true,
-            builder: (ctx) {
-              return AlertDialog(
-                content: Text(body),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.of(ctx).pop(),
-                    child: Text(later),
-                  ),
-                  TextButton(
-                    onPressed: () async {
-                      Navigator.of(ctx).pop();
-                      await openAppSettings();
-                    },
-                    child: Text(open),
-                  ),
-                ],
-              );
-            },
-          );
-        }
       }());
       PermissionCoordinator.handleOnResume(context, ref);
     });

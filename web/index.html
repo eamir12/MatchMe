@@ -59,6 +59,12 @@
             ) {
               return;
             }
+            if (
+              first.indexOf('[GSI_LOGGER-TOKEN_CLIENT]') !== -1 &&
+              first.indexOf('gapi.client library is not loaded') !== -1
+            ) {
+              return;
+            }
           } catch (_) {}
           return originalWarn.apply(console, arguments);
         };
@@ -142,7 +148,22 @@
     })();
   </script>
 
+  <script src="https://apis.google.com/js/api.js"></script>
+  <script>
+    (function () {
+      try {
+        window.__matchMeGapiClientReady = false;
+        if (window.gapi && typeof window.gapi.load === 'function') {
+          window.gapi.load('client', function () {
+            window.__matchMeGapiClientReady = true;
+          });
+        }
+      } catch (_) {}
+    })();
+  </script>
+
   <script src="https://alcdn.msauth.net/browser/2.35.0/js/msal-browser.min.js" 
+          integrity="sha384-PARf28kmic36Ve+O3DnUerRXFtOQ7ZDqRDGpLcbljly5/N39T2OV3kt3QsWOKeAX"
           crossorigin="anonymous"
           onerror="console.error('❌ MSAL.js failed to load from CDN')"></script>
   <script>

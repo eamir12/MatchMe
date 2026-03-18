@@ -97,7 +97,7 @@ class WebCalendarService {
   }
 
   Future<void> _init() async {
-    if (_isInitialized || _isInitializing || !kIsWeb) return;
+    if (_isInitialized || _isInitializing) return;
     _isInitializing = true;
     try {
       final envClientId = const String.fromEnvironment(
@@ -107,32 +107,38 @@ class WebCalendarService {
       final dotEnvClientId = (dotenv.env['GOOGLE_CLIENT_ID'] ?? '').trim();
       final clientId = envClientId.isNotEmpty ? envClientId : dotEnvClientId;
 
-      if (clientId.isEmpty) {
+      if (kIsWeb && clientId.isEmpty) {
         return;
       }
 
-      await _googleSignIn.initialize(clientId: clientId);
-      _googleSignIn.authenticationEvents.listen((event) {
-        if (event is GoogleSignInAuthenticationEventSignIn) {
-          _currentUser = event.user;
-          _cachedUserEmail = event.user.email;
-          unawaited(_saveGoogleUserEmailToCache(event.user.email));
-        } else {
-          _currentUser = null;
-          _activeClient?.close();
-          _activeClient = null;
-          _cachedAccessToken = null;
-          _cachedAccessTokenExpiry = null;
-          _cachedUserEmail = null;
-          unawaited(_clearGoogleTokenCache());
-        }
-        _userController.add(_currentUser);
-      }).onError((e, st) {
-        if (e is GoogleSignInException &&
-            e.code == GoogleSignInExceptionCode.canceled) {
-          return;
-        }
-      });
+      if (kIsWeb || clientId.isNotEmpty) {
+        await _googleSignIn.initialize(clientId: clientId);
+      } else {
+        await _googleSignIn.initialize();
+      }
+      _googleSignIn.authenticationEvents
+          .listen((event) {
+            if (event is GoogleSignInAuthenticationEventSignIn) {
+              _currentUser = event.user;
+              _cachedUserEmail = event.user.email;
+              unawaited(_saveGoogleUserEmailToCache(event.user.email));
+            } else {
+              _currentUser = null;
+              _activeClient?.close();
+              _activeClient = null;
+              _cachedAccessToken = null;
+              _cachedAccessTokenExpiry = null;
+              _cachedUserEmail = null;
+              unawaited(_clearGoogleTokenCache());
+            }
+            _userController.add(_currentUser);
+          })
+          .onError((e, st) {
+            if (e is GoogleSignInException &&
+                e.code == GoogleSignInExceptionCode.canceled) {
+              return;
+            }
+          });
 
       await _loadGoogleTokenFromCache();
 
@@ -166,7 +172,10 @@ class WebCalendarService {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_googleAccessTokenKey, token);
-      await prefs.setString(_googleAccessTokenExpiryKey, expiry.toIso8601String());
+      await prefs.setString(
+        _googleAccessTokenExpiryKey,
+        expiry.toIso8601String(),
+      );
       _cachedAccessToken = token;
       _cachedAccessTokenExpiry = expiry;
     } catch (_) {}
@@ -224,10 +233,18 @@ class WebCalendarService {
   }
 
   bool _looksLikeAuthError(Object e) {
-    final text = e.toString();
+    final text = e.toString().toLowerCase();
     return text.contains('401') ||
-        text.toLowerCase().contains('unauthorized') ||
-        text.toLowerCase().contains('authentication');
+        text.contains('unauthorized') ||
+        text.contains('authentication') ||
+        text.contains('authenticated client') ||
+        text.contains('sign in again') ||
+        text.contains('failed to authenticate with google') ||
+        text.contains('user information is not available') ||
+        text.contains('google sign in') ||
+        text.contains('apiexception: 10') ||
+        text.contains('developer error') ||
+        text.contains('clientconfiguration');
   }
 
   Future<void> _invalidateGoogleAuth() async {
@@ -239,27 +256,32 @@ class WebCalendarService {
     await _clearGoogleTokenCache();
   }
 
-  Future<http.Client?> _createAuthenticatedClient({bool allowInteractive = true}) async {
+  Future<http.Client?> _createAuthenticatedClient({
+    bool allowInteractive = true,
+  }) async {
     try {
       if (_activeClient != null) return _activeClient;
 
       await _loadGoogleTokenFromCache();
       if (!_isCachedTokenExpired()) {
-        _activeClient = _BearerClient(
-          http.Client(),
-          _cachedAccessToken!,
-        );
+        _activeClient = _BearerClient(http.Client(), _cachedAccessToken!);
         return _activeClient;
       }
 
+      if (allowInteractive && _currentUser == null) {
+        try {
+          final signedInUser = await _googleSignIn.authenticate();
+          _currentUser = signedInUser;
+          _cachedUserEmail = signedInUser.email;
+          unawaited(_saveGoogleUserEmailToCache(signedInUser.email));
+        } catch (_) {}
+      }
+
       final authClient = _googleSignIn.authorizationClient;
-      // Note: 'authorizeScopes' triggers a popup.
-      // If you see "Cross-Origin-Opener-Policy policy would block the window.closed call" in the console,
-      // it is a known browser security warning when COOP headers are missing. It typically doesn't break the flow.
-      final existingAuthorization = await authClient.authorizationForScopes(_scopes);
-      final authorization =
-          existingAuthorization ??
-          (allowInteractive ? await authClient.authorizeScopes(_scopes) : null);
+      var authorization = await authClient.authorizationForScopes(_scopes);
+      if (authorization == null && allowInteractive) {
+        authorization = await authClient.authorizeScopes(_scopes);
+      }
       if (authorization == null) return null;
 
       // Use the extension to create an authenticated client directly
@@ -268,7 +290,7 @@ class WebCalendarService {
       await _tryCacheAuthorization(authorization);
       return _activeClient;
     } catch (e) {
-      return null;
+      throw Exception('Google sign in failed: $e');
     }
   }
 
@@ -319,12 +341,11 @@ class WebCalendarService {
       GoogleSignInAccount? googleUser = _currentUser;
 
       await _loadGoogleTokenFromCache();
-      final emailForLabel =
-          (googleUser?.email.trim().isNotEmpty == true
-              ? googleUser!.email
-              : (_cachedUserEmail?.trim().isNotEmpty == true
-                  ? _cachedUserEmail!
-                  : 'google'));
+      final emailForLabel = (googleUser?.email.trim().isNotEmpty == true
+          ? googleUser!.email
+          : (_cachedUserEmail?.trim().isNotEmpty == true
+                ? _cachedUserEmail!
+                : 'google'));
 
       http.Client? httpClient = await _createAuthenticatedClient(
         allowInteractive: allowInteractive,
@@ -361,12 +382,21 @@ class WebCalendarService {
       );
     } catch (e) {
       if (_looksLikeAuthError(e)) {
+        final errorText = e.toString().toLowerCase();
+        final shouldRetryInteractively =
+            allowInteractive &&
+            !errorText.contains('failed to get authenticated client') &&
+            !errorText.contains('authentication failed');
         await _invalidateGoogleAuth();
-        if (allowInteractive) {
+        if (shouldRetryInteractively) {
           try {
-            final httpClient = await _createAuthenticatedClient(allowInteractive: true);
+            final httpClient = await _createAuthenticatedClient(
+              allowInteractive: true,
+            );
             if (httpClient == null) {
-              throw Exception('Authentication expired. Please sign in again.');
+              throw Exception(
+                'Failed to get authenticated client. Please sign in again.',
+              );
             }
             final calendarApi = google_calendar.CalendarApi(httpClient);
             final calendarList = await calendarApi.calendarList.list();
@@ -375,8 +405,9 @@ class WebCalendarService {
                 .map((item) {
                   final id = item.id?.trim();
                   if (id == null || id.isEmpty) return null;
-                  final label =
-                      (_cachedUserEmail?.trim().isNotEmpty == true ? _cachedUserEmail! : 'google');
+                  final label = (_cachedUserEmail?.trim().isNotEmpty == true
+                      ? _cachedUserEmail!
+                      : 'google');
                   return ExternalCalendar(
                     id: id,
                     name: item.summary?.trim().isNotEmpty == true
@@ -390,20 +421,36 @@ class WebCalendarService {
                 })
                 .whereType<ExternalCalendar>()
                 .toList();
-          } catch (_) {}
+          } catch (retryError) {
+            if (_looksLikeAuthError(retryError)) {
+              throw Exception(
+                'Authentication failed. Please sign in with your Google account to continue.',
+              );
+            } else if (retryError.toString().toLowerCase().contains('popup') ||
+                retryError.toString().toLowerCase().contains('window.closed')) {
+              throw Exception('Sign-in was cancelled. Please try again.');
+            } else {
+              throw Exception(
+                'Failed to authenticate with Google: $retryError',
+              );
+            }
+          }
         }
-        throw Exception('Authentication expired. Please sign in again.');
+        throw Exception(
+          'Authentication failed. Please sign in with your Google account to continue.',
+        );
       }
-      throw Exception('Failed to fetch Google Calendars. Please try again.');
+      throw Exception('Failed to fetch Google Calendars. $e');
     }
   }
 
   Future<List<ExternalEvent>> retrieveGoogleEvents(
     String calendarId,
     DateTime start,
-    DateTime end,
-    {bool allowInteractive = true, String? accessTokenOverride}
-  ) async {
+    DateTime end, {
+    bool allowInteractive = true,
+    String? accessTokenOverride,
+  }) async {
     final override = accessTokenOverride?.trim();
     if (override != null && override.isNotEmpty) {
       final tokenClient = _BearerClient(http.Client(), override);
@@ -418,14 +465,15 @@ class WebCalendarService {
             timeMax: end.toUtc(),
             singleEvents: true,
             orderBy: 'startTime',
-            maxResults: 250,
+            showDeleted: false,
+            eventTypes: ['default'],
+            maxResults: 2500,
             pageToken: pageToken,
           );
 
           if (events.items != null) {
             allEvents.addAll(
-              events.items!
-                  .map((item) {
+              events.items!.map((item) {
                 final startDt = item.start?.dateTime ?? item.start?.date;
                 final endDt = item.end?.dateTime ?? item.end?.date;
                 final isAllDay = item.start?.date != null;
@@ -457,8 +505,7 @@ class WebCalendarService {
                       : null,
                   organizer: item.organizer?.email,
                 );
-              })
-                  .whereType<ExternalEvent>(),
+              }).whereType<ExternalEvent>(),
             );
           }
           pageToken = events.nextPageToken;
@@ -480,7 +527,9 @@ class WebCalendarService {
         _activeClient = _BearerClient(http.Client(), _cachedAccessToken!);
         httpClient = _activeClient;
       } else {
-        httpClient = await _createAuthenticatedClient(allowInteractive: allowInteractive);
+        httpClient = await _createAuthenticatedClient(
+          allowInteractive: allowInteractive,
+        );
       }
       if (httpClient == null) return [];
 
@@ -496,14 +545,15 @@ class WebCalendarService {
           timeMax: end.toUtc(),
           singleEvents: true,
           orderBy: 'startTime',
-          maxResults: 250, // Google's max per page
+          showDeleted: false,
+          eventTypes: ['default'],
+          maxResults: 2500,
           pageToken: pageToken,
         );
 
         if (events.items != null) {
           allEvents.addAll(
-            events.items!
-                .map((item) {
+            events.items!.map((item) {
               final startDt = item.start?.dateTime ?? item.start?.date;
               final endDt = item.end?.dateTime ?? item.end?.date;
               final isAllDay = item.start?.date != null;
@@ -530,11 +580,12 @@ class WebCalendarService {
                 description: item.description,
                 isAllDay: isAllDay,
                 location: item.location,
-                url: item.htmlLink != null ? Uri.tryParse(item.htmlLink!) : null,
+                url: item.htmlLink != null
+                    ? Uri.tryParse(item.htmlLink!)
+                    : null,
                 organizer: item.organizer?.email,
               );
-            })
-                .whereType<ExternalEvent>(),
+            }).whereType<ExternalEvent>(),
           );
         }
 
@@ -549,7 +600,9 @@ class WebCalendarService {
         await _invalidateGoogleAuth();
         if (allowInteractive) {
           try {
-            final httpClient = await _createAuthenticatedClient(allowInteractive: true);
+            final httpClient = await _createAuthenticatedClient(
+              allowInteractive: true,
+            );
             if (httpClient == null) return [];
 
             final calendarApi = google_calendar.CalendarApi(httpClient);
@@ -563,14 +616,15 @@ class WebCalendarService {
                 timeMax: end.toUtc(),
                 singleEvents: true,
                 orderBy: 'startTime',
-                maxResults: 250,
+                showDeleted: false,
+                eventTypes: ['default'],
+                maxResults: 2500,
                 pageToken: pageToken,
               );
 
               if (events.items != null) {
                 allEvents.addAll(
-                  events.items!
-                      .map((item) {
+                  events.items!.map((item) {
                     final startDt = item.start?.dateTime ?? item.start?.date;
                     final endDt = item.end?.dateTime ?? item.end?.date;
                     final isAllDay = item.start?.date != null;
@@ -597,11 +651,12 @@ class WebCalendarService {
                       description: item.description,
                       isAllDay: isAllDay,
                       location: item.location,
-                      url: item.htmlLink != null ? Uri.tryParse(item.htmlLink!) : null,
+                      url: item.htmlLink != null
+                          ? Uri.tryParse(item.htmlLink!)
+                          : null,
                       organizer: item.organizer?.email,
                     );
-                  })
-                      .whereType<ExternalEvent>(),
+                  }).whereType<ExternalEvent>(),
                 );
               }
 

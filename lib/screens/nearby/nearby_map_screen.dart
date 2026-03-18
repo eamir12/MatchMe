@@ -499,20 +499,6 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen> {
         return Scaffold(
           appBar: AppBar(
             title: Text(l10n.getString('homeNearby')),
-            actions: [
-              IconButton(
-                onPressed: userLatLng == null
-                    ? null
-                    : () {
-                        _mapController.move(
-                          userLatLng,
-                          _initialZoomForRadiusKm(defaultRadiusKm),
-                        );
-                        _scheduleFetch(userCenter: userLatLng, defaultRadiusKm: defaultRadiusKm);
-                      },
-                icon: const Icon(Icons.my_location),
-              ),
-            ],
           ),
           body: userLatLng == null
               ? const Center(child: CircularProgressIndicator())
@@ -568,6 +554,21 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen> {
                         ),
                         MarkerLayer(markers: [_buildUserMarker(userLatLng)]),
                       ],
+                    ),
+                    Positioned(
+                      right: 12,
+                      bottom: 110,
+                      child: FloatingActionButton.small(
+                        heroTag: null,
+                        onPressed: () {
+                          _mapController.move(
+                            userLatLng,
+                            _initialZoomForRadiusKm(defaultRadiusKm),
+                          );
+                          _scheduleFetch(userCenter: userLatLng, defaultRadiusKm: defaultRadiusKm);
+                        },
+                        child: const Icon(Icons.my_location),
+                      ),
                     ),
                     Positioned(
                       right: 12,

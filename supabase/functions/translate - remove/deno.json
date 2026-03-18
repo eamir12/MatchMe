@@ -1,5 +1,0 @@
-{
-  "imports": {
-    "translate": "https://deno.land/x/translate@v0.2.1/mod.ts"
-  }
-}

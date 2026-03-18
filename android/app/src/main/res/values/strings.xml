@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="shortcut_open_short">MatchMe</string>
-    <string name="shortcut_open_long">Open MatchMe</string>
+    <string name="shortcut_open_long">MatchMe</string>
 
     <string name="shortcut_home_short">Home</string>
     <string name="shortcut_home_long">Open Home</string>

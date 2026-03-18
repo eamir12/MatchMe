@@ -102,9 +102,16 @@ class EventManager extends _$EventManager {
     if (!ref.mounted) return;
 
     if (cachedEvents != null) {
-      // Use cached data immediately
-      final events = cachedEvents.map((eventData) => EventModel.fromJson(eventData)).toList();
-      state = AsyncValue.data(events);
+      // Use cached data immediately, but honor current "show past events" toggle
+      final allEvents = cachedEvents.map((eventData) => EventModel.fromJson(eventData)).toList();
+      final now = DateTime.now();
+      final filteredEvents = _showPastEvents
+          ? allEvents
+          : allEvents.where((event) {
+              return !event.endTime.isBefore(now);
+            }).toList();
+
+      state = AsyncValue.data(filteredEvents);
 
       // Refresh from server in background
       _refreshEventsFromServer(userId, localDb);

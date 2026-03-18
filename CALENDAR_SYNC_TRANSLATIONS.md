@@ -28,6 +28,11 @@ Add these keys to your Supabase `translations` table:
 - `calendarSyncOutlookSignIn` - "Please sign in to Outlook to continue."
 - `calendarSyncPermissionDenied` - "Calendar access is required. Please grant permission in your device settings."
 - `calendarSyncPermissionFailed` - "Failed to request calendar permissions. Please try again."
+- `calendarSyncPermissionBlocked` - "Calendar permissions were permanently denied. Please enable them in your device settings to continue."
+- `calendarSyncPermissionTitle` - "Calendar Permission Required"
+- `calendarSyncGoogleAuthRequired` - "Google Sign-In Required"
+- `calendarSyncGoogleAuthRequiredMessage` - "To access your Google calendars, you need to sign in with your Google account."
+- `calendarSyncGoogleSignInCancelled` - "Sign-in was cancelled. Please try again."
 - `calendarSyncOutlookWebOnly` - "Outlook calendar sync is currently only available on the web version."
 - `calendarSyncOutlookExpired` - "Your Outlook session has expired. Please sign in again."
 - `calendarSyncOutlookFailed` - "Failed to fetch Outlook calendars. Please try again later."
@@ -35,6 +40,17 @@ Add these keys to your Supabase `translations` table:
 - `calendarSyncTimeout` - "Request timed out. Please try again."
 - `calendarSyncUnexpectedError` - "An unexpected error occurred. Please try again."
 - `calendarSyncOutlookEventsFailed` - "Failed to fetch Outlook events. Please try again later."
+
+## Settings Guide Messages
+- `calendarSyncPermissionBlockedSettingsGuideAndroid` - "Calendar permissions were permanently denied. To enable them:\n\n1. Go to Settings > Apps > MatchMe\n2. Tap 'Permissions'\n3. Enable 'Calendar' permission\n4. Return to the app and try again"
+- `calendarSyncPermissionBlockedSettingsGuideIos` - "Calendar permissions were permanently denied. To enable them:\n\n1. Go to Settings > Privacy & Security > Calendars\n2. Enable MatchMe\n3. Return to the app and try again"
+- `calendarSyncPermissionBlockedSettingsGuide` - "Calendar permissions were permanently denied. Please enable calendar permissions for MatchMe in your device settings and try again."
+
+## Action Labels
+- `permActionNotNow` - "Not Now"
+- `permActionOpenSettings` - "Open Settings"
+- `cancel` - "Cancel"
+- `signIn` - "Sign In"
 
 ## SQL Insert Example
 
@@ -66,13 +82,28 @@ INSERT INTO translations (key, value, locale) VALUES
 ('calendarSyncOutlookSignIn', 'Please sign in to Outlook to continue.', 'en'),
 ('calendarSyncPermissionDenied', 'Calendar access is required. Please grant permission in your device settings.', 'en'),
 ('calendarSyncPermissionFailed', 'Failed to request calendar permissions. Please try again.', 'en'),
-('calendarSyncOutlookWebOnly', 'Outlook calendar sync is currently only available on the web version.', 'en'),
+('calendarSyncPermissionBlocked', 'Calendar permissions were permanently denied. Please enable them in your device settings to continue.', 'en'),
+('calendarSyncPermissionTitle', 'Calendar Permission Required', 'en'),
+('calendarSyncGoogleAuthRequired', 'Google Sign-In Required', 'en'),
+('calendarSyncGoogleAuthRequiredMessage', 'To access your Google calendars, you need to sign in with your Google account.', 'en'),
+('calendarSyncOutlookWebOnly', 'Outlook calendar sync is currently only available on web version.', 'en'),
 ('calendarSyncOutlookExpired', 'Your Outlook session has expired. Please sign in again.', 'en'),
 ('calendarSyncOutlookFailed', 'Failed to fetch Outlook calendars. Please try again later.', 'en'),
 ('calendarSyncNetworkError', 'Network error. Please check your internet connection.', 'en'),
 ('calendarSyncTimeout', 'Request timed out. Please try again.', 'en'),
 ('calendarSyncUnexpectedError', 'An unexpected error occurred. Please try again.', 'en'),
-('calendarSyncOutlookEventsFailed', 'Failed to fetch Outlook events. Please try again later.', 'en');
+('calendarSyncOutlookEventsFailed', 'Failed to fetch Outlook events. Please try again later.', 'en'),
+
+-- Settings Guide Messages (English)
+('calendarSyncPermissionBlockedSettingsGuideAndroid', 'Calendar permissions were permanently denied. To enable them:\n\n1. Go to Settings > Apps > MatchMe\n2. Tap ''Permissions''\n3. Enable ''Calendar'' permission\n4. Return to the app and try again', 'en'),
+('calendarSyncPermissionBlockedSettingsGuideIos', 'Calendar permissions were permanently denied. To enable them:\n\n1. Go to Settings > Privacy & Security > Calendars\n2. Enable MatchMe\n3. Return to the app and try again', 'en'),
+('calendarSyncPermissionBlockedSettingsGuide', 'Calendar permissions were permanently denied. Please enable calendar permissions for MatchMe in your device settings and try again.', 'en'),
+
+-- Action Labels (English)
+('permActionNotNow', 'Not Now', 'en'),
+('permActionOpenSettings', 'Open Settings', 'en'),
+('cancel', 'Cancel', 'en'),
+('signIn', 'Sign In', 'en');
 ```
 
 ## Adding Translations for Other Languages
