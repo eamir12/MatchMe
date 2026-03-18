@@ -2,37 +2,60 @@ workflows:
   ios_unsigned_for_sideloadly:
     name: iOS Unsigned IPA (Sideloadly)
     instance_type: mac_mini_m2
+    max_build_duration: 60
     environment:
       flutter: stable
       xcode: latest
       cocoapods: default
+    cache:
+      cache_paths:
+        - ~/.pub-cache
+        - ios/Pods
     scripts:
-      - name: Pre-clean workspace
+      - name: Flutter version
         script: |
-          rm -rf build Payload Runner-unsigned.ipa
-          rm -rf ~/Library/Developer/Xcode/DerivedData/*
-      - name: Flutter clean/get
+          flutter --version
+      - name: Prepare workspace
         script: |
-          flutter clean
+          rm -rf build Runner-unsigned.ipa
           flutter pub get
+      - name: Verify sideload entitlements mode
+        script: |
+          grep -q 'MM_CODE_SIGN_ENTITLEMENTS_FILE=Runner/Runner.sideload.entitlements' ios/Flutter/Signing.xcconfig
       - name: Verify iOS fullscreen keys
         script: |
           /usr/libexec/PlistBuddy -c "Print :UILaunchStoryboardName" ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Print :UISupportedInterfaceOrientations" ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Print :UIApplicationSceneManifest" ios/Runner/Info.plist
+      - name: Flutter analyze (main app only)
+        script: |
+          flutter analyze lib
       - name: Install CocoaPods
         script: |
           cd ios
-          pod install --repo-update
+          pod install
           cd ..
-      - name: Build iOS without codesign
+      - name: Build iOS unsigned IPA
         script: |
-          flutter build ios --no-codesign
-      - name: Create unsigned IPA
-        script: |
+          flutter build ios --release --no-codesign
+          APP_PATH="build/ios/iphoneos/Runner.app"
+          if [ ! -d "$APP_PATH" ]; then
+            APP_PATH="build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app"
+          fi
+          test -d "$APP_PATH"
+          /usr/bin/xattr -cr "$APP_PATH" || true
+          rm -rf Payload Runner-unsigned.ipa
           mkdir -p Payload
-          cp -R build/ios/iphoneos/Runner.app Payload/
-          zip -r -y Runner-unsigned.ipa Payload
+          cp -R "$APP_PATH" Payload/Runner.app
+          test -f Payload/Runner.app/Info.plist
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent Payload Runner-unsigned.ipa
+          test -f Runner-unsigned.ipa
+      - name: Validate unsigned IPA structure
+        script: |
+          unzip -Z1 Runner-unsigned.ipa | grep -q '^Payload/Runner.app/Info.plist$'
+          unzip -Z1 Runner-unsigned.ipa | grep -q '^Payload/Runner.app/Runner$'
+      - name: Cleanup temporary files
+        script: |
+          rm -rf Payload build/ios/archive build/ios/iphoneos
     artifacts:
       - Runner-unsigned.ipa
-      - build/ios/iphoneos/Runner.app
