@@ -9,9 +9,7 @@ workflows:
       cocoapods: default
     cache:
       cache_paths:
-        - $FLUTTER_ROOT/.pub-cache
         - ~/.pub-cache
-        - ~/.cocoapods/repos
         - ios/Pods
     scripts:
       - name: Flutter version
@@ -35,7 +33,7 @@ workflows:
       - name: Install CocoaPods
         script: |
           cd ios
-          pod install --repo-update
+          pod install
           cd ..
       - name: Build iOS unsigned IPA
         script: |
@@ -56,7 +54,8 @@ workflows:
         script: |
           unzip -Z1 Runner-unsigned.ipa | grep -q '^Payload/Runner.app/Info.plist$'
           unzip -Z1 Runner-unsigned.ipa | grep -q '^Payload/Runner.app/Runner$'
+      - name: Cleanup temporary files
+        script: |
+          rm -rf Payload build/ios/archive build/ios/iphoneos
     artifacts:
       - Runner-unsigned.ipa
-      - build/ios/iphoneos/Runner.app
-      - build/ios/archive/Runner.xcarchive
