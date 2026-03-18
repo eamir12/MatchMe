@@ -39,8 +39,17 @@ workflows:
           cd ..
       - name: Build iOS unsigned IPA
         script: |
-          flutter build ipa --release --no-codesign
-          cp build/ios/ipa/*.ipa Runner-unsigned.ipa
+          flutter build ios --release --no-codesign
+          APP_PATH="build/ios/iphoneos/Runner.app"
+          if [ ! -d "$APP_PATH" ]; then
+            APP_PATH="build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app"
+          fi
+          test -d "$APP_PATH"
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          /usr/bin/zip -r -y Runner-unsigned.ipa Payload
     artifacts:
       - Runner-unsigned.ipa
-      - build/ios/ipa/*.ipa
+      - build/ios/iphoneos/Runner.app
+      - build/ios/archive/Runner.xcarchive
