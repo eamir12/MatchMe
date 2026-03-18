@@ -17,7 +17,7 @@ workflows:
           flutter --version
       - name: Prepare workspace
         script: |
-          rm -rf build Runner-unsigned.ipa
+          rm -rf build Runner-unsigned.ipa Runner-sideloadly-clean.ipa
           flutter pub get
       - name: Verify sideload entitlements mode
         script: |
@@ -65,16 +65,19 @@ workflows:
           find Payload -name "_CodeSignature" -type d -prune -exec rm -rf {} +
           find Payload -name "embedded.mobileprovision" -type f -delete
           test -d Payload/Runner.app
-          /usr/bin/ditto -c -k --sequesterRsrc --keepParent Payload ../Runner-unsigned.ipa
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent Payload ../Runner-sideloadly-clean.ipa
           cd ..
           rm -rf ipa_tmp
       - name: Validate unsigned IPA structure
         script: |
-          unzip -Z1 Runner-unsigned.ipa | grep -q '^Payload/Runner.app/Info.plist$'
-          unzip -Z1 Runner-unsigned.ipa | grep -q '^Payload/Runner.app/Runner$'
+          test -f Runner-sideloadly-clean.ipa
+          unzip -Z1 Runner-sideloadly-clean.ipa | grep -q '^Payload/Runner.app/Info.plist$'
+          unzip -Z1 Runner-sideloadly-clean.ipa | grep -q '^Payload/Runner.app/Runner$'
+      - name: Show final artifact name
+        script: |
+          ls -lh Runner-sideloadly-clean.ipa
       - name: Cleanup temporary files
         script: |
-          rm -rf Payload build/ios/archive build/ios/iphoneos
+          rm -rf Payload build/ios/archive build/ios/iphoneos build/ios/ipa Runner-unsigned.ipa
     artifacts:
-      - Runner-unsigned.ipa
-      - build/ios/ipa/*.ipa
+      - Runner-sideloadly-clean.ipa
