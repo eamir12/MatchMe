@@ -513,6 +513,8 @@ class LocalizationState {
     'signIn': 'Sign In',
     'calendarSyncOutlookWebOnly':
         'Outlook calendar sync is currently only available on the web version.',
+    'calendarSyncDeviceWebNotSupported':
+        'Import from Device Calendar is not available on web. Use Android, iOS, Windows, or macOS.',
     'calendarSyncOutlookExpired':
         'Your Outlook session has expired. Please sign in again.',
     'calendarSyncOutlookFailed':
@@ -578,6 +580,9 @@ class LocalizationState {
     'calendarSyncConnectGoogle': 'Connect Google Calendar',
     'calendarSyncConnectOutlook': 'Connect Outlook Calendar',
     'calendarSyncConnectApple': 'Connect Apple Calendar',
+    'calendarSyncConnectDevice': 'Connect Device Calendar',
+    'calendarSyncNoCalendarsDevice':
+        'No device calendars were found on this device.',
     'calendarSyncNoCalendarsApple':
         'No Apple calendars found on this device. Make sure iCloud Calendar is enabled in your device account settings.',
     'calendarSyncAppleWebNotSupported':
@@ -613,6 +618,7 @@ class LocalizationState {
     'eventsImportGoogle': 'Import Google Events',
     'eventsImportOutlook': 'Import Outlook Events',
     'eventsImportApple': 'Import Apple Events',
+    'eventsImportDeviceCalendar': 'Import from Device Calendar',
     'timeNight': 'Night',
     'eventLocationLabel': 'Location',
     'showPastEvents': 'Show past events',

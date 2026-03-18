@@ -19,7 +19,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'dart:async';
 
-enum CalendarProvider { google, outlook, apple }
+enum CalendarProvider { google, outlook, apple, device }
 
 enum CalendarSource { device, api }
 
@@ -559,6 +559,9 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
   Future<List<ExternalCalendar>> _loadOnlineCalendars(
     CalendarSyncService service,
   ) async {
+    if (_selectedProvider == CalendarProvider.device) {
+      return <ExternalCalendar>[];
+    }
     if (_selectedProvider == CalendarProvider.outlook) {
       return service.retrieveOutlookCalendarsNonWebOAuth();
     }
@@ -758,6 +761,8 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
           calendars = await service.retrieveOutlookCalendars();
         } else if (_selectedProvider == CalendarProvider.google) {
           calendars = await service.retrieveCalendars();
+        } else if (_selectedProvider == CalendarProvider.device) {
+          throw CalendarSyncException('calendarSyncDeviceWebNotSupported');
         } else {
           calendars = await _loadOnlineCalendars(service);
         }
@@ -784,7 +789,9 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
               );
             }
 
-            if (_selectedProvider == CalendarProvider.outlook) {
+            if (_selectedProvider == CalendarProvider.device) {
+              calendars = _allCalendars;
+            } else if (_selectedProvider == CalendarProvider.outlook) {
               calendars = _allCalendars.where((calendar) {
                 final accountType = calendar.accountType?.toLowerCase() ?? '';
                 final accountName = calendar.accountName?.toLowerCase() ?? '';
@@ -853,6 +860,9 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                 });
                 return;
               }
+            }
+            if (_selectedProvider == CalendarProvider.device) {
+              rethrow;
             }
             _trace(
               'CalendarSyncScreen permission denied, switching to online provider=$_selectedProvider',
@@ -1327,6 +1337,8 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                     ? Icons.mail_outline
                     : _selectedProvider == CalendarProvider.apple
                     ? Icons.phone_iphone
+                    : _selectedProvider == CalendarProvider.device
+                    ? Icons.devices_outlined
                     : Icons.calendar_month,
                 size: 64,
                 color: Colors.blue,
@@ -1378,6 +1390,14 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                       ),
                     ],
                   ),
+                ),
+              if (_selectedProvider == CalendarProvider.device)
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    await _fetchCalendars();
+                  },
+                  icon: const Icon(Icons.devices_outlined),
+                  label: Text(l10n.getString('calendarSyncConnectDevice')),
                 ),
             ],
           ),
@@ -1438,6 +1458,8 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                                 'calendarSyncNoCalendarsApple',
                                 gender: userGender,
                               ))
+                      : _selectedProvider == CalendarProvider.device
+                      ? l10n.getString('calendarSyncNoCalendarsDevice')
                       : l10n.getString(
                           'calendarSyncNoCalendarsGoogle',
                           gender: userGender,

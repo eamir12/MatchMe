@@ -110,6 +110,7 @@ class _EventsTabState extends ConsumerState<EventsTab> {
 }
 
 class EventsScreen extends ConsumerWidget {
+  static const bool _enableDeviceCalendarImportOption = true;
   final bool showAppBar;
   final VoidCallback? onAddEvent;
   final void Function(EventModel event)? onOpenEvent;
@@ -212,6 +213,14 @@ class EventsScreen extends ConsumerWidget {
     CalendarProvider provider,
   ) async {
     if (kIsWeb) {
+      if (provider == CalendarProvider.device) {
+        if (!context.mounted) return;
+        final l10n = ref.read(localizationProvider);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l10n.getString('calendarSyncDeviceWebNotSupported'))),
+        );
+        return;
+      }
       if (provider == CalendarProvider.outlook) {
         final service = ref.read(calendarSyncServiceProvider);
         try {
@@ -286,7 +295,8 @@ class EventsScreen extends ConsumerWidget {
 
   Widget _buildImportProviderButton({
     required String label,
-    required String assetPath,
+    String? assetPath,
+    IconData? iconData,
     required Future<void> Function() onPressed,
   }) {
     return OutlinedButton(
@@ -299,18 +309,22 @@ class EventsScreen extends ConsumerWidget {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Text(label),
-          const SizedBox(width: 12),
-          SizedBox(
-            width: 20,
-            height: 20,
-            child: Image.asset(
-              assetPath,
-              fit: BoxFit.contain,
-              errorBuilder: (context, error, stackTrace) {
-                return const SizedBox.shrink();
-              },
+          if (assetPath != null || iconData != null) ...[
+            const SizedBox(width: 12),
+            SizedBox(
+              width: 20,
+              height: 20,
+              child: assetPath != null
+                  ? Image.asset(
+                      assetPath,
+                      fit: BoxFit.contain,
+                      errorBuilder: (context, error, stackTrace) {
+                        return const SizedBox.shrink();
+                      },
+                    )
+                  : Icon(iconData, size: 20),
             ),
-          ),
+          ],
         ],
       ),
     );
@@ -536,6 +550,24 @@ class EventsScreen extends ConsumerWidget {
                           },
                         ),
                       ),
+                      if (_enableDeviceCalendarImportOption && !kIsWeb)
+                        SizedBox(
+                          width: importButtonWidth,
+                          child: _buildImportProviderButton(
+                            label: l10n.getString('eventsImportDeviceCalendar'),
+                            iconData: Icons.devices_outlined,
+                            onPressed: () async {
+                              debugPrint(
+                                'CalendarSync EventsScreen import tap provider=device',
+                              );
+                              await _startImportFlow(
+                                context,
+                                ref,
+                                CalendarProvider.device,
+                              );
+                            },
+                          ),
+                        ),
                     ],
                   ),
                 ],
