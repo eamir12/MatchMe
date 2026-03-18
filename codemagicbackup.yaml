@@ -56,13 +56,25 @@ workflows:
             /usr/bin/ditto -c -k --sequesterRsrc --keepParent Payload Runner-unsigned.ipa
           fi
           test -f Runner-unsigned.ipa
+      - name: Sanitize IPA for re-signing tools
+        script: |
+          rm -rf ipa_tmp
+          mkdir -p ipa_tmp
+          cd ipa_tmp
+          unzip -q ../Runner-unsigned.ipa
+          find Payload -name "_CodeSignature" -type d -prune -exec rm -rf {} +
+          find Payload -name "embedded.mobileprovision" -type f -delete
+          test -d Payload/Runner.app
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent Payload ../Runner-unsigned.ipa
+          cd ..
+          rm -rf ipa_tmp
       - name: Validate unsigned IPA structure
         script: |
           unzip -Z1 Runner-unsigned.ipa | grep -q '^Payload/Runner.app/Info.plist$'
           unzip -Z1 Runner-unsigned.ipa | grep -q '^Payload/Runner.app/Runner$'
       - name: Cleanup temporary files
         script: |
-          rm -rf Payload build/ios/archive build/ios/iphoneos build/ios/ipa
+          rm -rf Payload build/ios/archive build/ios/iphoneos
     artifacts:
       - Runner-unsigned.ipa
       - build/ios/ipa/*.ipa
