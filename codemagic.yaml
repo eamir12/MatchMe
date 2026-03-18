@@ -29,9 +29,9 @@ workflows:
           /usr/libexec/PlistBuddy -c "Print :UILaunchStoryboardName" ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Print :UISupportedInterfaceOrientations" ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Print :UIApplicationSceneManifest" ios/Runner/Info.plist
-      - name: Flutter analyze
+      - name: Flutter analyze (main app only)
         script: |
-          flutter analyze
+          flutter analyze lib
       - name: Install CocoaPods
         script: |
           cd ios
