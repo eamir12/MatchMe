@@ -2,37 +2,45 @@ workflows:
   ios_unsigned_for_sideloadly:
     name: iOS Unsigned IPA (Sideloadly)
     instance_type: mac_mini_m2
+    max_build_duration: 60
     environment:
       flutter: stable
       xcode: latest
       cocoapods: default
+    cache:
+      cache_paths:
+        - $FLUTTER_ROOT/.pub-cache
+        - ~/.pub-cache
+        - ~/.cocoapods/repos
+        - ios/Pods
     scripts:
-      - name: Pre-clean workspace
+      - name: Flutter version
         script: |
-          rm -rf build Payload Runner-unsigned.ipa
-          rm -rf ~/Library/Developer/Xcode/DerivedData/*
-      - name: Flutter clean/get
+          flutter --version
+      - name: Prepare workspace
         script: |
-          flutter clean
+          rm -rf build Runner-unsigned.ipa
           flutter pub get
+      - name: Verify sideload entitlements mode
+        script: |
+          grep -q 'MM_CODE_SIGN_ENTITLEMENTS_FILE=Runner/Runner.sideload.entitlements' ios/Flutter/Signing.xcconfig
       - name: Verify iOS fullscreen keys
         script: |
           /usr/libexec/PlistBuddy -c "Print :UILaunchStoryboardName" ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Print :UISupportedInterfaceOrientations" ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Print :UIApplicationSceneManifest" ios/Runner/Info.plist
+      - name: Flutter analyze
+        script: |
+          flutter analyze
       - name: Install CocoaPods
         script: |
           cd ios
           pod install --repo-update
           cd ..
-      - name: Build iOS without codesign
+      - name: Build iOS unsigned IPA
         script: |
-          flutter build ios --no-codesign
-      - name: Create unsigned IPA
-        script: |
-          mkdir -p Payload
-          cp -R build/ios/iphoneos/Runner.app Payload/
-          zip -r -y Runner-unsigned.ipa Payload
+          flutter build ipa --release --no-codesign
+          cp build/ios/ipa/*.ipa Runner-unsigned.ipa
     artifacts:
       - Runner-unsigned.ipa
-      - build/ios/iphoneos/Runner.app
+      - build/ios/ipa/*.ipa
