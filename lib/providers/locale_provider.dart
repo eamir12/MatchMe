@@ -701,15 +701,35 @@ class LocalizationState {
     'verificationGestureHandOnHeadTitle': 'Place your hand on your head',
     'verificationGestureHandOnHeadDescription':
         'Place one hand flat on top of your head so your hand is clearly visible.',
+    'verificationGestureClosedFistTitle': 'Show a closed fist',
+    'verificationGestureClosedFistDescription':
+        'Show a closed fist with your right hand next to your face.',
+    'verificationGestureOpenPalmTitle': 'Show an open palm',
+    'verificationGestureOpenPalmDescription':
+        'Show an open palm with your right hand next to your face, with your fingers fully visible.',
     'verificationGestureThumbsUpTitle': 'Show a thumbs-up',
     'verificationGestureThumbsUpDescription':
         'Show a clear thumbs-up with your right hand next to your face.',
+    'verificationGestureThumbsDownTitle': 'Show a thumbs-down',
+    'verificationGestureThumbsDownDescription':
+        'Show a clear thumbs-down with your right hand next to your face.',
+    'verificationGesturePointingUpTitle': 'Point up with your index finger',
+    'verificationGesturePointingUpDescription':
+        'Point up with your right index finger next to your face.',
+    'verificationGestureILoveYouTitle': 'Show the I love you sign',
+    'verificationGestureILoveYouDescription':
+        'Show the I love you hand sign with your right hand next to your face.',
     'verificationGesturePointToCheekTitle': 'Point to your cheek',
     'verificationGesturePointToCheekDescription':
         'Point to one of your cheeks with your right hand so both your hand and cheek are visible.',
     'verificationGestureCoverMouthTitle': 'Cover your mouth with your hand',
     'verificationGestureCoverMouthDescription':
         'Cover your mouth with your right hand while keeping the rest of your face visible.',
+    'verificationCaptureStatusAlignFace': 'Center your face inside the guide',
+    'verificationCaptureStatusPositionHand':
+        'Place your hand in the gesture area and show the gesture',
+    'verificationCaptureStatusHoldSteady': 'Great, hold steady...',
+    'verificationCaptureStatusCapturingBestFrame': 'Capturing best frame...',
 
     // --- Camera Preview Widget ---
     'confirmYourPhoto': 'Confirm your photo',

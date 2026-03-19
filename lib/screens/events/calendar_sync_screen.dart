@@ -517,7 +517,12 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
         _fetchCalendars();
       });
     } else {
-      Future.delayed(Duration.zero, _fetchCalendars);
+      final shouldAutoFetch =
+          !(_selectedProvider == CalendarProvider.apple &&
+              _selectedSource == CalendarSource.api);
+      if (shouldAutoFetch) {
+        Future.delayed(Duration.zero, _fetchCalendars);
+      }
     }
   }
 
@@ -661,6 +666,15 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
   bool _isGoogleAuthError(CalendarSyncException error) {
     final key = error.toString();
     return key == 'calendarSyncGoogleAuthRequired' || error.isAuthError;
+  }
+
+  bool _shouldKeepAppleOnlineFormState(String errorKey) {
+    final isAppleOnlineImport =
+        _selectedProvider == CalendarProvider.apple &&
+        (_selectedSource == CalendarSource.api || kIsWeb);
+    if (!isAppleOnlineImport) return false;
+    return errorKey == 'calendarSyncApplePublicUrlRequired' ||
+        errorKey == 'calendarSyncApplePublicUrlInvalid';
   }
 
   Future<bool> _promptBlockedCalendarPermissionSettings() async {
@@ -1026,11 +1040,16 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
       _trace(
         'CalendarSyncScreen fetchCalendars CalendarSyncException=${e.message}',
       );
+      final errorKey = e.toString();
+      final keepAppleOnlineFormState = _shouldKeepAppleOnlineFormState(errorKey);
       setState(() {
-        // e.toString() now returns a translation key
-        _errorMessage = e.toString();
+        _errorMessage = errorKey;
         _isLoading = false;
-        _hasFetched = true;
+        _hasFetched = !keepAppleOnlineFormState;
+        if (keepAppleOnlineFormState) {
+          _calendars = <ExternalCalendar>[];
+          _selectedCalendarIds.clear();
+        }
       });
     } catch (e) {
       _trace('CalendarSyncScreen fetchCalendars error=$e');
@@ -1885,13 +1904,6 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          l10n.getString('calendarSyncAppleOnlineImportTitle'),
-          style: Theme.of(
-            context,
-          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
-        ),
-        const SizedBox(height: 8),
         Text(
           l10n.getString('calendarSyncApplePublicUrlHelp'),
           style: Theme.of(context).textTheme.bodyMedium,

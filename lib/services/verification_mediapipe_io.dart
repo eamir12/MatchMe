@@ -176,7 +176,7 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
         )
         ..loadHtmlString(
           htmlWithParams,
-          baseUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/',
+          baseUrl: 'https://cdn.jsdelivr.net/',
         )
         ..setNavigationDelegate(
           NavigationDelegate(
@@ -190,7 +190,8 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
               debugPrint('WebView resource error: $error');
             },
             onNavigationRequest: (NavigationRequest request) {
-              if (request.url.startsWith('https://cdn.jsdelivr.net')) {
+              if (request.url.startsWith('https://cdn.jsdelivr.net') ||
+                  request.url.startsWith('https://unpkg.com')) {
                 return NavigationDecision.navigate;
               }
               debugPrint('Blocking navigation to: ${request.url}');

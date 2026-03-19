@@ -35,13 +35,13 @@ dependencies:
   intl: ^0.20.2
   shared_preferences: ^2.3.5
   image_picker: ^1.2.0
-  camera: ^0.11.4
+  camera: ^0.12.0
   file_picker: ^10.3.8
   extended_image: ^10.0.1
   image: ^4.8.0
   uuid: ^4.5.1
   collection: ^1.19.1
-  syncfusion_flutter_datepicker: ^32.2.5
+  syncfusion_flutter_datepicker: ^33.1.44
   url_launcher: ^6.3.0
   riverpod_annotation: ^4.0.0
   emoji_picker_flutter: ^4.4.0  # Added for WhatsApp-style categorized emoji picker
@@ -59,7 +59,7 @@ dependencies:
   hive_flutter: ^1.1.0
 
   # --- Local Notifications ---
-  flutter_local_notifications: ^20.0.0
+  flutter_local_notifications: ^21.0.0
 
   auto_size_text: ^3.0.0
   permission_handler: ^12.0.1

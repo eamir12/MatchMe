@@ -26,11 +26,46 @@ class VerificationGesture {
 
 const List<VerificationGesture> _availableVerificationGestures = [
   VerificationGesture(
+    code: 'CLOSED_FIST_RIGHT_HAND',
+    titleKey: 'verificationGestureClosedFistTitle',
+    descriptionKey: 'verificationGestureClosedFistDescription',
+    aiPromptText:
+        'The person must clearly show a closed fist with their right hand next to their face, with the fist fully visible.',
+  ),
+  VerificationGesture(
+    code: 'OPEN_PALM_RIGHT_HAND',
+    titleKey: 'verificationGestureOpenPalmTitle',
+    descriptionKey: 'verificationGestureOpenPalmDescription',
+    aiPromptText:
+        'The person must clearly show an open palm with their right hand next to their face, with all fingers visible.',
+  ),
+  VerificationGesture(
     code: 'PEACE_SIGN_RIGHT_HAND',
     titleKey: 'verificationGesturePeaceSignTitle',
     descriptionKey: 'verificationGesturePeaceSignDescription',
     aiPromptText:
         'The person must clearly show a V-shaped peace sign with their right hand next to their face, with the fingers clearly visible.',
+  ),
+  VerificationGesture(
+    code: 'POINTING_UP_RIGHT_HAND',
+    titleKey: 'verificationGesturePointingUpTitle',
+    descriptionKey: 'verificationGesturePointingUpDescription',
+    aiPromptText:
+        'The person must clearly show a pointing up gesture with their right hand next to their face, with the index finger extended upward.',
+  ),
+  VerificationGesture(
+    code: 'I_LOVE_YOU_RIGHT_HAND',
+    titleKey: 'verificationGestureILoveYouTitle',
+    descriptionKey: 'verificationGestureILoveYouDescription',
+    aiPromptText:
+        'The person must clearly show the I love you hand sign with their right hand next to their face, with thumb, index finger, and little finger extended.',
+  ),
+  VerificationGesture(
+    code: 'THUMBS_DOWN_RIGHT_HAND',
+    titleKey: 'verificationGestureThumbsDownTitle',
+    descriptionKey: 'verificationGestureThumbsDownDescription',
+    aiPromptText:
+        'The person must clearly show a thumbs-down with their right hand next to their face, with the thumb pointing down.',
   ),
   VerificationGesture(
     code: 'THUMBS_UP_RIGHT_HAND',
@@ -157,6 +192,10 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
          'verificationCaptureInstruction': l10n.getString('verificationCaptureInstruction'),
          'verificationCaptureStatusShowGesture': l10n.getString('verificationCaptureStatusShowGesture'),
          'verificationCaptureStatusShowFace': l10n.getString('verificationCaptureStatusShowFace'),
+         'verificationCaptureStatusAlignFace': l10n.getString('verificationCaptureStatusAlignFace'),
+         'verificationCaptureStatusPositionHand': l10n.getString('verificationCaptureStatusPositionHand'),
+         'verificationCaptureStatusHoldSteady': l10n.getString('verificationCaptureStatusHoldSteady'),
+         'verificationCaptureStatusCapturingBestFrame': l10n.getString('verificationCaptureStatusCapturingBestFrame'),
          'verificationCaptureStatusGestureDetected': l10n.getString('verificationCaptureStatusGestureDetected'),
          'verificationCaptureStatusUseCorrectHand': l10n.getString('verificationCaptureStatusUseCorrectHand'),
          'verificationCaptureHandLeft': l10n.getString('verificationCaptureHandLeft'),

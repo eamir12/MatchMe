@@ -369,15 +369,16 @@ serve(async (req) => {
       updatePayload.verification_auto_rejected = true;
       updatePayload.verification_reviewed_at = nowIso;
       updatePayload.is_verified = false;
-    } else if (comparisonResult.isMatch === true && comparisonResult.similarity >= 85) {
+    } else if (comparisonResult.isMatch === true) {
       updatePayload.verification_status = "approved";
       updatePayload.is_verified = true;
       updatePayload.verification_auto_rejected = false;
       updatePayload.verification_reviewed_at = nowIso;
     } else {
-      updatePayload.verification_status = "pending";
-      updatePayload.verification_auto_rejected = false;
-      updatePayload.verification_reviewed_at = null;
+      updatePayload.verification_status = "rejected";
+      updatePayload.verification_auto_rejected = true;
+      updatePayload.verification_reviewed_at = nowIso;
+      updatePayload.is_verified = false;
     }
 
     const { error: updateError } = await supabaseInternal
@@ -463,9 +464,9 @@ serve(async (req) => {
           await supabaseInternal.rpc("edge_update_verification", {
             p_user_id: requestUserId,
             p_patch: {
-              verification_status: "pending",
-              verification_auto_rejected: false,
-              verification_reviewed_at: null,
+              verification_status: "rejected",
+              verification_auto_rejected: true,
+              verification_reviewed_at: new Date().toISOString(),
               is_verified: false,
               verification_ai_analysis: {
                 service: "edge_function",

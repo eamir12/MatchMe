@@ -32,12 +32,37 @@ void openMediaPipeVerificationCapture({
 
   void handleMessage(html.Event e) {
     final event = e as html.MessageEvent;
-    if (event.data is! Map) return;
-    final data = event.data as Map;
-    if (data['type'] == 'verificationPhoto' && data['data'] != null) {
+    if (event.origin != base.origin) return;
+
+    dynamic payload;
+    try {
+      payload = event.data;
+    } catch (_) {
+      return;
+    }
+
+    String? type;
+    String? base64;
+    if (payload is String) {
+      try {
+        final decoded = jsonDecode(payload);
+        if (decoded is Map) {
+          type = decoded['type']?.toString();
+          final data = decoded['data'];
+          base64 = data is String ? data : data?.toString();
+        }
+      } catch (_) {
+        return;
+      }
+    } else if (payload is Map) {
+      type = payload['type']?.toString();
+      final data = payload['data'];
+      base64 = data is String ? data : data?.toString();
+    }
+
+    if (type == 'verificationPhoto' && base64 != null && base64.isNotEmpty) {
       html.window.removeEventListener('message', handleMessage);
       try {
-        final base64 = data['data'] as String;
         final bytes = Uint8List.fromList(base64Decode(base64));
         popup.close();
         onPhoto(bytes);

@@ -160,17 +160,48 @@ class CalendarSyncService {
 
   Future<Map<String, dynamic>?> _waitForProviderPayload({
     required Map<String, dynamic>? Function() readPayload,
-    Duration timeout = const Duration(seconds: 30),
+    Duration timeout = const Duration(minutes: 2),
   }) async {
-    var payload = readPayload();
-    if (payload != null) return payload;
-    final deadline = DateTime.now().add(timeout);
-    while (DateTime.now().isBefore(deadline)) {
-      await Future.delayed(const Duration(milliseconds: 350));
-      payload = readPayload();
-      if (payload != null) return payload;
+    final immediatePayload = readPayload();
+    if (immediatePayload != null) return immediatePayload;
+
+    final completer = Completer<Map<String, dynamic>?>();
+    void resolveIfAvailable() {
+      if (completer.isCompleted) return;
+      final payload = readPayload();
+      if (payload != null) {
+        completer.complete(payload);
+      }
     }
-    return null;
+
+    final authSub = Supabase.instance.client.auth.onAuthStateChange.listen(
+      (authState) {
+        if (authState.event == AuthChangeEvent.initialSession ||
+            authState.event == AuthChangeEvent.signedIn ||
+            authState.event == AuthChangeEvent.tokenRefreshed) {
+          resolveIfAvailable();
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {},
+    );
+
+    final pollTimer = Timer.periodic(const Duration(milliseconds: 350), (_) {
+      resolveIfAvailable();
+    });
+
+    final timeoutTimer = Timer(timeout, () {
+      if (!completer.isCompleted) {
+        completer.complete(readPayload());
+      }
+    });
+
+    try {
+      return await completer.future;
+    } finally {
+      await authSub.cancel();
+      pollTimer.cancel();
+      timeoutTimer.cancel();
+    }
   }
 
   Future<Map<String, dynamic>?> _ensureGoogleProviderSessionPayload() async {
@@ -187,6 +218,7 @@ class CalendarSyncService {
     } catch (_) {}
     final payload = await _waitForProviderPayload(
       readPayload: _googleProviderSessionPayload,
+      timeout: const Duration(minutes: 3),
     );
     await _restoreSessionIfChanged(
       originalSession: originalSession,
@@ -208,6 +240,7 @@ class CalendarSyncService {
     } catch (_) {}
     final payload = await _waitForProviderPayload(
       readPayload: _azureProviderSessionPayload,
+      timeout: const Duration(minutes: 3),
     );
     await _restoreSessionIfChanged(
       originalSession: originalSession,

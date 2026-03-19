@@ -91,6 +91,13 @@ void _reportNonFatal(Object error, StackTrace stackTrace) {
   );
 }
 
+bool _isIgnorableWebSocketError(Object error) {
+  if (!kIsWeb) return false;
+  final message = error.toString().toLowerCase();
+  return message.contains('websocketchannelexception') &&
+      message.contains('websocket connection failed');
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // Increase buffer size for flutter/lifecycle to avoid "discarded before it could be handled" warnings on Web
@@ -101,6 +108,9 @@ Future<void> main() async {
   MobileLocalNotificationService.setProviderContainer(container);
   WebNotificationService.setProviderContainer(container);
   PlatformDispatcher.instance.onError = (error, stack) {
+    if (_isIgnorableWebSocketError(error)) {
+      return true;
+    }
     if (error is GoogleSignInException &&
         error.code == GoogleSignInExceptionCode.canceled) {
       return true;
@@ -234,6 +244,9 @@ void _installWebStartupWarmupFrames() {
   final prevHandler = _webWarmupPrevFlutterErrorHandler;
   FlutterError.onError = (details) {
     final message = details.exceptionAsString();
+    if (_isIgnorableWebSocketError(details.exception)) {
+      return;
+    }
     if (message.contains('disposed EngineFlutterView') ||
         message.contains('Trying to render a disposed EngineFlutterView')) {
       shutdownWarmup();

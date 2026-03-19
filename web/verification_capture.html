@@ -16,6 +16,18 @@
     #feedback.ready svg { width: 72px; height: 72px; }
     #feedback svg { width: 48px; height: 48px; opacity: 0.6; }
     #feedback.ready svg { opacity: 1; }
+    .roi { pointer-events: none; position: absolute; border: 2px solid rgba(255, 255, 255, 0.55); border-radius: 18px; transition: border-color 0.2s, background 0.2s; }
+    .roi.active { border-color: rgba(0, 200, 83, 0.95); background: rgba(0, 200, 83, 0.12); }
+    #faceRoi { width: 56vw; max-width: 420px; min-width: 240px; height: 54vh; max-height: 470px; min-height: 280px; top: 6%; left: 50%; transform: translateX(-50%); border-radius: 42% 42% 46% 46% / 48% 48% 42% 42%; }
+    #gestureRoi { width: 34vw; max-width: 280px; min-width: 170px; height: 24vh; max-height: 230px; min-height: 140px; top: 64%; right: 16%; }
+    #gestureRoi.left { right: auto; left: 16%; }
+    @media (orientation: landscape) {
+      #faceRoi { width: 40vw; max-width: 460px; min-width: 260px; height: 50vh; max-height: 360px; min-height: 240px; top: 8%; }
+      #gestureRoi { width: 24vw; max-width: 260px; min-width: 150px; height: 28vh; max-height: 220px; min-height: 130px; top: 64%; right: 12%; }
+      #gestureRoi.left { left: 12%; }
+    }
+    #progressWrap { pointer-events: none; position: absolute; left: 8%; right: 8%; bottom: 118px; height: 8px; border-radius: 999px; background: rgba(255,255,255,0.2); overflow: hidden; }
+    #progressBar { width: 0%; height: 100%; background: linear-gradient(90deg, #42a5f5, #00c853); transition: width 0.15s linear; }
     #captureBar { position: absolute; bottom: 0; left: 0; right: 0; padding: 24px; background: linear-gradient(transparent, rgba(0,0,0,0.8)); display: flex; justify-content: center; }
     #captureWrap { display: flex; flex-direction: column; align-items: center; }
     #captureBtn { width: 72px; height: 72px; border-radius: 50%; border: 4px solid #fff; background: rgba(255,255,255,0.3); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: opacity 0.2s, background 0.2s; }
@@ -32,6 +44,9 @@
     <div id="overlay">
       <div id="instruction"></div>
       <div id="feedback"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg></div>
+      <div id="faceRoi" class="roi"></div>
+      <div id="gestureRoi" class="roi"></div>
+      <div id="progressWrap"><div id="progressBar"></div></div>
       <div id="captureBar">
         <div id="captureWrap">
           <button id="captureBtn" disabled><svg viewBox="0 0 24 24" fill="white"><circle cx="12" cy="12" r="4"/></svg></button>
@@ -41,6 +56,7 @@
     </div>
   </div>
   <canvas id="canvas" class="hidden"></canvas>
+  <canvas id="qualityCanvas" class="hidden"></canvas>
   <!-- For WebView: Flutter replaces __GESTURE_CODE__ with the required gesture. For web: URL param is used. -->
   <script>
     window.__REQUIRED_GESTURE_CODE__ = typeof window.__REQUIRED_GESTURE_CODE__ !== 'undefined' ? window.__REQUIRED_GESTURE_CODE__ : '';
@@ -63,12 +79,43 @@
   </script>
   <script type="module">
 (function() {
-  var HOLD_MS = 1200;
   var FPS = 10;
+  var READY_STABLE_MS = 850;
+  var SCORE_WINDOW_SIZE = 15;
+  var PASS_SCORE_MIN = 0.72;
+  var FACE_HIT_MIN = 0.85;
+  var GESTURE_HIT_MIN = 0.7;
+  var CAPTURE_SELECTION_MS = 900;
+  var FACE_STALE_MS = 900;
+  var MAX_CAPTURE_ATTEMPTS = 12;
+  var MEDIAPIPE_SOURCES = [
+    {
+      moduleUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/vision_bundle.mjs',
+      wasmRootUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm'
+    },
+    {
+      moduleUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs',
+      wasmRootUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
+    },
+    {
+      moduleUrl: 'https://unpkg.com/@mediapipe/tasks-vision@0.10.21/vision_bundle.mjs',
+      wasmRootUrl: 'https://unpkg.com/@mediapipe/tasks-vision@0.10.21/wasm'
+    },
+    {
+      moduleUrl: 'https://unpkg.com/@mediapipe/tasks-vision@latest/vision_bundle.mjs',
+      wasmRootUrl: 'https://unpkg.com/@mediapipe/tasks-vision@latest/wasm'
+    }
+  ];
+  var selectedMediaPipeSource = null;
 
   var gestureRequirements = {
-    'THUMBS_UP_RIGHT_HAND': { gesture: 'Thumb_Up', hand: 'Right' },
-    'PEACE_SIGN_RIGHT_HAND': { gesture: 'Victory', hand: 'Right' }
+    'CLOSED_FIST_RIGHT_HAND': { gesture: 'Closed_Fist', hand: 'Right' },
+    'OPEN_PALM_RIGHT_HAND': { gesture: 'Open_Palm', hand: 'Right' },
+    'PEACE_SIGN_RIGHT_HAND': { gesture: 'Victory', hand: 'Right' },
+    'POINTING_UP_RIGHT_HAND': { gesture: 'Pointing_Up', hand: 'Right' },
+    'I_LOVE_YOU_RIGHT_HAND': { gesture: 'ILoveYou', hand: 'Right' },
+    'THUMBS_DOWN_RIGHT_HAND': { gesture: 'Thumb_Down', hand: 'Right' },
+    'THUMBS_UP_RIGHT_HAND': { gesture: 'Thumb_Up', hand: 'Right' }
   };
 
   var gestureParam = (typeof window.__REQUIRED_GESTURE_CODE__ === 'string' && window.__REQUIRED_GESTURE_CODE__)
@@ -88,11 +135,15 @@
   var captureBtn = document.getElementById('captureBtn');
   var statusEl = document.getElementById('status');
   var canvas = document.getElementById('canvas');
+  var qualityCanvas = document.getElementById('qualityCanvas');
   var ctx = canvas.getContext('2d');
+  var qctx = qualityCanvas.getContext('2d');
+  var faceRoiEl = document.getElementById('faceRoi');
+  var gestureRoiEl = document.getElementById('gestureRoi');
+  var progressBar = document.getElementById('progressBar');
 
   var gestureRecognizer = null;
   var faceLandmarker = null;
-  var holdStart = null;
   var lastFaceSeenAt = 0;
   var lastFaceLandmarks = null;
   var ready = false;
@@ -100,13 +151,28 @@
   var stream = null;
   var hasCaptured = false;
   var tickTimer = null;
+  var scoreWindow = [];
+  var readySince = null;
+  var captureSelectionStartedAt = null;
+  var bestFrame = null;
+  var capturePlanned = false;
+  var previousFaceCenter = null;
+  var frameQualityCooldown = 0;
   var strings = (window.__CAPTURE_STRINGS__ && typeof window.__CAPTURE_STRINGS__ === 'object') ? window.__CAPTURE_STRINGS__ : {};
+  if (requiredHand === 'Left') {
+    gestureRoiEl.classList.add('left');
+  } else {
+    gestureRoiEl.classList.remove('left');
+  }
 
   window.sendVerificationPhoto = function(base64) {
     if (window.PhotoCapture && typeof window.PhotoCapture.postMessage === 'function') {
       window.PhotoCapture.postMessage(base64);
     } else if (window.opener) {
-      window.opener.postMessage({ type: 'verificationPhoto', data: base64 }, '*');
+      window.opener.postMessage(
+        JSON.stringify({ type: 'verificationPhoto', data: base64 }),
+        window.location.origin,
+      );
     }
   };
 
@@ -140,6 +206,15 @@
     statusEl.textContent = text;
   }
 
+  function clamp(v, min, max) {
+    return Math.max(min, Math.min(max, v));
+  }
+
+  function setProgress(v) {
+    var pct = clamp(Math.round(v * 100), 0, 100);
+    progressBar.style.width = pct + '%';
+  }
+
   var gestureInstruction = t('verificationCaptureInstruction', 'Show: {gesture}').replace('{gesture}', gestureLabel);
   setInstruction(gestureInstruction);
   setStatus(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
@@ -151,11 +226,33 @@
     return g[0].categoryName;
   }
 
+  function detectGestureScore(results) {
+    try {
+      if (!results || !results.gestures || !results.gestures.length) return 0;
+      var g = results.gestures[0];
+      if (!g || !g.length) return 0;
+      return clamp(Number(g[0].score || 0), 0, 1);
+    } catch (_) {
+      return 0;
+    }
+  }
+
   function detectHandedness(results) {
     if (!results || !results.handednesses || results.handednesses.length === 0) return null;
     var h = results.handednesses[0];
     if (!h || !h.length) return null;
     return h[0].categoryName;
+  }
+
+  function detectHandednessScore(results) {
+    try {
+      if (!results || !results.handednesses || !results.handednesses.length) return 0;
+      var h = results.handednesses[0];
+      if (!h || !h.length) return 0;
+      return clamp(Number(h[0].score || 0), 0, 1);
+    } catch (_) {
+      return 0;
+    }
   }
 
   function getHandLandmarks(results) {
@@ -173,7 +270,7 @@
   function isFaceObstructed(faceLandmarks, handLandmarks) {
     try {
       if (!faceLandmarks || !handLandmarks) return false;
-      var idx = [1, 13, 14, 61, 291];
+      var idx = [33, 263, 1, 6, 13, 14];
       var minX = 1, minY = 1, maxX = 0, maxY = 0;
       for (var i = 0; i < idx.length; i++) {
         var p = faceLandmarks[idx[i]];
@@ -184,8 +281,8 @@
         if (p.y > maxY) maxY = p.y;
       }
       if (maxX <= minX || maxY <= minY) return false;
-      var padX = 0.04;
-      var padY = 0.05;
+      var padX = 0.03;
+      var padY = 0.03;
       minX = Math.max(0, minX - padX);
       maxX = Math.min(1, maxX + padX);
       minY = Math.max(0, minY - padY);
@@ -218,14 +315,14 @@
         if (p.y > maxY) maxY = p.y;
       }
 
-      var margin = 0.08;
+      var margin = 0.05;
       if (minX < margin || minY < margin || maxX > (1 - margin) || maxY > (1 - margin)) {
         return false;
       }
 
       var w = maxX - minX;
       var h = maxY - minY;
-      if (w < 0.18 || h < 0.18) {
+      if (w < 0.15 || h < 0.15) {
         return false;
       }
 
@@ -244,53 +341,345 @@
     }
   }
 
+  function getFaceBox(faceLandmarks) {
+    if (!faceLandmarks || !faceLandmarks.length) return null;
+    var minX = 1, minY = 1, maxX = 0, maxY = 0;
+    for (var i = 0; i < faceLandmarks.length; i++) {
+      var p = faceLandmarks[i];
+      if (!p) continue;
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+    }
+    return {
+      minX: minX,
+      minY: minY,
+      maxX: maxX,
+      maxY: maxY,
+      width: maxX - minX,
+      height: maxY - minY,
+      cx: (minX + maxX) / 2,
+      cy: (minY + maxY) / 2
+    };
+  }
+
+  function getHandCenter(handLandmarks) {
+    if (!handLandmarks || !handLandmarks.length) return null;
+    var sx = 0;
+    var sy = 0;
+    var c = 0;
+    for (var i = 0; i < handLandmarks.length; i++) {
+      var h = handLandmarks[i];
+      if (!h) continue;
+      sx += h.x;
+      sy += h.y;
+      c++;
+    }
+    if (!c) return null;
+    return { x: sx / c, y: sy / c };
+  }
+
+  function computeFaceQuality(faceLandmarks) {
+    var box = getFaceBox(faceLandmarks);
+    if (!box) return { score: 0, centered: 0, sizeScore: 0, stability: 0, box: null };
+    var targets = getLayoutTargets();
+    var targetCx = targets.faceCx;
+    var targetCy = targets.faceCy;
+    var dx = Math.abs(box.cx - targetCx);
+    var dy = Math.abs(box.cy - targetCy);
+    var centered = clamp(1 - ((dx / targets.faceCenterXRange) + (dy / targets.faceCenterYRange)) * 0.5, 0, 1);
+    var area = box.width * box.height;
+    var sizeScore = clamp((area - 0.045) / 0.08, 0, 1);
+    var stability = 1;
+    if (previousFaceCenter) {
+      var jitter = Math.hypot(box.cx - previousFaceCenter.x, box.cy - previousFaceCenter.y);
+      stability = clamp(1 - (jitter / 0.07), 0, 1);
+    }
+    previousFaceCenter = { x: box.cx, y: box.cy };
+    var score = (centered * 0.4) + (sizeScore * 0.4) + (stability * 0.2);
+    return { score: score, centered: centered, sizeScore: sizeScore, stability: stability, box: box };
+  }
+
+  function computeRoiScores(faceQuality, handCenter) {
+    var targets = getLayoutTargets();
+    var faceRoiScore = 0;
+    if (faceQuality && faceQuality.box) {
+      var dx = Math.abs(faceQuality.box.cx - targets.faceCx);
+      var dy = Math.abs(faceQuality.box.cy - targets.faceCy);
+      faceRoiScore = clamp(1 - ((dx / targets.faceRoiXRange) + (dy / targets.faceRoiYRange)) * 0.5, 0, 1);
+    }
+    var handTargetX = requiredHand === 'Left' ? targets.handLeftX : targets.handRightX;
+    var handTargetY = targets.handY;
+    var handRoiScore = 0;
+    if (handCenter) {
+      var hdx = Math.abs(handCenter.x - handTargetX);
+      var hdy = Math.abs(handCenter.y - handTargetY);
+      handRoiScore = clamp(1 - ((hdx / targets.handXRange) + (hdy / targets.handYRange)) * 0.5, 0, 1);
+    }
+    return { faceRoiScore: faceRoiScore, handRoiScore: handRoiScore };
+  }
+
+  function getLayoutTargets() {
+    var width = video.videoWidth || window.innerWidth || 1;
+    var height = video.videoHeight || window.innerHeight || 1;
+    var isLandscape = width > height;
+    if (isLandscape) {
+      return {
+        faceCx: 0.5,
+        faceCy: 0.33,
+        faceCenterXRange: 0.28,
+        faceCenterYRange: 0.33,
+        faceRoiXRange: 0.26,
+        faceRoiYRange: 0.3,
+        handRightX: 0.64,
+        handLeftX: 0.36,
+        handY: 0.74,
+        handXRange: 0.34,
+        handYRange: 0.38
+      };
+    }
+    return {
+      faceCx: 0.5,
+      faceCy: 0.34,
+      faceCenterXRange: 0.28,
+      faceCenterYRange: 0.33,
+      faceRoiXRange: 0.26,
+      faceRoiYRange: 0.3,
+      handRightX: 0.61,
+      handLeftX: 0.39,
+      handY: 0.75,
+      handXRange: 0.34,
+      handYRange: 0.38
+    };
+  }
+
+  function computeImageQuality() {
+    try {
+      if (video.videoWidth <= 0 || video.videoHeight <= 0) return null;
+      var w = 160;
+      var h = Math.round((video.videoHeight / video.videoWidth) * w);
+      if (h < 90) h = 90;
+      qualityCanvas.width = w;
+      qualityCanvas.height = h;
+      qctx.save();
+      qctx.scale(-1, 1);
+      qctx.drawImage(video, -w, 0, w, h);
+      qctx.restore();
+      var imageData = qctx.getImageData(0, 0, w, h);
+      var d = imageData.data;
+      var n = w * h;
+      var sum = 0;
+      var sumSq = 0;
+      for (var i = 0; i < d.length; i += 4) {
+        var y = (0.299 * d[i]) + (0.587 * d[i + 1]) + (0.114 * d[i + 2]);
+        sum += y;
+        sumSq += y * y;
+      }
+      var mean = sum / n;
+      var variance = (sumSq / n) - (mean * mean);
+      var sharpness = clamp(variance / 2600, 0, 1);
+      var brightness = clamp(1 - (Math.abs(mean - 135) / 95), 0, 1);
+      return { sharpness: sharpness, brightness: brightness };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function buildFrameCandidateQuality(e) {
+    var q = computeImageQuality();
+    if (!q) return null;
+    var quality = (q.sharpness * 0.36) + (q.brightness * 0.18) + (e.frameScore * 0.30) + (e.gestureScore * 0.10) + (e.faceQualityScore * 0.06);
+    return {
+      quality: quality,
+      sharpness: q.sharpness,
+      brightness: q.brightness
+    };
+  }
+
+  function snapshotToDataUrl() {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.save();
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
+    ctx.restore();
+    return canvas.toDataURL('image/jpeg', 0.92);
+  }
+
+  function updateBestFrame(now, e) {
+    if (frameQualityCooldown > 0) {
+      frameQualityCooldown--;
+      return;
+    }
+    frameQualityCooldown = 1;
+    var candidate = buildFrameCandidateQuality(e);
+    if (!candidate) return;
+    var dataUrl = snapshotToDataUrl();
+    if (!bestFrame || candidate.quality > bestFrame.quality) {
+      bestFrame = {
+        quality: candidate.quality,
+        sharpness: candidate.sharpness,
+        brightness: candidate.brightness,
+        dataUrl: dataUrl,
+        ts: now
+      };
+    }
+  }
+
+  function pushScore(sample) {
+    scoreWindow.push(sample);
+    if (scoreWindow.length > SCORE_WINDOW_SIZE) {
+      scoreWindow.shift();
+    }
+  }
+
+  function summarizeWindow() {
+    if (!scoreWindow.length) {
+      return { avg: 0, faceHitRate: 0, gestureHitRate: 0 };
+    }
+    var sum = 0;
+    var faceHits = 0;
+    var gestureHits = 0;
+    for (var i = 0; i < scoreWindow.length; i++) {
+      var s = scoreWindow[i];
+      sum += s.frameScore;
+      if (s.faceOk) faceHits++;
+      if (s.gestureStrong) gestureHits++;
+    }
+    return {
+      avg: sum / scoreWindow.length,
+      faceHitRate: faceHits / scoreWindow.length,
+      gestureHitRate: gestureHits / scoreWindow.length
+    };
+  }
+
+  function shouldPass(summary) {
+    return summary.avg >= PASS_SCORE_MIN &&
+      summary.faceHitRate >= FACE_HIT_MIN &&
+      summary.gestureHitRate >= GESTURE_HIT_MIN;
+  }
+
+  function setRoiState(faceActive, handActive) {
+    if (faceActive) faceRoiEl.classList.add('active'); else faceRoiEl.classList.remove('active');
+    if (handActive) gestureRoiEl.classList.add('active'); else gestureRoiEl.classList.remove('active');
+  }
+
+  function stopStreamTracks() {
+    try {
+      if (stream && typeof stream.getTracks === 'function') {
+        stream.getTracks().forEach(function(t) {
+          try { t.stop(); } catch (_) {}
+        });
+      }
+    } catch (_) {}
+  }
+
+  function captureFromDataUrl(dataUrl) {
+    var base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, '');
+    window.sendVerificationPhoto(base64);
+    stopStreamTracks();
+  }
+
   function tick() {
     if (!gestureRecognizer || !faceLandmarker || video.readyState < 2) return;
     frameIndex++;
     var now = Date.now();
     try {
-      if (frameIndex % 2 === 0) {
-        try {
-          var faceResults = faceLandmarker.detectForVideo(video, now);
-          var hasFace = !!(faceResults && faceResults.faceLandmarks && faceResults.faceLandmarks.length > 0);
-          if (hasFace) {
-            lastFaceSeenAt = now;
-            lastFaceLandmarks = faceResults.faceLandmarks[0];
-          }
-        } catch (_) {}
-      }
-      var facePresent = (now - lastFaceSeenAt) < 900 && !!lastFaceLandmarks;
+      try {
+        var faceResults = faceLandmarker.detectForVideo(video, now);
+        var hasFace = !!(faceResults && faceResults.faceLandmarks && faceResults.faceLandmarks.length > 0);
+        if (hasFace) {
+          lastFaceSeenAt = now;
+          lastFaceLandmarks = faceResults.faceLandmarks[0];
+        }
+      } catch (_) {}
+      var facePresent = (now - lastFaceSeenAt) < FACE_STALE_MS && !!lastFaceLandmarks;
       var fullFaceVisible = facePresent && isFullFaceVisible(lastFaceLandmarks);
-
+      var faceQuality = facePresent ? computeFaceQuality(lastFaceLandmarks) : { score: 0, box: null };
       var gestureResults = gestureRecognizer.recognizeForVideo(video, now);
       var name = detectGesture(gestureResults);
+      var gestureConfidence = detectGestureScore(gestureResults);
       var hand = detectHandedness(gestureResults);
+      var handConfidence = detectHandednessScore(gestureResults);
       var handLandmarks = getHandLandmarks(gestureResults);
+      var handCenter = getHandCenter(handLandmarks);
+      var roiScores = computeRoiScores(faceQuality, handCenter);
       var faceObstructed = facePresent && handLandmarks && isFaceObstructed(lastFaceLandmarks, handLandmarks);
       var faceOk = fullFaceVisible && !faceObstructed;
-      var gestureOk = false;
       var matchesGesture = name === requiredGesture;
       var matchesHand = !requiredHand || hand === requiredHand;
-      if (matchesGesture && matchesHand) {
-        if (!holdStart) holdStart = now;
-        if ((now - holdStart) >= HOLD_MS) gestureOk = true;
-      } else {
-        holdStart = null;
-      }
+      var gestureScore = matchesGesture ? gestureConfidence : 0;
+      var handednessScore = !requiredHand ? 1 : (matchesHand ? handConfidence : 0);
+      var occlusionPenalty = faceObstructed ? 0.35 : 0;
+      var facePresenceScore = facePresent ? 1 : 0;
+      var faceQualityScore = faceOk ? faceQuality.score : 0;
+      var frameScore = (0.25 * facePresenceScore) +
+        (0.24 * faceQualityScore) +
+        (0.24 * gestureScore) +
+        (0.14 * handednessScore) +
+        (0.07 * roiScores.faceRoiScore) +
+        (0.06 * roiScores.handRoiScore) -
+        occlusionPenalty;
+      frameScore = clamp(frameScore, 0, 1);
+      var gestureStrong = matchesGesture && matchesHand && gestureScore >= 0.58;
+      pushScore({ frameScore: frameScore, faceOk: faceOk, gestureStrong: gestureStrong });
+      var summary = summarizeWindow();
+      setProgress(summary.avg);
+      setRoiState(faceOk, gestureStrong);
 
-      var newReady = faceOk && gestureOk;
-      if (newReady !== ready) {
-        ready = newReady;
-        setReady(ready);
+      var passNow = shouldPass(summary);
+      if (passNow) {
+        if (!readySince) {
+          readySince = now;
+        }
+        var stableMs = now - readySince;
+        if (stableMs >= READY_STABLE_MS) {
+          if (!ready) {
+            ready = true;
+            setReady(true);
+            setStatus(t('verificationCaptureStatusHoldSteady', 'Great, hold steady...'));
+          }
+          if (!capturePlanned) {
+            capturePlanned = true;
+            captureSelectionStartedAt = now;
+            bestFrame = null;
+          }
+          if (!hasCaptured) {
+            updateBestFrame(now, {
+              frameScore: frameScore,
+              gestureScore: gestureScore,
+              faceQualityScore: faceQualityScore
+            });
+            var elapsedSelection = now - captureSelectionStartedAt;
+            if (elapsedSelection >= CAPTURE_SELECTION_MS) {
+              setStatus(t('verificationCaptureStatusCapturingBestFrame', 'Capturing best frame...'));
+              triggerAutoCapture();
+              return;
+            }
+          }
+        } else {
+          setStatus(t('verificationCaptureStatusHoldSteady', 'Great, hold steady...'));
+        }
+      } else {
+        readySince = null;
+        capturePlanned = false;
+        captureSelectionStartedAt = null;
         if (ready) {
-          triggerAutoCapture();
-          return;
+          ready = false;
+          setReady(false);
         }
       }
 
       if (!ready) {
         if (!faceOk) {
-          setStatus(t('verificationCaptureStatusShowFace', 'Make sure your face is visible'));
+          if (!facePresent) {
+            setStatus(t('verificationCaptureStatusAlignFace', 'Center your face inside the guide'));
+          } else if (faceObstructed) {
+            setStatus(t('verificationCaptureStatusShowFace', 'Make sure your face is visible'));
+          } else {
+            setStatus(t('verificationCaptureStatusAlignFace', 'Center your face inside the guide'));
+          }
         } else if (matchesGesture && requiredHand && hand && hand !== requiredHand) {
           var handKey = requiredHand === 'Right' ? 'verificationCaptureHandRight' : 'verificationCaptureHandLeft';
           var handLabel = t(handKey, requiredHand.toLowerCase());
@@ -300,6 +689,10 @@
               handLabel,
             ),
           );
+        } else if (matchesGesture && !gestureStrong) {
+          setStatus(t('verificationCaptureStatusHoldSteady', 'Great, hold steady...'));
+        } else if (!matchesGesture) {
+          setStatus(t('verificationCaptureStatusPositionHand', 'Place your hand in the gesture area and show the gesture'));
         } else {
           setStatus(t('verificationCaptureStatusShowGesture', 'Show the required gesture'));
         }
@@ -319,40 +712,30 @@
         tickTimer = null;
       }
     } catch (_) {}
-    captureSafely(0);
+    captureSafely(0, bestFrame && bestFrame.dataUrl ? bestFrame.dataUrl : null);
   }
 
-  function captureSafely(attempt) {
+  function captureSafely(attempt, bestDataUrl) {
     try {
+      if (bestDataUrl) {
+        captureFromDataUrl(bestDataUrl);
+        return;
+      }
       if (video.videoWidth > 0 && video.videoHeight > 0 && video.readyState >= 2) {
         capture();
         return;
       }
     } catch (_) {}
-    if (attempt >= 10) {
+    if (attempt >= MAX_CAPTURE_ATTEMPTS) {
       capture();
       return;
     }
-    setTimeout(function() { captureSafely(attempt + 1); }, 50);
+    setTimeout(function() { captureSafely(attempt + 1, bestDataUrl); }, 50);
   }
 
   function capture() {
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.save();
-    ctx.scale(-1, 1);
-    ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
-    ctx.restore();
-    var dataUrl = canvas.toDataURL('image/jpeg', 0.92);
-    var base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, '');
-    window.sendVerificationPhoto(base64);
-    try {
-      if (stream && typeof stream.getTracks === 'function') {
-        stream.getTracks().forEach(function(t) {
-          try { t.stop(); } catch (_) {}
-        });
-      }
-    } catch (_) {}
+    var dataUrl = snapshotToDataUrl();
+    captureFromDataUrl(dataUrl);
   }
 
   captureBtn.addEventListener('click', function() {
@@ -374,11 +757,36 @@
     return Promise.resolve();
   }
 
+  function loadVisionModuleWithFallback() {
+    var lastError = null;
+    function tryAt(index) {
+      if (index >= MEDIAPIPE_SOURCES.length) {
+        return Promise.reject(lastError || new Error('No MediaPipe source available'));
+      }
+      var source = MEDIAPIPE_SOURCES[index];
+      return import(source.moduleUrl).then(function(mod) {
+        selectedMediaPipeSource = source;
+        return mod.default || mod;
+      }).catch(function(err) {
+        lastError = err;
+        return tryAt(index + 1);
+      });
+    }
+    return tryAt(0);
+  }
+
+  function createResolverPromise(vision) {
+    if (!selectedMediaPipeSource || !selectedMediaPipeSource.wasmRootUrl) {
+      return Promise.reject(new Error('MediaPipe source was not initialized'));
+    }
+    return vision.FilesetResolver.forVisionTasks(selectedMediaPipeSource.wasmRootUrl);
+  }
+
   function run(vision) {
     setInstruction(gestureInstruction);
     setStatus(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
 
-    var resolverPromise = vision.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm');
+    var resolverPromise = createResolverPromise(vision);
     var cameraPromise = navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
       audio: false
@@ -394,7 +802,10 @@
             modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task'
           },
           runningMode: 'VIDEO',
-          numHands: 1
+          numHands: 1,
+          minHandDetectionConfidence: 0.45,
+          minHandPresenceConfidence: 0.45,
+          minTrackingConfidence: 0.45
         }),
         vision.FaceLandmarker.createFromOptions(resolver, {
           baseOptions: {
@@ -402,6 +813,9 @@
           },
           runningMode: 'VIDEO',
           numFaces: 1,
+          minFaceDetectionConfidence: 0.45,
+          minFacePresenceConfidence: 0.45,
+          minTrackingConfidence: 0.45,
           outputFaceBlendshapes: false,
           outputFacialTransformationMatrixes: false
         })
@@ -418,8 +832,7 @@
     });
   }
 
-  import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs').then(function(mod) {
-    var vision = mod.default || mod;
+  loadVisionModuleWithFallback().then(function(vision) {
     run(vision);
   }).catch(function(err) {
     setInstruction(t('verificationCaptureFailedToLoad', 'Failed to load MediaPipe: {error}').replace('{error}', (err && (err.message || err)) || 'Unknown error'));
