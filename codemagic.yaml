@@ -21,7 +21,15 @@ workflows:
       - name: Set bundle identifier
         script: |
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" ios/Runner/Info.plist
-          xcode-project set-build-settings --project ios/Runner.xcodeproj --target Runner --build-settings PRODUCT_BUNDLE_IDENTIFIER=$BUNDLE_ID
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p = Path("ios/Runner.xcodeproj/project.pbxproj")
+          s = p.read_text()
+          bundle_id = os.environ["BUNDLE_ID"]
+          s = s.replace("PRODUCT_BUNDLE_IDENTIFIER = com.example.matchme;", f"PRODUCT_BUNDLE_IDENTIFIER = {bundle_id};")
+          p.write_text(s)
+          PY
       - name: Get Flutter packages
         script: flutter pub get
       - name: Clean Flutter build outputs
@@ -75,7 +83,15 @@ workflows:
       - name: Set bundle identifier
         script: |
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" ios/Runner/Info.plist
-          xcode-project set-build-settings --project ios/Runner.xcodeproj --target Runner --build-settings PRODUCT_BUNDLE_IDENTIFIER=$BUNDLE_ID
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p = Path("ios/Runner.xcodeproj/project.pbxproj")
+          s = p.read_text()
+          bundle_id = os.environ["BUNDLE_ID"]
+          s = s.replace("PRODUCT_BUNDLE_IDENTIFIER = com.example.matchme;", f"PRODUCT_BUNDLE_IDENTIFIER = {bundle_id};")
+          p.write_text(s)
+          PY
       - name: Get Flutter packages
         script: flutter pub get
       - name: Install CocoaPods dependencies
