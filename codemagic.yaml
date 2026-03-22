@@ -40,19 +40,19 @@ workflows:
           pod install --repo-update
           cd ..
       - name: Build iOS app without code signing
-        script: flutter build ios --release --no-codesign
-      - name: Package unsigned IPA for Sideloadly
+        script: flutter build ipa --release --no-codesign
+      - name: Export IPA artifact for Sideloadly
         script: |
-          rm -rf Payload
           rm -f Runner-unsigned.ipa
-          mkdir -p Payload
-          cp -R build/ios/iphoneos/Runner.app Payload/Runner.app
-          ditto -c -k --sequesterRsrc --keepParent Payload Runner-unsigned.ipa
+          IPA_PATH=$(find build/ios/ipa -maxdepth 1 -name "*.ipa" | head -n 1)
+          test -n "$IPA_PATH"
+          cp "$IPA_PATH" Runner-unsigned.ipa
       - name: Verify IPA structure
         script: |
           unzip -l Runner-unsigned.ipa | grep -q "Payload/Runner.app/"
           unzip -l Runner-unsigned.ipa | grep -q "Payload/Runner.app/Info.plist"
-          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" build/ios/iphoneos/Runner.app/Info.plist
+          unzip -p Runner-unsigned.ipa Payload/Runner.app/Info.plist > /tmp/Runner-Info.plist
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" /tmp/Runner-Info.plist
     artifacts:
       - Runner-unsigned.ipa
       - /tmp/xcodebuild_logs/*.log
