@@ -410,46 +410,13 @@ class BackgroundService {
   /// Update user visibility status in background
   static Future<void> updateVisibility(bool isVisible) async {
     try {
-      final targetUserId = _userId ?? Supabase.instance.client.auth.currentUser?.id;
-      if (targetUserId == null) return;
-
       if (kIsWeb || Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
-        // For web and desktop platforms
-        await Supabase.instance.client
-            .from('users')
-            .update({'user_visibility_setting': isVisible})
-            .eq('id', targetUserId);
-        
-        // Update visibility in user_activity
-        await Supabase.instance.client.rpc(
-          'update_user_visibility',
-          params: {'p_user_id': targetUserId}
-        );
-      } else {
-        // For mobile platforms
-        try {
-          // Update native service first
-          await _channel.invokeMethod('updateVisibility', {'isVisible': isVisible});
-        } catch (e) {
-          debugPrint('Native updateVisibility failed: $e');
-        }
-
-        // Update both users and user_activity tables
-        try {
-          await Supabase.instance.client
-              .from('users')
-              .update({'user_visibility_setting': isVisible})
-              .eq('id', targetUserId);
-              
-          await Supabase.instance.client.rpc(
-            'update_user_visibility',
-            params: {'p_user_id': targetUserId}
-          );
-        } catch (e) {
-          debugPrint('Failed to update user visibility in DB: $e');
-          // Fall back to outbox if online update fails
-          await (await LocalDbService.instance).saveVisibilityUpdateToOutbox(targetUserId, isVisible);
-        }
+        return;
+      }
+      try {
+        await _channel.invokeMethod('updateVisibility', {'isVisible': isVisible});
+      } catch (e) {
+        debugPrint('Native updateVisibility failed: $e');
       }
     } catch (e) {
       debugPrint('Failed to update visibility in background: $e');

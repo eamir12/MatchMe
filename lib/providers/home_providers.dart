@@ -72,7 +72,7 @@ final Map<String, ChatModel> _recentChatSnapshots = <String, ChatModel>{};
 final Set<String> _inFlightPreviewTranslationKeys = <String>{};
 
 Future<void> _triggerImmediateLastMessageTranslation({
-  required Ref ref,
+  required LocalDbService localDb,
   required String userId,
   required String matchId,
   required String messageId,
@@ -110,7 +110,6 @@ Future<void> _triggerImmediateLastMessageTranslation({
         normalizeLanguageCode(translatedTarget) == targetLanguage;
 
     if (hasTranslated && matchesTarget) {
-      final localDb = ref.read(localDbProvider);
       await localDb.updateChatLastMessageTranslation(
         userId,
         matchId,
@@ -205,7 +204,6 @@ final recentChatsProvider = StreamProvider.family<
                   }
 
                   try {
-                    final localDb = ref.read(localDbProvider);
                     if (payload.eventType == PostgresChangeEvent.insert) {
                       final messagesToDeliver = await localDb.addMessages(
                         matchId,
@@ -232,7 +230,6 @@ final recentChatsProvider = StreamProvider.family<
 
                   bool isTranslationEnabled = false;
                   try {
-                    final localDb = ref.read(localDbProvider);
                     isTranslationEnabled = await localDb.isTranslationEnabled(matchId, userId: currentUserId);
                   } catch (e) {
                     debugPrint('Failed to check translation status: $e');
@@ -736,7 +733,7 @@ final recentChatsProvider = StreamProvider.family<
                   lastMessageId.isNotEmpty) {
                 unawaited(
                   _triggerImmediateLastMessageTranslation(
-                    ref: ref,
+                    localDb: localDb,
                     userId: userId,
                     matchId: matchIdForCaseCheck,
                     messageId: lastMessageId,

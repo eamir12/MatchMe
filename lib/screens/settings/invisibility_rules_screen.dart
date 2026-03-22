@@ -1,4 +1,5 @@
 // lib/screens/settings/invisibility_rules_screen.dart
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -26,14 +27,16 @@ class InvisibilityRulesScreen extends ConsumerStatefulWidget {
 }
 
 class _InvisibilityRulesScreenState
-    extends ConsumerState<InvisibilityRulesScreen> {
+    extends ConsumerState<InvisibilityRulesScreen> with WidgetsBindingObserver {
   final Map<String, GlobalKey> _ruleKeys = {};
   final ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     // Rules are automatically loaded by the provider
+    _checkForRemoteUpdates();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -44,8 +47,24 @@ class _InvisibilityRulesScreenState
     });
   }
 
+  Future<void> _checkForRemoteUpdates() async {
+    try {
+      final notifier = ref.read(invisibilityRulesProvider.notifier);
+      await notifier.waitForInitialization();
+      await notifier.syncFromSupabase();
+    } catch (_) {}
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(ref.read(invisibilityRulesProvider.notifier).syncFromSupabase());
+    }
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _scrollController.dispose();
     super.dispose();
   }

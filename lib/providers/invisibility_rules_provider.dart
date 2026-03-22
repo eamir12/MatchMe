@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,24 +8,210 @@ import 'package:matchme/models/invisibility_rules.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/current_location_provider.dart';
-import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/providers/visibility_provider.dart';
+import 'package:matchme/providers/auth_provider.dart';
 
 class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
   final supabase = Supabase.instance.client;
   late Future<void> _initializationFuture;
+  RealtimeChannel? _rulesSubscription;
+  String? _rulesSubscriptionUserId;
+  Timer? _rulesResubscribeTimer;
 
   @override
   InvisibilityRules build() {
     _initializationFuture = _loadRules();
+    ref.listen<AsyncValue<AuthState>>(authStateProvider, (previous, next) {
+      final authState = next.asData?.value;
+      if (authState == null) return;
+      final event = authState.event;
+      if (event == AuthChangeEvent.signedOut) {
+        _clearRealtimeSubscription();
+        return;
+      }
+      if (event == AuthChangeEvent.initialSession || event == AuthChangeEvent.signedIn || event == AuthChangeEvent.tokenRefreshed) {
+        _ensureRealtimeSubscription();
+        unawaited(syncFromSupabase());
+      }
+    });
+    _ensureRealtimeSubscription();
+    ref.onDispose(() {
+      _rulesResubscribeTimer?.cancel();
+      _rulesResubscribeTimer = null;
+      _clearRealtimeSubscription();
+    });
     return InvisibilityRules(isLoaded: false);
+  }
+
+  InvisibilityRules? _rulesFromRecordValue(dynamic value) {
+    dynamic decoded = value;
+    if (decoded == null) return null;
+    if (decoded is String) {
+      final trimmed = decoded.trim();
+      if (trimmed.isEmpty) return null;
+      try {
+        decoded = jsonDecode(trimmed);
+      } catch (_) {
+        return null;
+      }
+      if (decoded is String) {
+        final nested = decoded.trim();
+        if (nested.isEmpty) return null;
+        try {
+          decoded = jsonDecode(nested);
+        } catch (_) {
+          return null;
+        }
+      }
+    }
+    if (decoded is! Map) return null;
+    final raw = Map<String, dynamic>.from(decoded);
+    final normalized = <String, dynamic>{
+      'locationRules': _normalizeRuleList(raw['locationRules'] ?? raw['location_rules']),
+      'dateRangeRules': _normalizeRuleList(raw['dateRangeRules'] ?? raw['date_range_rules']),
+      'timeRangeRules': _normalizeRuleList(raw['timeRangeRules'] ?? raw['time_range_rules']),
+      'dayOfWeekRules': _normalizeRuleList(raw['dayOfWeekRules'] ?? raw['day_of_week_rules']),
+      'dateTimeRangeRules': _normalizeRuleList(raw['dateTimeRangeRules'] ?? raw['date_time_range_rules']),
+      'dayTimeRangeRules': _normalizeRuleList(raw['dayTimeRangeRules'] ?? raw['day_time_range_rules']),
+      'isLoaded': true,
+    };
+    try {
+      return InvisibilityRules.fromJson(normalized).copyWith(isLoaded: true);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  List<Map<String, dynamic>> _normalizeRuleList(dynamic value) {
+    if (value is! List) return const <Map<String, dynamic>>[];
+    final result = <Map<String, dynamic>>[];
+    for (final item in value) {
+      if (item is! Map) continue;
+      final map = Map<String, dynamic>.from(item);
+      final normalized = <String, dynamic>{};
+      map.forEach((key, rawValue) {
+        final normalizedKey = _normalizeRuleKey(key.toString());
+        normalized[normalizedKey] = _normalizeRuleValue(normalizedKey, rawValue);
+      });
+      result.add(normalized);
+    }
+    return result;
+  }
+
+  String _normalizeRuleKey(String key) {
+    switch (key) {
+      case 'days_of_week':
+        return 'daysOfWeek';
+      case 'start_time':
+        return 'startTime';
+      case 'end_time':
+        return 'endTime';
+      case 'start_date':
+        return 'startDate';
+      case 'end_date':
+        return 'endDate';
+      case 'start_date_time':
+        return 'startDateTime';
+      case 'end_date_time':
+        return 'endDateTime';
+      case 'radius_meters':
+        return 'radiusMeters';
+      case 'is_enabled':
+      case 'isEnabled':
+        return 'enabled';
+      default:
+        return key;
+    }
+  }
+
+  dynamic _normalizeRuleValue(String key, dynamic value) {
+    if (key == 'daysOfWeek' && value is List) {
+      return value
+          .map((e) => e is num ? e.toInt() : int.tryParse(e.toString()) ?? 0)
+          .where((e) => e >= 1 && e <= 7)
+          .toList();
+    }
+    if (key == 'latitude' || key == 'longitude' || key == 'radiusMeters') {
+      if (value is num) return value.toDouble();
+      return double.tryParse(value.toString()) ?? 0.0;
+    }
+    if (key == 'enabled') {
+      if (value is bool) return value;
+      final text = value.toString().toLowerCase().trim();
+      return text == 'true' || text == '1';
+    }
+    if (key == 'id' || key == 'name' || key == 'startTime' || key == 'endTime' || key == 'startDate' || key == 'endDate' || key == 'startDateTime' || key == 'endDateTime') {
+      return value.toString();
+    }
+    return value;
+  }
+
+  void _clearRealtimeSubscription() {
+    final channel = _rulesSubscription;
+    if (channel != null) {
+      try {
+        supabase.removeChannel(channel);
+      } catch (_) {}
+    }
+    _rulesSubscription = null;
+    _rulesSubscriptionUserId = null;
+  }
+
+  void _scheduleRealtimeResubscribe() {
+    if (_rulesResubscribeTimer?.isActive ?? false) return;
+    _rulesResubscribeTimer = Timer(const Duration(seconds: 1), () {
+      if (!ref.mounted) return;
+      _clearRealtimeSubscription();
+      _ensureRealtimeSubscription();
+      unawaited(syncFromSupabase());
+    });
+  }
+
+  void _ensureRealtimeSubscription() {
+    final userId = supabase.auth.currentUser?.id;
+    if (userId == null) {
+      _clearRealtimeSubscription();
+      return;
+    }
+    if (_rulesSubscription != null && _rulesSubscriptionUserId == userId) return;
+
+    _clearRealtimeSubscription();
+    _rulesSubscription = supabase
+        .channel('user_invisibility_rules_$userId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'user_invisibility_rules',
+          filter: PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'user_id', value: userId),
+          callback: (payload) {
+            unawaited(() async {
+              try {
+                await syncFromSupabase();
+              } catch (e) {
+                debugPrint('Failed to apply realtime invisibility rules update: $e');
+              }
+            }());
+          },
+        )
+        .subscribe((status, err) {
+          if (status == RealtimeSubscribeStatus.subscribed) {
+            unawaited(syncFromSupabase());
+            return;
+          }
+          if (status == RealtimeSubscribeStatus.channelError || status == RealtimeSubscribeStatus.timedOut || status == RealtimeSubscribeStatus.closed) {
+            _scheduleRealtimeResubscribe();
+            unawaited(syncFromSupabase());
+          }
+        });
+    _rulesSubscriptionUserId = userId;
   }
 
   Future<void> waitForInitialization() => _initializationFuture;
 
   Future<void> _loadRules() async {
     try {
+      _ensureRealtimeSubscription();
       final user = supabase.auth.currentUser;
       if (user != null) {
         // Try to load from Supabase first
@@ -35,16 +222,15 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
             .maybeSingle();
 
         if (response != null && response['rules_data'] != null) {
-          final rulesJson = response['rules_data'] as String;
-          final rules = InvisibilityRules.fromJson(jsonDecode(rulesJson));
+          final rules = _rulesFromRecordValue(response['rules_data']);
+          if (rules == null) {
+            return;
+          }
           final normalizedRules = _pruneExpiredRules(rules).copyWith(isLoaded: true);
           final normalizedRulesJson = jsonEncode(normalizedRules.toJson());
           state = normalizedRules;
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString('invisibility_rules', normalizedRulesJson);
-          if (normalizedRulesJson != rulesJson) {
-            await _syncRulesToSupabase(normalizedRulesJson);
-          }
           await ref.read(isVisibleProvider.notifier).updateEffectiveVisibility();
           return;
         }
@@ -91,6 +277,7 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
   }
 
   Future<void> _saveRules(InvisibilityRules rules) async {
+    _ensureRealtimeSubscription();
     final normalizedRules = _pruneExpiredRules(rules);
     final rulesJson = jsonEncode(normalizedRules.toJson());
 
@@ -132,23 +319,15 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
     final user = supabase.auth.currentUser;
     if (user == null) return;
 
-    final isOnline = ref.read(connectivityProvider).value ?? false;
-
-    if (isOnline) {
-      // Try to sync immediately
-      try {
-        await supabase.from('user_invisibility_rules').upsert(
-          {
-            'user_id': user.id,
-            'rules_data': rulesJson,
-          },
-          onConflict: 'user_id',
-        );
-      } catch (e) {
-        await ref.read(localDbProvider).saveInvisibilityRulesUpdateToOutbox(user.id, rulesJson);
-      }
-    } else {
-      // Save to outbox for later sync
+    try {
+      await supabase.from('user_invisibility_rules').upsert(
+        {
+          'user_id': user.id,
+          'rules_data': rulesJson,
+        },
+        onConflict: 'user_id',
+      );
+    } catch (e) {
       await ref.read(localDbProvider).saveInvisibilityRulesUpdateToOutbox(user.id, rulesJson);
     }
   }
@@ -468,6 +647,7 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
 
   Future<void> syncFromSupabase() async {
     try {
+      _ensureRealtimeSubscription();
       final user = supabase.auth.currentUser;
       if (user != null) {
         final response = await supabase
@@ -476,20 +656,26 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
             .eq('user_id', user.id)
             .maybeSingle();
 
-        if (response != null && response['rules_data'] != null) {
-          final rulesJson = response['rules_data'] as String;
-          final rules = InvisibilityRules.fromJson(jsonDecode(rulesJson));
-          final normalizedRules = _pruneExpiredRules(rules).copyWith(isLoaded: true);
-          final normalizedRulesJson = jsonEncode(normalizedRules.toJson());
-          state = normalizedRules;
+        if (response == null || response['rules_data'] == null) {
+          final emptyRules = InvisibilityRules(isLoaded: true);
+          state = emptyRules;
           final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('invisibility_rules', normalizedRulesJson);
-          if (normalizedRulesJson != rulesJson) {
-            await _syncRulesToSupabase(normalizedRulesJson);
-          }
+          await prefs.setString('invisibility_rules', jsonEncode(emptyRules.toJson()));
           await ref.read(isVisibleProvider.notifier).updateEffectiveVisibility();
           return;
         }
+
+        final rules = _rulesFromRecordValue(response['rules_data']);
+        if (rules == null) {
+          return;
+        }
+        final normalizedRules = _pruneExpiredRules(rules).copyWith(isLoaded: true);
+        final normalizedRulesJson = jsonEncode(normalizedRules.toJson());
+        state = normalizedRules;
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('invisibility_rules', normalizedRulesJson);
+        await ref.read(isVisibleProvider.notifier).updateEffectiveVisibility();
+        return;
       }
     } catch (e) {
       // Ignore

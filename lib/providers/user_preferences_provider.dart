@@ -236,16 +236,42 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
 
   final supabase = Supabase.instance.client;
   Timer? _notificationUnpauseTimer;
+  RealtimeChannel? _settingsSubscription;
+  String? _settingsSubscriptionUserId;
+  StreamSubscription<AuthState>? _authStateSubscription;
 
   @override
   UserPreferencesState build() {
-    // Start with defaults, then hydrate from local storage and sync
     ref.onDispose(() {
       _notificationUnpauseTimer?.cancel();
       _notificationUnpauseTimer = null;
+      _clearRealtimeSubscription();
+      _authStateSubscription?.cancel();
+      _authStateSubscription = null;
     });
+    _listenAuthStateChanges();
     _loadFromLocalAndSync();
+    _ensureRealtimeSubscription();
     return UserPreferencesState.defaults();
+  }
+
+  void _clearRealtimeSubscription() {
+    _settingsSubscription?.unsubscribe();
+    _settingsSubscription = null;
+    _settingsSubscriptionUserId = null;
+  }
+
+  void _listenAuthStateChanges() {
+    _authStateSubscription?.cancel();
+    _authStateSubscription = supabase.auth.onAuthStateChange.listen((event) {
+      final authEvent = event.event;
+      if (authEvent == AuthChangeEvent.signedOut) {
+        _clearRealtimeSubscription();
+        return;
+      }
+      _ensureRealtimeSubscription();
+      unawaited(_loadFromLocalAndSync());
+    });
   }
 
   void _syncNotificationMuteTimer() {
@@ -293,6 +319,7 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
   }
 
   Future<void> _loadFromLocalAndSync() async {
+    _ensureRealtimeSubscription();
     try {
       final prefs = await SharedPreferences.getInstance();
       final unitStr = prefs.getString(_prefsUnitSystemKey);
@@ -351,13 +378,15 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
         try {
           final userData = await supabase
               .from('users')
-              .select('unit_system, time_format, notification_preferences')
+              .select('unit_system, time_format, theme_mode, high_accuracy_mode, notification_preferences')
               .eq('id', userId)
               .maybeSingle();
 
           if (userData != null) {
             final remoteUnitStr = userData['unit_system'] as String?;
             final remoteTimeStr = userData['time_format'] as String?;
+            final remoteThemeStr = userData['theme_mode'] as String?;
+            final remoteHighAccuracy = userData['high_accuracy_mode'] as bool?;
             final remoteNotifPrefs = userData['notification_preferences'] as Map<String, dynamic>?;
 
             // Parse remote notification preferences if available
@@ -453,6 +482,12 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
             }
             if (remoteTimeStr != null) {
               await prefs.setString(_prefsTimeFormatKey, remoteTimeStr);
+            }
+            if (remoteThemeStr != null) {
+              await prefs.setString('theme_mode', remoteThemeStr);
+            }
+            if (remoteHighAccuracy != null) {
+              await prefs.setBool(_prefsHighAccuracyKey, remoteHighAccuracy);
             }
             if (remoteNotifPrefs != null) {
               await prefs.setBool(_prefsChatNotificationsKey, remoChatNotifs);
@@ -568,6 +603,18 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
       await BackgroundService.updateHighAccuracyMode(value);
     } catch (e) {
       debugPrint('Failed to update native High Accuracy Mode: $e');
+    }
+    try {
+      // Sync to Supabase if user is logged in
+      final userId = supabase.auth.currentUser?.id;
+      if (userId != null) {
+        await supabase
+            .from('users')
+            .update({'high_accuracy_mode': value})
+            .eq('id', userId);
+      }
+    } catch (e) {
+      debugPrint('Failed to sync high_accuracy_mode to Supabase: $e');
     }
   }
 
@@ -762,6 +809,95 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
         }
       }
     } catch (_) {}
+  }
+
+  void _ensureRealtimeSubscription() {
+    final userId = supabase.auth.currentUser?.id;
+    if (userId == null) {
+      _clearRealtimeSubscription();
+      return;
+    }
+    if (_settingsSubscription != null && _settingsSubscriptionUserId == userId) {
+      return;
+    }
+    _clearRealtimeSubscription();
+
+    _settingsSubscription = supabase
+        .channel('user_settings_$userId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
+          schema: 'public',
+          table: 'users',
+          filter: PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'id', value: userId),
+          callback: (payload) {
+            final newData = payload.newRecord as Map<String, dynamic>?;
+            if (newData == null) return;
+
+            // Update state with realtime changes
+            final updatedState = _mergeRealtimeUpdate(newData);
+            if (updatedState != state) {
+              state = updatedState;
+            }
+          },
+        )
+        .subscribe();
+    _settingsSubscriptionUserId = userId;
+  }
+
+  UserPreferencesState _mergeRealtimeUpdate(Map<String, dynamic> remoteData) {
+    final currentPrefs = state;
+
+    // Extract settings from remote data
+    final remoteUnitStr = remoteData['unit_system'] as String?;
+    final remoteTimeStr = remoteData['time_format'] as String?;
+    final remoteHighAccuracy = remoteData['high_accuracy_mode'] as bool?;
+    final remoteNotifPrefs = remoteData['notification_preferences'] as Map<String, dynamic>?;
+
+    // Parse notification preferences
+    NotificationPreferencesState notifications = currentPrefs.notifications;
+    if (remoteNotifPrefs != null) {
+      final parsedNotifs = _parseNotificationPreferences(remoteNotifPrefs);
+      if (parsedNotifs != null) {
+        notifications = parsedNotifs;
+      }
+    }
+
+    return UserPreferencesState(
+      unitSystem: remoteUnitStr != null ? _parseUnitSystem(remoteUnitStr) ?? currentPrefs.unitSystem : currentPrefs.unitSystem,
+      timeFormat: remoteTimeStr != null ? _parseTimeFormat(remoteTimeStr) ?? currentPrefs.timeFormat : currentPrefs.timeFormat,
+      highAccuracyMode: remoteHighAccuracy ?? currentPrefs.highAccuracyMode,
+      notifications: notifications,
+    );
+  }
+
+  NotificationPreferencesState? _parseNotificationPreferences(Map<String, dynamic> data) {
+    try {
+      final matrix = _parseMatrix(data['matrix']);
+      final globalMethods = data['global_methods'] as Map<String, dynamic>?;
+      final pausedUntilMsUtc = (data['paused_until_ms_utc'] as num?)?.toInt();
+      final pausedDurationSeconds = (data['paused_duration_seconds'] as num?)?.toInt();
+      final pausedIndefinitely = data['paused_indefinitely'] as bool? ?? false;
+
+      Map<NotificationMethod, bool> parsedGlobalMethods = NotificationPreferencesState._defaultGlobalMethods;
+      if (globalMethods != null) {
+        parsedGlobalMethods = {
+          NotificationMethod.push: globalMethods['push'] is bool ? globalMethods['push'] as bool : true,
+          NotificationMethod.inApp: globalMethods['in_app'] is bool ? globalMethods['in_app'] as bool : true,
+          NotificationMethod.sound: globalMethods['sound'] is bool ? globalMethods['sound'] as bool : true,
+          NotificationMethod.vibrate: globalMethods['vibrate'] is bool ? globalMethods['vibrate'] as bool : true,
+        };
+      }
+
+      return NotificationPreferencesState(
+        matrix: matrix ?? NotificationPreferencesState._defaultMatrix,
+        globalMethods: parsedGlobalMethods,
+        pausedUntilEpochMsUtc: pausedUntilMsUtc,
+        pausedDurationSeconds: pausedDurationSeconds,
+        pausedIndefinitely: pausedIndefinitely,
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   static Map<NotificationType, Map<NotificationMethod, bool>> _buildMatrixFromLegacy({

@@ -1,4 +1,6 @@
 // lib/screens/settings/gender_age_preferences_screen.dart
+import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/locale_provider.dart';
@@ -20,48 +22,101 @@ class _GenderAgePreferencesScreenState extends ConsumerState<GenderAgePreference
   final _genderPreferences = ValueNotifier<Map<String, List<String>>>({});
   final _agePreferences = ValueNotifier<Map<String, List<double>>>({});
   bool _preferencesInitialized = false;
-  UserProfile? _profile;
-  bool _isLoadingProfile = true;
+  bool _updatingFromProfile = false;
+  Map<String, List<String>> _lastAppliedGenderPreferences = {};
+  Map<String, List<double>> _lastAppliedAgePreferences = {};
+  bool _lastAppliedStrictEnforcement = false;
+  bool _hasAppliedRemotePreferences = false;
+
+  Timer? _saveTimer;
 
   @override
   void initState() {
     super.initState();
     _currentUserId = Supabase.instance.client.auth.currentUser!.id;
-    // Load initial profile data directly
-    _loadProfileData();
+    _strictEnforcement.addListener(_onStrictEnforcementChanged);
+    _genderPreferences.addListener(_onPreferencesChanged);
+    _agePreferences.addListener(_onPreferencesChanged);
   }
 
-  Future<void> _loadProfileData() async {
-    setState(() => _isLoadingProfile = true);
-    try {
-      final response = await Supabase.instance.client
-          .from('users')
-          .select('*')
-          .eq('id', _currentUserId)
-          .single();
-
-      // Create UserProfile from the response
-      _profile = UserProfile.fromMap(response);
-      _initializePreferences(_profile!);
-    } catch (e, st) {
-      FlutterError.reportError(
-        FlutterErrorDetails(exception: e, stack: st),
-      );
-      _profile = null;
-    } finally {
-      if (mounted) {
-        setState(() => _isLoadingProfile = false);
-      }
-    }
+  @override
+  void dispose() {
+    _saveTimer?.cancel();
+    _strictEnforcement.dispose();
+    _genderPreferences.dispose();
+    _agePreferences.dispose();
+    super.dispose();
   }
 
-  void _initializePreferences(UserProfile profile) {
-    if (!_preferencesInitialized) {
-      _strictEnforcement.value = profile.strictGenderAgeEnforcement;
-      _genderPreferences.value = Map.from(profile.genderPreferences);
-      _agePreferences.value = Map.from(profile.agePreferences);
-      _preferencesInitialized = true;
+  void _onStrictEnforcementChanged() {
+    if (!_preferencesInitialized || _updatingFromProfile) return;
+    _savePreferences();
+  }
+
+  void _onPreferencesChanged() {
+    if (!_preferencesInitialized || _updatingFromProfile) return;
+    _debounceSave();
+  }
+
+  void _debounceSave() {
+    _saveTimer?.cancel();
+    _saveTimer = Timer(const Duration(milliseconds: 500), _savePreferences);
+  }
+
+  bool _stringMapListEquals(Map<String, List<String>> a, Map<String, List<String>> b) {
+    if (a.length != b.length) return false;
+    for (final entry in a.entries) {
+      final other = b[entry.key];
+      if (other == null || !listEquals(entry.value, other)) return false;
     }
+    return true;
+  }
+
+  bool _doubleMapListEquals(Map<String, List<double>> a, Map<String, List<double>> b) {
+    if (a.length != b.length) return false;
+    for (final entry in a.entries) {
+      final other = b[entry.key];
+      if (other == null || !listEquals(entry.value, other)) return false;
+    }
+    return true;
+  }
+
+  Map<String, List<String>> _cloneGenderPrefs(Map<String, List<String>> value) {
+    return Map<String, List<String>>.from(
+      value.map((key, list) => MapEntry(key, List<String>.from(list))),
+    );
+  }
+
+  Map<String, List<double>> _cloneAgePrefs(Map<String, List<double>> value) {
+    return Map<String, List<double>>.from(
+      value.map((key, list) => MapEntry(key, List<double>.from(list))),
+    );
+  }
+
+  void _applyProfilePreferences(UserProfile profile) {
+    final nextStrict = profile.strictGenderAgeEnforcement;
+    final nextGender = _cloneGenderPrefs(profile.genderPreferences);
+    final nextAge = _cloneAgePrefs(profile.agePreferences);
+
+    final changedFromLastApplied = !_hasAppliedRemotePreferences ||
+        _lastAppliedStrictEnforcement != nextStrict ||
+        !_stringMapListEquals(_lastAppliedGenderPreferences, nextGender) ||
+        !_doubleMapListEquals(_lastAppliedAgePreferences, nextAge);
+
+    if (!changedFromLastApplied && _preferencesInitialized) {
+      return;
+    }
+
+    _updatingFromProfile = true;
+    _strictEnforcement.value = nextStrict;
+    _genderPreferences.value = nextGender;
+    _agePreferences.value = nextAge;
+    _preferencesInitialized = true;
+    _lastAppliedStrictEnforcement = nextStrict;
+    _lastAppliedGenderPreferences = _cloneGenderPrefs(nextGender);
+    _lastAppliedAgePreferences = _cloneAgePrefs(nextAge);
+    _hasAppliedRemotePreferences = true;
+    _updatingFromProfile = false;
   }
 
   @override
@@ -69,159 +124,156 @@ class _GenderAgePreferencesScreenState extends ConsumerState<GenderAgePreference
     final l10n = ref.watch(localizationProvider);
     final mainIntents = ref.watch(mainIntentsProvider);
     final genderOptionsAsync = ref.watch(genderOptionsProvider);
+    final profileAsync = ref.watch(userProfileProvider(_currentUserId));
 
     return Scaffold(
       appBar: AppBar(
         title: Text(l10n.getString('settingsGenderAgePreferences')),
-        actions: [
-          TextButton(
-            onPressed: _savePreferences,
-            child: Text(l10n.getString('generalSave')),
-          ),
-        ],
       ),
       body: genderOptionsAsync.when(
-        data: (genderOptions) {
-          if (_isLoadingProfile) {
-            return const Center(child: CircularProgressIndicator());
-          }
+        data: (genderOptions) => profileAsync.when(
+          data: (profile) {
+            if (profile == null) {
+              return Center(child: Text(l10n.getString('generalErrorLoadingProfile')));
+            }
 
-          if (_profile == null) {
-            return Center(child: Text(l10n.getString('generalErrorLoadingProfile')));
-          }
+            _applyProfilePreferences(profile);
 
-          final selectedIntentKeys = _profile!.activeModes;
-          final selectedIntents = mainIntents.where((intent) => selectedIntentKeys.contains(intent.key)).toList();
+            final selectedIntentKeys = profile.activeModes;
+            final selectedIntents = mainIntents.where((intent) => selectedIntentKeys.contains(intent.key)).toList();
 
-          if (selectedIntents.isEmpty) {
-            return Center(child: Text(l10n.getString('settingsNoIntentsSelected')));
-          }
+            if (selectedIntents.isEmpty) {
+              return Center(child: Text(l10n.getString('settingsNoIntentsSelected')));
+            }
 
-          return ListView(
-            padding: const EdgeInsets.all(16.0),
-            children: [
-              // Strict vs Prioritize Toggle
-              ValueListenableBuilder<bool>(
-                valueListenable: _strictEnforcement,
-                builder: (context, strictEnforcement, _) => Container(
-                  margin: const EdgeInsets.only(bottom: 16),
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.05),
-                        blurRadius: 8,
-                        offset: const Offset(0, 4),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              l10n.getString('settingsEnforcementMode'),
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                                color: Theme.of(context).colorScheme.onSurface,
+            return ListView(
+              padding: const EdgeInsets.all(16.0),
+              children: [
+                // Strict vs Prioritize Toggle
+                ValueListenableBuilder<bool>(
+                  valueListenable: _strictEnforcement,
+                  builder: (context, strictEnforcement, _) => Container(
+                    margin: const EdgeInsets.only(bottom: 16),
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.05),
+                          blurRadius: 8,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                l10n.getString('settingsEnforcementMode'),
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                  color: Theme.of(context).colorScheme.onSurface,
+                                ),
                               ),
                             ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.info_outline),
-                            tooltip: 'Enforcement details',
-                            onPressed: () {
-                              showDialog<void>(
-                                context: context,
-                                builder: (ctx) => AlertDialog(
-                                  title: Text(l10n.getString('settingsEnforcementHelpTitle')),
-                                  content: Text(l10n.getString('settingsEnforcementHelpBody')),
-                                  actions: [
-                                    TextButton(onPressed: () => Navigator.of(ctx).pop(), child: Text(l10n.getString('generalClose'))),
-                                  ],
-                                ),
-                              );
-                            },
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Expanded(
-                                child: ChoiceChip(
-                                  label: Text(l10n.getString('settingsFlexibleLabel')),
-                                  selected: !strictEnforcement,
-                                  onSelected: (_) => _strictEnforcement.value = false,
-                                  selectedColor: Theme.of(context).colorScheme.secondary.withValues(alpha: 0.1),
-                                  labelStyle: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
-                                    color: !strictEnforcement
-                                        ? Theme.of(context).colorScheme.secondary
-                                        : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                            IconButton(
+                              icon: const Icon(Icons.info_outline),
+                              tooltip: 'Enforcement details',
+                              onPressed: () {
+                                showDialog<void>(
+                                  context: context,
+                                  builder: (ctx) => AlertDialog(
+                                    title: Text(l10n.getString('settingsEnforcementHelpTitle')),
+                                    content: Text(l10n.getString('settingsEnforcementHelpBody')),
+                                    actions: [
+                                      TextButton(onPressed: () => Navigator.of(ctx).pop(), child: Text(l10n.getString('generalClose'))),
+                                    ],
                                   ),
-                                  backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
-                                  shape: StadiumBorder(
-                                    side: BorderSide(
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: ChoiceChip(
+                                    label: Text(l10n.getString('settingsFlexibleLabel')),
+                                    selected: !strictEnforcement,
+                                    onSelected: (_) => _strictEnforcement.value = false,
+                                    selectedColor: Theme.of(context).colorScheme.secondary.withValues(alpha: 0.1),
+                                    labelStyle: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
                                       color: !strictEnforcement
                                           ? Theme.of(context).colorScheme.secondary
-                                          : Theme.of(context).dividerColor,
+                                          : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                    ),
+                                    backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+                                    shape: StadiumBorder(
+                                      side: BorderSide(
+                                        color: !strictEnforcement
+                                            ? Theme.of(context).colorScheme.secondary
+                                            : Theme.of(context).dividerColor,
+                                      ),
                                     ),
                                   ),
                                 ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: ChoiceChip(
-                                  label: Text(l10n.getString('settingsStrictLabel')),
-                                  selected: strictEnforcement,
-                                  onSelected: (_) => _strictEnforcement.value = true,
-                                  selectedColor: Theme.of(context).colorScheme.secondary.withValues(alpha: 0.1),
-                                  labelStyle: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
-                                    color: strictEnforcement
-                                        ? Theme.of(context).colorScheme.secondary
-                                        : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
-                                  ),
-                                  backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
-                                  shape: StadiumBorder(
-                                    side: BorderSide(
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: ChoiceChip(
+                                    label: Text(l10n.getString('settingsStrictLabel')),
+                                    selected: strictEnforcement,
+                                    onSelected: (_) => _strictEnforcement.value = true,
+                                    selectedColor: Theme.of(context).colorScheme.secondary.withValues(alpha: 0.1),
+                                    labelStyle: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600,
                                       color: strictEnforcement
                                           ? Theme.of(context).colorScheme.secondary
-                                          : Theme.of(context).dividerColor,
+                                          : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                                    ),
+                                    backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+                                    shape: StadiumBorder(
+                                      side: BorderSide(
+                                        color: strictEnforcement
+                                            ? Theme.of(context).colorScheme.secondary
+                                            : Theme.of(context).dividerColor,
+                                      ),
                                     ),
                                   ),
                                 ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 10),
-                          Text(
-                            strictEnforcement ? l10n.getString('settingsStrictEnforcement') : l10n.getString('settingsPrioritizeEnforcement'),
-                            style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurface.withValues(alpha:0.75)),
-                          ),
-                        ],
-                      ),
-                    ],
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              strictEnforcement ? l10n.getString('settingsStrictEnforcement') : l10n.getString('settingsPrioritizeEnforcement'),
+                              style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurface.withValues(alpha:0.75)),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
 
-              // Intent-specific preferences
-              ...selectedIntents.map((intent) => _buildIntentPreferenceCard(intent, genderOptions, l10n)),
-            ],
-          );
-        },
+                // Intent-specific preferences
+                ...selectedIntents.map((intent) => _buildIntentPreferenceCard(intent, genderOptions, l10n)),
+              ],
+            );
+          },
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (e, s) => Center(child: Text('${l10n.getString('generalError')}: $e')),
+        ),
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, s) => Center(child: Text('${l10n.getString('generalError')}: $e')),
       ),
@@ -315,7 +367,13 @@ class _GenderAgePreferencesScreenState extends ConsumerState<GenderAgePreference
               Builder(
                 builder: (context) {
                   final ageList = agePrefs[intentKey] ?? [18.0, 100.0];
-                  final ageRange = RangeValues(ageList.isNotEmpty ? ageList[0] : 18.0, ageList.length > 1 ? ageList[1] : 100.0);
+                  final rawStart = ageList.isNotEmpty ? ageList[0] : 18.0;
+                  final rawEnd = ageList.length > 1 ? ageList[1] : 100.0;
+                  final roundedStart = rawStart.round().clamp(18, 100).toDouble();
+                  final roundedEnd = rawEnd.round().clamp(18, 100).toDouble();
+                  final ageRange = roundedStart <= roundedEnd
+                      ? RangeValues(roundedStart, roundedEnd)
+                      : RangeValues(roundedEnd, roundedStart);
                   return Column(
                     children: [
                       RangeSlider(
@@ -329,7 +387,10 @@ class _GenderAgePreferencesScreenState extends ConsumerState<GenderAgePreference
                         ),
                         onChanged: (values) {
                           final newPrefs = Map<String, List<double>>.from(agePrefs);
-                          newPrefs[intentKey] = [values.start, values.end];
+                          newPrefs[intentKey] = [
+                            values.start.roundToDouble(),
+                            values.end.roundToDouble(),
+                          ];
                           _agePreferences.value = newPrefs;
                         },
                         activeColor: Theme.of(context).colorScheme.secondary,
@@ -353,25 +414,16 @@ class _GenderAgePreferencesScreenState extends ConsumerState<GenderAgePreference
   }
 
   Future<void> _savePreferences() async {
-    final l10n = ref.read(localizationProvider);
     try {
       await ref.read(profileEditProvider(_currentUserId).notifier).updateGenderAgePreferences(
         _genderPreferences.value,
         _agePreferences.value,
         _strictEnforcement.value,
       );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(l10n.getString('settingsPreferencesSaved')), backgroundColor: Colors.green),
-        );
-        Navigator.pop(context);
-      }
+      // Auto-save is silent - no snackbar needed
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${l10n.getString('settingsPreferencesSaveFailed')}: $e'), backgroundColor: Colors.red),
-        );
-      }
+      // Silent failure for auto-save - user can retry manually if needed
+      debugPrint('Auto-save failed: $e');
     }
   }
 }

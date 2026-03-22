@@ -58,6 +58,9 @@ class IsVisible extends _$IsVisible {
     int _batteryThrottleInterval = 60; // Will be loaded from config
     int _batteryLowThreshold = 15; // Will be loaded from config
     int _stationaryThrottleInterval = 60; // Will be loaded from config
+    RealtimeChannel? _visibilityRealtimeChannel;
+    String? _visibilityRealtimeUserId;
+    String _systemVisibilityStatus = 'visible';
 
    @override
   bool build() {
@@ -78,6 +81,10 @@ class IsVisible extends _$IsVisible {
     });
      // Do not clear _manualVisibility here; it will be loaded from local storage first
      _locationService!.setVisibility(_manualVisibility ?? true);
+    ref.onDispose(() {
+      _clearVisibilityRealtimeSubscription();
+    });
+    _ensureVisibilityRealtimeSubscription();
 
      // Load config values asynchronously
      Future.microtask(() async {
@@ -121,27 +128,7 @@ class IsVisible extends _$IsVisible {
       // 2. Then fetch from Supabase and sync (DB is source of truth when online)
       if (userId != null) {
         try {
-          final response = await Supabase.instance.client
-              .from('users')
-              .select('user_visibility_setting, system_visibility_status')
-              .eq('id', userId)
-              .maybeSingle();
-          if (response != null && response['user_visibility_setting'] != null) {
-            final dbVisible = response['user_visibility_setting'] == true;
-            final systemVisibility = (response['system_visibility_status'] as String?) ?? 'visible';
-            debugPrint('🟢 [IsVisible] Loaded DB visibility: $dbVisible (system: $systemVisibility)');
-            _manualVisibility = dbVisible;
-            await _saveManualVisibility(dbVisible);
-
-            try {
-              await BackgroundService.updateVisibility(dbVisible);
-              debugPrint('🟢 [IsVisible] Updated background service from DB: $dbVisible');
-            } catch (e) {
-              debugPrint('🔴 [IsVisible] Failed to update background service from DB: $e');
-            }
-
-            await _updateEffectiveVisibility();
-          }
+          await _syncVisibilityFromRemote(userId: userId);
         } catch (e) {
           debugPrint('🔴 [IsVisible] Error fetching user_visibility_setting from DB: $e');
         }
@@ -282,6 +269,7 @@ class IsVisible extends _$IsVisible {
        final event = authState.event;
 
        if (event == AuthChangeEvent.signedOut) {
+        _clearVisibilityRealtimeSubscription();
          _lastRestoredUserId = null;
          _locationService?.stopLocationStream();
          _locationService?.setVisibility(false);
@@ -305,6 +293,7 @@ class IsVisible extends _$IsVisible {
 
        final userId = authState.session?.user.id ?? Supabase.instance.client.auth.currentUser?.id;
        if (userId == null) return;
+      _ensureVisibilityRealtimeSubscription();
        if (_lastRestoredUserId == userId && event == AuthChangeEvent.initialSession) return;
        _lastRestoredUserId = userId;
 
@@ -331,25 +320,15 @@ class IsVisible extends _$IsVisible {
          ref.read(systemNotificationProvider.notifier).clearType('stationary_throttle');
 
          try {
-           final response = await Supabase.instance.client
-               .from('users')
-               .select('user_visibility_setting, system_visibility_status')
-               .eq('id', userId)
-               .maybeSingle();
-           if (response != null && response['user_visibility_setting'] != null) {
-             final dbVisible = response['user_visibility_setting'] == true;
-             _manualVisibility = dbVisible;
-             await _saveManualVisibility(dbVisible);
-             final rulesNotifier = ref.read(invisibilityRulesProvider.notifier);
-             await rulesNotifier.syncFromSupabase();
-             final syncedRules = ref.read(invisibilityRulesProvider);
-             if (syncedRules.locationRules.any((rule) => rule.enabled)) {
-               try {
-                 await ref.read(currentLocationProvider.notifier).refreshLocation();
-               } catch (_) {}
-             }
-             await _updateEffectiveVisibility();
-           }
+          await _syncVisibilityFromRemote(userId: userId);
+          final rulesNotifier = ref.read(invisibilityRulesProvider.notifier);
+          await rulesNotifier.syncFromSupabase();
+          final syncedRules = ref.read(invisibilityRulesProvider);
+          if (syncedRules.locationRules.any((rule) => rule.enabled)) {
+            try {
+              await ref.read(currentLocationProvider.notifier).refreshLocation();
+            } catch (_) {}
+          }
          } catch (_) {}
        });
      });
@@ -634,7 +613,8 @@ class IsVisible extends _$IsVisible {
         currentLongitude: currentLocation?.longitude,
         currentDateTime: DateTime.now(),
       );
-      final effective = _manualVisibility! && !shouldBeInvisible;
+      final systemAllowsVisibility = _systemVisibilityStatus == 'visible';
+      final effective = _manualVisibility! && !shouldBeInvisible && systemAllowsVisibility;
       if (effective != state) {
         final wasVisible = state;
         state = effective;
@@ -657,7 +637,6 @@ class IsVisible extends _$IsVisible {
           debugPrint('Failed to update background service visibility: $e');
         }
 
-        await _syncVisibilityChange(effective);
         if (effective && !wasVisible) {
           // User became visible - restart GPS tracking and evaluate throttling
           debugPrint('🔴 Starting GPS tracking (user became visible)');
@@ -691,7 +670,7 @@ class IsVisible extends _$IsVisible {
 
   Future<void> updateEffectiveVisibility() => _updateEffectiveVisibility();
 
-  Future<void> _syncVisibilityChange(bool isVisible) async {
+  Future<void> _syncManualVisibilityChange(bool isVisible) async {
     final userId = Supabase.instance.client.auth.currentUser?.id;
     if (userId == null) return;
 
@@ -710,6 +689,100 @@ class IsVisible extends _$IsVisible {
     } catch (e) {
       await ref.read(localDbProvider).saveVisibilityUpdateToOutbox(userId, isVisible);
     }
+  }
+
+  void _clearVisibilityRealtimeSubscription() {
+    final channel = _visibilityRealtimeChannel;
+    if (channel != null) {
+      try {
+        Supabase.instance.client.removeChannel(channel);
+      } catch (_) {}
+    }
+    _visibilityRealtimeChannel = null;
+    _visibilityRealtimeUserId = null;
+  }
+
+  void _ensureVisibilityRealtimeSubscription() {
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId == null) {
+      _clearVisibilityRealtimeSubscription();
+      return;
+    }
+    if (_visibilityRealtimeChannel != null && _visibilityRealtimeUserId == userId) {
+      return;
+    }
+    _clearVisibilityRealtimeSubscription();
+    _visibilityRealtimeChannel = Supabase.instance.client
+        .channel('user_visibility_$userId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
+          schema: 'public',
+          table: 'users',
+          filter: PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'id', value: userId),
+          callback: (payload) {
+            final newRecord = payload.newRecord;
+            final oldRecord = payload.oldRecord;
+            final hasUserVisibility =
+                newRecord.containsKey('user_visibility_setting') ||
+                oldRecord.containsKey('user_visibility_setting');
+            final hasSystemVisibility =
+                newRecord.containsKey('system_visibility_status') ||
+                oldRecord.containsKey('system_visibility_status');
+            if (!hasUserVisibility && !hasSystemVisibility) return;
+            final remoteManual = (newRecord['user_visibility_setting'] ??
+                    oldRecord['user_visibility_setting']) ==
+                true;
+            final remoteSystem =
+                (newRecord['system_visibility_status'] ?? oldRecord['system_visibility_status'])
+                    as String?;
+            unawaited(
+              _applyRemoteVisibilitySnapshot(
+                manualVisible: remoteManual,
+                systemVisibilityStatus: remoteSystem,
+              ),
+            );
+          },
+        )
+        .subscribe((status, err) {
+          if (status == RealtimeSubscribeStatus.channelError ||
+              status == RealtimeSubscribeStatus.timedOut ||
+              status == RealtimeSubscribeStatus.closed) {
+            unawaited(_syncVisibilityFromRemote());
+          }
+        });
+    _visibilityRealtimeUserId = userId;
+  }
+
+  Future<void> _syncVisibilityFromRemote({String? userId}) async {
+    final resolvedUserId = userId ?? Supabase.instance.client.auth.currentUser?.id;
+    if (resolvedUserId == null) return;
+    try {
+      final response = await Supabase.instance.client
+          .from('users')
+          .select('user_visibility_setting, system_visibility_status')
+          .eq('id', resolvedUserId)
+          .maybeSingle();
+      if (response == null || response['user_visibility_setting'] == null) return;
+      final remoteManual = response['user_visibility_setting'] == true;
+      final remoteSystem = (response['system_visibility_status'] as String?) ?? 'visible';
+      await _applyRemoteVisibilitySnapshot(
+        manualVisible: remoteManual,
+        systemVisibilityStatus: remoteSystem,
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _applyRemoteVisibilitySnapshot({
+    required bool manualVisible,
+    String? systemVisibilityStatus,
+  }) async {
+    _manualVisibility = manualVisible;
+    _systemVisibilityStatus =
+        (systemVisibilityStatus == null || systemVisibilityStatus.isEmpty)
+            ? 'visible'
+            : systemVisibilityStatus;
+    await _saveManualVisibility(manualVisible);
+    await _updateEffectiveVisibility();
   }
 
   // Call this method when user reaches HomeScreen or explicitly enables visibility
@@ -895,6 +968,7 @@ class IsVisible extends _$IsVisible {
   Future<void> setVisibility(bool isVisible) async {
     _manualVisibility = isVisible;
     await _saveManualVisibility(isVisible);
+    await _syncManualVisibilityChange(isVisible);
     await _updateEffectiveVisibility();
     _locationService?.setVisibility(state);
     

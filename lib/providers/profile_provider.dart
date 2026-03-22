@@ -666,6 +666,9 @@ class ProfileSyncService {
       'shared_event_matching_enabled',
       'shared_movement_matching_enabled',
       'editable_profile_fields',
+      'gender_preferences',
+      'age_preferences',
+      'strict_gender_age_enforcement',
       'bio',
       'photos',
       'approved_primary_photos',
@@ -1143,6 +1146,46 @@ final userProfileProvider = StreamProvider.family<UserProfile?, String>((ref, us
     ref.onDispose(() => ResumeDiagnostics.log('userProfileProvider disposed for user=$userId'));
   } catch (_) {}
 
+  // Set up realtime subscription for profile changes
+  final subscription = supabase
+      .channel('user_profile_$userId')
+      .onPostgresChanges(
+        event: PostgresChangeEvent.update,
+        schema: 'public',
+        table: 'users',
+        filter: PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'id', value: userId),
+        callback: (payload) {
+          final newRecord = payload.newRecord as Map<String, dynamic>?;
+          if (newRecord != null && (
+            newRecord.containsKey('preferred_language') ||
+            newRecord.containsKey('match_radius_default') ||
+            newRecord.containsKey('gps_interval_default') ||
+            newRecord.containsKey('smart_gps_throttling_enabled') ||
+            newRecord.containsKey('shared_event_matching_enabled') ||
+            newRecord.containsKey('shared_movement_matching_enabled') ||
+            newRecord.containsKey('gender_preferences') ||
+            newRecord.containsKey('age_preferences') ||
+            newRecord.containsKey('strict_gender_age_enforcement') ||
+            newRecord.containsKey('bio') ||
+            newRecord.containsKey('photos') ||
+            newRecord.containsKey('gender') ||
+            newRecord.containsKey('date_of_birth') ||
+            newRecord.containsKey('name') ||
+            newRecord.containsKey('active_modes') ||
+            newRecord.containsKey('languages_known') ||
+            newRecord.containsKey('subscription_tier') ||
+            newRecord.containsKey('subscription_expires_at') ||
+            newRecord.containsKey('is_verified') ||
+            newRecord.containsKey('verification_status')
+          )) {
+            unawaited(ref.read(profileSyncProvider).syncProfile(userId));
+          }
+        },
+      )
+      .subscribe();
+
+  ref.onDispose(() => subscription.unsubscribe());
+
   final localStream = localDb.watchLocalProfile(userId);
   return localStream.map((localProfileMap) {
     if (localProfileMap == null) {
@@ -1225,7 +1268,7 @@ final otherUserProfileProvider = FutureProvider.family<UserProfile?, String>((re
 
             final userRow = await supabase
                 .from('users')
-                .select('id,name,date_of_birth,gender,preferred_language,active_modes,languages_known,subscription_tier,subscription_expires_at,is_profile_complete,match_radius_default,gps_interval_default,smart_gps_throttling_enabled,shared_event_matching_enabled,shared_movement_matching_enabled,editable_profile_fields,bio,photos,approved_primary_photos,is_verified,verification_status,verification_submitted_at,verification_reviewed_at,referral_code,credits')
+                .select('id,name,date_of_birth,gender,preferred_language,active_modes,languages_known,subscription_tier,subscription_expires_at,is_profile_complete,match_radius_default,gps_interval_default,smart_gps_throttling_enabled,shared_event_matching_enabled,shared_movement_matching_enabled,editable_profile_fields,gender_preferences,age_preferences,strict_gender_age_enforcement,bio,photos,approved_primary_photos,is_verified,verification_status,verification_submitted_at,verification_reviewed_at,referral_code,credits')
                 .eq('id', userId)
                 .maybeSingle();
             if (userRow == null) return;
@@ -1358,7 +1401,40 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
 
   @override
   AsyncValue<UserProfile?> build(String userId) {
-    return const AsyncLoading();
+    state = const AsyncLoading();
+    ref.listen<AsyncValue<UserProfile?>>(userProfileProvider(userId), (previous, next) {
+      final remoteProfile = next.asData?.value;
+      if (remoteProfile == null) return;
+      UserProfile? currentProfile;
+      try {
+        currentProfile = state.value;
+      } catch (_) {
+        currentProfile = null;
+      }
+      if (currentProfile == null) {
+        state = AsyncData(remoteProfile.copyWith());
+        return;
+      }
+
+      final shouldApplyRealtimeSettings =
+          currentProfile.matchRadiusDefault != remoteProfile.matchRadiusDefault ||
+          currentProfile.gpsIntervalDefault != remoteProfile.gpsIntervalDefault ||
+          currentProfile.smartGpsThrottlingEnabled != remoteProfile.smartGpsThrottlingEnabled ||
+          currentProfile.sharedEventMatchingEnabled != remoteProfile.sharedEventMatchingEnabled ||
+          currentProfile.sharedMovementMatchingEnabled != remoteProfile.sharedMovementMatchingEnabled;
+      if (!shouldApplyRealtimeSettings) return;
+
+      state = AsyncData(
+        currentProfile.copyWith(
+          matchRadiusDefault: remoteProfile.matchRadiusDefault,
+          gpsIntervalDefault: remoteProfile.gpsIntervalDefault,
+          smartGpsThrottlingEnabled: remoteProfile.smartGpsThrottlingEnabled,
+          sharedEventMatchingEnabled: remoteProfile.sharedEventMatchingEnabled,
+          sharedMovementMatchingEnabled: remoteProfile.sharedMovementMatchingEnabled,
+        ),
+      );
+    }, fireImmediately: true);
+    return state;
   }
 
   Future<void> _cleanupWizardUploadedPhotosNotIn(Set<String> keep) async {
@@ -1991,9 +2067,24 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     bool strictEnforcement,
   ) async {
     if (!state.hasValue || state.value == null) return;
+    final normalizedAgePreferences = <String, List<double>>{};
+    for (final entry in agePreferences.entries) {
+      final values = entry.value;
+      if (values.isEmpty) continue;
+      var minAge = values.first.round();
+      var maxAge = (values.length > 1 ? values[1] : values.first).round();
+      minAge = minAge.clamp(18, 100);
+      maxAge = maxAge.clamp(18, 100);
+      if (minAge > maxAge) {
+        final tmp = minAge;
+        minAge = maxAge;
+        maxAge = tmp;
+      }
+      normalizedAgePreferences[entry.key] = [minAge.toDouble(), maxAge.toDouble()];
+    }
     final updatedProfile = state.value!.copyWith(
       genderPreferences: genderPreferences,
-      agePreferences: agePreferences,
+      agePreferences: normalizedAgePreferences,
       strictGenderAgeEnforcement: strictEnforcement,
     );
     state = AsyncData(updatedProfile);
@@ -2006,7 +2097,7 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     try {
       await supabase.from('users').update({
         'gender_preferences': genderPreferences.isNotEmpty ? genderPreferences : null,
-        'age_preferences': agePreferences.isNotEmpty ? agePreferences : null,
+        'age_preferences': normalizedAgePreferences.isNotEmpty ? normalizedAgePreferences : null,
         'strict_gender_age_enforcement': strictEnforcement,
       }).eq('id', userId);
     } catch (e) {
@@ -2015,7 +2106,7 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
         'userId': userId,
         'updates': {
           'gender_preferences': genderPreferences.isNotEmpty ? genderPreferences : null,
-          'age_preferences': agePreferences.isNotEmpty ? agePreferences : null,
+          'age_preferences': normalizedAgePreferences.isNotEmpty ? normalizedAgePreferences : null,
           'strict_gender_age_enforcement': strictEnforcement,
         },
       });

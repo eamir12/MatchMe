@@ -1,4 +1,5 @@
 // lib/providers/locale_provider.dart
+import 'dart:async';
 import 'dart:convert'; // For jsonEncode and jsonDecode
 import 'package:flutter/material.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
@@ -752,9 +753,30 @@ class Localization extends _$Localization {
 
   // Remember which DB keys we've warned about already to avoid log spam
   final Set<String> _missingDbKeysWarned = <String>{};
+  RealtimeChannel? _languageRealtimeChannel;
+  String? _languageRealtimeUserId;
+  StreamSubscription<AuthState>? _authStateSubscription;
+  bool _localeChangeInFlight = false;
+  String? _localeChangeTarget;
 
   @override
   LocalizationState build() {
+    ref.onDispose(() {
+      _clearLanguageRealtimeSubscription();
+      _authStateSubscription?.cancel();
+      _authStateSubscription = null;
+    });
+    _authStateSubscription?.cancel();
+    _authStateSubscription = Supabase.instance.client.auth.onAuthStateChange.listen((event) {
+      final authEvent = event.event;
+      if (authEvent == AuthChangeEvent.signedOut) {
+        _clearLanguageRealtimeSubscription();
+      }
+      _ensureLanguageRealtimeSubscription();
+      unawaited(_syncLanguageFromRemote());
+    });
+    _ensureLanguageRealtimeSubscription();
+    unawaited(_syncLanguageFromRemote());
     _init();
     // Return loading state initially - translations will be loaded async
     // BUT: Ensure we at least have default translations while loading
@@ -765,6 +787,69 @@ class Localization extends _$Localization {
       supportedLanguages: const [],
       isLoading: true,
     );
+  }
+
+  void _clearLanguageRealtimeSubscription() {
+    final channel = _languageRealtimeChannel;
+    if (channel != null) {
+      try {
+        Supabase.instance.client.removeChannel(channel);
+      } catch (_) {}
+    }
+    _languageRealtimeChannel = null;
+    _languageRealtimeUserId = null;
+  }
+
+  void _ensureLanguageRealtimeSubscription() {
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId == null) {
+      _clearLanguageRealtimeSubscription();
+      return;
+    }
+    if (_languageRealtimeChannel != null && _languageRealtimeUserId == userId) {
+      return;
+    }
+    _clearLanguageRealtimeSubscription();
+    _languageRealtimeChannel = Supabase.instance.client
+        .channel('user_language_$userId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
+          schema: 'public',
+          table: 'users',
+          filter: PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'id', value: userId),
+          callback: (payload) {
+            final newRecord = payload.newRecord;
+            final remoteLanguage = newRecord['preferred_language'] as String?;
+            if (remoteLanguage == null || remoteLanguage.isEmpty) return;
+            if (remoteLanguage == state.currentLocale.languageCode) return;
+            if (_localeChangeInFlight && _localeChangeTarget == remoteLanguage) return;
+            unawaited(setLocale(remoteLanguage, null, false));
+          },
+        )
+        .subscribe((status, err) {
+          if (status == RealtimeSubscribeStatus.channelError ||
+              status == RealtimeSubscribeStatus.timedOut ||
+              status == RealtimeSubscribeStatus.closed) {
+            unawaited(_syncLanguageFromRemote());
+          }
+        });
+    _languageRealtimeUserId = userId;
+  }
+
+  Future<void> _syncLanguageFromRemote() async {
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId == null) return;
+    try {
+      final response = await Supabase.instance.client
+          .from('users')
+          .select('preferred_language')
+          .eq('id', userId)
+          .maybeSingle();
+      final remoteLanguage = response?['preferred_language'] as String?;
+      if (remoteLanguage == null || remoteLanguage.isEmpty) return;
+      if (remoteLanguage == state.currentLocale.languageCode) return;
+      await setLocale(remoteLanguage, null, false);
+    } catch (_) {}
   }
 
   Future<void> _init() async {
@@ -968,67 +1053,77 @@ class Localization extends _$Localization {
   Future<void> setLocale(
     String langCode, [
     List<AppLanguage>? supported,
+    bool syncToDatabase = true,
   ]) async {
+    if (_localeChangeInFlight && _localeChangeTarget == langCode) return;
+    _localeChangeInFlight = true;
+    _localeChangeTarget = langCode;
     state = state.copyWith(isLoading: true);
+    try {
+      final supportedLanguages = supported ?? state.supportedLanguages;
+      if (supportedLanguages.isEmpty && supported == null) {
+        final fetchedLanguages = await _fetchSupportedLanguages();
+        return setLocale(langCode, fetchedLanguages, syncToDatabase);
+      }
 
-    final supportedLanguages = supported ?? state.supportedLanguages;
-    if (supportedLanguages.isEmpty && supported == null) {
-      final fetchedLanguages = await _fetchSupportedLanguages();
-      return setLocale(langCode, fetchedLanguages);
-    }
-
-    final AppLanguage lang = supportedLanguages.firstWhere(
-      (l) => l.code == langCode,
-      orElse: () => supportedLanguages.firstWhere((l) => l.code == 'en'),
-    );
-
-    // First check cache - if we already have translations for this language, use them
-    final cachedStrings = await _loadTranslationsFromCache(lang.code);
-    Map<String, String> strings;
-
-    if (cachedStrings.isNotEmpty) {
-      // Use cached translations - they're faster and avoid DB round-trip
-      strings = cachedStrings;
-      debugPrint(
-        '[L10N] Using cached translations for $langCode (${strings.length} strings)',
+      final AppLanguage lang = supportedLanguages.firstWhere(
+        (l) => l.code == langCode,
+        orElse: () => supportedLanguages.firstWhere((l) => l.code == 'en'),
       );
-    } else {
-      // No cache - fetch from DB
-      strings = await _fetchTranslationsFromDB(lang.code);
-      // Save to cache for future use
-      await _saveTranslationsToCache(lang.code, strings);
-      debugPrint(
-        '[L10N] Fetched translations from DB for $langCode (${strings.length} strings)',
+
+      // First check cache - if we already have translations for this language, use them
+      final cachedStrings = await _loadTranslationsFromCache(lang.code);
+      Map<String, String> strings;
+
+      if (cachedStrings.isNotEmpty) {
+        // Use cached translations - they're faster and avoid DB round-trip
+        strings = cachedStrings;
+        debugPrint(
+          '[L10N] Using cached translations for $langCode (${strings.length} strings)',
+        );
+      } else {
+        // No cache - fetch from DB
+        strings = await _fetchTranslationsFromDB(lang.code);
+        // Save to cache for future use
+        await _saveTranslationsToCache(lang.code, strings);
+        debugPrint(
+          '[L10N] Fetched translations from DB for $langCode (${strings.length} strings)',
+        );
+      }
+
+      // Respect provider lifecycle: if disposed while awaiting, bail out safely.
+      if (!ref.mounted) return;
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('user_language_code', lang.code);
+      if (!ref.mounted) return;
+
+      // Update users.preferred_language and chats.translation_language in database
+      // Only attempt DB update if user is authenticated (skip on login screen)
+      final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+      if (syncToDatabase && currentUserId != null) {
+        await _updateLanguageInDatabase(lang.code);
+      } else if (syncToDatabase) {
+        debugPrint(
+          '[L10N] Skipping DB language update: user not authenticated (login screen)',
+        );
+      }
+      if (!ref.mounted) return;
+
+      state = state.copyWith(
+        currentLocale: Locale(lang.code),
+        textDirection: lang.direction,
+        strings: strings,
+        supportedLanguages: supportedLanguages,
+        isLoading: false,
+        dbKeys: _lastFetchedDbKeys,
       );
+    } finally {
+      if (_localeChangeTarget == langCode) {
+        _localeChangeInFlight = false;
+        _localeChangeTarget = null;
+      }
     }
-
-    // Respect provider lifecycle: if disposed while awaiting, bail out safely.
-    if (!ref.mounted) return;
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('user_language_code', lang.code);
-    if (!ref.mounted) return;
-
-    // Update users.preferred_language and chats.translation_language in database
-    // Only attempt DB update if user is authenticated (skip on login screen)
-    final currentUserId = Supabase.instance.client.auth.currentUser?.id;
-    if (currentUserId != null) {
-      await _updateLanguageInDatabase(lang.code);
-    } else {
-      debugPrint(
-        '[L10N] Skipping DB language update: user not authenticated (login screen)',
-      );
-    }
-    if (!ref.mounted) return;
-
-    state = state.copyWith(
-      currentLocale: Locale(lang.code),
-      textDirection: lang.direction,
-      strings: strings,
-      supportedLanguages: supportedLanguages,
-      isLoading: false,
-      dbKeys: _lastFetchedDbKeys,
-    );
   }
 
   /// Updates the user's preferred language in the database and all their chat translation settings

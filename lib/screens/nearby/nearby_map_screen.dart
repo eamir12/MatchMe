@@ -473,6 +473,7 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen> {
   Widget build(BuildContext context) {
     final l10n = ref.watch(localizationProvider);
     final userId = Supabase.instance.client.auth.currentUser?.id;
+    final isOnline = ref.watch(connectivityProvider).value ?? false;
 
     if (userId == null) {
       return Scaffold(body: Center(child: Text(l10n.getString('generalError'))));
@@ -529,11 +530,12 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen> {
                         },
                       ),
                       children: [
-                        TileLayer(
-                          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                          userAgentPackageName: 'matchme.app',
-                          tileBounds: _worldBounds,
-                        ),
+                        if (isOnline)
+                          TileLayer(
+                            urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                            userAgentPackageName: 'matchme.app',
+                            tileBounds: _worldBounds,
+                          ),
                         CircleLayer(
                           circles: [
                             CircleMarker(
@@ -643,6 +645,23 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen> {
                                   child: Text(l10n.getString('generalClose')),
                                 ),
                               ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (!isOnline)
+                      Positioned(
+                        top: 12,
+                        left: 12,
+                        right: 12,
+                        child: Material(
+                          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                          borderRadius: BorderRadius.circular(8),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            child: Text(
+                              l10n.getString('generalOffline'),
+                              textAlign: TextAlign.center,
                             ),
                           ),
                         ),
@@ -965,6 +984,7 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen> {
   @override
   Widget build(BuildContext context) {
     final l10n = ref.watch(localizationProvider);
+    final isOnline = ref.watch(connectivityProvider).value ?? false;
 
     return Scaffold(
       appBar: AppBar(
@@ -1019,11 +1039,12 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen> {
               interactionOptions: _interaction,
             ),
             children: [
-              TileLayer(
-                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                userAgentPackageName: 'matchme.app',
-                tileBounds: _worldBounds,
-              ),
+              if (isOnline)
+                TileLayer(
+                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  userAgentPackageName: 'matchme.app',
+                  tileBounds: _worldBounds,
+                ),
               MarkerLayer(markers: _buildMarkers(context)),
             ],
           ),
@@ -1053,6 +1074,23 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen> {
                 width: 22,
                 height: 22,
                 child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          if (!isOnline)
+            Positioned(
+              top: 12,
+              left: 12,
+              right: 12,
+              child: Material(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Text(
+                    l10n.getString('generalOffline'),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
               ),
             ),
           if (_error != null)
