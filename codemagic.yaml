@@ -8,7 +8,7 @@ workflows:
       xcode: latest
       cocoapods: default
       vars:
-        BUNDLE_ID: com.example.matchme
+        BUNDLE_ID: com.eranamir.matchme
     cache:
       cache_paths:
         - $FLUTTER_ROOT/.pub-cache
@@ -16,11 +16,16 @@ workflows:
         - ~/Library/Caches/CocoaPods
         - ios/Pods
     scripts:
+      - name: Install Codemagic CLI tools
+        script: pip3 install --upgrade codemagic-cli-tools
       - name: Set bundle identifier
         script: |
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" ios/Runner/Info.plist
+          xcode-project set-build-settings --project ios/Runner.xcodeproj --target Runner --build-settings PRODUCT_BUNDLE_IDENTIFIER=$BUNDLE_ID
       - name: Get Flutter packages
         script: flutter pub get
+      - name: Clean Flutter build outputs
+        script: flutter clean
       - name: Install CocoaPods dependencies
         script: |
           cd ios
@@ -30,14 +35,16 @@ workflows:
         script: flutter build ios --release --no-codesign
       - name: Package unsigned IPA for Sideloadly
         script: |
+          rm -rf Payload
+          rm -f Runner-unsigned.ipa
           mkdir -p Payload
           cp -R build/ios/iphoneos/Runner.app Payload/Runner.app
-          rm -f Runner-unsigned.ipa
           ditto -c -k --sequesterRsrc --keepParent Payload Runner-unsigned.ipa
       - name: Verify IPA structure
         script: |
           unzip -l Runner-unsigned.ipa | grep -q "Payload/Runner.app/"
           unzip -l Runner-unsigned.ipa | grep -q "Payload/Runner.app/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" build/ios/iphoneos/Runner.app/Info.plist
     artifacts:
       - Runner-unsigned.ipa
       - /tmp/xcodebuild_logs/*.log
