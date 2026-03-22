@@ -1,38 +1,91 @@
 workflows:
   ios_unsigned_for_sideloadly:
-    name: iOS Unsigned IPA (Sideloadly)
+    name: iOS Unsigned IPA for Sideloadly (No Paid Apple Account)
+    max_build_duration: 120
     instance_type: mac_mini_m2
     environment:
       flutter: stable
       xcode: latest
       cocoapods: default
+      vars:
+        BUNDLE_ID: com.example.matchme
+    cache:
+      cache_paths:
+        - $FLUTTER_ROOT/.pub-cache
+        - ~/.pub-cache
+        - ~/Library/Caches/CocoaPods
+        - ios/Pods
     scripts:
-      - name: Pre-clean workspace
+      - name: Set bundle identifier
         script: |
-          rm -rf build Payload Runner-unsigned.ipa
-          rm -rf ~/Library/Developer/Xcode/DerivedData/*
-      - name: Flutter clean/get
-        script: |
-          flutter clean
-          flutter pub get
-      - name: Verify iOS fullscreen keys
-        script: |
-          /usr/libexec/PlistBuddy -c "Print :UILaunchStoryboardName" ios/Runner/Info.plist
-          /usr/libexec/PlistBuddy -c "Print :UISupportedInterfaceOrientations" ios/Runner/Info.plist
-          /usr/libexec/PlistBuddy -c "Print :UIApplicationSceneManifest" ios/Runner/Info.plist
-      - name: Install CocoaPods
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" ios/Runner/Info.plist
+      - name: Get Flutter packages
+        script: flutter pub get
+      - name: Install CocoaPods dependencies
         script: |
           cd ios
           pod install --repo-update
           cd ..
-      - name: Build iOS without codesign
-        script: |
-          flutter build ios --no-codesign
-      - name: Create unsigned IPA
+      - name: Build iOS app without code signing
+        script: flutter build ios --release --no-codesign
+      - name: Package unsigned IPA for Sideloadly
         script: |
           mkdir -p Payload
-          cp -R build/ios/iphoneos/Runner.app Payload/
-          zip -r -y Runner-unsigned.ipa Payload
+          cp -R build/ios/iphoneos/Runner.app Payload/Runner.app
+          rm -f Runner-unsigned.ipa
+          ditto -c -k --sequesterRsrc --keepParent Payload Runner-unsigned.ipa
+      - name: Verify IPA structure
+        script: |
+          unzip -l Runner-unsigned.ipa | grep -q "Payload/Runner.app/"
+          unzip -l Runner-unsigned.ipa | grep -q "Payload/Runner.app/Info.plist"
     artifacts:
       - Runner-unsigned.ipa
-      - build/ios/iphoneos/Runner.app
+      - /tmp/xcodebuild_logs/*.log
+
+  ios_sideload_signed:
+    name: iOS Signed IPA for Sideloading
+    max_build_duration: 120
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      ios_signing:
+        distribution_type: development
+        bundle_identifier: com.example.matchme
+      vars:
+        BUNDLE_ID: com.example.matchme
+        XCODE_SCHEME: Runner
+    cache:
+      cache_paths:
+        - $FLUTTER_ROOT/.pub-cache
+        - ~/.pub-cache
+        - ~/Library/Caches/CocoaPods
+        - ios/Pods
+    scripts:
+      - name: Install Codemagic CLI tools
+        script: pip3 install --upgrade codemagic-cli-tools
+      - name: Set bundle identifier
+        script: |
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" ios/Runner/Info.plist
+          xcode-project set-build-settings --project ios/Runner.xcodeproj --target Runner --build-settings PRODUCT_BUNDLE_IDENTIFIER=$BUNDLE_ID
+      - name: Get Flutter packages
+        script: flutter pub get
+      - name: Install CocoaPods dependencies
+        script: |
+          cd ios
+          pod install --repo-update
+          cd ..
+      - name: Set up iOS code signing
+        script: xcode-project use-profiles
+      - name: Build signed IPA
+        script: flutter build ipa --release --export-options-plist=/Users/builder/export_options.plist
+      - name: Verify IPA is signed
+        script: |
+          IPA_PATH=$(find build/ios/ipa -maxdepth 1 -name "*.ipa" | head -n 1)
+          test -n "$IPA_PATH"
+          unzip -l "$IPA_PATH" | grep -q "Payload/Runner.app/embedded.mobileprovision"
+          unzip -l "$IPA_PATH" | grep -q "Payload/Runner.app/_CodeSignature/CodeResources"
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
