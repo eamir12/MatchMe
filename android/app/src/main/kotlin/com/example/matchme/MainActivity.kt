@@ -6,12 +6,20 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.util.Log
 import android.provider.OpenableColumns
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.lifecycleScope
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetectorOptions
+import com.google.mlkit.vision.pose.Pose
+import com.google.mlkit.vision.pose.PoseLandmark
+import com.google.mlkit.vision.pose.PoseDetection
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.android.RenderMode
 import io.flutter.embedding.engine.FlutterEngine
@@ -20,6 +28,8 @@ import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
 class MainActivity : FlutterFragmentActivity() {
     companion object {
@@ -27,11 +37,18 @@ class MainActivity : FlutterFragmentActivity() {
         private const val CHANNEL = "matchme/main_activity"
         private const val APP_INFO_CHANNEL = "matchme/app_info"
         private const val APP_CHECK_CHANNEL = "com.example.matchme/app_check"
+        private const val AUTHENTICATOR_LAUNCHER_CHANNEL = "matchme/authenticator_launcher"
+        private const val PHOTO_MODERATION_CHANNEL = "matchme/photo_moderation"
+        private const val PHOTO_PRESCREEN_CHANNEL = "matchme/photo_prescreen"
     }
 
     private var mainChannel: MethodChannel? = null
     private var appInfoChannel: MethodChannel? = null
+    private var badgeChannel: MethodChannel? = null
     private var appCheckChannel: MethodChannel? = null
+    private var authenticatorLauncherChannel: MethodChannel? = null
+    private var photoModerationChannel: MethodChannel? = null
+    private var photoPrescreenChannel: MethodChannel? = null
 
     override fun getRenderMode(): RenderMode = RenderMode.texture
 
@@ -74,6 +91,32 @@ class MainActivity : FlutterFragmentActivity() {
         } catch (_: Exception) {
             null
         }
+    }
+
+    private fun launchInstalledAuthenticatorApp(): Boolean {
+        val candidatePackages = listOf(
+            "com.google.android.apps.authenticator2",
+            "com.azure.authenticator",
+            "com.authy.authy",
+            "com.duosecurity.duomobile",
+            "com.lastpass.authenticator",
+            "com.twofasapp"
+        )
+
+        for (packageName in candidatePackages) {
+            try {
+                val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+                    ?: continue
+                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(launchIntent)
+                // Log.d(TAG, "Launched authenticator package: $packageName")
+                return true
+            } catch (e: Exception) {
+                // Log.d(TAG, "Failed to launch authenticator package $packageName: ${e.message}")
+            }
+        }
+
+        return false
     }
 
     private fun extractRouteData(from: Intent?): Map<String, Any?>? {
@@ -175,7 +218,7 @@ class MainActivity : FlutterFragmentActivity() {
         }
 
         try {
-            Log.d(TAG, "extractRouteData action=${from.action} shortcutId=$shortcutId tabIndex=$tabIndex route=$route matchId=$matchId")
+            // Log.d(TAG, "extractRouteData action=${from.action} shortcutId=$shortcutId tabIndex=$tabIndex route=$route matchId=$matchId")
         } catch (_: Exception) {
         }
 
@@ -185,6 +228,30 @@ class MainActivity : FlutterFragmentActivity() {
             "matchId" to matchId
             ,"tabIndex" to tabIndex
         )
+    }
+
+    private fun computeBodyPresence(pose: Pose): Pair<Boolean, Double> {
+        val landmarks = pose.allPoseLandmarks
+        if (landmarks.isEmpty()) {
+            return false to 0.0
+        }
+
+        val confidentLandmarks = landmarks.filter { it.inFrameLikelihood >= 0.45f }
+        val torsoReady = listOf(
+            PoseLandmark.LEFT_SHOULDER,
+            PoseLandmark.RIGHT_SHOULDER,
+            PoseLandmark.LEFT_HIP,
+            PoseLandmark.RIGHT_HIP,
+        ).count { pose.getPoseLandmark(it)?.inFrameLikelihood ?: 0f >= 0.35f } >= 2
+        val upperBodyReady = listOf(
+            PoseLandmark.LEFT_SHOULDER,
+            PoseLandmark.RIGHT_SHOULDER,
+            PoseLandmark.LEFT_ELBOW,
+            PoseLandmark.RIGHT_ELBOW,
+        ).count { pose.getPoseLandmark(it)?.inFrameLikelihood ?: 0f >= 0.35f } >= 2
+        val bodyConfidence = (confidentLandmarks.size / 12.0).coerceIn(0.0, 1.0)
+        val containsBody = confidentLandmarks.size >= 8 || torsoReady || upperBodyReady
+        return containsBody to bodyConfidence
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -260,7 +327,7 @@ class MainActivity : FlutterFragmentActivity() {
                     )
                 )
             } catch (e: Exception) {
-                Log.w(TAG, "getAppInfo failed: $e")
+                // Log.w(TAG, "getAppInfo failed: $e")
                 result.success(
                     mapOf(
                         "appName" to null,
@@ -268,6 +335,17 @@ class MainActivity : FlutterFragmentActivity() {
                         "buildNumber" to null
                     )
                 )
+            }
+        }
+
+        // App-icon badge: Android launchers derive badges from the tray, so
+        // there is no global badge API. Accept set/clear so shared Dart code
+        // stays platform-agnostic (iOS applies the count, Android no-ops).
+        badgeChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "matchme/badge")
+        badgeChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "setBadgeCount", "clearBadge" -> result.success(null)
+                else -> result.notImplemented()
             }
         }
 
@@ -285,10 +363,10 @@ class MainActivity : FlutterFragmentActivity() {
                     try {
                         @Suppress("DEPRECATION")
                         packageManager.getPackageInfo(packageName, 0)
-                        Log.d(TAG, "Package $packageName IS installed")
+                        // Log.d(TAG, "Package $packageName IS installed")
                         result.success(true)
                     } catch (e: Exception) {
-                        Log.d(TAG, "Package $packageName NOT installed: ${e.message}")
+                        // Log.d(TAG, "Package $packageName NOT installed: ${e.message}")
                         result.success(false)
                     }
                 }
@@ -306,7 +384,7 @@ class MainActivity : FlutterFragmentActivity() {
                         startActivity(intent)
                         result.success(true)
                     } catch (e: Exception) {
-                        Log.w(TAG, "Failed to open app settings: $e")
+                        // Log.w(TAG, "Failed to open app settings: $e")
                         result.error("FAILED", "Could not open app settings", e.message)
                     }
                 }
@@ -339,7 +417,7 @@ class MainActivity : FlutterFragmentActivity() {
                         }
                         result.success(opened)
                     } catch (e: Exception) {
-                        Log.w(TAG, "Failed to open calendar permission settings: $e")
+                        // Log.w(TAG, "Failed to open calendar permission settings: $e")
                         result.error("FAILED", "Could not open calendar permission settings", e.message)
                     }
                 }
@@ -370,7 +448,7 @@ class MainActivity : FlutterFragmentActivity() {
                             )
                         )
                     } catch (e: Exception) {
-                        Log.w(TAG, "Failed to inspect calendar permission request state: $e")
+                        // Log.w(TAG, "Failed to inspect calendar permission request state: $e")
                         result.error("FAILED", "Could not inspect calendar permission request state", e.message)
                     }
                 }
@@ -387,7 +465,7 @@ class MainActivity : FlutterFragmentActivity() {
                             result.error("NOT_FOUND", "Outlook app not found", null)
                         }
                     } catch (e: Exception) {
-                        Log.w(TAG, "Failed to launch Outlook: $e")
+                        // Log.w(TAG, "Failed to launch Outlook: $e")
                         result.error("FAILED", "Could not launch Outlook app", e.message)
                     }
                 }
@@ -401,11 +479,178 @@ class MainActivity : FlutterFragmentActivity() {
                             pkgName.contains("office")
                         }.map { it.packageName }
                         
-                        Log.d(TAG, "Found ${outlookPackages.size} Microsoft/Outlook packages: $outlookPackages")
+                        // Log.d(TAG, "Found ${outlookPackages.size} Microsoft/Outlook packages: $outlookPackages")
                         result.success(outlookPackages)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to scan packages: $e")
+                        // Log.e(TAG, "Failed to scan packages: $e")
                         result.error("FAILED", "Could not scan packages", e.message)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        authenticatorLauncherChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            AUTHENTICATOR_LAUNCHER_CHANNEL
+        )
+        authenticatorLauncherChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "launchAuthenticatorApp" -> {
+                    result.success(launchInstalledAuthenticatorApp())
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        photoModerationChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, PHOTO_MODERATION_CHANNEL)
+        photoModerationChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "analyzeProfilePhotoPresence" -> {
+                    val bytes = call.argument<ByteArray>("bytes")
+                    if (bytes == null || bytes.isEmpty()) {
+                        result.success(
+                            mapOf(
+                                "supported" to true,
+                                "containsFace" to false,
+                                "containsBody" to false,
+                                "uncertain" to false,
+                                "faceConfidence" to 0.0,
+                                "bodyConfidence" to 0.0,
+                            )
+                        )
+                        return@setMethodCallHandler
+                    }
+
+                    lifecycleScope.launch {
+                        try {
+                            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                            if (bitmap == null) {
+                                result.success(
+                                    mapOf(
+                                        "supported" to true,
+                                        "containsFace" to false,
+                                        "containsBody" to false,
+                                        "uncertain" to true,
+                                        "faceConfidence" to 0.0,
+                                        "bodyConfidence" to 0.0,
+                                    )
+                                )
+                                return@launch
+                            }
+
+                            val image = InputImage.fromBitmap(bitmap, 0)
+                            val faceDetector = FaceDetection.getClient(
+                                FaceDetectorOptions.Builder()
+                                    .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
+                                    .enableTracking()
+                                    .build()
+                            )
+                            val poseDetector = PoseDetection.getClient(
+                                com.google.mlkit.vision.pose.defaults.PoseDetectorOptions.Builder()
+                                    .setDetectorMode(
+                                        com.google.mlkit.vision.pose.defaults.PoseDetectorOptions.SINGLE_IMAGE_MODE
+                                    )
+                                    .build()
+                            )
+
+                            try {
+                                val faces = faceDetector.process(image).await()
+                                val pose = poseDetector.process(image).await()
+
+                                val containsFace = faces.isNotEmpty()
+                                val faceConfidence = faces.maxOfOrNull { it.boundingBox.width().toDouble() * it.boundingBox.height().toDouble() }
+                                    ?.let { area ->
+                                        val totalArea = (bitmap.width * bitmap.height).toDouble().coerceAtLeast(1.0)
+                                        (area / totalArea).coerceIn(0.0, 1.0)
+                                    }
+                                    ?: 0.0
+                                val (containsBody, bodyConfidence) = computeBodyPresence(pose)
+                                val uncertain = !containsFace && !containsBody && pose.allPoseLandmarks.isNotEmpty()
+
+                                result.success(
+                                    mapOf(
+                                        "supported" to true,
+                                        "containsFace" to containsFace,
+                                        "containsBody" to containsBody,
+                                        "uncertain" to uncertain,
+                                        "faceConfidence" to faceConfidence,
+                                        "bodyConfidence" to bodyConfidence,
+                                    )
+                                )
+                            } finally {
+                                faceDetector.close()
+                                poseDetector.close()
+                                bitmap.recycle()
+                            }
+                        } catch (e: Exception) {
+                            // Log.w(TAG, "analyzeProfilePhotoPresence failed: $e")
+                            result.success(
+                                mapOf(
+                                    "supported" to false,
+                                    "containsFace" to false,
+                                    "containsBody" to false,
+                                    "uncertain" to true,
+                                    "faceConfidence" to 0.0,
+                                    "bodyConfidence" to 0.0,
+                                )
+                            )
+                        }
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        photoPrescreenChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, PHOTO_PRESCREEN_CHANNEL)
+        photoPrescreenChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "analyzePhoto" -> {
+                    val bytes = call.argument<ByteArray>("bytes")
+
+                    if (bytes == null || bytes.isEmpty()) {
+                        result.success(
+                            mapOf(
+                                "supported" to true,
+                                "containsFace" to false,
+                                "containsBody" to false,
+                                "uncertain" to true,
+                                "faceConfidence" to 0.0,
+                                "bodyConfidence" to 0.0,
+                                "faceCount" to 0,
+                                "faceSizeRatio" to 0.0,
+                                "facePositionedCenter" to false,
+                                "faceObstructed" to false,
+                                "upperBodyOnly" to false,
+                                "fullBodyVisible" to false
+                            )
+                        )
+                        return@setMethodCallHandler
+                    }
+
+                    lifecycleScope.launch {
+                        try {
+                            val analysisResult = PhotoPrescreenHandler.analyzePhoto(bytes)
+                            result.success(analysisResult)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "analyzePhoto failed: ${e.message}", e)
+                            result.success(
+                                mapOf(
+                                    "supported" to false,
+                                    "containsFace" to false,
+                                    "containsBody" to false,
+                                    "uncertain" to true,
+                                    "faceConfidence" to 0.0,
+                                    "bodyConfidence" to 0.0,
+                                    "faceCount" to 0,
+                                    "faceSizeRatio" to 0.0,
+                                    "facePositionedCenter" to false,
+                                    "faceObstructed" to false,
+                                    "upperBodyOnly" to false,
+                                    "fullBodyVisible" to false
+                                )
+                            )
+                        }
                     }
                 }
                 else -> result.notImplemented()
@@ -416,17 +661,26 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        val data = extractRouteData(intent)
-        if (data != null) {
+        
+        // CRITICAL: Handle OAuth deep link callbacks for calendar sync
+        val data = intent.data
+        if (data != null && data.scheme == "com.example.matchme" && data.host == "login-callback") {
+            // Log.d(TAG, "🔓 [OAuth] Deep link received in onNewIntent: $data")
+            // Let Supabase handle the deep link via its internal listener
+            // The deep link will also be forwarded to Flutter's app_links plugin
+        }
+        
+        val routeData = extractRouteData(intent)
+        if (routeData != null) {
             try {
-                val isShare = data.containsKey("sharedText") || data.containsKey("sharedFilePath")
+                val isShare = routeData.containsKey("sharedText") || routeData.containsKey("sharedFilePath")
                 if (isShare) {
-                    mainChannel?.invokeMethod("onSharedIntent", data)
+                    mainChannel?.invokeMethod("onSharedIntent", routeData)
                 } else {
-                    mainChannel?.invokeMethod("onNotificationRoute", data)
+                    mainChannel?.invokeMethod("onNotificationRoute", routeData)
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to deliver notification route to Flutter: $e")
+                // Log.w(TAG, "Failed to deliver notification route to Flutter: $e")
             }
         }
     }
@@ -464,10 +718,10 @@ class MainActivity : FlutterFragmentActivity() {
             }
 
             // Log initial window state
-            Log.d(TAG, "onCreate: statusBarColor=${window.statusBarColor}, navigationBarColor=${window.navigationBarColor}, systemUiVisibility=${window.decorView.systemUiVisibility}")
+            // Log.d(TAG, "onCreate: statusBarColor=${window.statusBarColor}, navigationBarColor=${window.navigationBarColor}, systemUiVisibility=${window.decorView.systemUiVisibility}")
         } catch (e: Exception) {
             // Ignore - best effort
-            Log.w(TAG, "Failed to set status bar appearance: $e")
+            // Log.w(TAG, "Failed to set status bar appearance: $e")
         }
     }
 
@@ -494,9 +748,9 @@ class MainActivity : FlutterFragmentActivity() {
                 window.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
             }
 
-            Log.d(TAG, "applySystemUiColors applied: statusBarColor=${window.statusBarColor}, navigationBarColor=${window.navigationBarColor}, systemUiVisibility=${window.decorView.systemUiVisibility}")
+            // Log.d(TAG, "applySystemUiColors applied: statusBarColor=${window.statusBarColor}, navigationBarColor=${window.navigationBarColor}, systemUiVisibility=${window.decorView.systemUiVisibility}")
         } catch (e: Exception) {
-            Log.w(TAG, "applySystemUiColors failed: $e")
+            // Log.w(TAG, "applySystemUiColors failed: $e")
         }
     }
 
@@ -507,7 +761,7 @@ class MainActivity : FlutterFragmentActivity() {
         try {
             applySystemUiColors()
         } catch (e: Exception) {
-            Log.w(TAG, "onResume logging failed: $e")
+            // Log.w(TAG, "onResume logging failed: $e")
         }
     }
 }

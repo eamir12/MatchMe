@@ -12,8 +12,9 @@ DECLARE
   preview text;
 BEGIN
   IF (TG_OP = 'UPDATE') THEN
-    -- Only process if the content was actually changed
-    IF (OLD.content_original != NEW.content_original) THEN
+    -- Only process if the content was actually changed (using current schema columns)
+    IF (OLD.content_original_encrypted IS DISTINCT FROM NEW.content_original_encrypted
+        OR OLD.encryption_scheme IS DISTINCT FROM NEW.encryption_scheme) THEN
       -- Resolve participants
       SELECT user1_id, user2_id INTO m_record FROM public.matches WHERE id = NEW.match_id;
       IF NOT FOUND THEN
@@ -28,7 +29,7 @@ BEGIN
       END IF;
 
       -- Check if this message is the latest for the match
-      SELECT id, content_original, created_at INTO latest_msg
+      SELECT id, content_original_encrypted, created_at INTO latest_msg
       FROM public.chat_messages
       WHERE match_id = NEW.match_id
       ORDER BY created_at DESC
@@ -36,7 +37,12 @@ BEGIN
 
       -- If this is the latest message, update the chats table
       IF latest_msg.id = NEW.id THEN
-        preview := substring(regexp_replace(coalesce(NEW.content_original, ''), E'\n+', ' ', 'g') FROM 1 FOR 400);
+        -- For encrypted messages, use placeholder
+        IF NEW.encryption_scheme = 'v1' THEN
+          preview := '[Encrypted message]';
+        ELSE
+          preview := '[Encrypted message]';
+        END IF;
         
         -- Update both users' chat entries
         UPDATE public.chats 
@@ -91,7 +97,7 @@ BEGIN
     was_unread := (OLD.read_at IS NULL);
 
     -- Find the new latest message for this match after deletion
-    SELECT id, content_original, created_at INTO latest_msg
+    SELECT id, content_original_encrypted, encryption_scheme, created_at INTO latest_msg
     FROM public.chat_messages
     WHERE match_id = OLD.match_id
     ORDER BY created_at DESC
@@ -99,8 +105,12 @@ BEGIN
 
     -- Update the chats table for both participants
     IF latest_msg.id IS NOT NULL THEN
-      -- New message exists, update chats to point to it
-      preview := substring(regexp_replace(coalesce(latest_msg.content_original, ''), E'\n+', ' ', 'g') FROM 1 FOR 400);
+      -- Generate preview based on encryption scheme
+      IF latest_msg.encryption_scheme = 'v1' THEN
+        preview := '[Encrypted message]';
+      ELSE
+        preview := substring(regexp_replace(coalesce(latest_msg.content_original_encrypted, ''), E'\n+', ' ', 'g') FROM 1 FOR 400);
+      END IF;
       UPDATE public.chats 
       SET last_message_id = latest_msg.id, 
           last_message_preview = preview, 

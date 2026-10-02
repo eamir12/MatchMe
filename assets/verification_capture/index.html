@@ -2,131 +2,313 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title></title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --capture-top-inset: max(12px, calc(env(safe-area-inset-top, 0px) + 12px));
+      /* Pin the instruction card to the bottom edge: hug the screen bottom
+         just above the system navigation (viewport-fit=cover lets env()
+         resolve on notch/gesture devices). Tighter than before so the card
+         no longer floats mid-screen. */
+      --capture-bottom-inset: max(8px, calc(env(safe-area-inset-bottom, 0px) + 8px));
+    }
     body { font-family: system-ui, sans-serif; background: #000; color: #fff; overflow: hidden; }
+    body.rtl { direction: rtl; }
     #container { position: relative; width: 100vw; height: 100vh; }
     #video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
-    #overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: 20px; }
-    #instruction { pointer-events: none; text-align: center; padding: 12px 20px; background: rgba(0,0,0,0.6); border-radius: 12px; font-size: 1rem; max-width: 90%; }
-    #feedback { pointer-events: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 120px; height: 120px; border-radius: 50%; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; transition: background 0.3s; }
-    #feedback.ready { background: rgba(0, 200, 83, 0.9); }
-    #feedback.ready svg { width: 72px; height: 72px; }
-    #feedback svg { width: 48px; height: 48px; opacity: 0.6; }
+    #overlay { position: absolute; inset: 0; }
+    #topHud { pointer-events: none; position: absolute; top: var(--capture-top-inset); left: 12px; right: 58px; display: flex; justify-content: center; z-index: 4; }
+    #instruction { text-align: center; padding: 8px 14px; background: rgba(0, 0, 0, 0.62); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 999px; font-size: 0.92rem; font-weight: 600; max-width: min(70vw, 320px); white-space: normal; line-height: 1.2; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28); backdrop-filter: blur(8px); }
+    #gestureExample { pointer-events: none; width: 50px; height: 50px; border-radius: 14px; background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.18); display: flex; align-items: center; justify-content: center; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.24); flex: 0 0 auto; }
+    #gestureExampleEmoji { font-size: 28px; line-height: 1; }
+    #feedback { pointer-events: none; position: absolute; top: var(--capture-top-inset); right: 12px; width: 36px; height: 36px; border-radius: 999px; background: rgba(0, 0, 0, 0.58); border: 1px solid rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; transition: background 0.25s, border-color 0.25s, opacity 0.25s; opacity: 0.78; z-index: 4; }
+    #feedback.ready { background: rgba(0, 200, 83, 0.92); border-color: rgba(0, 200, 83, 0.95); opacity: 1; }
+    #feedback svg { width: 18px; height: 18px; opacity: 0.72; }
     #feedback.ready svg { opacity: 1; }
     .roi { pointer-events: none; position: absolute; border: 2px solid rgba(255, 255, 255, 0.55); border-radius: 18px; transition: border-color 0.2s, background 0.2s; }
     .roi.active { border-color: rgba(0, 200, 83, 0.95); background: rgba(0, 200, 83, 0.12); }
-    #faceRoi { width: 56vw; max-width: 420px; min-width: 240px; height: 54vh; max-height: 470px; min-height: 280px; top: 6%; left: 50%; transform: translateX(-50%); border-radius: 42% 42% 46% 46% / 48% 48% 42% 42%; }
-    #gestureRoi { width: 34vw; max-width: 280px; min-width: 170px; height: 24vh; max-height: 230px; min-height: 140px; top: 64%; right: 16%; }
-    #gestureRoi.left { right: auto; left: 16%; }
+    #faceRoi { width: 50vw; max-width: 390px; min-width: 236px; height: 43vh; max-height: 372px; min-height: 246px; top: 9%; left: 50%; transform: translateX(-50%); border-radius: 42% 42% 46% 46% / 48% 48% 42% 42%; }
+    #gestureRoi { width: 56vw; max-width: 410px; min-width: 280px; height: 29vh; max-height: 270px; min-height: 182px; top: 68%; right: 6%; border-radius: 24px; }
+    #gestureRoi.left { right: auto; left: 10%; }
     @media (orientation: landscape) {
-      #faceRoi { width: 40vw; max-width: 460px; min-width: 260px; height: 50vh; max-height: 360px; min-height: 240px; top: 8%; }
-      #gestureRoi { width: 24vw; max-width: 260px; min-width: 150px; height: 28vh; max-height: 220px; min-height: 130px; top: 64%; right: 12%; }
-      #gestureRoi.left { left: 12%; }
+      #faceRoi { width: 38vw; max-width: 430px; min-width: 250px; height: 48vh; max-height: 330px; min-height: 220px; top: 7%; }
+      #gestureRoi { width: 37vw; max-width: 380px; min-width: 250px; height: 35vh; max-height: 275px; min-height: 178px; top: 65%; right: 7%; }
+      #gestureRoi.left { left: 10%; }
     }
-    #progressWrap { pointer-events: none; position: absolute; left: 8%; right: 8%; bottom: 118px; height: 8px; border-radius: 999px; background: rgba(255,255,255,0.2); overflow: hidden; }
+    /* Fixed to the visual viewport (not the container): an absolute bottom
+       anchor can float when the container/viewport heights disagree in some
+       WebViews, leaving video visible under the card. Fixed + bottom padding
+       pins the card to the true screen bottom on every platform. */
+    #bottomPanel { position: fixed; left: 0; right: 0; bottom: 0; padding: 0 12px var(--capture-bottom-inset); display: flex; flex-direction: column; align-items: center; z-index: 4; }
+    #detailCard { pointer-events: none; width: min(100%, 410px); padding: 10px 12px; border-radius: 16px; background: rgba(0, 0, 0, 0.56); border: 1px solid rgba(255, 255, 255, 0.1); box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28); backdrop-filter: blur(10px); }
+    #detailHeader { display: flex; align-items: center; gap: 10px; }
+    #detailText { min-width: 0; flex: 1 1 auto; }
+    #gestureDescription { font-size: 0.84rem; line-height: 1.25; color: rgba(255, 255, 255, 0.9); }
+    #checklist { margin-top: 8px; width: 100%; display: flex; flex-wrap: nowrap; justify-content: flex-start; align-items: center; gap: 6px 12px; }
+    .checkItem { display: inline-flex; align-items: center; justify-content: flex-start; gap: 7px; color: rgba(255, 255, 255, 0.72); font-size: 0.8rem; line-height: 1.15; white-space: nowrap; flex: 0 0 auto; }
+    .checkDot { width: 16px; height: 16px; border-radius: 999px; border: 1.5px solid rgba(255, 255, 255, 0.38); display: flex; align-items: center; justify-content: center; font-size: 10px; color: transparent; flex: 0 0 auto; }
+    .checkItem.complete { color: #fff; }
+    .checkItem.complete .checkDot { background: rgba(0, 200, 83, 0.95); border-color: rgba(0, 200, 83, 0.95); color: #fff; }
+    #status { pointer-events: none; font-size: 0.84rem; margin-top: 8px; text-align: center; min-height: 1.25em; color: rgba(255, 255, 255, 0.95); }
+    #progressWrap { pointer-events: none; position: static; width: 100%; margin-top: 8px; height: 6px; border-radius: 999px; background: rgba(255,255,255,0.2); overflow: hidden; }
     #progressBar { width: 0%; height: 100%; background: linear-gradient(90deg, #42a5f5, #00c853); transition: width 0.15s linear; }
-    #captureBar { position: absolute; bottom: 0; left: 0; right: 0; padding: 24px; background: linear-gradient(transparent, rgba(0,0,0,0.8)); display: flex; justify-content: center; }
+    #captureBar { position: static; width: 0; height: 0; overflow: hidden; pointer-events: none; }
     #captureWrap { display: flex; flex-direction: column; align-items: center; }
-    #captureBtn { width: 72px; height: 72px; border-radius: 50%; border: 4px solid #fff; background: rgba(255,255,255,0.3); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: opacity 0.2s, background 0.2s; }
+    #captureBtn { width: 1px; height: 1px; border: 0; padding: 0; opacity: 0; pointer-events: none; position: absolute; }
     #captureBtn:disabled { opacity: 0.5; cursor: not-allowed; }
     #captureBtn.ready { background: rgba(0, 200, 83, 0.9); }
     #captureBtn svg { width: 36px; height: 36px; }
-    #status { pointer-events: none; font-size: 0.9rem; margin-top: 8px; text-align: center; }
+    body.rtl #detailCard,
+    body.rtl #gestureDescription,
+    body.rtl #status { text-align: right; }
+    body.rtl #detailHeader { flex-direction: row-reverse; }
+    body.rtl #checklist { direction: rtl; flex-direction: row; justify-content: flex-start; }
+    body.rtl .checkItem { direction: rtl; flex-direction: row-reverse; justify-content: flex-end; text-align: right; }
+    body.rtl .checkItem span:last-child { text-align: right; }
     .hidden { display: none !important; }
+    #errorCard { position: absolute; left: 16px; right: 16px; top: 50%; transform: translate(-50%, -50%); left: 50%; width: min(92vw, 380px); padding: 18px 16px; border-radius: 16px; background: rgba(20, 20, 22, 0.94); border: 1px solid rgba(255, 255, 255, 0.16); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5); z-index: 10; text-align: center; }
+    #errorTitle { font-size: 1rem; font-weight: 700; margin-bottom: 8px; }
+    #errorDetail { font-size: 0.82rem; line-height: 1.4; color: rgba(255, 255, 255, 0.75); margin-bottom: 14px; word-break: break-word; }
+    #retryBtn { min-width: 140px; padding: 10px 22px; border: 0; border-radius: 999px; background: #00c853; color: #fff; font-size: 0.95rem; font-weight: 700; }
+    #debugOverlay { position: absolute; left: 8px; bottom: 8px; max-width: 92vw; padding: 6px 8px; border-radius: 8px; background: rgba(0, 0, 0, 0.72); color: #7dffb0; font-family: monospace; font-size: 10px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; z-index: 9; pointer-events: none; }
   </style>
 </head>
 <body>
   <div id="container">
     <video id="video" autoplay playsinline muted></video>
     <div id="overlay">
-      <div id="instruction"></div>
+      <div id="topHud">
+        <div id="instruction"></div>
+      </div>
       <div id="feedback"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg></div>
       <div id="faceRoi" class="roi"></div>
       <div id="gestureRoi" class="roi"></div>
-      <div id="progressWrap"><div id="progressBar"></div></div>
-      <div id="captureBar">
-        <div id="captureWrap">
-          <button id="captureBtn" disabled><svg viewBox="0 0 24 24" fill="white"><circle cx="12" cy="12" r="4"/></svg></button>
+      <div id="bottomPanel">
+        <div id="detailCard">
+          <div id="detailHeader">
+            <div id="gestureExample"><span id="gestureExampleEmoji"></span></div>
+            <div id="detailText">
+              <div id="gestureDescription"></div>
+            </div>
+          </div>
+          <div id="checklist">
+            <div class="checkItem" id="checkFace"><span class="checkDot">✓</span><span id="checkFaceLabel"></span></div>
+            <div class="checkItem" id="checkHand"><span class="checkDot">✓</span><span id="checkHandLabel"></span></div>
+            <div class="checkItem" id="checkGesture"><span class="checkDot">✓</span><span id="checkGestureLabel"></span></div>
+          </div>
           <div id="status"></div>
+          <div id="progressWrap"><div id="progressBar"></div></div>
+        </div>
+        <div id="captureBar">
+          <div id="captureWrap">
+            <button id="captureBtn" disabled aria-hidden="true" tabindex="-1"></button>
+          </div>
         </div>
       </div>
     </div>
   </div>
   <canvas id="canvas" class="hidden"></canvas>
   <canvas id="qualityCanvas" class="hidden"></canvas>
-  <script>
-    window.__REQUIRED_GESTURE_CODE__ = __GESTURE_CODE_JSON__;
-    window.__REQUIRED_GESTURE_LABEL__ = __GESTURE_LABEL_JSON__;
-    window.__CAPTURE_STRINGS__ = __CAPTURE_STRINGS_JSON__;
-    window.__INPUT_IMAGE_BASE64__ = __INPUT_IMAGE_BASE64_JSON__;
-  </script>
+  <div id="errorCard" class="hidden">
+    <div id="errorTitle"></div>
+    <div id="errorDetail"></div>
+    <button id="retryBtn" type="button"></button>
+  </div>
+  <div id="debugOverlay" class="hidden"></div>
+   <script>
+      window.__REQUIRED_GESTURE_CODE__ = __GESTURE_CODE_JSON__;
+      window.__REQUIRED_GESTURE_LABEL__ = __GESTURE_LABEL_JSON__;
+      window.__REQUIRED_GESTURE_DESCRIPTION__ = __GESTURE_DESCRIPTION_JSON__;
+      window.__LOCALE_CODE__ = __LOCALE_CODE_JSON__;
+      window.__CAPTURE_STRINGS__ = __CAPTURE_STRINGS_JSON__;
+      window.__INPUT_IMAGE_BASE64__ = __INPUT_IMAGE_BASE64_JSON__;
+      window.__CAPTURE_DEBUG__ = __CAPTURE_DEBUG_JSON__;
+      // Bottom inset in CSS px, measured by the host app (MediaQuery padding).
+      // Takes precedence over the env() guess below: the host knows whether
+      // the WebView already ends above opaque system bars (inset ~0, card
+      // hugs the bottom) or underlaps them (inset = bar height, card clears
+      // the buttons). Null/non-number keeps the CSS default (web popup).
+      window.__BOTTOM_INSET_PX__ = __BOTTOM_INSET_JSON__;
+   </script>
   <script type="module">
 (function() {
   var FPS = 10;
-  var READY_STABLE_MS = 850;
+  var FPS_SLOW = 5;
+  var READY_STABLE_MS = 600;
+  var READY_STABLE_MS_SLOW = 900;
+  var STABLE_FRAMES_REQUIRED = 6;
   var SCORE_WINDOW_SIZE = 15;
-  var PASS_SCORE_MIN = 0.72;
-  var FACE_HIT_MIN = 0.85;
-  var GESTURE_HIT_MIN = 0.7;
-  var CAPTURE_SELECTION_MS = 900;
+  var PASS_SCORE_MIN = 0.62;
+  var FACE_HIT_MIN = 0.7;
+  var GESTURE_HIT_MIN = 0.55;
+  var CAPTURE_SELECTION_MS = 600;
+  // Primary-selfie (FACE_ONLY) gates: the instructions are spoken aloud and
+  // take several seconds, so the face must hold steady inside the green oval
+  // much longer than a gesture shot before auto-capture may fire.
+  var READY_STABLE_MS_FACE_ONLY = 2000;
+  var STABLE_FRAMES_REQUIRED_FACE_ONLY = 12;
+  var CAPTURE_SELECTION_MS_FACE_ONLY = 1000;
+  // Minimum face-centering quality (0..1, distance of the face-box center to
+  // the oval center) for the face to count as "inside the green circle".
+  var FACE_ROI_SCORE_MIN = 0.55;
+  // Minimum page-open time before a primary selfie may auto-capture, so the
+  // spoken instructions always finish first even if TTS signalling is lost.
+  var FACE_ONLY_MIN_OPEN_MS = 4500;
   var FACE_STALE_MS = 900;
+  var FACE_STALE_MS_SLOW = 1800;
   var MAX_CAPTURE_ATTEMPTS = 12;
+  var GESTURE_SCORE_MIN = 0.38;
+  var GESTURE_STRONG_MIN = 0.50;
+  var HAND_ROI_MIN = 0.16;
+  var FACE_EDGE_MARGIN = 0.035;
+  var FACE_MIN_SIZE = 0.12;
+  // The preview is CSS-mirrored (scaleX(-1)) so it behaves like a mirror,
+  // but MediaPipe sees the raw unmirrored sensor frame. Detector coordinates
+  // must therefore be mapped into display space before comparing them with
+  // the on-screen guides. Front-camera mirroring behaviour differs between
+  // devices/WebViews, so handedness is also treated as advisory (see below).
+  var MIRRORED_PREVIEW = true;
+  var SLOW_INFER_MS = 140;
+  var MODEL_LOAD_TIMEOUT_MS = 12000;
+  var MAX_SNAPSHOT_DIM = 1280;
+  var STUCK_REPORT_MS = 8000;
+  // Dual-cue handedness enforcement (see computeChirality/decideHandVerdict).
+  // CHIRALITY_SIGN_FOR_RIGHT maps each canonical gesture class to the expected
+  // sign of the display-space thumb-side test for an ANATOMICAL right hand
+  // presented palm-out (the instructed pose): wrist->middle-MCP axis vs thumb
+  // position gives cross < 0 for a right hand, > 0 for a left hand. Display
+  // space is device-independent (our own known mirror + cover mapping), so
+  // this table transfers across phones; per-gesture magnitude floors below
+  // tolerate side-view presentations (thumbs) and tucked thumbs (pointing).
+  // If field data ever contradicts a sign, flip that entry (and only it) -
+  // the disagreement resolver degrades to tolerant mode, never to a block.
+  var CHIRALITY_SIGN_FOR_RIGHT = {
+    'CLOSED_FIST': -1,
+    'OPEN_PALM': -1,
+    'VICTORY': -1,
+    'POINTING_UP': -1,
+    'THUMB_UP': -1,
+    'THUMB_DOWN': -1
+  };
+  var CHIRALITY_MIN_MAGNITUDE = 0.12;
+  var CHIRALITY_MIN_MAGNITUDE_THUMBS = 0.06;
+  var CHIRALITY_MIN_AXIS_LEN = 0.02;
+  var CHIRALITY_STRONG_MULT = 1.5;
+  var WRONG_HAND_MIN_LABEL_SCORE = 0.5;
   var MEDIAPIPE_SOURCES = [
     {
       moduleUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/vision_bundle.mjs',
       wasmRootUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm'
     },
     {
-      moduleUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs',
-      wasmRootUrl: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
-    },
-    {
       moduleUrl: 'https://unpkg.com/@mediapipe/tasks-vision@0.10.21/vision_bundle.mjs',
       wasmRootUrl: 'https://unpkg.com/@mediapipe/tasks-vision@0.10.21/wasm'
-    },
-    {
-      moduleUrl: 'https://unpkg.com/@mediapipe/tasks-vision@latest/vision_bundle.mjs',
-      wasmRootUrl: 'https://unpkg.com/@mediapipe/tasks-vision@latest/wasm'
     }
   ];
   var selectedMediaPipeSource = null;
 
   var gestureRequirements = {
     'CLOSED_FIST_RIGHT_HAND': { gesture: 'Closed_Fist', hand: 'Right' },
+    'CLOSED_FIST_LEFT_HAND': { gesture: 'Closed_Fist', hand: 'Left' },
     'OPEN_PALM_RIGHT_HAND': { gesture: 'Open_Palm', hand: 'Right' },
+    'OPEN_PALM_LEFT_HAND': { gesture: 'Open_Palm', hand: 'Left' },
     'PEACE_SIGN_RIGHT_HAND': { gesture: 'Victory', hand: 'Right' },
+    'PEACE_SIGN_LEFT_HAND': { gesture: 'Victory', hand: 'Left' },
     'POINTING_UP_RIGHT_HAND': { gesture: 'Pointing_Up', hand: 'Right' },
-    'I_LOVE_YOU_RIGHT_HAND': { gesture: 'ILoveYou', hand: 'Right' },
+    'POINTING_UP_LEFT_HAND': { gesture: 'Pointing_Up', hand: 'Left' },
     'THUMBS_DOWN_RIGHT_HAND': { gesture: 'Thumb_Down', hand: 'Right' },
-    'THUMBS_UP_RIGHT_HAND': { gesture: 'Thumb_Up', hand: 'Right' }
+    'THUMBS_DOWN_LEFT_HAND': { gesture: 'Thumb_Down', hand: 'Left' },
+    'THUMBS_UP_RIGHT_HAND': { gesture: 'Thumb_Up', hand: 'Right' },
+    'THUMBS_UP_LEFT_HAND': { gesture: 'Thumb_Up', hand: 'Left' }
   };
 
   var gestureParam = (typeof window.__REQUIRED_GESTURE_CODE__ === 'string' && window.__REQUIRED_GESTURE_CODE__)
     ? window.__REQUIRED_GESTURE_CODE__.toUpperCase().replace(/-/g, '_')
     : (new URLSearchParams(window.location.search).get('gesture') || '').toUpperCase().replace(/-/g, '_');
-  var requirement = gestureRequirements[gestureParam] || gestureRequirements['THUMBS_UP_RIGHT_HAND'];
+  var localeCode = (typeof window.__LOCALE_CODE__ === 'string' && window.__LOCALE_CODE__)
+    ? window.__LOCALE_CODE__.toLowerCase()
+    : ((new URLSearchParams(window.location.search).get('locale') || 'en').toLowerCase());
+  var isRtlLocale = localeCode === 'he' || localeCode.indexOf('he-') === 0;
+  // Face-only mode (primary profile selfie): no hand gesture is required.
+  // Readiness gates purely on a single clear face inside the face oval.
+  // All face-only branches are guarded by isFaceOnlyMode so the gesture
+  // verification flow below behaves exactly as before.
+  var isFaceOnlyMode = (gestureParam === 'FACE_ONLY');
+  var requirement = isFaceOnlyMode ? { gesture: '', hand: null } : (gestureRequirements[gestureParam] || gestureRequirements['THUMBS_UP_RIGHT_HAND']);
+  // Instruction gate for primary selfies: the host app speaks the capture
+  // instructions aloud when the page opens and calls
+  // window.setFaceOnlyInstructionsReady() once they finish. Auto-capture
+  // stays disabled until then (plus FACE_ONLY_MIN_OPEN_MS), so the photo is
+  // never taken mid-sentence. Gesture verification is unaffected.
+  var faceOnlyInstructionsReady = !isFaceOnlyMode;
+  window.setFaceOnlyInstructionsReady = function() {
+    faceOnlyInstructionsReady = true;
+  };
   var requiredGesture = requirement.gesture;
   var requiredHand = requirement.hand || null;
-  var gestureLabel = (typeof window.__REQUIRED_GESTURE_LABEL__ === 'string' && window.__REQUIRED_GESTURE_LABEL__)
-    ? window.__REQUIRED_GESTURE_LABEL__
-    : requiredGesture;
+  var gestureSymbols = {
+    'CLOSED_FIST_RIGHT_HAND': '✊',
+    'CLOSED_FIST_LEFT_HAND': '✊',
+    'OPEN_PALM_RIGHT_HAND': '✋',
+    'OPEN_PALM_LEFT_HAND': '✋',
+    'PEACE_SIGN_RIGHT_HAND': '✌️',
+    'PEACE_SIGN_LEFT_HAND': '✌️',
+    'POINTING_UP_RIGHT_HAND': '☝️',
+    'POINTING_UP_LEFT_HAND': '☝️',
+    'THUMBS_DOWN_RIGHT_HAND': '👎',
+    'THUMBS_DOWN_LEFT_HAND': '👎',
+    'THUMBS_UP_RIGHT_HAND': '👍',
+    'THUMBS_UP_LEFT_HAND': '👍'
+  };
+   var gestureLabel = (typeof window.__REQUIRED_GESTURE_LABEL__ === 'string' && window.__REQUIRED_GESTURE_LABEL__)
+     ? window.__REQUIRED_GESTURE_LABEL__
+     : (new URLSearchParams(window.location.search).get('label') || requiredGesture);
+   var gestureDescription = (typeof window.__REQUIRED_GESTURE_DESCRIPTION__ === 'string' && window.__REQUIRED_GESTURE_DESCRIPTION__)
+     ? window.__REQUIRED_GESTURE_DESCRIPTION__
+     : (new URLSearchParams(window.location.search).get('description') || '');
+  document.documentElement.lang = localeCode || 'en';
+  document.documentElement.dir = isRtlLocale ? 'rtl' : 'ltr';
+  document.body.classList.toggle('rtl', isRtlLocale);
   document.title = gestureLabel;
 
+  var container = document.getElementById('container');
   var video = document.getElementById('video');
   var instruction = document.getElementById('instruction');
   var feedback = document.getElementById('feedback');
   var captureBtn = document.getElementById('captureBtn');
   var statusEl = document.getElementById('status');
+  var gestureDescriptionEl = document.getElementById('gestureDescription');
   var canvas = document.getElementById('canvas');
   var qualityCanvas = document.getElementById('qualityCanvas');
   var ctx = canvas.getContext('2d');
   var qctx = qualityCanvas.getContext('2d');
+  var bottomPanelEl = document.getElementById('bottomPanel');
   var faceRoiEl = document.getElementById('faceRoi');
   var gestureRoiEl = document.getElementById('gestureRoi');
   var progressBar = document.getElementById('progressBar');
+  var gestureExampleEmojiEl = document.getElementById('gestureExampleEmoji');
+  var checkFaceEl = document.getElementById('checkFace');
+  var checkHandEl = document.getElementById('checkHand');
+  var checkGestureEl = document.getElementById('checkGesture');
+  var checkFaceLabelEl = document.getElementById('checkFaceLabel');
+  var checkHandLabelEl = document.getElementById('checkHandLabel');
+  var checkGestureLabelEl = document.getElementById('checkGestureLabel');
+  if (gestureExampleEmojiEl) {
+    gestureExampleEmojiEl.textContent = gestureSymbols[gestureParam] || '🖐️';
+  }
+  if (isFaceOnlyMode) {
+    // Primary selfie: hide the gesture ROI, gesture example, and the
+    // hand/gesture checklist rows. The face oval + face checklist row stay.
+    try {
+      var faceOnlyHidden = ['gestureRoi', 'gestureExample', 'checkHand', 'checkGesture'];
+      for (var hi = 0; hi < faceOnlyHidden.length; hi++) {
+        var hel = document.getElementById(faceOnlyHidden[hi]);
+        if (hel) hel.classList.add('hidden');
+      }
+    } catch (_) {}
+  }
 
   var gestureRecognizer = null;
   var faceLandmarker = null;
@@ -150,6 +332,37 @@
   var capturePlanned = false;
   var previousFaceCenter = null;
   var frameQualityCooldown = 0;
+  // Adaptive-performance and diagnostics state (see markSlow/tick).
+  var tickInProgress = false;
+  var lastGestureTs = 0;
+  var lastFaceTs = 0;
+  var inferMsAvg = 0;
+  var slowDevice = false;
+  var slowStreak = 0;
+  var stableFrames = 0;
+  var lastStuckReportAt = 0;
+  var firstTickAt = 0;
+  // Wall-clock origin for capture-timing telemetry (boot → ready → gate →
+  // selection → photo posted). Reported via ValidationLog; no behaviour change.
+  var bootStart = Date.now();
+  var flipFrames = 0;
+  var booted = false;
+  var debugOverlayEl = null;
+  // Host-measured bottom inset wins over the env() CSS guess (see above).
+  try {
+    var hostInset = window.__BOTTOM_INSET_PX__;
+    if (typeof hostInset === 'number' && isFinite(hostInset)) {
+      document.documentElement.style.setProperty(
+        '--capture-bottom-inset',
+        Math.max(8, Math.round(hostInset)) + 'px',
+      );
+    }
+  } catch (_) {}
+  var debugEnabled = (typeof window.__CAPTURE_DEBUG__ !== 'undefined' && !!window.__CAPTURE_DEBUG__ &&
+      window.__CAPTURE_DEBUG__ !== '__CAPTURE_DEBUG_JSON__') ||
+    (function() {
+      try { return new URLSearchParams(window.location.search).get('debug') === '1'; } catch (_) { return false; }
+    })();
   if (requiredHand === 'Left') {
     gestureRoiEl.classList.add('left');
   } else {
@@ -157,6 +370,13 @@
   }
 
   window.sendVerificationPhoto = function(base64) {
+    try {
+      reportLog('captureTiming', {
+        stage: 'photoPosted',
+        bytes: (base64 || '').length,
+        tMs: Date.now() - bootStart
+      }, true);
+    } catch (_) {}
     if (window.PhotoCapture && typeof window.PhotoCapture.postMessage === 'function') {
       window.PhotoCapture.postMessage(base64);
     } else if (window.opener) {
@@ -166,6 +386,77 @@
       );
     }
   };
+
+  // Bridge for diagnostics: forwards structured events to the host app
+  // (ValidationLog JS channel on mobile, opener postMessage on web popup)
+  // and falls back to the console. `forward` controls opener forwarding so
+  // high-frequency metrics don't spam the popup channel.
+  function reportLog(type, data, forward) {
+    var payload = null;
+    try {
+      payload = JSON.stringify({ type: type, ts: Date.now(), gesture: gestureParam, data: data || {} });
+    } catch (_) { return; }
+    try {
+      if (window.ValidationLog && typeof window.ValidationLog.postMessage === 'function') {
+        window.ValidationLog.postMessage(payload);
+      }
+    } catch (_) {}
+    try {
+      if (forward && window.opener && !window.PhotoCapture) {
+        window.opener.postMessage(
+          JSON.stringify({ type: 'verificationCaptureLog', data: payload }),
+          window.location.origin,
+        );
+      }
+    } catch (_) {}
+    try {
+      if (type === 'error' || type === 'stuck') {
+        console.error('[verify-capture:' + type + ']', payload);
+      } else if (debugEnabled) {
+        console.log('[verify-capture:' + type + ']', payload);
+      }
+    } catch (_) {}
+  }
+
+  function showFatalError(title, detail) {
+    try {
+      var titleEl = document.getElementById('errorTitle');
+      var detailEl = document.getElementById('errorDetail');
+      var retryEl = document.getElementById('retryBtn');
+      var cardEl = document.getElementById('errorCard');
+      if (titleEl) titleEl.textContent = title;
+      if (detailEl) detailEl.textContent = detail || '';
+      if (retryEl) retryEl.textContent = t('verificationCaptureRetry', 'Retry');
+      if (cardEl) cardEl.classList.remove('hidden');
+    } catch (_) {}
+    try { setStatus(title); } catch (_) {}
+    var shortDetail = '';
+    try { shortDetail = String(detail || '').slice(0, 500); } catch (_) {}
+    reportLog('error', { stage: 'boot', title: title, detail: shortDetail }, true);
+  }
+
+  function hideFatalError() {
+    try {
+      var cardEl = document.getElementById('errorCard');
+      if (cardEl) cardEl.classList.add('hidden');
+    } catch (_) {}
+  }
+
+  window.__captureRetry = function() {
+    hideFatalError();
+    boot();
+  };
+
+  function updateDebugOverlay(info) {
+    if (!debugEnabled) return;
+    try {
+      if (!debugOverlayEl) {
+        debugOverlayEl = document.getElementById('debugOverlay');
+        if (debugOverlayEl) debugOverlayEl.classList.remove('hidden');
+      }
+      if (debugOverlayEl) debugOverlayEl.textContent = info;
+    } catch (_) {}
+  }
 
   function setInstruction(text) {
     instruction.textContent = text;
@@ -197,6 +488,60 @@
 
   function setStatus(text) {
     statusEl.textContent = text;
+    emitVoiceStatus(text);
+  }
+
+  // Voice guidance bridge: when the on-screen status maps to one of the
+  // whitelisted coaching keys, emit a 'voice' event so the host app can speak
+  // it in the user's language. Uses a reverse lookup from the localized text
+  // back to its key so status call sites don't need to change. Suppressed for
+  // repeats and rapid transitions; composed strings (e.g. status + countdown)
+  // intentionally don't match — their base status is already voiced.
+  var voiceStatusKeys = {
+    'verificationCaptureStatusShowGesture': 1,
+    'verificationCaptureStatusShowFace': 1,
+    'verificationCaptureStatusAlignFace': 1,
+    'verificationCaptureStatusPositionHand': 1,
+    'verificationCaptureStatusHoldSteady': 1,
+    'verificationCaptureStatusCapturingBestFrame': 1,
+    'verificationCaptureStatusGestureDetected': 1,
+    'verificationCaptureStatusUseCorrectHand': 1
+  };
+  var statusKeyByText = {};
+  (function() {
+    try {
+      Object.keys(strings || {}).forEach(function(k) {
+        if (voiceStatusKeys[k] && typeof strings[k] === 'string' && strings[k].trim().length) {
+          statusKeyByText[strings[k]] = k;
+        }
+      });
+    } catch (_) {}
+  })();
+  var lastVoiceStatusTs = 0;
+  var voiceKeyLastTs = {};
+
+  function emitVoiceStatus(text) {
+    try {
+      var key = statusKeyByText[text];
+      if (!key) return;
+      var now = Date.now();
+      // Global rate limit (one line at a time) plus a per-key cooldown so
+      // rapidly alternating statuses (e.g. face drifting in/out of the
+      // guide) can't chatter.
+      if (now - lastVoiceStatusTs < 2000) return;
+      if (voiceKeyLastTs[key] && now - voiceKeyLastTs[key] < 8000) return;
+      lastVoiceStatusTs = now;
+      voiceKeyLastTs[key] = now;
+      // forward=true so the event also reaches the web popup host (the
+      // ValidationLog JS channel only exists inside the mobile WebView).
+      reportLog('voice', { key: key }, true);
+    } catch (_) {}
+  }
+
+  function setChecklistState(faceReady, handReady, gestureReady) {
+    if (checkFaceEl) checkFaceEl.classList.toggle('complete', !!faceReady);
+    if (checkHandEl) checkHandEl.classList.toggle('complete', !!handReady);
+    if (checkGestureEl) checkGestureEl.classList.toggle('complete', !!gestureReady);
   }
 
   function clamp(v, min, max) {
@@ -208,15 +553,54 @@
     progressBar.style.width = pct + '%';
   }
 
-  var gestureInstruction = t('verificationCaptureInstruction', 'Show: {gesture}').replace('{gesture}', gestureLabel);
-  setInstruction(gestureInstruction);
+  if (gestureDescriptionEl) {
+    gestureDescriptionEl.textContent = gestureDescription || t('verificationCaptureStatusPositionHand', 'Place your hand in the gesture area and show the gesture');
+  }
+  if (checkFaceLabelEl) {
+    checkFaceLabelEl.textContent = t('verificationCaptureChecklistFaceVisible', 'Face visible');
+  }
+  if (checkHandLabelEl) {
+    checkHandLabelEl.textContent = t('verificationCaptureChecklistHandPositioned', 'Hand in position');
+  }
+  if (checkGestureLabelEl) {
+    checkGestureLabelEl.textContent = t('verificationCaptureChecklistGestureRecognized', 'Gesture recognized');
+  }
+  setChecklistState(false, false, false);
+  setInstruction(gestureLabel);
   setStatus(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
+
+  function canonicalGestureName(name) {
+    if (!name) return '';
+    var normalized = String(name).trim().replace(/[\s\-]+/g, '_').replace(/([a-z])([A-Z])/g, '$1_$2').toUpperCase();
+    var aliases = {
+      'CLOSEDFIST': 'CLOSED_FIST',
+      'CLOSED_FIST': 'CLOSED_FIST',
+      'OPENPALM': 'OPEN_PALM',
+      'OPEN_PALM': 'OPEN_PALM',
+      'THUMBUP': 'THUMB_UP',
+      'THUMB_UP': 'THUMB_UP',
+      'THUMBSUP': 'THUMB_UP',
+      'THUMBS_UP': 'THUMB_UP',
+      'THUMBDOWN': 'THUMB_DOWN',
+      'THUMB_DOWN': 'THUMB_DOWN',
+      'THUMBSDOWN': 'THUMB_DOWN',
+      'THUMBS_DOWN': 'THUMB_DOWN',
+      'POINTINGUP': 'POINTING_UP',
+      'POINTING_UP': 'POINTING_UP',
+      'PEACE': 'VICTORY',
+      'VICTORY': 'VICTORY',
+      'ILOVEYOU': 'I_LOVE_YOU',
+      'I_LOVE_YOU': 'I_LOVE_YOU',
+      'I_LOVEYOU': 'I_LOVE_YOU'
+    };
+    return aliases[normalized] || normalized;
+  }
 
   function detectGesture(results) {
     if (!results || !results.gestures || results.gestures.length === 0) return null;
     var g = results.gestures[0];
     if (!g || !g.length) return null;
-    return g[0].categoryName;
+    return canonicalGestureName(g[0].categoryName || g[0].displayName || '');
   }
 
   function detectGestureScore(results) {
@@ -308,14 +692,17 @@
         if (p.y > maxY) maxY = p.y;
       }
 
-      var margin = 0.05;
+      // Operates in raw detector space (margins are symmetric, so mirroring
+      // is irrelevant here). Thresholds are intentionally lenient across
+      // front-camera FOVs; precise on-screen alignment is scored separately.
+      var margin = FACE_EDGE_MARGIN;
       if (minX < margin || minY < margin || maxX > (1 - margin) || maxY > (1 - margin)) {
         return false;
       }
 
       var w = maxX - minX;
       var h = maxY - minY;
-      if (w < 0.15 || h < 0.15) {
+      if (w < FACE_MIN_SIZE || h < FACE_MIN_SIZE) {
         return false;
       }
 
@@ -345,6 +732,54 @@
       if (p.x > maxX) maxX = p.x;
       if (p.y > maxY) maxY = p.y;
     }
+    return mapDetectorBox({
+      minX: minX,
+      minY: minY,
+      maxX: maxX,
+      maxY: maxY,
+      width: maxX - minX,
+      height: maxY - minY,
+      cx: (minX + maxX) / 2,
+      cy: (minY + maxY) / 2
+    });
+  }
+
+  // Maps a detector-space point (raw sensor frame, 0..1) into display space
+  // (the mirrored, cover-cropped preview the user actually sees and that the
+  // guide overlays are positioned in).
+  function detectorToDisplayPoint(p) {
+    if (!p) return null;
+    var dx = p.x;
+    var dy = p.y;
+    var crop = getCoverCrop();
+    if (crop) {
+      dx = (p.x * crop.vw - crop.ox) / crop.visW;
+      dy = (p.y * crop.vh - crop.oy) / crop.visH;
+    }
+    if (MIRRORED_PREVIEW) dx = 1 - dx;
+    return { x: dx, y: dy };
+  }
+
+  function mapDetectorBox(box) {
+    if (!box) return null;
+    var crop = getCoverCrop();
+    var sx = 1, sy = 1, oxN = 0, oyN = 0;
+    if (crop) {
+      sx = crop.vw / crop.visW;
+      sy = crop.vh / crop.visH;
+      oxN = crop.ox / crop.visW;
+      oyN = crop.oy / crop.visH;
+    }
+    var minX = box.minX * sx - oxN;
+    var maxX = box.maxX * sx - oxN;
+    var minY = box.minY * sy - oyN;
+    var maxY = box.maxY * sy - oyN;
+    if (MIRRORED_PREVIEW) {
+      var mirroredMinX = 1 - maxX;
+      var mirroredMaxX = 1 - minX;
+      minX = mirroredMinX;
+      maxX = mirroredMaxX;
+    }
     return {
       minX: minX,
       minY: minY,
@@ -355,6 +790,146 @@
       cx: (minX + maxX) / 2,
       cy: (minY + maxY) / 2
     };
+  }
+
+  // Visible region of the sensor frame under `object-fit: cover`, in sensor
+  // pixels. The preview element scales the frame with
+  // scale = max(cw/vw, ch/vh) and centers it, cropping the overflow.
+  function getCoverCrop() {
+    try {
+      var vw = video.videoWidth || 0;
+      var vh = video.videoHeight || 0;
+      if (!vw || !vh || !container) return null;
+      var rect = container.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      var scale = Math.max(rect.width / vw, rect.height / vh);
+      if (!scale) return null;
+      var visW = rect.width / scale;
+      var visH = rect.height / scale;
+      return {
+        vw: vw,
+        vh: vh,
+        visW: visW,
+        visH: visH,
+        ox: (vw - visW) / 2,
+        oy: (vh - visH) / 2
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function oppositeHand(h) {
+    if (h === 'Right') return 'Left';
+    if (h === 'Left') return 'Right';
+    return null;
+  }
+
+  // Display-space hand chirality: which side of the wrist->middle-finger axis
+  // the thumb falls on, measured in the mirrored preview coordinates the user
+  // sees (so it is independent of device/WebView sensor mirroring). Returns
+  // { sign: -1|0|+1, magnitude: number, determinate: bool }. The signed-side
+  // test is rotation-invariant; only palm-vs-back presentation flips it, and
+  // that case is resolved by decideHandVerdict (never by blocking).
+  function computeChirality(handLandmarks, gestureCanonical) {
+    var none = { sign: 0, magnitude: 0, determinate: false };
+    try {
+      if (!handLandmarks || handLandmarks.length < 21) return none;
+      var wrist = detectorToDisplayPoint(handLandmarks[0]);
+      var middleMcp = detectorToDisplayPoint(handLandmarks[9]);
+      var thumbTip = detectorToDisplayPoint(handLandmarks[4]);
+      if (!wrist || !middleMcp || !thumbTip) return none;
+      var ax = middleMcp.x - wrist.x;
+      var ay = middleMcp.y - wrist.y;
+      var axisLenSq = ax * ax + ay * ay;
+      if (!(axisLenSq > 0)) return none;
+      var axisLen = Math.sqrt(axisLenSq);
+      if (axisLen < CHIRALITY_MIN_AXIS_LEN) return none;
+      var cross = ax * (thumbTip.y - wrist.y) - ay * (thumbTip.x - wrist.x);
+      var magnitude = Math.abs(cross) / axisLenSq;
+      var floor = CHIRALITY_MIN_MAGNITUDE;
+      try {
+        if (gestureCanonical === 'THUMB_UP' || gestureCanonical === 'THUMB_DOWN') {
+          floor = CHIRALITY_MIN_MAGNITUDE_THUMBS;
+        }
+      } catch (_) {}
+      if (!(magnitude >= floor)) return { sign: 0, magnitude: magnitude, determinate: false };
+      return { sign: cross < 0 ? -1 : 1, magnitude: magnitude, determinate: true };
+    } catch (_) {
+      return none;
+    }
+  }
+
+  // Dual-cue handedness verdict. Combines the MediaPipe label (raw sensor
+  // space, pipeline-mirror-dependent) with display-space chirality
+  // (device-independent). Returns { verdict: 'pass'|'wrong'|'unclear',
+  // score, hintWrongHand, flipEvidence }.
+  //  - 'pass': gate opens (matchesHand = true).
+  //  - 'wrong': BOTH cues confidently indicate the opposite hand -> the gate
+  //    hard-blocks and the UI shows "use correct hand". This is the only
+  //    state that can block on handedness, so a compliant user is never
+  //    rejected by a single faulty cue.
+  //  - 'unclear': cues conflict or are weak -> tolerant (gate opens, reduced
+  //    score), exactly the previous behaviour, plus telemetry.
+  function decideHandVerdict(o) {
+    var noHandScore = (o && o.hasHand) ? 0.35 : 0;
+    var fallback = { verdict: 'unclear', score: noHandScore, hintWrongHand: false, flipEvidence: false };
+    try {
+      var requiredHand = o.requiredHand;
+      if (!requiredHand) {
+        return { verdict: 'pass', score: 1, hintWrongHand: false, flipEvidence: false };
+      }
+      var label = o.label || null;
+      var labelScore = clamp(Number(o.labelScore || 0), 0, 1);
+      var ch = o.chirality || { sign: 0, magnitude: 0, determinate: false };
+      var prior = CHIRALITY_SIGN_FOR_RIGHT[o.gestureCanonical] || -1;
+      var expectedSign = requiredHand === 'Right' ? prior : -prior;
+      var agrees = !!(ch.determinate && ch.sign === expectedSign);
+      var opposes = !!(ch.determinate && ch.sign === -expectedSign);
+      var strictLabel = label === requiredHand;
+      var mirrorLabel = !!label && label === oppositeHand(requiredHand);
+      var strongChirality = !!(ch.determinate && ch.magnitude >= CHIRALITY_MIN_MAGNITUDE * CHIRALITY_STRONG_MULT);
+
+      if (agrees && strictLabel) {
+        // Both cues confirm the requested hand: full confidence.
+        return { verdict: 'pass', score: Math.max(labelScore, 0.5), hintWrongHand: false, flipEvidence: false };
+      }
+      if (agrees && mirrorLabel) {
+        // Flipped pipeline, compliant user: label says the opposite hand but
+        // geometry confirms the requested one. Pass and record the evidence.
+        return { verdict: 'pass', score: Math.max(0.5, labelScore * 0.7), hintWrongHand: false, flipEvidence: true };
+      }
+      if (agrees && !label) {
+        return { verdict: 'pass', score: 0.7, hintWrongHand: false, flipEvidence: false };
+      }
+      if (opposes && mirrorLabel && labelScore >= WRONG_HAND_MIN_LABEL_SCORE && strongChirality) {
+        // Both cues confidently agree it is the opposite hand (near-impossible
+        // for a compliant user: chirality is pipeline-independent, so this
+        // fires only when the user truly shows the wrong hand).
+        return { verdict: 'wrong', score: 0, hintWrongHand: true, flipEvidence: false };
+      }
+      if (opposes && mirrorLabel) {
+        return { verdict: 'unclear', score: 0.3, hintWrongHand: true, flipEvidence: false };
+      }
+      if (opposes && !label) {
+        return { verdict: 'unclear', score: 0.3, hintWrongHand: true, flipEvidence: false };
+      }
+      if (opposes && strictLabel) {
+        // Pose-vs-label conflict (e.g. back-of-hand presentation flips the
+        // geometric sign while the label is right). Trust the label: pass
+        // without nagging about the hand.
+        return { verdict: 'unclear', score: 0.35, hintWrongHand: false, flipEvidence: false };
+      }
+      if (!ch.determinate && strictLabel) {
+        return { verdict: 'pass', score: labelScore, hintWrongHand: false, flipEvidence: false };
+      }
+      if (!ch.determinate && mirrorLabel) {
+        return { verdict: 'unclear', score: 0.35, hintWrongHand: false, flipEvidence: false };
+      }
+      return fallback;
+    } catch (_) {
+      return fallback;
+    }
   }
 
   function getHandCenter(handLandmarks) {
@@ -370,7 +945,110 @@
       c++;
     }
     if (!c) return null;
-    return { x: sx / c, y: sy / c };
+    return detectorToDisplayPoint({ x: sx / c, y: sy / c });
+  }
+
+  function getDefaultGestureRoiTarget() {
+    // Orientation must follow the visible screen layout (the guides are CSS),
+    // not the sensor frame, which is often landscape while the phone is held
+    // in portrait.
+    var isLandscape = false;
+    try {
+      if (container && container.clientWidth && container.clientHeight) {
+        isLandscape = container.clientWidth > container.clientHeight;
+      } else {
+        var width = video.videoWidth || window.innerWidth || 1;
+        var height = video.videoHeight || window.innerHeight || 1;
+        isLandscape = width > height;
+      }
+    } catch (_) {
+      isLandscape = false;
+    }
+    return {
+      cx: requiredHand === 'Left' ? (isLandscape ? 0.31 : 0.35) : (isLandscape ? 0.69 : 0.65),
+      cy: isLandscape ? 0.72 : 0.74,
+      width: isLandscape ? 0.32 : 0.4,
+      height: isLandscape ? 0.28 : 0.22
+    };
+  }
+
+  function getBottomPanelTopLimit() {
+    try {
+      if (!bottomPanelEl || !container) return 0.86;
+      var rect = bottomPanelEl.getBoundingClientRect();
+      var parentRect = container.getBoundingClientRect();
+      if (!rect.height || !parentRect.height) return 0.86;
+      return clamp((rect.top - parentRect.top) / parentRect.height, 0.58, 0.92);
+    } catch (_) {
+      return 0.86;
+    }
+  }
+
+  function setGestureRoiPose(faceBox) {
+    if (!faceBox) {
+      var defaultTarget = getDefaultGestureRoiTarget();
+      gestureRoiEl.style.left = (defaultTarget.cx * 100) + '%';
+      gestureRoiEl.style.top = (defaultTarget.cy * 100) + '%';
+      gestureRoiEl.style.width = (defaultTarget.width * 100) + '%';
+      gestureRoiEl.style.height = (defaultTarget.height * 100) + '%';
+      gestureRoiEl.style.right = 'auto';
+      gestureRoiEl.style.transform = 'translate(-50%, -50%)';
+      return;
+    }
+    var faceGuide = getNormalizedRect(faceRoiEl) || {
+      cx: 0.5,
+      cy: 0.375,
+      width: 0.6,
+      height: 0.49
+    };
+    var targetWidth = clamp(faceBox.width * 1.32, 0.43, 0.6);
+    var targetHeight = clamp(faceBox.height * 0.5, 0.22, 0.34);
+    var gap = 0.035;
+    var bottomLimit = getBottomPanelTopLimit() - 0.005;
+    var maxHeightThatFitsBelow = Math.max(
+      0.12,
+      (bottomLimit - (faceGuide.cy + (faceGuide.height / 2)) - gap) * 2
+    );
+    targetHeight = Math.min(targetHeight, maxHeightThatFitsBelow);
+    targetWidth = Math.min(targetWidth, 0.6);
+    var target = {
+      cx: clamp(
+        faceGuide.cx + (requiredHand === 'Left' ? -faceGuide.width * 0.2 : faceGuide.width * 0.2),
+        (targetWidth / 2) + 0.04,
+        1 - (targetWidth / 2) - 0.04
+      ),
+      cy: clamp(
+        faceGuide.cy + (faceGuide.height / 2) + (targetHeight / 2) + gap,
+        (targetHeight / 2) + 0.12,
+        bottomLimit - (targetHeight / 2)
+      ),
+      width: targetWidth,
+      height: targetHeight
+    };
+
+    gestureRoiEl.style.left = (target.cx * 100) + '%';
+    gestureRoiEl.style.top = (target.cy * 100) + '%';
+    gestureRoiEl.style.width = (target.width * 100) + '%';
+    gestureRoiEl.style.height = (target.height * 100) + '%';
+    gestureRoiEl.style.right = 'auto';
+    gestureRoiEl.style.transform = 'translate(-50%, -50%)';
+  }
+
+  function getNormalizedRect(el) {
+    try {
+      if (!el || !container) return null;
+      var rect = el.getBoundingClientRect();
+      var parentRect = container.getBoundingClientRect();
+      if (!rect.width || !rect.height || !parentRect.width || !parentRect.height) return null;
+      return {
+        cx: ((rect.left - parentRect.left) + (rect.width / 2)) / parentRect.width,
+        cy: ((rect.top - parentRect.top) + (rect.height / 2)) / parentRect.height,
+        width: rect.width / parentRect.width,
+        height: rect.height / parentRect.height
+      };
+    } catch (_) {
+      return null;
+    }
   }
 
   function computeFaceQuality(faceLandmarks) {
@@ -414,43 +1092,32 @@
   }
 
   function getLayoutTargets() {
-    var width = video.videoWidth || window.innerWidth || 1;
-    var height = video.videoHeight || window.innerHeight || 1;
-    var isLandscape = width > height;
-    if (isLandscape) {
-      return {
-        faceCx: 0.5,
-        faceCy: 0.33,
-        faceCenterXRange: 0.28,
-        faceCenterYRange: 0.33,
-        faceRoiXRange: 0.26,
-        faceRoiYRange: 0.3,
-        handRightX: 0.64,
-        handLeftX: 0.36,
-        handY: 0.74,
-        handXRange: 0.34,
-        handYRange: 0.38
-      };
-    }
+    var faceRect = getNormalizedRect(faceRoiEl) || {
+      cx: 0.5,
+      cy: 0.39,
+      width: 0.52,
+      height: 0.49
+    };
+    var gestureRect = getNormalizedRect(gestureRoiEl) || getDefaultGestureRoiTarget();
     return {
-      faceCx: 0.5,
-      faceCy: 0.34,
-      faceCenterXRange: 0.28,
-      faceCenterYRange: 0.33,
-      faceRoiXRange: 0.26,
-      faceRoiYRange: 0.3,
-      handRightX: 0.61,
-      handLeftX: 0.39,
-      handY: 0.75,
-      handXRange: 0.34,
-      handYRange: 0.38
+      faceCx: faceRect.cx,
+      faceCy: faceRect.cy,
+      faceCenterXRange: Math.max(faceRect.width * 0.32, 0.18),
+      faceCenterYRange: Math.max(faceRect.height * 0.3, 0.18),
+      faceRoiXRange: Math.max(faceRect.width * 0.52, 0.24),
+      faceRoiYRange: Math.max(faceRect.height * 0.52, 0.24),
+      handRightX: gestureRect.cx,
+      handLeftX: gestureRect.cx,
+      handY: gestureRect.cy,
+      handXRange: Math.max(gestureRect.width * 0.92, 0.34),
+      handYRange: Math.max(gestureRect.height * 0.96, 0.34)
     };
   }
 
   function computeImageQuality() {
     try {
       if (video.videoWidth <= 0 || video.videoHeight <= 0) return null;
-      var w = 160;
+      var w = slowDevice ? 120 : 160;
       var h = Math.round((video.videoHeight / video.videoWidth) * w);
       if (h < 90) h = 90;
       qualityCanvas.width = w;
@@ -491,13 +1158,21 @@
   }
 
   function snapshotToDataUrl() {
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    // Cap the snapshot resolution: some phones ignore the ideal constraint
+    // and return very large frames, which blocks the UI thread for seconds
+    // during toDataURL and can OOM low-memory devices.
+    var vw = video.videoWidth || 0;
+    var vh = video.videoHeight || 0;
+    var scale = 1;
+    var longest = Math.max(vw, vh);
+    if (longest > MAX_SNAPSHOT_DIM) scale = MAX_SNAPSHOT_DIM / longest;
+    canvas.width = Math.max(2, Math.round(vw * scale));
+    canvas.height = Math.max(2, Math.round(vh * scale));
     ctx.save();
     ctx.scale(-1, 1);
     ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
     ctx.restore();
-    return canvas.toDataURL('image/jpeg', 0.92);
+    return canvas.toDataURL('image/jpeg', slowDevice ? 0.85 : 0.92);
   }
 
   function updateBestFrame(now, e) {
@@ -583,12 +1258,37 @@
     var faceOk = fullFaceVisible && !faceObstructed;
     var faceQuality = facePresent ? computeFaceQuality(faceLandmarks) : { score: 0, box: null };
     var roiScores = computeRoiScores(faceQuality, handCenter);
+    // "Inside the green circle": the face-box center must be close to the
+    // oval center (not merely visible somewhere in the frame). The green
+    // oval lights up on this signal, and primary-selfie auto-capture
+    // requires it — a face at the frame edge can never trigger capture.
+    var faceInsideOval = !!facePresent && !!faceQuality.box && roiScores.faceRoiScore >= FACE_ROI_SCORE_MIN;
     var name = detectGesture(gestureResults);
     var hand = detectHandedness(gestureResults);
-    var gestureScore = (name === requiredGesture) ? detectGestureScore(gestureResults) : 0;
-    var handednessScore = !requiredHand ? 1 : ((hand === requiredHand) ? detectHandednessScore(gestureResults) : 0);
-    var matchesGesture = name === requiredGesture;
-    var matchesHand = !requiredHand || hand === requiredHand;
+    var requiredGestureCanonical = canonicalGestureName(requiredGesture);
+    var gestureScore = (name === requiredGestureCanonical) ? detectGestureScore(gestureResults) : 0;
+    // Dual-cue handedness enforcement: display-space chirality (independent of
+    // device sensor mirroring) cross-checked against the MediaPipe label (raw
+    // sensor space, mirror-state-dependent). Only a confident agreement of
+    // BOTH cues on the opposite hand blocks the gate ('wrong'); every other
+    // disagreement stays tolerant so a compliant user is never rejected by a
+    // single faulty cue. Server-side AI remains the final arbiter of the photo.
+    var chirality = computeChirality(handLandmarks, requiredGestureCanonical);
+    var handVerdict = decideHandVerdict({
+      requiredHand: requiredHand,
+      label: hand,
+      labelScore: detectHandednessScore(gestureResults),
+      chirality: chirality,
+      gestureCanonical: requiredGestureCanonical,
+      hasHand: !!handCenter
+    });
+    var handednessScore = handVerdict.score;
+    var matchesHandStrict = handVerdict.verdict === 'pass' && chirality.determinate && hand === requiredHand;
+    var matchesHandMirrored = !!hand && hand === oppositeHand(requiredHand);
+    var matchesHand = handVerdict.verdict !== 'wrong';
+    var matchesGesture = name === requiredGestureCanonical;
+    var handPlacementOk = !!handCenter && matchesHand && roiScores.handRoiScore >= HAND_ROI_MIN;
+    var gestureDetected = matchesGesture && matchesHand && gestureScore >= GESTURE_SCORE_MIN;
     var occlusionPenalty = faceObstructed ? 0.35 : 0;
     var facePresenceScore = facePresent ? 1 : 0;
     var faceQualityScore = faceOk ? faceQuality.score : 0;
@@ -600,87 +1300,220 @@
       (0.06 * roiScores.handRoiScore) -
       occlusionPenalty;
     frameScore = clamp(frameScore, 0, 1);
-    var gestureStrong = matchesGesture && matchesHand && gestureScore >= 0.58;
+    var gestureStrong = matchesGesture && matchesHand && gestureScore >= GESTURE_STRONG_MIN;
+    var gestureChecklistReady = matchesGesture && matchesHand && (handPlacementOk || gestureStrong);
+    if (isFaceOnlyMode) {
+      // No hand or gesture is required: gate purely on the face. Neutralize
+      // the gesture terms so the smoothing window, progress bar, checklist,
+      // and best-frame quality all work on face criteria alone.
+      gestureScore = 1;
+      gestureStrong = true;
+      handPlacementOk = true;
+      gestureDetected = true;
+      gestureChecklistReady = true;
+      frameScore = clamp(
+        (0.45 * facePresenceScore) +
+        (0.35 * faceQualityScore) +
+        (0.20 * roiScores.faceRoiScore) -
+        occlusionPenalty,
+        0, 1);
+    }
     return {
       faceOk: faceOk,
+      faceInsideOval: faceInsideOval,
       facePresent: facePresent,
       faceObstructed: faceObstructed,
       matchesGesture: matchesGesture,
       matchesHand: matchesHand,
+      matchesHandStrict: matchesHandStrict,
+      matchesHandMirrored: matchesHandMirrored,
+      handVerdict: handVerdict.verdict,
+      chiralitySign: chirality.sign,
+      chiralityMagnitude: Math.round(chirality.magnitude * 100) / 100,
+      chiralityOpposes: !!(chirality.determinate && chirality.sign !== (requiredHand === 'Right'
+        ? (CHIRALITY_SIGN_FOR_RIGHT[requiredGestureCanonical] || -1)
+        : -(CHIRALITY_SIGN_FOR_RIGHT[requiredGestureCanonical] || -1))),
+      hintWrongHand: handVerdict.hintWrongHand,
+      flipEvidence: handVerdict.flipEvidence,
+      handPlacementOk: handPlacementOk,
+      gestureDetected: gestureDetected,
+      gestureChecklistReady: gestureChecklistReady,
       hand: hand,
+      faceBox: faceQuality.box,
       gestureScore: gestureScore,
       faceQualityScore: faceQualityScore,
+      handRoiScore: roiScores.handRoiScore,
       frameScore: frameScore,
       gestureStrong: gestureStrong
     };
   }
 
-  function tick() {
-    if (!gestureRecognizer || !faceLandmarker || video.readyState < 2) return;
-    frameIndex++;
-    var now = Date.now();
+  function setTickRate(fps) {
     try {
+      if (tickTimer) clearInterval(tickTimer);
+    } catch (_) {}
+    tickTimer = setInterval(tick, 1000 / fps);
+  }
+
+  function markSlowDevice() {
+    if (slowDevice) return;
+    slowDevice = true;
+    FACE_STALE_MS = FACE_STALE_MS_SLOW;
+    READY_STABLE_MS = READY_STABLE_MS_SLOW;
+    setTickRate(FPS_SLOW);
+    reportLog('metrics', { event: 'slow-device', inferMsAvg: Math.round(inferMsAvg) });
+  }
+
+  function tick() {
+    // Guard against overlapping ticks: on slow devices inference can take
+    // longer than the interval, and re-entrant MediaPipe VIDEO calls throw.
+    if (tickInProgress) return;
+    if (!gestureRecognizer || !faceLandmarker || video.readyState < 2) return;
+    tickInProgress = true;
+    var now = Date.now();
+    if (!firstTickAt) firstTickAt = now;
+    var inferStart = 0;
+    try {
+      inferStart = performance.now();
+    } catch (_) {}
+    frameIndex++;
+    try {
+      // MediaPipe VIDEO mode requires strictly increasing timestamps per
+      // detector; wall-clock duplicates (coarse timers, throttled intervals)
+      // previously threw every frame on some devices.
+      if (now <= lastGestureTs) now = lastGestureTs + 1;
       if (frameIndex % 2 === 0) {
         try {
-          var faceResults = faceLandmarker.detectForVideo(video, now);
+          var faceTs = now <= lastFaceTs ? lastFaceTs + 1 : now;
+          var faceResults = faceLandmarker.detectForVideo(video, faceTs);
+          lastFaceTs = faceTs;
           var hasFace = !!(faceResults && faceResults.faceLandmarks && faceResults.faceLandmarks.length > 0);
           if (hasFace) {
             lastFaceSeenAt = now;
             lastFaceLandmarks = faceResults.faceLandmarks[0];
           }
-        } catch (_) {}
+        } catch (err) {
+          reportLog('warn', { stage: 'face', message: String((err && err.message) || err || '').slice(0, 200) });
+        }
       }
-      var gestureResults = gestureRecognizer.recognizeForVideo(video, now);
+      var gestureResults = null;
+      if (isFaceOnlyMode) {
+        // Face-only mode needs no hand tracking: skip gesture inference
+        // entirely (saves per-frame work on low-end devices).
+      } else try {
+        gestureResults = gestureRecognizer.recognizeForVideo(video, now);
+        lastGestureTs = now;
+      } catch (err) {
+        reportLog('warn', { stage: 'gesture', message: String((err && err.message) || err || '').slice(0, 200) });
+      }
       var facePresent = (now - lastFaceSeenAt) < FACE_STALE_MS && !!lastFaceLandmarks;
       var e = evaluateFrame(facePresent ? lastFaceLandmarks : null, gestureResults);
+      if (e.flipEvidence) flipFrames++;
+      if (!isFaceOnlyMode) {
+        setGestureRoiPose(e.faceBox);
+      }
       pushScore({ frameScore: e.frameScore, faceOk: e.faceOk, gestureStrong: e.gestureStrong });
       var summary = summarizeWindow();
       setProgress(summary.avg);
-      setRoiState(e.faceOk, e.gestureStrong);
+      var visualHandReady = e.handPlacementOk || e.gestureStrong;
+      setChecklistState(e.faceOk, visualHandReady, e.gestureChecklistReady);
+      // The green oval lights up only while the face is inside it in
+      // primary-selfie mode (not merely visible somewhere in the frame).
+      var faceRoiActive = isFaceOnlyMode ? (e.faceOk && e.faceInsideOval) : e.faceOk;
+      setRoiState(faceRoiActive, visualHandReady);
 
-      var passNow = shouldPass(summary);
-      if (passNow) {
-        if (!readySince) {
-          readySince = now;
+      // Primary selfies additionally require the face inside the oval; a
+      // face at the frame edge can satisfy faceOk but must never capture.
+      var faceGateOk = isFaceOnlyMode ? (e.faceOk && e.faceInsideOval) : e.faceOk;
+      var passNow = faceGateOk && visualHandReady && e.gestureChecklistReady;
+      // Hysteresis: the smoothed window can carry a single marginal frame so
+      // one jittery detection doesn't reset the whole hold-still progress.
+      // shouldPass was previously dead code; it now acts as the smoothing gate.
+      var windowPass = false;
+      try {
+        windowPass = shouldPass(summary) && faceGateOk && e.gestureChecklistReady;
+      } catch (_) {}
+      // Instruction gate: never count progress toward auto-capture while the
+      // spoken instructions are still playing (host signals readiness), nor
+      // before the minimum page-open time. Gesture flow is unaffected.
+      var instructionsReady = true;
+      try {
+        instructionsReady = !isFaceOnlyMode ||
+          (faceOnlyInstructionsReady && (now - bootStart) >= FACE_ONLY_MIN_OPEN_MS);
+      } catch (_) {}
+      var goodNow = (passNow || windowPass) && instructionsReady;
+      if (goodNow) {
+        stableFrames++;
+        if (!readySince) readySince = now;
+      } else {
+        // Forgive isolated bad frames instead of resetting to zero.
+        stableFrames = Math.max(0, stableFrames - 1);
+        if (stableFrames === 0) {
+          readySince = null;
+          capturePlanned = false;
+          captureSelectionStartedAt = null;
+          if (ready) {
+            ready = false;
+            setReady(false);
+          }
         }
-        var stableMs = now - readySince;
-        if (stableMs >= READY_STABLE_MS) {
-          if (!ready) {
-            ready = true;
-            setReady(true);
-            setStatus(t('verificationCaptureStatusHoldSteady', 'Great, hold steady...'));
-          }
-          if (!capturePlanned) {
-            capturePlanned = true;
-            captureSelectionStartedAt = now;
-            bestFrame = null;
-          }
-          if (!hasCaptured && !usingInputImage) {
-            updateBestFrame(now, e);
-            if ((now - captureSelectionStartedAt) >= CAPTURE_SELECTION_MS) {
-              setStatus(t('verificationCaptureStatusCapturingBestFrame', 'Capturing best frame...'));
-              triggerAutoCapture();
-              return;
-            }
-          } else if (!hasCaptured && usingInputImage) {
+      }
+      var stableMs = readySince ? now - readySince : 0;
+      var stableFramesNeed = isFaceOnlyMode ? STABLE_FRAMES_REQUIRED_FACE_ONLY : STABLE_FRAMES_REQUIRED;
+      var stableMsNeed = isFaceOnlyMode ? READY_STABLE_MS_FACE_ONLY : READY_STABLE_MS;
+      var selectionMsNeed = isFaceOnlyMode ? CAPTURE_SELECTION_MS_FACE_ONLY : CAPTURE_SELECTION_MS;
+      if (goodNow && stableFrames >= stableFramesNeed && stableMs >= stableMsNeed) {
+        if (!ready) {
+          ready = true;
+          setReady(true);
+          setStatus(t('verificationCaptureStatusHoldSteady', 'Great, hold steady...'));
+          try {
+            reportLog('captureTiming', { stage: 'gatePassed', tMs: Date.now() - bootStart }, true);
+          } catch (_) {}
+        }
+        if (!capturePlanned) {
+          capturePlanned = true;
+          captureSelectionStartedAt = now;
+          bestFrame = null;
+          try {
+            reportLog('captureTiming', { stage: 'selectionStarted', tMs: Date.now() - bootStart }, true);
+          } catch (_) {}
+        }
+        if (!hasCaptured && !usingInputImage) {
+          updateBestFrame(now, e);
+          if ((now - captureSelectionStartedAt) >= selectionMsNeed) {
+            setStatus(t('verificationCaptureStatusCapturingBestFrame', 'Capturing best frame...'));
+            tickInProgress = false;
             triggerAutoCapture();
             return;
           }
-        } else {
-          setStatus(t('verificationCaptureStatusHoldSteady', 'Great, hold steady...'));
+        } else if (!hasCaptured && usingInputImage) {
+          tickInProgress = false;
+          triggerAutoCapture();
+          return;
         }
-      } else {
-        readySince = null;
-        capturePlanned = false;
-        captureSelectionStartedAt = null;
-        if (ready) {
-          ready = false;
-          setReady(false);
-        }
+      } else if (goodNow) {
+        var countdown = Math.max(1, Math.ceil((stableMsNeed - stableMs) / 1000));
+        setStatus(t('verificationCaptureStatusHoldSteady', 'Great, hold steady...') + ' ' + countdown);
       }
 
       if (!ready) {
-        if (!e.faceOk) {
+        if (isFaceOnlyMode) {
+          // Primary selfie guidance: face framing only, no hand prompts.
+          // A visible face that is NOT inside the oval must keep hearing
+          // "center your face" — never "hold steady" — until it moves in.
+          if (!e.faceOk || !e.faceInsideOval) {
+            if (!e.facePresent) {
+              setStatus(t('verificationCaptureStatusAlignFace', 'Center your face inside the guide'));
+            } else if (e.faceObstructed) {
+              setStatus(t('verificationCaptureStatusShowFace', 'Make sure your face is visible'));
+            } else {
+              setStatus(t('verificationCaptureStatusAlignFace', 'Center your face inside the guide'));
+            }
+          } else {
+            setStatus(t('verificationCaptureStatusHoldSteady', 'Great, hold steady...'));
+          }
+        } else if (!e.faceOk) {
           if (!e.facePresent) {
             setStatus(t('verificationCaptureStatusAlignFace', 'Center your face inside the guide'));
           } else if (e.faceObstructed) {
@@ -688,7 +1521,7 @@
           } else {
             setStatus(t('verificationCaptureStatusAlignFace', 'Center your face inside the guide'));
           }
-        } else if (e.matchesGesture && requiredHand && e.hand && !e.matchesHand) {
+          } else if (e.matchesGesture && requiredHand && e.hand && (e.handVerdict === 'wrong' || e.hintWrongHand)) {
           var handKey = requiredHand === 'Right' ? 'verificationCaptureHandRight' : 'verificationCaptureHandLeft';
           var handLabel = t(handKey, requiredHand.toLowerCase());
           setStatus(
@@ -697,19 +1530,134 @@
               handLabel,
             ),
           );
-        } else if (e.matchesGesture && !e.gestureStrong) {
-          setStatus(t('verificationCaptureStatusHoldSteady', 'Great, hold steady...'));
+        } else if (!e.handPlacementOk) {
+          setStatus(t('verificationCaptureStatusPositionHand', 'Place your hand in the gesture area and show the gesture'));
         } else if (!e.matchesGesture) {
           setStatus(t('verificationCaptureStatusPositionHand', 'Place your hand in the gesture area and show the gesture'));
+        } else if (!e.gestureDetected) {
+          setStatus(t('verificationCaptureStatusHoldSteady', 'Great, hold steady...'));
         } else {
-          setStatus(t('verificationCaptureStatusShowGesture', 'Show the required gesture'));
+          setStatus(t('verificationCaptureStatusHoldSteady', 'Great, hold steady...'));
         }
       }
-    } catch (e) {}
+
+      // Adaptive performance: slow inference (software WASM, old WebView)
+      // drops to a lower frame rate with a longer face-stale window instead
+      // of stalling with stale landmarks and a frozen progress bar.
+      var inferMs = 0;
+      try {
+        inferMs = performance.now() - inferStart;
+      } catch (_) {}
+      inferMsAvg = inferMsAvg ? inferMsAvg * 0.8 + inferMs * 0.2 : inferMs;
+      if (!slowDevice) {
+        if (inferMsAvg > SLOW_INFER_MS) {
+          slowStreak++;
+          if (slowStreak >= 6) markSlowDevice();
+        } else {
+          slowStreak = 0;
+        }
+      }
+      if (frameIndex % 20 === 0) {
+        reportLog('metrics', {
+          fps: slowDevice ? FPS_SLOW : FPS,
+          inferMsAvg: Math.round(inferMsAvg),
+          frameScore: Math.round(e.frameScore * 100) / 100,
+          windowAvg: Math.round(summary.avg * 100) / 100,
+          faceOk: e.faceOk,
+          facePresent: e.facePresent,
+          obstructed: e.faceObstructed,
+          gesture: name0(e),
+          gestureScore: Math.round(e.gestureScore * 100) / 100,
+          hand: e.hand,
+          mirroredHand: e.matchesHandMirrored,
+          handVerdict: e.handVerdict,
+          chirality: e.chiralitySign,
+          chiralityMag: e.chiralityMagnitude,
+          flipFrames: flipFrames,
+          pipelineFlipped: flipFrames >= 8,
+          handRoi: Math.round(e.handRoiScore * 100) / 100,
+          stableFrames: stableFrames,
+          videoW: video.videoWidth || 0,
+          videoH: video.videoHeight || 0
+        });
+      }
+      // If the user has been compliant-looking for a while with no pass,
+      // send a diagnostics snapshot so support can see which gate is stuck.
+      if (!ready && now - firstTickAt > STUCK_REPORT_MS && now - lastStuckReportAt > 15000) {
+        lastStuckReportAt = now;
+        reportLog('stuck', {
+          windowAvg: Math.round(summary.avg * 100) / 100,
+          faceHitRate: Math.round(summary.faceHitRate * 100) / 100,
+          gestureHitRate: Math.round(summary.gestureHitRate * 100) / 100,
+          faceOk: e.faceOk,
+          facePresent: e.facePresent,
+          obstructed: e.faceObstructed,
+          faceQuality: Math.round(e.faceQualityScore * 100) / 100,
+          gestureScore: Math.round(e.gestureScore * 100) / 100,
+          hand: e.hand,
+          mirroredHand: e.matchesHandMirrored,
+          handVerdict: e.handVerdict,
+          chirality: e.chiralitySign,
+          chiralityMag: e.chiralityMagnitude,
+          flipFrames: flipFrames,
+          pipelineFlipped: flipFrames >= 8,
+          handRoi: Math.round(e.handRoiScore * 100) / 100,
+          handPlacementOk: e.handPlacementOk,
+          inferMsAvg: Math.round(inferMsAvg),
+          slowDevice: slowDevice,
+          videoW: video.videoWidth || 0,
+          videoH: video.videoHeight || 0
+        }, true);
+      }
+      try {
+        updateDebugOverlay(
+          'fps=' + (slowDevice ? FPS_SLOW : FPS) +
+          ' infer=' + Math.round(inferMsAvg) + 'ms' +
+          ' frame=' + frameIndex +
+          '\nface ok=' + e.faceOk + ' present=' + e.facePresent +
+          ' obstructed=' + e.faceObstructed +
+          ' q=' + Math.round(e.faceQualityScore * 100) / 100 +
+          '\ngesture score=' + Math.round(e.gestureScore * 100) / 100 +
+          ' hand=' + (e.hand || '-') +
+          (e.matchesHandMirrored ? ' (mirrored-label)' : '') +
+          ' verdict=' + e.handVerdict +
+          ' chir=' + (e.chiralitySign > 0 ? '+' : '') + e.chiralitySign +
+          '/' + e.chiralityMagnitude +
+          (flipFrames >= 8 ? ' FLIPPED' : '') +
+          ' roi=' + Math.round(e.handRoiScore * 100) / 100 +
+          '\nframeScore=' + Math.round(e.frameScore * 100) / 100 +
+          ' avg=' + Math.round(summary.avg * 100) / 100 +
+          ' stable=' + stableFrames +
+          '\nvideo=' + (video.videoWidth || 0) + 'x' + (video.videoHeight || 0) +
+          (slowDevice ? ' SLOW' : '')
+        );
+      } catch (_) {}
+      tickInProgress = false;
+    } catch (err) {
+      tickInProgress = false;
+      try {
+        reportLog('error', { stage: 'tick', message: String((err && err.message) || err || '').slice(0, 300) });
+      } catch (_) {}
+    }
+  }
+
+  function name0(e) {
+    try {
+      return e && e.matchesGesture ? requiredGesture : '';
+    } catch (_) {
+      return '';
+    }
   }
 
   function triggerAutoCapture() {
     if (hasCaptured) return;
+    try {
+      reportLog('captureTiming', {
+        stage: 'triggerAutoCapture',
+        tMs: Date.now() - bootStart,
+        selectionMs: captureSelectionStartedAt ? Date.now() - captureSelectionStartedAt : -1
+      }, true);
+    } catch (_) {}
     hasCaptured = true;
     try {
       captureBtn.disabled = true;
@@ -756,7 +1704,7 @@
   });
 
   function analyzeInputPhoto(vision) {
-    setInstruction(gestureInstruction);
+    setInstruction(gestureLabel);
     setStatus(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
 
     createResolverPromise(vision)
@@ -806,13 +1754,16 @@
           ? faceResults.faceLandmarks[0]
           : null;
         var e = evaluateFrame(faceLandmarks, gestureResults);
-        ready = e.faceOk && e.gestureStrong;
+        setGestureRoiPose(e.faceBox);
+        var visualHandReady = e.handPlacementOk || e.gestureStrong;
+        setChecklistState(e.faceOk, visualHandReady, e.gestureChecklistReady);
+        ready = e.faceOk && visualHandReady && e.gestureChecklistReady;
         setReady(ready);
-        setInstruction(gestureInstruction);
+        setInstruction(gestureLabel);
         if (!ready) {
           if (!e.faceOk) {
             setStatus(t('verificationCaptureStatusAlignFace', 'Center your face inside the guide'));
-          } else if (e.matchesGesture && requiredHand && e.hand && !e.matchesHand) {
+        } else if (e.matchesGesture && requiredHand && e.hand && (e.handVerdict === 'wrong' || e.hintWrongHand)) {
             var handKey = requiredHand === 'Right' ? 'verificationCaptureHandRight' : 'verificationCaptureHandLeft';
             var handLabel = t(handKey, requiredHand.toLowerCase());
             setStatus(
@@ -821,6 +1772,8 @@
                 handLabel,
               ),
             );
+          } else if (!e.handPlacementOk) {
+            setStatus(t('verificationCaptureStatusPositionHand', 'Place your hand in the gesture area and show the gesture'));
           } else if (!e.matchesGesture) {
             setStatus(t('verificationCaptureStatusShowGesture', 'Show the required gesture'));
           } else {
@@ -830,8 +1783,11 @@
           setStatus(t('verificationCaptureStatusGestureDetected', 'Gesture detected. Tap to continue'));
         }
       }).catch(function(err) {
-        setInstruction(t('verificationCaptureCameraOrModelError', 'Camera or model error: {error}').replace('{error}', (err && (err.message || err)) || 'Unknown error'));
-        console.error(err);
+        var msg = (err && (err.message || err)) || 'Unknown error';
+        showFatalError(
+          t('verificationCaptureCameraOrModelError', 'Camera or model error: {error}').replace('{error}', msg),
+          String(msg),
+        );
       });
   }
 
@@ -839,14 +1795,104 @@
     stream = cameraStream;
     video.srcObject = stream;
     video.muted = true;
-    var playPromise = null;
-    try {
-      playPromise = video.play();
-    } catch (_) {}
-    if (playPromise && typeof playPromise.then === 'function') {
-      return playPromise.catch(function() {});
-    }
-    return Promise.resolve();
+    video.autoplay = true;
+    video.playsInline = true;
+    try { video.setAttribute('playsinline', 'true'); } catch (_) {}
+    try { video.setAttribute('webkit-playsinline', 'true'); } catch (_) {}
+    return new Promise(function(resolve) {
+      var settled = false;
+      function finish() {
+        if (settled) return;
+        settled = true;
+        resolve();
+      }
+      function cleanup() {
+        video.removeEventListener('loadedmetadata', onVideoReadyEvent);
+        video.removeEventListener('canplay', onVideoReadyEvent);
+      }
+      function hasUsableFrame() {
+        return video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0;
+      }
+      function onVideoReadyEvent() {
+        if (hasUsableFrame()) {
+          cleanup();
+          finish();
+        }
+      }
+      video.addEventListener('loadedmetadata', onVideoReadyEvent, { once: true });
+      video.addEventListener('canplay', onVideoReadyEvent, { once: true });
+      if (hasUsableFrame()) {
+        cleanup();
+        finish();
+        return;
+      }
+      var playPromise = null;
+      try {
+        playPromise = video.play();
+      } catch (_) {}
+      if (playPromise && typeof playPromise.then === 'function') {
+        playPromise.then(function() {
+          var retries = 0;
+          (function waitForFrame() {
+            if (hasUsableFrame()) {
+              cleanup();
+              finish();
+              return;
+            }
+            retries++;
+            if (retries >= 20) {
+              cleanup();
+              finish();
+              return;
+            }
+            setTimeout(waitForFrame, 100);
+          })();
+        }).catch(function() {
+          cleanup();
+          finish();
+        });
+      }
+      setTimeout(function() {
+        cleanup();
+        finish();
+      }, 1500);
+    });
+  }
+
+  function importWithTimeout(url, ms) {
+    return new Promise(function(resolve, reject) {
+      var done = false;
+      var timer = setTimeout(function() {
+        if (!done) {
+          done = true;
+          reject(new Error('Timed out after ' + ms + 'ms loading ' + url));
+        }
+      }, ms);
+      try {
+        import(url).then(
+          function(mod) {
+            if (!done) {
+              done = true;
+              clearTimeout(timer);
+              resolve(mod);
+            }
+          },
+          function(err) {
+            if (!done) {
+              done = true;
+              clearTimeout(timer);
+              reject(err);
+            }
+          },
+        );
+      } catch (err) {
+        if (!done) {
+          done = true;
+          clearTimeout(timer);
+          reject(err);
+        }
+      }
+    });
   }
 
   function loadVisionModuleWithFallback() {
@@ -856,11 +1902,12 @@
         return Promise.reject(lastError || new Error('No MediaPipe source available'));
       }
       var source = MEDIAPIPE_SOURCES[index];
-      return import(source.moduleUrl).then(function(mod) {
+      return importWithTimeout(source.moduleUrl, MODEL_LOAD_TIMEOUT_MS).then(function(mod) {
         selectedMediaPipeSource = source;
         return mod.default || mod;
       }).catch(function(err) {
         lastError = err;
+        reportLog('warn', { stage: 'cdn', source: source.moduleUrl, message: String((err && err.message) || err || '').slice(0, 200) });
         return tryAt(index + 1);
       });
     }
@@ -879,7 +1926,8 @@
       analyzeInputPhoto(vision);
       return;
     }
-    setInstruction(gestureInstruction);
+    setGestureRoiPose(null);
+    setInstruction(gestureLabel);
     setStatus(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
 
     var resolverPromise = createResolverPromise(vision);
@@ -919,21 +1967,87 @@
     }).then(function(recognizer) {
       gestureRecognizer = recognizer[0];
       faceLandmarker = recognizer[1];
-      setInstruction(gestureInstruction);
-      setStatus(t('verificationCaptureStatusShowGesture', 'Show the required gesture'));
-      tickTimer = setInterval(tick, 1000 / FPS);
+      setInstruction(gestureLabel);
+      setStatus(isFaceOnlyMode
+        ? t('verificationCaptureStatusAlignFace', 'Center your face inside the guide')
+        : t('verificationCaptureStatusShowGesture', 'Show the required gesture'));
+      reportLog('ready', {
+        source: selectedMediaPipeSource ? selectedMediaPipeSource.moduleUrl : null,
+        videoW: video.videoWidth || 0,
+        videoH: video.videoHeight || 0,
+        bootMs: Date.now() - bootStart
+      });
+      setTickRate(slowDevice ? FPS_SLOW : FPS);
     }).catch(function(err) {
-      setInstruction(t('verificationCaptureCameraOrModelError', 'Camera or model error: {error}').replace('{error}', (err && (err.message || err)) || 'Unknown error'));
-      console.error(err);
+      var msg = (err && (err.message || err)) || 'Unknown error';
+      var cameraDenied = false;
+      try {
+        cameraDenied = /denied|notallowed|permission/i.test(String(msg));
+      } catch (_) {}
+      showFatalError(
+        cameraDenied
+          ? t('verificationCaptureCameraPermissionDenied', 'Camera permission denied. Please allow camera access and retry.')
+          : t('verificationCaptureCameraOrModelError', 'Camera or model error: {error}').replace('{error}', msg),
+        String(msg),
+      );
     });
   }
 
-  loadVisionModuleWithFallback().then(function(vision) {
-    run(vision);
-  }).catch(function(err) {
-    setInstruction(t('verificationCaptureFailedToLoad', 'Failed to load MediaPipe: {error}').replace('{error}', (err && (err.message || err)) || 'Unknown error'));
-    console.error(err);
-  });
+  function boot() {
+    if (booted) {
+      // Re-entry via Retry: reset per-session detection state.
+      try {
+        if (tickTimer) {
+          clearInterval(tickTimer);
+          tickTimer = null;
+        }
+      } catch (_) {}
+      gestureRecognizer = null;
+      faceLandmarker = null;
+      lastFaceSeenAt = 0;
+      lastFaceLandmarks = null;
+      ready = false;
+      hasCaptured = false;
+      scoreWindow = [];
+      readySince = null;
+      captureSelectionStartedAt = null;
+      bestFrame = null;
+      capturePlanned = false;
+      previousFaceCenter = null;
+      stableFrames = 0;
+      slowStreak = 0;
+      firstTickAt = 0;
+      lastStuckReportAt = 0;
+      tickInProgress = false;
+    }
+    booted = true;
+    hideFatalError();
+    setGestureRoiPose(null);
+    setInstruction(gestureLabel);
+    setStatus(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
+    loadVisionModuleWithFallback().then(function(vision) {
+      run(vision);
+    }).catch(function(err) {
+      var msg = (err && (err.message || err)) || 'Unknown error';
+      showFatalError(
+        t('verificationCaptureFailedToLoad', 'Failed to load: {error}').replace('{error}', msg),
+        String(msg),
+      );
+    });
+  }
+
+  try {
+    var retryBtnEl = document.getElementById('retryBtn');
+    if (retryBtnEl) {
+      retryBtnEl.addEventListener('click', function() {
+        try {
+          window.__captureRetry();
+        } catch (_) {}
+      });
+    }
+  } catch (_) {}
+
+  boot();
 })();
   </script>
 </body>

@@ -1,0 +1,23 @@
+INSERT INTO public.translations (locale, key, value) VALUES
+  ('en', 'eventAttendeeCountIncludingYou', '{count} attending, including you'),
+  ('en', 'eventLeave', 'Leave event'),
+  ('en', 'eventLeaveConfirmBody', 'This removes only your MatchMe attendance and event matches. Other attendees keep the event.'),
+  ('en', 'eventLeaveConfirmTitle', 'Leave this event?'),
+  ('en', 'eventLeft', 'You left the event'),
+  ('en', 'eventMatchedAttendeesOnly', 'Only your event matches are shown—not the full attendee list.'),
+  ('en', 'eventRsvpAttending', 'You’re listed as attending on MatchMe'),
+  ('es', 'eventAttendeeCountIncludingYou', '{count} asistentes, incluido tú'),
+  ('es', 'eventLeave', 'Salir del evento'),
+  ('es', 'eventLeaveConfirmBody', 'Esto solo elimina tu asistencia y tus coincidencias del evento en MatchMe. Los demás asistentes conservan el evento.'),
+  ('es', 'eventLeaveConfirmTitle', '¿Salir de este evento?'),
+  ('es', 'eventLeft', 'Saliste del evento'),
+  ('es', 'eventMatchedAttendeesOnly', 'Solo se muestran tus coincidencias del evento, no la lista completa de asistentes.'),
+  ('es', 'eventRsvpAttending', 'Figuras como asistente en MatchMe'),
+  ('he', 'eventAttendeeCountIncludingYou', '{count} משתתפים, כולל אותך'),
+  ('he', 'eventLeave', 'עזיבת האירוע'),
+  ('he', 'eventLeaveConfirmBody', 'פעולה זו תסיר רק את ההשתתפות שלך ואת ההתאמות האירוע שלך ב‑MatchMe. משתתפים אחרים ימשיכו לקבל את האירוע.'),
+  ('he', 'eventLeaveConfirmTitle', 'לעזוב את האירוע?'),
+  ('he', 'eventLeft', 'עזבת את האירוע'),
+  ('he', 'eventMatchedAttendeesOnly', 'מוצגות רק ההתאמות האירוע שלך — לא רשימת המשתתפים המלאה.'),
+  ('he', 'eventRsvpAttending', 'את/ה מפורט/ת כמשתתף/ת באירוע ב‑MatchMe')
+ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;

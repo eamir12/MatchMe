@@ -1,17 +1,20 @@
 // lib/main.dart
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:ui';
 import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:google_sign_in/google_sign_in.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:app_links/app_links.dart';
 import 'package:matchme/firebase_options.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/foundation.dart'
@@ -26,42 +29,82 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:matchme/providers/auth_provider.dart';
+import 'package:matchme/providers/app_config_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/theme_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/visibility_provider.dart';
+import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/utils/resume_diagnostics.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/theme/semantic_colors.dart';
+import 'package:matchme/theme/app_theme_tokens.dart';
 import 'package:matchme/screens/auth/auth_screen.dart';
 import 'package:matchme/screens/auth/profile_check_screen.dart';
+import 'package:matchme/screens/settings/notifications_settings_screen.dart';
+import 'package:matchme/screens/notifications/notification_inbox_screen.dart';
+import 'package:matchme/screens/settings/matching_settings_screen.dart';
+import 'package:matchme/screens/settings/security_center_screen.dart';
+import 'package:matchme/screens/settings/settings_screen.dart';
+import 'package:matchme/screens/subscription/subscription_payment_screen.dart';
+import 'package:matchme/services/secure_local_storage.dart';
 import 'package:matchme/services/outbox_sync_service.dart';
+import 'package:matchme/services/runtime_supabase_config.dart';
+import 'package:matchme/services/sensitive_session_store.dart';
+import 'package:matchme/services/auth_transition_guard.dart';
 import 'package:matchme/services/background_service.dart';
 import 'package:matchme/services/web_notification_service.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/calendar_sync_service.dart';
 import 'package:matchme/services/local_db_service.dart'; // Added for explicit init
+import 'package:matchme/services/map_tile_cache_service.dart';
+import 'package:matchme/services/offline_trail_service.dart';
+import 'package:matchme/services/storage_helper.dart'; // Persisted photo URL warmup
+import 'package:matchme/services/encrypted_cache_service.dart';
+import 'package:matchme/providers/chat_key_provider.dart';
+import 'package:matchme/services/chat_key_service.dart';
+import 'package:matchme/services/offline_cache_manager.dart'; // Added for offline support
+import 'package:matchme/services/network_availability.dart';
+import 'package:matchme/services/supabase_reachability.dart';
+import 'package:matchme/services/offline_mutation_queue.dart'; // Added for offline mutations
+import 'package:matchme/utils/offline_utils.dart';
+import 'package:matchme/services/session_registration_coordinator.dart';
 import 'package:matchme/services/session_service.dart';
+import 'package:matchme/services/user_activity_service.dart';
 import 'package:matchme/services/app_info_service.dart';
 import 'package:matchme/services/outlook_web_auth.dart'
     if (dart.library.io) 'package:matchme/services/outlook_web_auth_stub.dart';
+import 'package:matchme/services/platform_trace_logger.dart';
 import 'package:matchme/utils/permission_helper.dart';
 import 'package:matchme/utils/permission_coordinator.dart';
 import 'package:matchme/utils/permission_manager.dart';
+import 'package:matchme/utils/resume_route_restore.dart';
+import 'package:matchme/utils/time_of_day_ranges.dart';
 import 'package:quick_actions/quick_actions.dart';
 // (flutter/services.dart already imported above)
 
 import 'package:matchme/screens/chats/chat_screen.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/chat_provider.dart'
-    show pendingMessageTranslationProvider;
+    show pendingMessageTranslationProvider, migrateLegacyTranslationPrefs;
+import 'package:matchme/providers/match_notification_provider.dart'
+    show matchNotificationProvider;
+import 'package:matchme/services/global_sync_manager.dart';
 import 'package:matchme/providers/event_provider.dart';
 import 'package:matchme/utils/app_shortcuts.dart';
 import 'package:matchme/web_imports.dart' as html;
 import 'package:matchme/services/referral_service.dart';
 import 'package:matchme/services/admin_broadcast_service.dart';
+import 'package:matchme/providers/location_share_provider.dart';
+import 'package:matchme/services/supabase_realtime_manager.dart';
+import 'package:matchme/widgets/startup_loader.dart';
+import 'package:matchme/widgets/birthday_overlay.dart';
+import 'package:timezone/data/latest.dart' as tz_data;
+import 'package:timezone/timezone.dart' as tz;
 // ignore: unnecessary_import - Kept for compatibility with other files that depend on it
 import 'package:matchme/services/mobile_local_notification_service.dart';
+import 'package:matchme/services/app_badge_service.dart';
+import 'package:matchme/services/voice_guidance_service.dart';
 
 final container = ProviderContainer();
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -70,6 +113,7 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 // If we receive one before Navigator is ready, keep it here and replay post-frame.
 String? _pendingNotificationRoute;
 bool _fcmHandlersInstalled = false;
+Timer? _fcmResyncTimer;
 
 late final Future<_BootstrapInitResult> _bootstrapInitFuture;
 bool _webFrameKickShutdown = false;
@@ -79,15 +123,41 @@ DateTime? _webWarmupStartedAt;
 bool _webWarmupShutdown = false;
 bool _webWarmupInstalled = false;
 FlutterExceptionHandler? _webWarmupPrevFlutterErrorHandler;
-String? _runtimeSupabaseUrl;
-String? _runtimeSupabaseAnonKey;
+final Set<String> _oauthCodesInFlight = <String>{};
+String? _lastHandledOAuthCode;
+bool _timezonesInitialized = false;
+
+void _ensureTimezonesInitialized() {
+  if (_timezonesInitialized) return;
+  tz_data.initializeTimeZones();
+  _timezonesInitialized = true;
+}
+
+bool _isUsersBirthdayToday({
+  required DateTime? dateOfBirth,
+  required String? userTimezone,
+}) {
+  if (dateOfBirth == null) return false;
+
+  DateTime localNow;
+  final timezoneName = (userTimezone ?? '').trim();
+  if (timezoneName.isNotEmpty) {
+    try {
+      final location = tz.getLocation(timezoneName);
+      localNow = tz.TZDateTime.from(DateTime.now().toUtc(), location);
+    } catch (_) {
+      localNow = DateTime.now();
+    }
+  } else {
+    localNow = DateTime.now();
+  }
+
+  return localNow.month == dateOfBirth.month && localNow.day == dateOfBirth.day;
+}
 
 void _reportNonFatal(Object error, StackTrace stackTrace) {
   FlutterError.reportError(
-    FlutterErrorDetails(
-      exception: error,
-      stack: stackTrace,
-    ),
+    FlutterErrorDetails(exception: error, stack: stackTrace),
   );
 }
 
@@ -98,8 +168,133 @@ bool _isIgnorableWebSocketError(Object error) {
       message.contains('websocket connection failed');
 }
 
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+bool _shouldConnectRealtime() {
+  final auth = Supabase.instance.client.auth;
+  return auth.currentSession != null && auth.currentUser != null;
+}
+
+bool _isIgnorableRealtimePresenceError(Object error, StackTrace stack) {
+  final message = error.toString().toLowerCase();
+  final stackText = stack.toString().toLowerCase();
+  return message.contains("type 'null' is not a subtype of type 'string'") &&
+      stackText.contains('realtime_presence.dart');
+}
+
+// Supabase GoTrue auto-recovers the persisted session during Supabase.initialize()
+// via CancelableCompleter.complete, which can rethrow AuthApiException into the
+// root zone even though our auth listener's onError would normally handle it.
+// The auth state stream's own onError handler treats these as "sign out" events,
+// so once the SDK tears the local session down the user is correctly routed to
+// AuthScreen — we just don't want the original rethrow to surface as an
+// Unhandled Exception (which in debug mode triggers a Flutter engine restart
+// and re-runs the entire bootstrap, doubling the geolocator engine-connect
+// count and producing the duplicate "Cleared all persisted auth data" log
+// observed in the cold-start trace).
+bool _isIgnorableAuthRecoveryError(Object error, StackTrace stack) {
+  if (error is AuthException) return true;
+  final message = error.toString().toLowerCase();
+  final stackText = stack.toString().toLowerCase();
+  final isSupabaseAuthStack =
+      stackText.contains('gotrue/src') ||
+      stackText.contains('supabase_flutter/src') ||
+      stackText.contains('supabase/src');
+  if (!isSupabaseAuthStack) return false;
+  return message.contains('invalid refresh token') ||
+      message.contains('refresh_token_already_used') ||
+      message.contains('refresh_token_not_found') ||
+      message.contains('already used') ||
+      message.contains('auth session missing') ||
+      message.contains('authsessionmissing') ||
+      message.contains('invalid jwt') ||
+      message.contains('jwt expired') ||
+      message.contains('token is expired');
+}
+
+/// Checks if an AuthException is specifically an OAuth code exchange failure.
+/// These occur when the Supabase ↔ provider configuration is incomplete (e.g.
+/// Azure AD not fully set up) and are not actionable by the user mid-flow —
+/// the app should show a user-friendly message and let them retry or choose
+/// another provider instead of logging a scary DartError.
+bool _isOAuthCodeExchangeError(Object error) {
+  final message = error.toString().toLowerCase();
+  return message.contains('unable to exchange external code') ||
+      message.contains('unable to exchange code') ||
+      (message.contains('oauth') &&
+          message.contains('exchange') &&
+          message.contains('code')) ||
+      (message.contains('external') &&
+          message.contains('code') &&
+          message.contains('exchange'));
+}
+
+/// Zone-level guard that catches unhandled async errors not reaching
+/// PlatformDispatcher.onError (dart2js zone path).
+bool _suppressUnhandledError(Object error, StackTrace stack) {
+  if (_isIgnorableAuthRecoveryError(error, stack)) {
+    debugPrint('🔐 [AUTH] Zone guard suppressing auth-recovery error: $error');
+    return true;
+  }
+  if (_isOAuthCodeExchangeError(error)) {
+    debugPrint(
+      '🔐 [AUTH] Zone guard suppressing OAuth code exchange error: $error',
+    );
+    return true;
+  }
+  if (_isIgnorableWebSocketError(error)) {
+    return true;
+  }
+  if (_isIgnorableRealtimePresenceError(error, stack)) {
+    debugPrint('Ignoring known realtime presence null-cast error: $error');
+    return true;
+  }
+  if (_isIgnorableConnectivityStreamError(error)) {
+    return true;
+  }
+  return false;
+}
+
+/// On Windows, connectivity_plus's NetworkManager::StartListen can fail with
+/// E_INVALIDARG (-2147024809) when the platform thread is inside certain
+/// input-synchronous windows (COM rejects the outgoing Advise). The Dart
+/// framework surfaces that as a PlatformException thrown during stream
+/// activation, which — with no error handler — becomes an uncaught
+/// exception that crashes the app. Connectivity is non-critical: the
+/// monitor probes real reachability over HTTP on its own timer, so a failed
+/// event stream just means we lose change notifications.
+bool _isIgnorableConnectivityStreamError(Object error) {
+  if (!Platform.isWindows) return false;
+  final message = error.toString().toLowerCase();
+  return message.contains('platformexception') &&
+      (message.contains('-2147024809') ||
+          message.contains('networkmanager::startlisten') ||
+          message.contains('e_invalidarg'));
+}
+
+void main() {
+  // bindings + runApp MUST share the same zone. Using runZonedGuarded
+  // to catch unhandled async exceptions that would otherwise bypass
+  // PlatformDispatcher.onError (dart2js root-zone path).
+  runZonedGuarded(
+    () {
+      WidgetsFlutterBinding.ensureInitialized();
+      ChatKeyService.instance.attachLifecycleObserver();
+      _mainSync();
+    },
+    (error, stack) {
+      // Last-resort zone guard. Catches errors that escape through the
+      // dart2js microtask loop without being caught by any Future catch.
+      if (!_suppressUnhandledError(error, stack)) {
+        debugPrint('Unhandled error in zone: $error');
+      }
+    },
+  );
+}
+
+void _mainSync() {
+  _ensureTimezonesInitialized();
+  if (kIsWeb) {
+    SemanticsBinding.instance.ensureSemantics();
+  }
   // Increase buffer size for flutter/lifecycle to avoid "discarded before it could be handled" warnings on Web
   ServicesBinding.instance.channelBuffers.resize('flutter/lifecycle', 20);
 
@@ -107,15 +302,34 @@ Future<void> main() async {
   AdminBroadcastService.setAppInForeground(true);
   MobileLocalNotificationService.setProviderContainer(container);
   WebNotificationService.setProviderContainer(container);
+  VoiceGuidanceService.setProviderContainer(container);
+  print('[BOOTSTRAP] Initializing VoiceGuidanceService...');
+  unawaited(VoiceGuidanceService.instance.loadEnabledFromPrefs());
   PlatformDispatcher.instance.onError = (error, stack) {
-    if (_isIgnorableWebSocketError(error)) {
-      return true;
-    }
-    if (error is GoogleSignInException &&
-        error.code == GoogleSignInExceptionCode.canceled) {
-      return true;
-    }
+    // PlatformDispatcher runs AFTER the zone guard, so errors caught here
+    // are ones that escaped the zone guard AND are non-ignorable.
+    // Still check our suppression patterns as a safety net.
+    if (_suppressUnhandledError(error, stack)) return true;
     return false;
+  };
+
+  // Second safety net: FlutterError.onError catches errors that surface via
+  // the framework's error reporter (including the "Unhandled Exception" lines
+  // emitted by dart_vm_initializer when an unhandled async error escapes the
+  // current zone). Without this, Supabase GoTrue's internal recoverSession()
+  // can rethrow an AuthApiException from inside a CancelableCompleter
+  // callback, which PlatformDispatcher.onError sometimes does not see
+  // depending on the zone the throw originates in.
+  final prevFlutterErrorHandler = FlutterError.onError;
+  FlutterError.onError = (FlutterErrorDetails details) {
+    final error = details.exception;
+    final stack = details.stack ?? StackTrace.current;
+    if (_suppressUnhandledError(error, stack)) return;
+    if (_isIgnorableWebSocketError(error)) {
+      return;
+    }
+    prevFlutterErrorHandler?.call(details);
+    FlutterError.presentError(details);
   };
   final originalDebugPrint = debugPrint;
   debugPrint = (String? message, {int? wrapWidth}) {
@@ -125,11 +339,17 @@ Future<void> main() async {
         !lower.contains('l10n') &&
         !lower.contains('missing message') &&
         !lower.contains('missing translation') &&
-        !lower.contains('calendarsync')) {
+        !lower.contains('calendarsync') &&
+        !lower.contains('resume-diag') &&
+        !lower.contains('bootstrap') &&
+        !lower.contains('maptiles') &&
+        !lower.contains('hivecrypto')) {
       return;
     }
     originalDebugPrint(message, wrapWidth: wrapWidth);
   };
+  ResumeDiagnostics.setEnabled(kDebugMode);
+  ResumeDiagnostics.log('main() started');
 
   _installWebVisibilityFrameKick();
 
@@ -205,10 +425,11 @@ void _installWebStartupWarmupFrames() {
         Future.delayed(Duration(milliseconds: 25 * i), () {
           if (_webWarmupShutdown || !isHidden()) return;
           try {
+            if (SchedulerBinding.instance.hasScheduledFrame) return;
             SchedulerBinding.instance.scheduleWarmUpFrame();
             SchedulerBinding.instance.scheduleFrame();
           } catch (_) {
-            shutdownWarmup();
+            _shutdownWebWarmup();
           }
         });
       }
@@ -232,10 +453,11 @@ void _installWebStartupWarmupFrames() {
       }
 
       try {
+        if (SchedulerBinding.instance.hasScheduledFrame) return;
         SchedulerBinding.instance.scheduleWarmUpFrame();
         SchedulerBinding.instance.scheduleFrame();
       } catch (_) {
-        shutdownWarmup();
+        _shutdownWebWarmup();
       }
     });
   }
@@ -249,7 +471,9 @@ void _installWebStartupWarmupFrames() {
     }
     if (message.contains('disposed EngineFlutterView') ||
         message.contains('Trying to render a disposed EngineFlutterView')) {
-      shutdownWarmup();
+      // Quietly shutdown warmup without re-throwing to user
+      _shutdownWebWarmup();
+      return;
     }
     prevHandler?.call(details);
     FlutterError.presentError(details);
@@ -276,28 +500,46 @@ class _BootstrapApp extends StatefulWidget {
 }
 
 class _BootstrapAppState extends State<_BootstrapApp> {
-  bool _showMainApp = false;
-  late Future<_BootstrapInitResult> _initFuture;
+  static const Duration _minimumLoaderDuration = Duration(milliseconds: 600);
 
-  static const _loadingApp = MaterialApp(
-    debugShowCheckedModeBanner: false,
-    home: Scaffold(
-      backgroundColor: Colors.white,
-      body: Center(child: CircularProgressIndicator()),
-    ),
-  );
+  bool _showMainApp = false;
+  bool _minimumLoaderElapsed = false;
+  bool _didLogInitComplete = false;
+  int _lastWaitingLogAtMs = 0;
+  late Future<_BootstrapInitResult> _initFuture;
+  Timer? _minimumLoaderTimer;
 
   @override
   void initState() {
     super.initState();
     _initFuture = widget.initFuture;
+    _restartMinimumLoaderTimer();
+  }
+
+  @override
+  void dispose() {
+    _minimumLoaderTimer?.cancel();
+    super.dispose();
+  }
+
+  void _restartMinimumLoaderTimer() {
+    _minimumLoaderTimer?.cancel();
+    _minimumLoaderElapsed = false;
+    _minimumLoaderTimer = Timer(_minimumLoaderDuration, () {
+      if (!mounted) return;
+      setState(() {
+        _minimumLoaderElapsed = true;
+      });
+    });
   }
 
   void _retryBootstrap() {
     setState(() {
       _showMainApp = false;
+      _didLogInitComplete = false;
       _initFuture = _bootstrapInitialize(widget.container);
     });
+    _restartMinimumLoaderTimer();
   }
 
   @override
@@ -306,22 +548,32 @@ class _BootstrapAppState extends State<_BootstrapApp> {
       future: _initFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
-          debugPrint('⏱️ [BOOTSTRAP] Waiting for initFuture at ${DateTime.now().millisecondsSinceEpoch}');
-          return _loadingApp;
+          final nowMs = DateTime.now().millisecondsSinceEpoch;
+          if (nowMs - _lastWaitingLogAtMs >= 1000) {
+            _lastWaitingLogAtMs = nowMs;
+            debugPrint('⏱️ [BOOTSTRAP] Waiting for initFuture at $nowMs');
+          }
+          return const MaterialApp(
+            debugShowCheckedModeBanner: false,
+            home: StartupLoaderScaffold(),
+          );
         }
 
         final result = snapshot.data;
-        debugPrint('⏱️ [BOOTSTRAP] Init complete at ${DateTime.now().millisecondsSinceEpoch}');
+        if (!_didLogInitComplete) {
+          _didLogInitComplete = true;
+          debugPrint(
+            '⏱️ [BOOTSTRAP] Init complete at ${DateTime.now().millisecondsSinceEpoch}',
+          );
+        }
         if (snapshot.hasError || result == null) {
-          final err = snapshot.error?.toString() ??
+          final err =
+              snapshot.error?.toString() ??
               LocalizationState.defaultTranslation('bootstrapUnknownError');
           return MaterialApp(
             debugShowCheckedModeBanner: false,
             home: ProviderScope(
-              child: SupabaseInitErrorApp(
-                error: err,
-                onRetry: _retryBootstrap,
-              ),
+              child: SupabaseInitErrorApp(error: err, onRetry: _retryBootstrap),
             ),
           );
         }
@@ -333,12 +585,28 @@ class _BootstrapAppState extends State<_BootstrapApp> {
           );
         }
 
+        if (!_minimumLoaderElapsed && !result.prefersImmediateAppReveal) {
+          return const MaterialApp(
+            debugShowCheckedModeBanner: false,
+            home: StartupLoaderScaffold(),
+          );
+        }
+
         // Defer building the full app by one frame so this frame stays light (avoids jank).
         if (!_showMainApp) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
+            // Give the engine one more frame to recover from any startup load
+            // before unblocking the deferred bootstrap work (chat keys, BGSESSION,
+            // L10N retranslation, etc.).
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              BootstrapDeferral.markAppReady();
+            });
             if (mounted) setState(() => _showMainApp = true);
           });
-          return _loadingApp;
+          return const MaterialApp(
+            debugShowCheckedModeBanner: false,
+            home: StartupLoaderScaffold(),
+          );
         }
 
         return UncontrolledProviderScope(
@@ -364,29 +632,66 @@ int? _parseTabIndexFromAny(Object? raw) {
   return null;
 }
 
-void _applyNavigationFromPushData(Map<String, dynamic> data, {bool isUserInteraction = false}) {
-  final matchId =
-      ((data['matchId'] ?? data['match_id']) as String?)?.trim();
-  final routeFromData =
-      ((data['route'] ?? data['deep_link']) as String?)?.trim();
+void _applyNavigationFromPushData(
+  Map<String, dynamic> data, {
+  bool isUserInteraction = false,
+}) {
+  // Defense-in-depth: server now stamps match_expiry pushes with the target
+  // user_id. Drop pushes meant for a different account sharing this device's
+  // old FCM token (multi-account testing left stale user_session rows).
+  try {
+    final pushType =
+        ((data['type'] ?? data['kind'] ?? data['notification_type']) as Object?)
+            ?.toString()
+            .trim()
+            .toLowerCase();
+    if (pushType == 'match_expiry' || pushType == 'pinned_expiry') {
+      final targetUid =
+          ((data['user_id'] ?? data['userId']) as Object?)?.toString().trim() ??
+          '';
+      if (targetUid.isNotEmpty) {
+        final currentUid = supabase.auth.currentUser?.id.trim() ?? '';
+        if (currentUid.isNotEmpty && targetUid != currentUid) return;
+      }
+    }
+  } catch (_) {}
+  final matchId = ((data['matchId'] ?? data['match_id']) as String?)?.trim();
+  final routeFromData = ((data['route'] ?? data['deep_link']) as String?)
+      ?.trim();
   final tabIndex = _parseTabIndexFromAny(data['tabIndex'] ?? data['tab_index']);
 
   final effectiveRoute = (routeFromData != null && routeFromData.isNotEmpty)
       ? routeFromData
       : (matchId != null && matchId.isNotEmpty)
-          ? '/chat/$matchId'
-          : null;
+      ? '/chat/$matchId'
+      : null;
 
   if (!isUserInteraction) {
     return;
   }
 
+  // Pinned-expiry tap: open Matching Settings directly (Home base card).
+  try {
+    final tapType =
+        ((data['type'] ?? data['kind'] ?? data['notification_type']) as Object?)
+            ?.toString()
+            .trim()
+            .toLowerCase();
+    if (tapType == 'pinned_expiry') {
+      final nav = navigatorKey.currentState;
+      if (nav == null) return;
+      nav.push(
+        MaterialPageRoute(builder: (_) => const MatchingSettingsScreen()),
+      );
+      return;
+    }
+  } catch (_) {}
+
   if (tabIndex != null && tabIndex >= 0 && tabIndex <= 4) {
     AppShortcuts.setPendingTabIndex(tabIndex);
     try {
       container.read(navigationIndexProvider.notifier).setIndex(tabIndex);
-    } catch (_) {
-    }
+    } catch (_) {}
     return;
   }
 
@@ -413,28 +718,95 @@ void _applyNavigationFromPushData(Map<String, dynamic> data, {bool isUserInterac
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   try {
     DartPluginRegistrant.ensureInitialized();
-    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-    // Handle admin broadcast messages
-    AdminBroadcastService.handleBroadcastMessage(message);
-    if (defaultTargetPlatform == TargetPlatform.android &&
-        (message.notification == null)) {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    // Handle admin broadcast messages (in-app bookkeeping + tray for
+    // data-only pushes). `fromBackground: true` stops this isolate from
+    // re-posting the tray entry the Android/FCM SDK already drew for the
+    // message's `notification` block (that duplicate showed the same broadcast
+    // twice for a single admin Resend click).
+    try {
+      AdminBroadcastService.handleBroadcastMessage(
+        message,
+        fromBackground: true,
+      );
+    } catch (_) {}
+    if (defaultTargetPlatform == TargetPlatform.android) {
       final data = Map<String, dynamic>.from(message.data);
-      final messageId = (data['messageId'] ?? data['message_id'])?.toString().trim();
+      final messageId = (data['messageId'] ?? data['message_id'])
+          ?.toString()
+          .trim();
       final matchId = (data['matchId'] ?? data['match_id'])?.toString().trim();
       final kind = (data['kind'] ?? data['type'] ?? data['notification_type'])
           ?.toString()
           .trim()
           .toLowerCase();
 
-      if ((messageId != null && messageId.isNotEmpty) ||
-          (kind == 'match' && (matchId != null && matchId.isNotEmpty))) {
-        final title = (data['title'] ?? data['senderName'] ?? 'MatchMe')
-            .toString()
-            .trim();
-        final body = (data['body'] ?? data['message'] ?? '').toString().trim();
+      // NOTE: previously this only ran when message.notification == null,
+      // but the server always sends notification+data so the branch never
+      // fired for real chat/match pushes. Handle both shapes so killed /
+      // background / reboot pushes still refresh the native tray, history,
+      // and MessagingStyle via the native service.
+      final isChat =
+          (messageId != null && messageId.isNotEmpty) ||
+          kind == 'message' ||
+          kind == 'chat_message' ||
+          kind == 'chat' ||
+          (data['senderId'] ?? data['sender_id']) != null;
+      final isMatch =
+          kind == 'match' || kind == 'new_match' || kind == 'match_extended';
+      final isExpiry = kind == 'match_expiry' || kind == 'pinned_expiry';
+      // NOTE: admin broadcasts are deliberately NOT routed through the native
+      // service here. `checkNotifications` -> `showTranslatedNotification`
+      // posts a chat/MessagingStyle notification built from the passed
+      // senderName/translatedContent (i.e. the broadcast title/body), which
+      // duplicated the broadcast in the tray on top of the FCM/OS entry.
+      final isRetraction =
+          kind == 'message_edited' || kind == 'message_deleted';
+
+      // Silent retraction tick: drop the stale grouped card + history, then
+      // re-check latest so remaining unreads re-post with correct text.
+      if (isRetraction && (matchId != null && matchId.isNotEmpty)) {
+        try {
+          await BackgroundService.dismissChatNotification(matchId);
+        } catch (_) {}
+        try {
+          await BackgroundService.resetChatNotification(matchId);
+        } catch (_) {}
+        try {
+          await BackgroundService.triggerNotificationCheck(matchId: matchId);
+        } catch (_) {}
+        return;
+      }
+
+      if ((isChat || isMatch || isExpiry) &&
+          ((messageId != null && messageId.isNotEmpty) ||
+              (matchId != null && matchId.isNotEmpty) ||
+              isExpiry)) {
+        // Prefer data body, fall back to the system-tray notification body
+        // so killed-state pushes still carry text even when data is sparse.
+        final title =
+            (data['title'] ??
+                    data['senderName'] ??
+                    data['sender_name'] ??
+                    message.notification?.title ??
+                    'MatchMe')
+                .toString()
+                .trim();
+        final body =
+            (data['body'] ??
+                    data['message'] ??
+                    data['preview'] ??
+                    message.notification?.body ??
+                    '')
+                .toString()
+                .trim();
 
         await BackgroundService.triggerNotificationCheck(
-          messageId: (messageId != null && messageId.isNotEmpty) ? messageId : null,
+          messageId: (messageId != null && messageId.isNotEmpty)
+              ? messageId
+              : null,
           translatedContent: body.isNotEmpty ? body : null,
           originalContent: body.isNotEmpty ? body : null,
           senderName: title.isNotEmpty ? title : null,
@@ -442,15 +814,16 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
         );
       }
     }
-  } catch (_) {
-  }
+  } catch (_) {}
 }
 
 Future<void> _initializeFcmForCurrentUser() async {
   if (!_isFcmSupportedPlatform()) return;
 
   try {
-    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
   } catch (_) {
     return;
   }
@@ -458,32 +831,30 @@ Future<void> _initializeFcmForCurrentUser() async {
   if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
     try {
       await PermissionManager.requestNotificationPermission();
-    } catch (_) {
-    }
+    } catch (_) {}
   }
 
   if (kIsWeb) {
     try {
       await WebNotificationService.initialize();
-    } catch (_) {
-    }
+    } catch (_) {}
   }
 
   if (!_fcmHandlersInstalled) {
     _fcmHandlersInstalled = true;
     if (!kIsWeb) {
       try {
-        FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-      } catch (_) {
-      }
+        FirebaseMessaging.onBackgroundMessage(
+          _firebaseMessagingBackgroundHandler,
+        );
+      } catch (_) {}
     }
 
     if (defaultTargetPlatform == TargetPlatform.iOS) {
       var hasApsEntitlement = true;
       try {
         hasApsEntitlement = await AppInfoService.hasApsEnvironmentEntitlement();
-      } catch (_) {
-      }
+      } catch (_) {}
 
       try {
         if (hasApsEntitlement) {
@@ -493,26 +864,33 @@ Future<void> _initializeFcmForCurrentUser() async {
             sound: true,
           );
         }
-      } catch (_) {
-      }
+      } catch (_) {}
       try {
+        // Foreground pushes must still banner on iOS (maximized/focused UI).
+        // Local `showMessageNotification` suppresses only the open chat, so
+        // enabling the system banner here does not double-notify the
+        // active conversation — it fixes silent foreground on iOS.
         await FirebaseMessaging.instance
             .setForegroundNotificationPresentationOptions(
-          alert: false,
-          badge: false,
-          sound: false,
-        );
-      } catch (_) {
-      }
+              alert: true,
+              badge: true,
+              sound: true,
+            );
+      } catch (_) {}
     }
 
     try {
       final initial = await FirebaseMessaging.instance.getInitialMessage();
       if (initial != null) {
-        _applyNavigationFromPushData(Map<String, dynamic>.from(initial.data), isUserInteraction: true);
+        try {
+          unawaited(AppBadgeService.clear());
+        } catch (_) {}
+        _applyNavigationFromPushData(
+          Map<String, dynamic>.from(initial.data),
+          isUserInteraction: true,
+        );
       }
-    } catch (_) {
-    }
+    } catch (_) {}
 
     try {
       FirebaseMessaging.onMessage.listen((message) {
@@ -524,34 +902,262 @@ Future<void> _initializeFcmForCurrentUser() async {
             .trim()
             .toLowerCase();
         if (type == 'profile_edit_review') {
-          final requestId = (data['request_id'] ?? data['requestId'])?.toString().trim();
+          final requestId = (data['request_id'] ?? data['requestId'])
+              ?.toString()
+              .trim();
           final title = message.notification?.title?.trim();
           final body = message.notification?.body?.trim();
-          if (title != null && title.isNotEmpty && body != null && body.isNotEmpty) {
+          if (title != null &&
+              title.isNotEmpty &&
+              body != null &&
+              body.isNotEmpty) {
             unawaited(
               MobileLocalNotificationService.showAdminBroadcastNotification(
-                broadcastId: requestId?.isNotEmpty == true ? 'profile_edit_review:$requestId' : 'profile_edit_review',
+                broadcastId: requestId?.isNotEmpty == true
+                    ? 'profile_edit_review:$requestId'
+                    : 'profile_edit_review',
                 title: title,
                 body: body,
               ),
             );
           }
+        } else if (type == 'match' || type == 'new_match') {
+          // Foreground match push: Realtime overlay may be disconnected, so
+          // also raise an OS notification (tap routes via onMessageOpenedApp).
+          final matchId =
+              (data['matchId'] ?? data['match_id'])?.toString().trim() ?? '';
+          final title = message.notification?.title?.trim().isNotEmpty == true
+              ? message.notification!.title!.trim()
+              : 'New Match!';
+          final body = message.notification?.body?.trim().isNotEmpty == true
+              ? message.notification!.body!.trim()
+              : 'You have a new match. Tap to view.';
+          if (matchId.isNotEmpty && !kIsWeb) {
+            unawaited(
+              MobileLocalNotificationService.showNewMatchNotification(
+                matchId: matchId,
+                title: title,
+                body: body,
+              ),
+            );
+          } else if (kIsWeb) {
+            final otherUser =
+                (data['otherUserId'] ?? data['other_user_id'] ?? '').toString();
+            unawaited(
+              WebNotificationService.showMatchNotification(
+                matchId: matchId.isNotEmpty ? matchId : 'unknown',
+                matchName: otherUser.isNotEmpty ? otherUser : title,
+                matchPhotoUrl: '',
+              ),
+            );
+          }
+        } else if (type == 'match_extended') {
+          // Foreground extension push: the peer extended the chat window, so
+          // surface it as its own notification rather than reusing the
+          // new-match copy ("New Match!" would be wrong and confusing).
+          final matchId =
+              (data['matchId'] ?? data['match_id'])?.toString().trim() ?? '';
+          final title = message.notification?.title?.trim().isNotEmpty == true
+              ? message.notification!.title!.trim()
+              : 'You have more time';
+          final body = message.notification?.body?.trim().isNotEmpty == true
+              ? message.notification!.body!.trim()
+              : 'Say hi before this match runs out.';
+          if (!kIsWeb && matchId.isNotEmpty) {
+            unawaited(
+              MobileLocalNotificationService.showMatchExtendedNotification(
+                matchId: matchId,
+                title: title,
+                body: body,
+              ),
+            );
+          } else if (kIsWeb) {
+            unawaited(
+              WebNotificationService.showMatchNotification(
+                matchId: matchId.isNotEmpty ? matchId : 'match_extended',
+                matchName: title,
+                matchPhotoUrl: '',
+              ),
+            );
+          }
+        } else if (type == 'match_expiry' || type == 'pinned_expiry') {
+          // Foreground expiry push: client timer only runs when UI is alive;
+          // FCM is the reliable path for minimized/maximized/foreground.
+          final matchId =
+              (data['matchId'] ?? data['match_id'])?.toString().trim() ?? '';
+          final title = message.notification?.title?.trim().isNotEmpty == true
+              ? message.notification!.title!.trim()
+              : (type == 'pinned_expiry'
+                    ? 'Pinned location expiring soon'
+                    : 'Match expiring soon');
+          final body = message.notification?.body?.trim().isNotEmpty == true
+              ? message.notification!.body!.trim()
+              : 'Open the app to add more time.';
+          if (!kIsWeb) {
+            final safeType = type ?? 'match_expiry';
+            unawaited(
+              MobileLocalNotificationService.showMatchExpiryNotification(
+                matchId: matchId.isNotEmpty ? matchId : safeType,
+                title: title,
+                body: body,
+                notificationKey:
+                    '${safeType}_${data['threshold_seconds'] ?? data['thresholdSeconds'] ?? 'warn'}',
+              ),
+            );
+          } else {
+            final safeType = type ?? 'match_expiry';
+            unawaited(
+              WebNotificationService.showMatchNotification(
+                matchId: matchId.isNotEmpty ? matchId : safeType,
+                matchName: title,
+                matchPhotoUrl: '',
+              ),
+            );
+          }
+        } else if (type == 'ai_quota') {
+          // Foreground admin AI-quota alert: Android does not auto-display
+          // FCM notification payloads while the app is foregrounded, so
+          // surface it through the admin-broadcast channel.
+          final title = message.notification?.title?.trim().isNotEmpty == true
+              ? message.notification!.title!.trim()
+              : 'System alert';
+          final body = message.notification?.body?.trim().isNotEmpty == true
+              ? message.notification!.body!.trim()
+              : 'AI provider quota needs attention.';
+          if (!kIsWeb) {
+            unawaited(
+              MobileLocalNotificationService.showAdminBroadcastNotification(
+                broadcastId: 'ai_quota:${(data['metric'] ?? data['provider'] ?? 'alert').toString()}',
+                title: title,
+                body: body,
+              ),
+            );
+          } else {
+            unawaited(
+              WebNotificationService.showMatchNotification(
+                matchId: 'ai_quota',
+                matchName: title,
+                matchPhotoUrl: '',
+              ),
+            );
+          }
+        } else if (type == 'location_share') {
+          // Foreground location-share push: the realtime path usually beats
+          // the queue-driven push and shows the persistent banner; this
+          // covers the case where realtime was torn down. Both paths post to
+          // the SAME OS notification id, so they replace instead of stack.
+          final matchId =
+              (data['matchId'] ?? data['match_id'])?.toString().trim() ?? '';
+          final title = message.notification?.title?.trim().isNotEmpty == true
+              ? message.notification!.title!.trim()
+              : '📍 Live location';
+          final body = message.notification?.body?.trim().isNotEmpty == true
+              ? message.notification!.body!.trim()
+              : 'is sharing their live location with you';
+          if (matchId.isNotEmpty) {
+            if (kIsWeb) {
+              unawaited(
+                WebNotificationService.showLocationShareNotification(
+                  title: title,
+                  body: body,
+                ),
+              );
+            } else {
+              unawaited(
+                MobileLocalNotificationService.showLocationShareNotification(
+                  notificationId: 'location_share_$matchId',
+                  title: title,
+                  body: body,
+                ),
+              );
+            }
+          }
+        } else if (type == 'message_edited' || type == 'message_deleted') {
+          // Silent retraction tick in foreground: Realtime already merged the
+          // edit/delete locally; drop the stale tray card and rebuild from
+          // the RPC latest on Android so remaining unreads re-post cleanly.
+          final matchId =
+              (data['matchId'] ?? data['match_id'])?.toString().trim() ?? '';
+          if (matchId.isNotEmpty && !kIsWeb) {
+            unawaited(
+              MobileLocalNotificationService.dismissChatNotification(matchId),
+            );
+            if (defaultTargetPlatform == TargetPlatform.android) {
+              unawaited(BackgroundService.resetChatNotification(matchId));
+              unawaited(
+                BackgroundService.triggerNotificationCheck(matchId: matchId),
+              );
+            }
+          }
+        } else if (type == 'message' ||
+            type == 'chat_message' ||
+            type == 'chat' ||
+            (data['messageId'] ?? data['message_id']) != null) {
+          // Foreground chat push: the Realtime path may be down (offline,
+          // reconnecting, backgrounded WebView). Show a local notification
+          // directly from FCM so foreground/maximized never goes silent.
+          // `showMessageNotification` itself suppresses the open chat and
+          // coalesces history, so double-posting with Realtime is safe.
+          final matchId =
+              (data['matchId'] ?? data['match_id'])?.toString().trim() ?? '';
+          final sender =
+              (data['senderName'] ??
+                      data['sender_name'] ??
+                      message.notification?.title ??
+                      'Someone')
+                  .toString();
+          final text =
+              (data['body'] ??
+                      data['message'] ??
+                      message.notification?.body ??
+                      'New message')
+                  .toString();
+          if (matchId.isNotEmpty) {
+            if (kIsWeb) {
+              unawaited(
+                WebNotificationService.showMessageNotification(
+                  chatId: matchId,
+                  senderName: sender,
+                  messageContent: text,
+                  matchId: matchId,
+                ),
+              );
+            } else {
+              unawaited(
+                MobileLocalNotificationService.showMessageNotification(
+                  chatId: matchId,
+                  senderName: sender,
+                  messageContent: text,
+                  matchId: matchId,
+                ),
+              );
+            }
+          }
         }
         // Don't navigate automatically for background messages - just show notification
-        _applyNavigationFromPushData(Map<String, dynamic>.from(message.data), isUserInteraction: false);
+        _applyNavigationFromPushData(
+          Map<String, dynamic>.from(message.data),
+          isUserInteraction: false,
+        );
       });
-    } catch (_) {
-    }
+    } catch (_) {}
 
     try {
       FirebaseMessaging.onMessageOpenedApp.listen((message) {
+        // Tapping a tray entry means its content is seen: drop the icon
+        // badge (server re-asserts the true count on the next push).
+        try {
+          unawaited(AppBadgeService.clear());
+        } catch (_) {}
         // Handle admin broadcast message opens
         AdminBroadcastService.handleBroadcastMessageOpened(message);
         // Navigate when user taps on notification
-        _applyNavigationFromPushData(Map<String, dynamic>.from(message.data), isUserInteraction: true);
+        _applyNavigationFromPushData(
+          Map<String, dynamic>.from(message.data),
+          isUserInteraction: true,
+        );
       });
-    } catch (_) {
-    }
+    } catch (_) {}
 
     try {
       FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
@@ -562,19 +1168,60 @@ Future<void> _initializeFcmForCurrentUser() async {
         final platformText = kIsWeb
             ? 'web'
             : defaultTargetPlatform == TargetPlatform.android
-                ? 'android'
-                : 'ios';
+            ? 'android'
+            : 'ios';
+        // Immediate (bypass dedup/cooldown) so a rotation while the app was
+        // killed/off is pushed to user_session without waiting 5s.
+        SessionRegistrationCoordinator.instance.scheduleImmediate(
+          userId: current,
+          platform: platformText,
+          fcmToken: trimmed,
+          source: 'fcm-token-refresh',
+        );
+      });
+    } catch (_) {}
+    // Periodic FCM resync: FCM tokens can rotate while the app is killed.
+    // Re-fetch every 6h while UI is alive so the server never keeps a stale
+    // token for long (covers reboot/off gaps on next launch + while running).
+    try {
+      _fcmResyncTimer?.cancel();
+      _fcmResyncTimer = Timer.periodic(const Duration(hours: 6), (_) async {
         try {
-          await SessionService.registerSession(
-            current,
+          final current = supabase.auth.currentUser?.id;
+          if (current == null || current.isEmpty) return;
+          String? fresh;
+          if (kIsWeb) {
+            final envVapid = const String.fromEnvironment(
+              'FCM_WEB_VAPID_KEY',
+              defaultValue: '',
+            ).trim();
+            String dotVapid = '';
+            try {
+              dotVapid = (dotenv.env['FCM_WEB_VAPID_KEY'] ?? '').trim();
+            } catch (_) {}
+            final vapidKey = envVapid.isNotEmpty ? envVapid : dotVapid;
+            fresh = await FirebaseMessaging.instance.getToken(
+              vapidKey: vapidKey.isNotEmpty ? vapidKey : null,
+            );
+          } else {
+            fresh = await FirebaseMessaging.instance.getToken();
+          }
+          final trimmed = (fresh ?? '').trim();
+          if (trimmed.isEmpty) return;
+          final platformText = kIsWeb
+              ? 'web'
+              : defaultTargetPlatform == TargetPlatform.android
+              ? 'android'
+              : 'ios';
+          SessionRegistrationCoordinator.instance.scheduleImmediate(
+            userId: current,
             platform: platformText,
             fcmToken: trimmed,
+            source: 'fcm-periodic-resync',
           );
-        } catch (_) {
-        }
+        } catch (_) {}
       });
-    } catch (_) {
-    }
+    } catch (_) {}
   }
 
   final userId = supabase.auth.currentUser?.id;
@@ -583,7 +1230,10 @@ Future<void> _initializeFcmForCurrentUser() async {
   String? token;
   try {
     if (kIsWeb) {
-      final envVapid = const String.fromEnvironment('FCM_WEB_VAPID_KEY', defaultValue: '').trim();
+      final envVapid = const String.fromEnvironment(
+        'FCM_WEB_VAPID_KEY',
+        defaultValue: '',
+      ).trim();
       final dotVapid = (dotenv.env['FCM_WEB_VAPID_KEY'] ?? '').trim();
       final vapidKey = envVapid.isNotEmpty ? envVapid : dotVapid;
       token = await FirebaseMessaging.instance.getToken(
@@ -592,8 +1242,7 @@ Future<void> _initializeFcmForCurrentUser() async {
     } else {
       token = await FirebaseMessaging.instance.getToken();
     }
-  } catch (_) {
-  }
+  } catch (_) {}
 
   if (token != null) {
     final trimmed = token.trim();
@@ -602,15 +1251,70 @@ Future<void> _initializeFcmForCurrentUser() async {
         final platformText = kIsWeb
             ? 'web'
             : defaultTargetPlatform == TargetPlatform.android
-                ? 'android'
-                : 'ios';
-        await SessionService.registerSession(
-          userId,
+            ? 'android'
+            : 'ios';
+        SessionRegistrationCoordinator.instance.schedule(
+          userId: userId,
           platform: platformText,
           fcmToken: trimmed,
+          source: 'fcm-initial-token',
         );
-      } catch (_) {
-      }
+      } catch (_) {}
+      // Post-reboot recovery: native BootReceiver stamps
+      // boot_service_start_ms. If we booted recently, force a second
+      // immediate upsert (bypass dedup/cooldown) so a token rotated while
+      // the device was off/killed reaches user_session on first launch.
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        // Native BootReceiver writes boot time as long + string (Dart
+        // SharedPreferences cannot reliably read native longs).
+        int bootMs = 0;
+        try {
+          final str =
+              prefs.getString('boot_service_start_ms_str') ??
+              prefs.getString('flutter.boot_service_start_ms_str');
+          if (str != null && str.trim().isNotEmpty) {
+            bootMs = int.tryParse(str.trim()) ?? 0;
+          }
+        } catch (_) {}
+        if (bootMs == 0) {
+          try {
+            bootMs = prefs.getInt('boot_service_start_ms') ?? 0;
+            if (bootMs != 0 && bootMs < 100000000000) {
+              // Seconds fallback written by BootReceiver.
+              bootMs = bootMs * 1000;
+            }
+          } catch (_) {}
+        }
+        if (bootMs > 0) {
+          final ageMs = DateTime.now().millisecondsSinceEpoch - bootMs;
+          if (ageMs >= 0 && ageMs < 24 * 60 * 60 * 1000) {
+            final platformText = kIsWeb
+                ? 'web'
+                : defaultTargetPlatform == TargetPlatform.android
+                ? 'android'
+                : 'ios';
+            Future.delayed(const Duration(seconds: 8), () {
+              try {
+                SessionRegistrationCoordinator.instance.scheduleImmediate(
+                  userId: userId,
+                  platform: platformText,
+                  fcmToken: trimmed,
+                  source: 'fcm-boot-resync',
+                );
+              } catch (_) {}
+            });
+          }
+        }
+        // Web SW identity: keep the service worker's recipient filter in
+        // sync so background pushes are dropped for the wrong account and
+        // kept for the right one even after restart.
+        if (kIsWeb) {
+          try {
+            WebNotificationService.setServiceWorkerUserId(userId);
+          } catch (_) {}
+        }
+      } catch (_) {}
     }
   }
 }
@@ -619,7 +1323,13 @@ class _BootstrapInitResult {
   final Widget? errorApp;
   final String? supabaseUrl;
   final String? supabaseAnonKey;
-  const _BootstrapInitResult({this.errorApp, this.supabaseUrl, this.supabaseAnonKey});
+  final bool prefersImmediateAppReveal;
+  const _BootstrapInitResult({
+    this.errorApp,
+    this.supabaseUrl,
+    this.supabaseAnonKey,
+    this.prefersImmediateAppReveal = false,
+  });
 }
 
 class _SupabaseRuntimeConfig {
@@ -630,6 +1340,10 @@ class _SupabaseRuntimeConfig {
 
 const String _prefsSupabaseUrlKey = 'runtime_supabase_url';
 const String _prefsSupabaseAnonKeyKey = 'runtime_supabase_anon_key';
+const String _prefsLastHandledOAuthCodeKey = 'oauth_last_handled_code';
+const String _prefsGoogleSwitchFlowIdKey = 'google_switch_flow_id';
+const String _prefsGoogleSwitchCompletedFlowIdKey =
+    'google_switch_completed_flow_id';
 
 String _stripOptionalQuotes(String value) {
   final trimmed = value.trim();
@@ -681,8 +1395,9 @@ Future<_SupabaseRuntimeConfig> _resolveSupabaseRuntimeConfig() async {
   if (kIsWeb) {
     try {
       final qp = Uri.base.queryParameters;
-      final qpUrl =
-          _stripOptionalQuotes(qp['SUPABASE_URL'] ?? qp['supabase_url'] ?? '');
+      final qpUrl = _stripOptionalQuotes(
+        qp['SUPABASE_URL'] ?? qp['supabase_url'] ?? '',
+      );
       final qpKey = _stripOptionalQuotes(
         qp['SUPABASE_ANON_KEY'] ?? qp['supabase_anon_key'] ?? '',
       );
@@ -691,7 +1406,9 @@ Future<_SupabaseRuntimeConfig> _resolveSupabaseRuntimeConfig() async {
       if (anonKey.isEmpty && qpKey.isNotEmpty) anonKey = qpKey;
 
       if (prefs != null) {
-        if (qpUrl.isNotEmpty) await prefs.setString(_prefsSupabaseUrlKey, qpUrl);
+        if (qpUrl.isNotEmpty) {
+          await prefs.setString(_prefsSupabaseUrlKey, qpUrl);
+        }
         if (qpKey.isNotEmpty) {
           await prefs.setString(_prefsSupabaseAnonKeyKey, qpKey);
         }
@@ -706,19 +1423,24 @@ Future<_SupabaseRuntimeConfig> _resolveSupabaseRuntimeConfig() async {
       url = _stripOptionalQuotes(prefs.getString(_prefsSupabaseUrlKey) ?? '');
     }
     if (anonKey.isEmpty) {
-      anonKey =
-          _stripOptionalQuotes(prefs.getString(_prefsSupabaseAnonKeyKey) ?? '');
+      anonKey = _stripOptionalQuotes(
+        prefs.getString(_prefsSupabaseAnonKeyKey) ?? '',
+      );
     }
   }
 
   return _SupabaseRuntimeConfig(url: url, anonKey: anonKey);
 }
 
-Future<void> _captureWebQueryParams(String currentUrl, String currentKey) async {
+Future<void> _captureWebQueryParams(
+  String currentUrl,
+  String currentKey,
+) async {
   try {
     final qp = Uri.base.queryParameters;
-    final qpUrl =
-        _stripOptionalQuotes(qp['SUPABASE_URL'] ?? qp['supabase_url'] ?? '');
+    final qpUrl = _stripOptionalQuotes(
+      qp['SUPABASE_URL'] ?? qp['supabase_url'] ?? '',
+    );
     final qpKey = _stripOptionalQuotes(
       qp['SUPABASE_ANON_KEY'] ?? qp['supabase_anon_key'] ?? '',
     );
@@ -727,23 +1449,929 @@ Future<void> _captureWebQueryParams(String currentUrl, String currentKey) async 
 
     final prefs = await SharedPreferences.getInstance();
     if (qpUrl.isNotEmpty) await prefs.setString(_prefsSupabaseUrlKey, qpUrl);
-    if (qpKey.isNotEmpty) await prefs.setString(_prefsSupabaseAnonKeyKey, qpKey);
+    if (qpKey.isNotEmpty) {
+      await prefs.setString(_prefsSupabaseAnonKeyKey, qpKey);
+    }
   } catch (e, st) {
     _reportNonFatal(e, st);
   }
 }
 
-Future<_BootstrapInitResult> _bootstrapInitialize(ProviderContainer container) async {
+/// Setup deep link handler for OAuth callbacks from Google and Outlook
+/// This is CRITICAL for the calendar sync OAuth flow to work on mobile
+Future<void> _setupDeepLinkHandler() async {
+  if (kIsWeb) return;
+
+  try {
+    final appLinks = AppLinks();
+    debugPrint('🔗 [DeepLink] Setting up handler...');
+
+    // CRITICAL: Set up stream listener FIRST, SYNCHRONOUSLY
+    // This must be done immediately to catch callbacks that arrive while app is running
+    // Do NOT await this - just set it up immediately
+    appLinks.uriLinkStream.listen(
+      (uri) async {
+        debugPrint('🔗 [DeepLink] STREAM link received: $uri');
+        await _processDeepLink(uri);
+      },
+      onError: (err) {
+        debugPrint('⚠️ [DeepLink] Stream error: $err');
+      },
+    );
+    debugPrint(
+      '✅ [DeepLink] Stream listener registered (ready for callbacks while running)',
+    );
+
+    // Handle INITIAL deep link in background (when app launches via deep link)
+    // This won't block the main flow
+    scheduleMicrotask(() async {
+      try {
+        final initialLink = await appLinks.getInitialLink();
+        if (initialLink != null) {
+          debugPrint(
+            '[BOOTSTRAP] [DeepLink] INITIAL link received on startup: $initialLink',
+          );
+          await _processDeepLink(initialLink);
+        } else {
+          debugPrint('[BOOTSTRAP] [DeepLink] No initial link on startup');
+        }
+      } catch (e) {
+        debugPrint('⚠️ [DeepLink] Error getting initial link: $e');
+      }
+    });
+
+    debugPrint(
+      '✅ [DeepLink] Handler setup complete - listener active, initial link handler queued',
+    );
+  } catch (e, st) {
+    debugPrint('⚠️ [DeepLink] Failed to setup handler: $e\n$st');
+    _reportNonFatal(e, st);
+  }
+}
+
+/// Helper function to restore the original session after detecting a user change
+Future<void> _performSessionRestoration(
+  Session? originalSession,
+  String? originalUserId,
+  String? newGoogleUserId,
+  String? googleProviderToken,
+  String? googleProviderEmail,
+) async {
+  if (originalSession == null || originalUserId == null) {
+    debugPrint('⚠️ [OAuth] Restoration conditions not met, skipping');
+    return;
+  }
+
+  debugPrint('🔐 [OAuth] ========== RESTORATION SEQUENCE START ==========');
+  debugPrint('🔐 [OAuth] originalUserId: $originalUserId');
+  debugPrint('🔐 [OAuth] newGoogleUserId: $newGoogleUserId');
+
+  // Run restoration directly (no nested unawaited)
+  try {
+    debugPrint('🔐 [OAuth] Encoding session JSON...');
+    final normalizedGoogleToken = googleProviderToken?.trim();
+    if (normalizedGoogleToken != null && normalizedGoogleToken.isNotEmpty) {
+      await CalendarSyncService.cacheGoogleImportToken(
+        token: normalizedGoogleToken,
+        expiry: DateTime.now().add(const Duration(minutes: 55)),
+        userEmail: googleProviderEmail,
+      );
+      debugPrint('✅ [OAuth] Cached Google token before session restoration');
+    }
+
+    final sessionJson = jsonEncode(originalSession.toJson());
+    debugPrint(
+      '🔐 [OAuth] Session JSON encoded, about to call recoverSession()...',
+    );
+
+    await Supabase.instance.client.auth
+        .recoverSession(sessionJson)
+        .timeout(const Duration(seconds: 5));
+
+    debugPrint(
+      '✅ [OAuth] Original session RESTORED: user back to $originalUserId',
+    );
+    debugPrint(
+      '✅ [OAuth] Google token available for calendar sync: ${googleProviderToken?.isNotEmpty == true ? 'YES' : 'NO'}',
+    );
+
+    // CRITICAL FIX: Force Supabase to persist the recovered session to its storage layer
+    // recoverSession() only updates in-memory; refreshSession() forces validation and persistence
+    try {
+      debugPrint(
+        '🔄 [OAuth] Forcing session persistence via refreshSession()...',
+      );
+      await Supabase.instance.client.auth.refreshSession().timeout(
+        const Duration(seconds: 5),
+      );
+      debugPrint(
+        '✅ [OAuth] Session refreshed and persisted to Supabase storage',
+      );
+    } catch (e) {
+      debugPrint(
+        '⚠️ [OAuth] refreshSession() encountered an issue: $e - but continuing with recovery',
+      );
+    }
+
+    // CRITICAL FIX: Persist the restored session's credentials to secure store
+    // (SecureStorage source of truth + plain shim for native background
+    // service's restoreCredentialsAndConnect()). This prevents the background
+    // service from overwriting with stale user_id/tokens.
+    try {
+      final currentUser = Supabase.instance.client.auth.currentUser;
+      final currentSession = Supabase.instance.client.auth.currentSession;
+
+      if (currentUser != null && currentSession != null) {
+        await SensitiveSessionStore.instance.writeAuthTokens(
+          userId: currentUser.id,
+          accessToken: currentSession.accessToken,
+          refreshToken: currentSession.refreshToken,
+        );
+
+        debugPrint(
+          '💾 [OAuth] ✅ Persisted restored session to secure store: userId=$originalUserId',
+        );
+      }
+    } catch (e) {
+      debugPrint(
+        '⚠️ [OAuth] Failed to persist restored session to secure store: $e',
+      );
+      // Continue anyway - this is a safety measure, not critical
+    }
+  } on TimeoutException catch (e) {
+    debugPrint(
+      '⚠️ [OAuth] recoverSession() timed out after 5s, but continuing: $e',
+    );
+  } catch (e, st) {
+    debugPrint('❌ [OAuth] FATAL ERROR during restoration: $e');
+    debugPrint('❌ [OAuth] Stack trace: $st');
+  } finally {
+    debugPrint('🔐 [OAuth] ========== RESTORATION SEQUENCE END ==========');
+  }
+}
+
+/// Process any deep link (OAuth, email change, etc.)
+Future<void> _processDeepLink(Uri uri) async {
+  debugPrint(
+    '🔗 [DeepLink] Processing: ${uri.scheme}://${uri.host}${uri.path}',
+  );
+
+  // Check if this is an email change confirmation link from our custom deep link
+  if (uri.scheme == 'com.example.matchme' &&
+      uri.host == 'email-change-confirm') {
+    await _processEmailChangeDeepLink(uri);
+    return;
+  }
+
+  // Check if this is a Supabase email change link (from email template)
+  // Supabase sends links like: https://yourapp.supabase.co/auth/v1/verify?token=...&type=email_change
+  if (uri.scheme == 'https' && uri.path.contains('/auth/v1/verify')) {
+    final type = uri.queryParameters['type']?.trim();
+    if (type == 'email_change') {
+      await _processEmailChangeDeepLink(uri);
+      return;
+    }
+  }
+
+  // Otherwise process as OAuth link
+  await _processOAuthDeepLink(uri);
+}
+
+/// Process email change confirmation deep link
+Future<void> _processEmailChangeDeepLink(Uri uri) async {
+  debugPrint('📧 [EmailChange] Processing email change confirmation link');
+
+  try {
+    final token = uri.queryParameters['token']?.trim();
+    final type = uri.queryParameters['type']?.trim();
+
+    debugPrint(
+      '📧 [EmailChange] Token: ${token == null || token.isEmpty ? 'none' : 'present'}, len=${token?.length ?? 0}',
+    );
+    debugPrint('📧 [EmailChange] Type: $type');
+
+    if (token == null || token.isEmpty) {
+      debugPrint('⚠️ [EmailChange] No token in link');
+      return;
+    }
+
+    if (type != 'email_change') {
+      debugPrint('⚠️ [EmailChange] Invalid type: $type');
+      return;
+    }
+
+    // The token is already processed by Supabase when the user clicked the link
+    // We just need to refresh the session to get the updated email
+    final auth = Supabase.instance.client.auth;
+
+    // Capture localization and messenger before the async gap
+    final String successMessage;
+    final ScaffoldMessengerState? messenger;
+    if (navigatorKey.currentContext != null) {
+      final ctx = navigatorKey.currentContext!;
+      messenger = ScaffoldMessenger.of(ctx);
+      successMessage = ProviderScope.containerOf(
+        ctx,
+        listen: false,
+      ).read(localizationProvider).getString('emailChangeSuccess');
+    } else {
+      messenger = null;
+      successMessage = 'Email changed successfully!';
+    }
+
+    try {
+      debugPrint(
+        '📧 [EmailChange] Refreshing session to confirm email change...',
+      );
+      await auth.refreshSession().timeout(const Duration(seconds: 5));
+
+      final updatedUser = auth.currentUser;
+      debugPrint(
+        '✅ [EmailChange] Email change confirmed! New email: ${updatedUser?.email}',
+      );
+
+      // Show success notification
+      messenger?.showSnackBar(
+        SnackBar(
+          content: Text(successMessage),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    } on TimeoutException {
+      debugPrint('⚠️ [EmailChange] Session refresh timed out');
+    } catch (e) {
+      debugPrint('⚠️ [EmailChange] Error refreshing session: $e');
+    }
+  } catch (e, st) {
+    debugPrint('⚠️ [EmailChange] Error processing email change link: $e\n$st');
+  }
+}
+
+Future<void> _processOAuthDeepLink(Uri uri) async {
+  debugPrint(
+    '[BOOTSTRAP] [OAuth] Processing deep link: ${uri.scheme}://${uri.host}',
+  );
+
+  // Must match the redirect URI exactly: com.example.matchme://login-callback
+  if (uri.scheme != 'com.example.matchme' || uri.host != 'login-callback') {
+    debugPrint('[BOOTSTRAP] [OAuth] Not an OAuth callback link');
+    return;
+  }
+
+  debugPrint('[BOOTSTRAP] [OAuth] Matched login-callback pattern');
+  debugPrint('[BOOTSTRAP] [OAuth] Query params: ${uri.queryParameters}');
+
+  final code = uri.queryParameters['code']?.trim();
+  final state = uri.queryParameters['state']?.trim();
+  final error = uri.queryParameters['error']?.trim();
+  final errorDescription = uri.queryParameters['error_description']?.trim();
+
+  // Handle OAuth errors from sign-in flows even without a session context.
+  // The user was not logged in before starting the OAuth flow, so
+  // originalSession/originalUserId will be null — but we must still show the error.
+  if (error != null && error.isNotEmpty) {
+    debugPrint('[BOOTSTRAP] [OAuth] OAuth error: $error - $errorDescription');
+    try {
+      await CalendarSyncService.failGoogleImportOAuthFlow(
+        errorDescription ?? error,
+      );
+    } catch (_) {}
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final pendingProvider = prefs.getString('pending_oauth_provider') ?? '';
+      await prefs.remove('pending_oauth_provider');
+      // OAuth temp session now lives in SecureStorage (not plain prefs).
+      await SensitiveSessionStore.instance.clearOAuthSession();
+      final effectiveError = errorDescription ?? error;
+      final key = effectiveError.toLowerCase().contains('cancel')
+          ? 'authOAuthCancelled'
+          : 'authOAuthProviderFailed';
+      final errorMsg = '$key|||$effectiveError|||$pendingProvider';
+      // Store in SharedPreferences so AuthScreen.build() can read it
+      // even if authUiMessageProvider listener hasn't been registered yet.
+      await prefs.setString('oauth_bootstrap_error', errorMsg);
+      container.read(authUiMessageProvider.notifier).setMessage(errorMsg);
+    } catch (_) {}
+    return;
+  }
+
+  if (code == null || code.isEmpty) {
+    debugPrint('[BOOTSTRAP] [OAuth] No auth code in callback');
+    return;
+  }
+
+  // CRITICAL: Try to get the original user from memory first.
+  // Code exchange requires a session context; skip stale links when none exists.
+  var originalUserId = Supabase.instance.client.auth.currentUser?.id;
+  var originalSession = Supabase.instance.client.auth.currentSession;
+  debugPrint(
+    '[BOOTSTRAP] [OAuth] Original session user (from memory): $originalUserId',
+  );
+
+  // If session is null but it was saved to SecureStorage during switchGoogleAccount,
+  // the background service may have cleared the in-memory session
+  if (originalSession == null && originalUserId == null) {
+    debugPrint(
+      '💾 [OAuth] In-memory session is null, checking SecureStorage...',
+    );
+    try {
+      final savedSessionJson = await SensitiveSessionStore.instance
+          .readOAuthSessionJson();
+      final savedUserId = await SensitiveSessionStore.instance
+          .readOAuthUserId();
+
+      if (savedSessionJson != null && savedUserId != null) {
+        debugPrint(
+          '💾 [OAuth] Found saved session in SecureStorage: $savedUserId',
+        );
+        try {
+          await Supabase.instance.client.auth
+              .recoverSession(savedSessionJson)
+              .timeout(const Duration(seconds: 5));
+          debugPrint(
+            '🔄 [OAuth] Forcing session persistence via refreshSession()...',
+          );
+          await Supabase.instance.client.auth.refreshSession().timeout(
+            const Duration(seconds: 5),
+          );
+          debugPrint(
+            '✅ [OAuth] Session refreshed and persisted to Supabase storage',
+          );
+          originalSession = Supabase.instance.client.auth.currentSession;
+          originalUserId = savedUserId;
+          debugPrint(
+            '✅ [OAuth] Restored session from SecureStorage: $originalUserId',
+          );
+          try {
+            final currentUser = Supabase.instance.client.auth.currentUser;
+            final currentSession = Supabase.instance.client.auth.currentSession;
+            if (currentUser != null && currentSession != null) {
+              // SecureStorage is source of truth; plain shim kept for native
+              // background service (see SensitiveSessionStore).
+              await SensitiveSessionStore.instance.writeAuthTokens(
+                userId: currentUser.id,
+                accessToken: currentSession.accessToken,
+                refreshToken: currentSession.refreshToken,
+              );
+              debugPrint(
+                '💾 [OAuth] ✅ Persisted restored session to secure store: userId=$originalUserId',
+              );
+            }
+          } catch (e) {
+            debugPrint(
+              '⚠️ [OAuth] Failed to persist restored session to secure store: $e',
+            );
+          }
+        } on TimeoutException {
+          debugPrint(
+            '⚠️ [OAuth] recoverSession() from SecureStorage timed out after 5s, continuing anyway...',
+          );
+        } catch (e, st) {
+          final errorMsg = e.toString().toLowerCase();
+          if (errorMsg.contains('refresh_token_already_used') ||
+              errorMsg.contains('invalid refresh token') ||
+              errorMsg.contains('refresh token not found')) {
+            // NEVER auto-sign-out: a stale oauth_original_* entry must not
+            // log the user out. Only discard the stale switch-account
+            // scratch keys and keep the current session as-is.
+            debugPrint(
+              '⚠️ [OAuth] Refresh token is stale/already used, discarding saved switch-account scratch keys only (keeping current session)',
+            );
+            await SensitiveSessionStore.instance.clearOAuthSession();
+          } else {
+            debugPrint(
+              '⚠️ [OAuth] Failed to restore session from SecureStorage: $e',
+            );
+            debugPrint('⚠️ [OAuth] Stack trace: $st');
+          }
+          originalSession = Supabase.instance.client.auth.currentSession;
+          originalUserId = originalSession?.user.id ?? savedUserId;
+        }
+      } else {
+        debugPrint(
+          'ℹ️ [OAuth] No saved session in SecureStorage (this is normal for direct OAuth without account switch)',
+        );
+      }
+    } catch (e) {
+      debugPrint('⚠️ [OAuth] Error reading SecureStorage: $e');
+    }
+  }
+
+  // CRITICAL: If we have no session context at all, don't try to process the OAuth code
+  // This prevents processing stale deep links from previous sessions when the app starts
+  if (originalSession == null && originalUserId == null) {
+    debugPrint(
+      '[BOOTSTRAP] [OAuth] No session context found (not logged in and no saved session)',
+    );
+    debugPrint(
+      '[BOOTSTRAP] [OAuth] Ignoring OAuth code exchange - this is likely a stale deep link from a previous session',
+    );
+    return;
+  }
+
+  String? callbackCode;
+  try {
+    callbackCode = code;
+
+    debugPrint(
+      '✅ [OAuth] Auth code received: ${code.isEmpty ? 'empty' : 'present'}, len=${code.length}',
+    );
+    debugPrint(
+      '✅ [OAuth] State: ${state == null || state.isEmpty ? 'none' : 'present'}, len=${state?.length ?? 0}',
+    );
+    debugPrint(
+      '🔓 [OAuth] Auth client current session before recovery: ${Supabase.instance.client.auth.currentSession?.user.id}',
+    );
+
+    final prefs = await SharedPreferences.getInstance();
+    final switchAccountFlowActive = await SensitiveSessionStore.instance
+        .hasOAuthSession();
+    final persistedHandledCode = prefs.getString(_prefsLastHandledOAuthCodeKey);
+    if (_oauthCodesInFlight.contains(code)) {
+      debugPrint(
+        'ℹ️ [OAuth] Callback code already being processed, ignoring duplicate',
+      );
+      return;
+    }
+    if (_lastHandledOAuthCode == code || persistedHandledCode == code) {
+      debugPrint(
+        'ℹ️ [OAuth] Callback code already handled previously, ignoring stale duplicate',
+      );
+      return;
+    }
+    _oauthCodesInFlight.add(code);
+
+    // CRITICAL: Supabase should have ALREADY exchanged the code and updated its internal state
+    // But the events might not have fired yet. Listen to auth changes and also poll.
+
+    bool sessionRecovered = false;
+    String? googleProviderToken;
+    String? newGoogleUserId;
+    String? googleProviderEmail;
+    StreamSubscription? authListener;
+    Future<void>? restorationFuture;
+
+    String? extractGoogleIdentityToken(User? user) {
+      final identities = user?.identities;
+      if (identities == null) {
+        return null;
+      }
+      for (final identity in identities) {
+        if (identity.provider == 'google' && identity.identityData != null) {
+          final identData = identity.identityData as Map<String, dynamic>;
+          final token = (identData['access_token'] as String?)?.trim();
+          if (token != null && token.isNotEmpty) {
+            return token;
+          }
+        }
+      }
+      return null;
+    }
+
+    String? extractGoogleIdentityEmail(User? user) {
+      final identities = user?.identities;
+      if (identities == null) {
+        return null;
+      }
+      for (final identity in identities) {
+        if (identity.provider == 'google' && identity.identityData != null) {
+          final identData = identity.identityData as Map<String, dynamic>;
+          final email = (identData['email'] as String?)?.trim();
+          if (email != null && email.isNotEmpty) {
+            return email;
+          }
+        }
+      }
+      return null;
+    }
+
+    bool userHasGoogleIdentity(User? user) {
+      final meta = user?.appMetadata;
+      final directProvider = meta?['provider']?.toString().toLowerCase().trim();
+      if (directProvider == 'google') {
+        return true;
+      }
+      final providers = meta?['providers'];
+      if (providers is List) {
+        for (final provider in providers) {
+          if (provider.toString().toLowerCase().trim() == 'google') {
+            return true;
+          }
+        }
+      }
+      final identities = user?.identities;
+      if (identities == null) {
+        return false;
+      }
+      for (final identity in identities) {
+        if (identity.provider == 'google') {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    void cacheGoogleImportTokenIfPresent(Session session, String source) {
+      final sessionProviderToken = userHasGoogleIdentity(session.user)
+          ? session.providerToken?.trim()
+          : null;
+      final identityToken = extractGoogleIdentityToken(session.user);
+      final previousToken = googleProviderToken;
+
+      googleProviderToken =
+          previousToken ?? sessionProviderToken ?? identityToken;
+
+      if (googleProviderToken != previousToken && googleProviderToken != null) {
+        googleProviderEmail =
+            extractGoogleIdentityEmail(session.user) ?? session.user.email;
+      }
+
+      if (googleProviderToken != null &&
+          googleProviderToken!.isNotEmpty &&
+          googleProviderToken != previousToken) {
+        unawaited(
+          CalendarSyncService.cacheGoogleImportToken(
+            token: googleProviderToken!,
+            expiry: DateTime.now().add(const Duration(minutes: 55)),
+            userEmail: googleProviderEmail,
+          ),
+        );
+        debugPrint('✅ [OAuth] Cached Google token from $source');
+      }
+    }
+
+    bool hasOAuthResult(Session session) {
+      cacheGoogleImportTokenIfPresent(session, 'oauth-session-check');
+      return session.user.id != originalUserId ||
+          (googleProviderToken?.isNotEmpty == true);
+    }
+
+    bool shouldRestoreOriginalSession(Session session) {
+      return switchAccountFlowActive &&
+          originalSession != null &&
+          originalUserId != null;
+    }
+
+    void scheduleRestorationIfNeeded(Session session) {
+      if (restorationFuture != null || !shouldRestoreOriginalSession(session)) {
+        return;
+      }
+      final newUserId = session.user.id;
+      debugPrint(
+        '🔐 [OAuth] DETECTED: Different user after OAuth: original=$originalUserId, new=$newUserId',
+      );
+      newGoogleUserId = newUserId;
+      if (session.user.id != originalUserId) {
+        debugPrint(
+          'ðŸ” [OAuth] DETECTED: Different user after OAuth: original=$originalUserId, new=$newGoogleUserId',
+        );
+      } else {
+        debugPrint(
+          'ðŸ” [OAuth] DETECTED: Session changed during switch-account flow for user=$originalUserId; restoring original MatchMe session',
+        );
+      }
+      debugPrint('🔐 [OAuth] ========== IMMEDIATE RESTORATION ==========');
+      restorationFuture = _performSessionRestoration(
+        originalSession,
+        originalUserId,
+        newGoogleUserId,
+        googleProviderToken,
+        googleProviderEmail,
+      );
+      unawaited(
+        Future.microtask(() async {
+          await authListener?.cancel();
+          debugPrint(
+            '🔓 [OAuth] Listener cancelled to prevent stream conflicts',
+          );
+        }),
+      );
+    }
+
+    debugPrint(
+      '🔓 [OAuth] Starting recovery with dual approach (listen + poll)...',
+    );
+
+    // Approach 1: Listen for auth state changes (most reliable for completed exchanges)
+    final authFuture = Future<void>(() async {
+      final completer = Completer<void>();
+      authListener = Supabase.instance.client.auth.onAuthStateChange.listen(
+        (data) {
+          debugPrint(
+            '🔓 [OAuth] Auth state change detected: event=${data.event}',
+          );
+          debugPrint('✅ [OAuth] Session from event: ${data.session?.user.id}');
+          debugPrint(
+            '✅ [OAuth] ProviderToken from event: ${data.session?.providerToken == null || data.session!.providerToken!.isEmpty ? 'NULL' : 'present'}, len=${data.session?.providerToken?.length ?? 0}',
+          );
+
+          if (data.session != null) {
+            final session = data.session!;
+            final newUserId = session.user.id;
+            cacheGoogleImportTokenIfPresent(session, 'auth-listener');
+
+            if (!hasOAuthResult(session)) {
+              debugPrint(
+                '⏳ [OAuth] Auth state change still reflects the original session, waiting...',
+              );
+              return;
+            }
+
+            debugPrint(
+              '✅ [OAuth] Session recovered via auth state change: $newUserId',
+            );
+            scheduleRestorationIfNeeded(session);
+            sessionRecovered = true;
+            if (!completer.isCompleted) completer.complete();
+          }
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          debugPrint('[OAuth] Auth stream error: $error');
+        },
+      );
+
+      // Give listener time to trigger
+      try {
+        await completer.future.timeout(const Duration(seconds: 8));
+      } on TimeoutException {
+        debugPrint(
+          '⏱️ [OAuth] Auth state listener timeout (expected if already exchanged)',
+        );
+      }
+    });
+
+    // Approach 2: Aggressive polling to detect token update
+    final pollFuture = Future<void>(() async {
+      await Future.delayed(const Duration(milliseconds: 100));
+      for (var i = 0; i < 40; i++) {
+        try {
+          final currentSession = Supabase.instance.client.auth.currentSession;
+          if (currentSession != null) {
+            if (!hasOAuthResult(currentSession)) {
+              if (i % 10 == 0) {
+                debugPrint(
+                  '⏳ [OAuth] Polling attempt $i sees the original session only, continuing to wait...',
+                );
+              }
+              await Future.delayed(const Duration(milliseconds: 250));
+              continue;
+            }
+
+            debugPrint(
+              '✅ [OAuth] Session found via polling attempt $i: ${currentSession.user.id}',
+            );
+            debugPrint(
+              '✅ [OAuth] ProviderToken from polling: ${currentSession.providerToken == null || currentSession.providerToken!.isEmpty ? 'NULL' : 'present'}, len=${currentSession.providerToken?.length ?? 0}',
+            );
+
+            scheduleRestorationIfNeeded(currentSession);
+            sessionRecovered = true;
+            break;
+          }
+          if (i % 10 == 0) {
+            debugPrint(
+              '🔓 [OAuth] Polling attempt $i (checking for updated session)...',
+            );
+          }
+          await Future.delayed(const Duration(milliseconds: 250));
+        } catch (e) {
+          if (i == 0) debugPrint('⚠️ [OAuth] Polling error: $e');
+        }
+      }
+    });
+
+    // Run both approaches in parallel
+    await Future.wait([authFuture, pollFuture]);
+
+    // CRITICAL: Wait for restoration to complete before doing final verification
+    if (restorationFuture != null) {
+      debugPrint('🔓 [OAuth] Waiting for restoration to complete...');
+      try {
+        await restorationFuture!.timeout(const Duration(seconds: 6));
+        debugPrint('✅ [OAuth] Restoration completed');
+      } on TimeoutException {
+        debugPrint('⚠️ [OAuth] Restoration timed out, but continuing...');
+      } catch (e) {
+        debugPrint('⚠️ [OAuth] Error during restoration wait: $e');
+      }
+    }
+
+    // NOTE: Session restoration now happens as soon as we detect a user change.
+    // We waited for it above before doing the final verification pass.
+
+    // Final verification
+    debugPrint('🔓 [OAuth] Recovery complete, checking final state...');
+    final finalSession = Supabase.instance.client.auth.currentSession;
+    final finalUser = Supabase.instance.client.auth.currentUser;
+    final cachedGooglePayload =
+        await CalendarSyncService.getCachedGoogleImportPayload();
+    if (finalSession != null && sessionRecovered) {
+      debugPrint(
+        '✅ [OAuth] FINAL SUCCESS: Session confirmed: ${finalSession.user.id}',
+      );
+      debugPrint(
+        '✅ [OAuth] Access token: ${finalSession.accessToken.isEmpty ? 'EMPTY' : 'present'}, len=${finalSession.accessToken.length}',
+      );
+      final hasUsableGoogleToken =
+          finalSession.providerToken?.isNotEmpty == true ||
+          cachedGooglePayload != null;
+      debugPrint(
+        '✅ [OAuth] ProviderToken available: ${hasUsableGoogleToken ? 'YES' : 'NO - WILL CAUSE TIMEOUT'}',
+      );
+
+      _lastHandledOAuthCode = code;
+      await prefs.setString(_prefsLastHandledOAuthCodeKey, code);
+      if (switchAccountFlowActive) {
+        final flowId = prefs.getString(_prefsGoogleSwitchFlowIdKey);
+        if (flowId != null && flowId.isNotEmpty) {
+          await prefs.setString(_prefsGoogleSwitchCompletedFlowIdKey, flowId);
+          debugPrint('[OAuth] Marked Google switch flow complete: $flowId');
+        }
+      }
+
+      // Check identities array (where Supabase stores OAuth provider tokens)
+      debugPrint('🔓 [OAuth] Checking identities array...');
+      if (finalUser?.identities != null && finalUser!.identities!.isNotEmpty) {
+        for (final identity in finalUser.identities!) {
+          debugPrint('🔓 [OAuth] Identity: provider=${identity.provider}');
+          if (identity.provider == 'google' && identity.identityData != null) {
+            final data = identity.identityData as Map<String, dynamic>;
+            final providerToken = data['access_token'] as String?;
+            if (providerToken != null && providerToken.isNotEmpty) {
+              debugPrint('✅ [OAuth] FOUND Google access token in identities!');
+              debugPrint(
+                '✅ [OAuth] Token in identities: present, len=${providerToken.length}',
+              );
+            } else {
+              debugPrint(
+                'ℹ️ [OAuth] No access_token in Google identity data (session providerToken/cache is being used instead)',
+              );
+            }
+          }
+        }
+      } else {
+        debugPrint('⚠️ [OAuth] No identities array or empty');
+      }
+
+      // CRITICAL: If providerToken is null, we need to force Supabase to refresh
+      // This ensures the calendar sync service can access the provider token
+      if ((finalSession.providerToken == null ||
+              finalSession.providerToken!.isEmpty) &&
+          cachedGooglePayload == null) {
+        debugPrint(
+          '⚠️ [OAuth] ProviderToken is empty! Attempting to refresh session...',
+        );
+        try {
+          // Try to refresh to populate providerToken
+          await Supabase.instance.client.auth.refreshSession();
+          final refreshedSession = Supabase.instance.client.auth.currentSession;
+          final token = refreshedSession?.providerToken;
+          final tokenLength = token?.length ?? 0;
+          debugPrint(
+            '✅ [OAuth] After refresh - ProviderToken: ${token == null ? 'STILL NULL' : 'present'}, len=$tokenLength',
+          );
+        } catch (e) {
+          debugPrint('⚠️ [OAuth] Refresh failed: $e');
+        }
+      }
+    } else if (finalSession != null) {
+      debugPrint(
+        '⚠️ [OAuth] Session exists but recovery flag not set: ${finalSession.user.id}',
+      );
+    } else {
+      debugPrint(
+        '❌ [OAuth] ERROR: No session found after OAuth callback processing',
+      );
+      debugPrint(
+        '❌ [OAuth] This means Supabase backend did not exchange the OAuth code for a token',
+      );
+    }
+
+    // CLEANUP: Clear the saved session from secure store since we either restored it or didn't need it
+    try {
+      await SensitiveSessionStore.instance.clearOAuthSession();
+      debugPrint('🧹 [OAuth] Cleared saved session from secure store');
+    } catch (e) {
+      debugPrint('⚠️ [OAuth] Error clearing secure store: $e');
+    }
+
+    authListener?.cancel();
+  } catch (e, st) {
+    debugPrint('❌ [OAuth] Error processing deep link: $e\n$st');
+    _reportNonFatal(e, st);
+  } finally {
+    if (callbackCode != null && callbackCode.isNotEmpty) {
+      _oauthCodesInFlight.remove(callbackCode);
+    }
+  }
+}
+
+Future<void> _processWebOAuthCodeDuringBootstrap() async {
+  if (!kIsWeb) return;
+  // Clear any stale OAuth error from a prior session so it doesn't persist
+  // across app launches when no OAuth flow is actually in progress.
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('oauth_bootstrap_error');
+  } catch (_) {}
+
+  // Must be called after Supabase.initialize() but BEFORE the widget tree
+  // builds, because supabase_flutter's SupabaseAuth widget auto-registers a
+  // deep-link listener (_handleDeeplink) that also calls getSessionFromUrl.
+  // We process the code here, capture any error, and clear the URL so the
+  // SDK listener has nothing to fail on.
+
+  final uri = Uri.base;
+  final fragment = uri.fragment;
+  final queryParams = uri.queryParameters;
+
+  // Handle OAuth error URLs (e.g. provider denied access).
+  // The popup must close so the main window's signInWithOAuth() can proceed.
+  final errorParam = queryParams['error']?.trim();
+  if (errorParam != null && errorParam.isNotEmpty) {
+    debugPrint('[BOOTSTRAP] [OAuth] OAuth error in URL: $errorParam');
+    final errorDescription = queryParams['error_description']?.trim() ?? '';
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final providerName = prefs.getString('pending_oauth_provider') ?? '';
+      await prefs.remove('pending_oauth_provider');
+      final effectiveError = errorDescription.isNotEmpty
+          ? errorDescription
+          : errorParam;
+      final key = effectiveError.toLowerCase().contains('cancel')
+          ? 'authOAuthCancelled'
+          : 'authOAuthProviderFailed';
+      final errorMsg = '$key|||$effectiveError|||$providerName';
+      await prefs.setString('oauth_bootstrap_error', errorMsg);
+    } catch (_) {}
+    // Close popup if we're in one so opener's signInWithOAuth() rejects
+    try {
+      if (html.window.opener != null) {
+        html.window.close();
+      }
+    } catch (_) {}
+    return;
+  }
+
+  final hasCode =
+      (queryParams.containsKey('code') && queryParams.containsKey('state')) ||
+      (fragment.contains('code=') && fragment.contains('state='));
+
+  if (!hasCode) return;
+
+  debugPrint(
+    '🔐 [BOOTSTRAP] Detected OAuth callback code in URL — processing during bootstrap',
+  );
+
+  // Read the pending provider BEFORE getSessionFromUrl so we can include it
+  // in the error message if exchange fails.
+  String providerName = '';
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    providerName = prefs.getString('pending_oauth_provider') ?? '';
+    // Don't remove it yet — our appOnGenerateRoute may also try to read it
+  } catch (_) {}
+
+  try {
+    await Supabase.instance.client.auth.getSessionFromUrl(Uri.base);
+    // Success — code exchanged. The auth state listener will handle navigation.
+    debugPrint('✅ [BOOTSTRAP] OAuth code exchanged successfully');
+  } catch (error) {
+    debugPrint('❌ [BOOTSTRAP] OAuth code exchange failed: $error');
+    // Store the error in SharedPreferences so AuthScreen can pick it up.
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final msg = 'authOAuthProviderFailed|||$error|||$providerName';
+      await prefs.setString('oauth_bootstrap_error', msg);
+    } catch (_) {}
+  }
+
+  // CRITICAL: Clear the URL so neither supabase_flutter's own handler nor
+  // appOnGenerateRoute will try to process this stale code a second time.
+  try {
+    if (kIsWeb) {
+      final cleaned = Uri.base.replace(path: '/', query: '', fragment: '');
+      html.window.history.replaceState('', cleaned.toString());
+      debugPrint('🔐 [BOOTSTRAP] Cleared OAuth code from URL');
+    }
+  } catch (_) {}
+}
+
+Future<_BootstrapInitResult> _bootstrapInitialize(
+  ProviderContainer container,
+) async {
   // Yield immediately so main() can call runApp and the first frame (loading indicator) paints before heavy work.
   await Future.delayed(Duration.zero);
   try {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-      statusBarColor: Colors.white,
-      statusBarIconBrightness: Brightness.dark,
-      systemNavigationBarColor: Colors.white,
-      systemNavigationBarIconBrightness: Brightness.dark,
-    ));
+    SystemChrome.setSystemUIOverlayStyle(
+      const SystemUiOverlayStyle(
+        statusBarColor: Colors.white,
+        statusBarIconBrightness: Brightness.dark,
+        systemNavigationBarColor: Colors.white,
+        systemNavigationBarIconBrightness: Brightness.dark,
+      ),
+    );
   } catch (e, st) {
     _reportNonFatal(e, st);
   }
@@ -761,7 +2389,7 @@ Future<_BootstrapInitResult> _bootstrapInitialize(ProviderContainer container) a
         return;
       } on MissingPluginException catch (e) {
         lastError = e;
-        final backoffMs = min(1500, 80 * (1 << min(attempt, 5)));
+        final backoffMs = min(300, 80 * (1 << min(attempt, 4)));
         await Future.delayed(Duration(milliseconds: backoffMs));
       }
     }
@@ -769,6 +2397,15 @@ Future<_BootstrapInitResult> _bootstrapInitialize(ProviderContainer container) a
   }
 
   await ensurePluginsReady();
+
+  await initializeAppConfigCache();
+
+  // NOTE: there is deliberately no connectivity/internet pre-check here.
+  // The app's online/offline status is Supabase reachability and nothing else
+  // (see `supabase_reachability.dart`): working internet with an unreachable
+  // Supabase is still offline, so a transport or generate_204 probe could only
+  // ever reach the wrong verdict. The single decision point is
+  // `_applySupabaseReachabilityGate()` below, right after Supabase is up.
 
   Future<void> initHive() async {
     Object? lastError;
@@ -779,7 +2416,7 @@ Future<_BootstrapInitResult> _bootstrapInitialize(ProviderContainer container) a
         return;
       } on MissingPluginException catch (e) {
         lastError = e;
-        final backoffMs = min(2000, 80 * (1 << min(attempt, 5)));
+        final backoffMs = min(500, 80 * (1 << min(attempt, 5)));
         await Future.delayed(Duration(milliseconds: backoffMs));
       }
     }
@@ -787,7 +2424,9 @@ Future<_BootstrapInitResult> _bootstrapInitialize(ProviderContainer container) a
   }
 
   // Start Hive and DotEnv in parallel
-  debugPrint('⏱️ [BOOTSTRAP] Starting parallel init (Hive + DotEnv) at ${DateTime.now().millisecondsSinceEpoch}');
+  debugPrint(
+    '⏱️ [BOOTSTRAP] Starting parallel init (Hive + DotEnv) at ${DateTime.now().millisecondsSinceEpoch}',
+  );
   final hiveInitFuture = initHive();
 
   final dotenvFuture = dotenv.load(fileName: 'assets/.env').catchError((e, st) {
@@ -796,13 +2435,17 @@ Future<_BootstrapInitResult> _bootstrapInitialize(ProviderContainer container) a
 
   // Wait for DotEnv to load BEFORE resolving config, as config accesses dotenv.env
   await dotenvFuture;
-  debugPrint('⏱️ [BOOTSTRAP] DotEnv loaded at ${DateTime.now().millisecondsSinceEpoch}');
+  debugPrint(
+    '⏱️ [BOOTSTRAP] DotEnv loaded at ${DateTime.now().millisecondsSinceEpoch}',
+  );
 
   final configFuture = _resolveSupabaseRuntimeConfig();
 
   // Wait for config to be ready before starting Supabase
   final config = await configFuture;
-  debugPrint('⏱️ [BOOTSTRAP] Config resolved at ${DateTime.now().millisecondsSinceEpoch}');
+  debugPrint(
+    '⏱️ [BOOTSTRAP] Config resolved at ${DateTime.now().millisecondsSinceEpoch}',
+  );
   final supabaseUrl = config.url;
   final supabaseAnonKey = config.anonKey;
 
@@ -817,121 +2460,456 @@ Future<_BootstrapInitResult> _bootstrapInitialize(ProviderContainer container) a
     );
   }
 
-  // Start Supabase init (Parallel with Hive)
-  debugPrint('⏱️ [BOOTSTRAP] Starting Supabase.initialize at ${DateTime.now().millisecondsSinceEpoch}');
-  final supabaseInitFuture = Supabase.initialize(
-    url: supabaseUrl,
-    anonKey: supabaseAnonKey,
+  // Supabase reachability is the one and only online/offline signal, so the
+  // bootstrap gate below replaces the old generate_204 "dead carrier/wifi"
+  // probe and the 3× rapid RPC loop. One `health_check` round trip with a
+  // budget larger than Supabase's own gateway timeout decides it, and a
+  // genuine outage is entered in one shot instead of three doomed requests.
+
+  // Start Supabase init in parallel with the remaining Hive init.
+  debugPrint(
+    '⏱️ [BOOTSTRAP] Starting Supabase.initialize at ${DateTime.now().millisecondsSinceEpoch}',
   );
+
+  // Single init attempt with a short timeout (client is created synchronously;
+  // the await is only for recoverSession). Relaxed to 5s for mobile release
+  // cold starts (2s caused spurious timeouts on slow TLS).
+  const supabaseInitTimeout = Duration(seconds: 5);
+
+  final supabaseInitFuture =
+      Supabase.initialize(
+        url: supabaseUrl,
+        publishableKey: supabaseAnonKey,
+        // Security: persist the SDK session (access + refresh tokens) in secure
+        // storage (Keychain / EncryptedSharedPreferences) instead of the default
+        // plaintext SharedPreferences / localStorage.
+        authOptions: FlutterAuthClientOptions(
+          localStorage: SecureLocalStorage(
+            persistSessionKey: SecureLocalStorage.buildSessionKey(supabaseUrl),
+          ),
+        ),
+        realtimeClientOptions: RealtimeClientOptions(
+          transport: (url, headers) => WebSocketChannel.connect(Uri.parse(url)),
+        ),
+      ).timeout(
+        supabaseInitTimeout,
+        onTimeout: () {
+          debugPrint(
+            '⚠️ [BOOTSTRAP] Supabase initialization timed out after ${supabaseInitTimeout.inSeconds}s',
+          );
+          throw TimeoutException(
+            'Supabase initialization timeout',
+            supabaseInitTimeout,
+          );
+        },
+      );
 
   // Wait for Hive to be ready before starting LocalDb
   await hiveInitFuture;
-  debugPrint('⏱️ [BOOTSTRAP] Hive initialized at ${DateTime.now().millisecondsSinceEpoch}');
+  debugPrint(
+    '⏱️ [BOOTSTRAP] Hive initialized at ${DateTime.now().millisecondsSinceEpoch}',
+  );
+
+  final restoreTarget = await ResumeRouteRestore.peekPendingRouteName();
+  final prefersImmediateAppReveal =
+      restoreTarget != null && restoreTarget.isNotEmpty;
+  if (prefersImmediateAppReveal) {
+    debugPrint(
+      '⏱️ [BOOTSTRAP] Immediate reveal enabled for saved restore target "$restoreTarget"',
+    );
+  }
 
   // Start LocalDb init (depends on Hive)
   // We do NOT await this here, so the UI can load while Hive opens boxes.
-  unawaited(LocalDbService.instance.catchError((e, st) {
-    _reportNonFatal(e, st);
-    throw e;
-  }).then((_) => debugPrint('⏱️ [BOOTSTRAP] LocalDbService initialized at ${DateTime.now().millisecondsSinceEpoch}')));
+  unawaited(
+    LocalDbService.instance
+        .catchError((e, st) {
+          _reportNonFatal(e, st);
+          throw e;
+        })
+        .then(
+          (_) => debugPrint(
+            '⏱️ [BOOTSTRAP] LocalDbService initialized at ${DateTime.now().millisecondsSinceEpoch}',
+          ),
+        ),
+  );
+
+  // Initialize OfflineMutationQueue (depends on Hive)
+  unawaited(
+    OfflineMutationQueue.instance
+        .initialize()
+        .catchError((e, st) {
+          _reportNonFatal(e, st);
+          // Don't throw - mutation queue is not critical for app startup
+        })
+        .then(
+          (_) => debugPrint(
+            '⏱️ [BOOTSTRAP] OfflineMutationQueue initialized at ${DateTime.now().millisecondsSinceEpoch}',
+          ),
+        ),
+  );
+
+  // Warm signed-photo-URL memory from local storage so matched-user photos
+  // resolve instantly on UI startup (memory + disk, no network wait).
+  // Fire-and-forget: SharedPreferences read, never blocks first paint.
+  unawaited(
+    StorageHelper.warmUpPersistedUrlCache().catchError((e, st) {
+      _reportNonFatal(e, st);
+    }),
+  );
 
   // Await Supabase completion (critical for auth check in MatchMeApp)
   String? supabaseError;
+  User? bootstrapUser;
+  // NOTE: session policy — bootstrap must never clear the cached session.
+  // (Previously a `bootstrapSessionCleared` flag was set when JWT validation
+  // failed; removed so expired tokens keep the user logged in. Only
+  // auth.forced_sign_out_days or an explicit UI logout may sign out.)
   try {
     final supabaseInstance = await supabaseInitFuture;
-    debugPrint('⏱️ [BOOTSTRAP] Supabase initialized at ${DateTime.now().millisecondsSinceEpoch}');
-    
+    debugPrint(
+      '⏱️ [BOOTSTRAP] Supabase initialized at ${DateTime.now().millisecondsSinceEpoch}',
+    );
+
+    // Yield so the UI thread can paint before we kick off any further work.
+    await Future.delayed(Duration.zero);
+
+    // Process any OAuth callback code in the URL BEFORE the widget tree builds.
+    // supabase_flutter's SupabaseAuth widget auto-registers a deep-link handler
+    // that calls getSessionFromUrl — if we don't consume the code and clear the
+    // URL first, the SDK handler will throw an unhandled DartError on failure.
+    await _processWebOAuthCodeDuringBootstrap();
+
+    // Setup deep link handler for OAuth callbacks (CRITICAL for calendar sync)
+    // Must be done after Supabase is initialized
+    unawaited(_setupDeepLinkHandler());
+
     // Verify global instance matches
     if (supabaseInstance.client != Supabase.instance.client) {
-      debugPrint('⚠️ [BOOTSTRAP] WARNING: Returned client != Supabase.instance.client');
+      debugPrint(
+        '⚠️ [BOOTSTRAP] WARNING: Returned client != Supabase.instance.client',
+      );
     }
 
-    // Critical for web: validate recovered session immediately after Supabase init
-    // If the restored session has an invalid/expired JWT, clear it and force re-login
-    if (kIsWeb) {
-      final session = Supabase.instance.client.auth.currentSession;
-      if (session != null) {
-        debugPrint('⏱️ [BOOTSTRAP] Web session recovered, validating JWT...');
-        try {
-          final now = DateTime.now().millisecondsSinceEpoch / 1000;
-          final exp = session.expiresAt;
-          final expired = exp != null && exp <= now;
-          final accessToken = session.accessToken.trim();
-          if (expired || accessToken.isEmpty) {
-            debugPrint('❌ [BOOTSTRAP] Web session expired/invalid. Clearing persistence and reloading.');
+    // The single online/offline decision point of the whole bootstrap. One
+    // `health_check` round trip decides it: the budget is larger than Supabase's
+    // own gateway timeout, so a database stall reads as "the server answered
+    // but cannot serve us" and is reported as such instead of being confused
+    // with a dead network. No confirming attempt here — the runtime monitor
+    // re-probes within seconds and restores the online state automatically, so
+    // a false negative only costs a cached-data splash, not a stuck app.
+    if (offlineCacheManager.isSupabaseAvailable) {
+      final reachable = await _applySupabaseReachabilityGate();
+      if (!reachable) {
+        debugPrint(
+          '⏱️ [BOOTSTRAP] Forced offline after the Supabase reachability gate failed',
+        );
+      }
+    }
+
+    // Validate recovered session on all platforms immediately after Supabase init.
+    // If the restored session has an invalid/expired JWT, clear it and force re-login.
+    // Previously this was Web-only — moved to universal so mobile also catches stale JWTs.
+    final recoveredSession = Supabase.instance.client.auth.currentSession;
+    if (recoveredSession != null) {
+      debugPrint('⏱️ [BOOTSTRAP] Session recovered, validating JWT...');
+
+      // Skip network-dependent session validation when offline to avoid
+      // hanging the startup for 10-15 seconds on network timeouts.
+      if (!offlineCacheManager.isSupabaseAvailable) {
+        debugPrint('⏱️ [BOOTSTRAP] Skipping JWT validation (offline)');
+      } else {
+        // Proactively check token expiry and attempt refresh before calling getUser().
+        // This avoids a 403 error from the server for an expired access token.
+        // Wrapped in a 2s timeout + 3 rapid tries; network failure -> offline.
+        final now = DateTime.now().millisecondsSinceEpoch / 1000;
+        final expiresAt = recoveredSession.expiresAt;
+        if (expiresAt != null && expiresAt <= now + 30) {
+          debugPrint(
+            '⏱️ [BOOTSTRAP] Token expired or expiring soon (exp=$expiresAt), attempting refresh...',
+          );
+          bool refreshSucceeded = false;
+          for (int attempt = 1; attempt <= 3; attempt++) {
             try {
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.remove('supabase.auth.token');
-              if (kIsWeb) {
-                // html.window.location.reload();
-                // Return immediately to avoid further processing while reload happens
-                // return _BootstrapInitResult(supabaseUrl: supabaseUrl, supabaseAnonKey: supabaseAnonKey);
-                 debugPrint('🔄 [BOOTSTRAP] Web session cleared. Continuing to Auth Screen without reload.');
+              await SessionService.safeRefreshSession(
+                timeout: const Duration(milliseconds: 1200),
+              ).timeout(const Duration(milliseconds: 1200));
+              debugPrint('✅ [BOOTSTRAP] Token refreshed successfully');
+              refreshSucceeded = true;
+
+              // Token refresh succeeded: invalidate critical providers to force them to re-initialize
+              // with the refreshed token. This prevents stale token errors in location share,
+              // recent chats, and match notifications during bootstrap.
+              unawaited(
+                Future.microtask(() {
+                  try {
+                    if (bootstrapUser != null) {
+                      // Invalidate providers that depend on the session token
+                      container.invalidate(
+                        recentChatsProvider(bootstrapUser.id),
+                      );
+                      container.invalidate(
+                        recentMatchesProvider(bootstrapUser.id),
+                      );
+                      // Also invalidate match notifications to force subscription retry with new token
+                      container.invalidate(matchNotificationProvider);
+                    }
+                    debugPrint(
+                      '✅ [BOOTSTRAP] Invalidated providers after token refresh for recovery',
+                    );
+                  } catch (e) {
+                    debugPrint(
+                      '⚠️ [BOOTSTRAP] Provider invalidation after refresh failed: $e',
+                    );
+                  }
+                }),
+              );
+
+              break;
+            } catch (refreshError) {
+              final isNetwork =
+                  refreshError is TimeoutException ||
+                  isExpectedOfflineFailure(refreshError) ||
+                  refreshError.toString().toLowerCase().contains(
+                    'socketexception',
+                  ) ||
+                  refreshError.toString().toLowerCase().contains('timeout');
+              if (isNetwork) {
+                debugPrint(
+                  '⚠️ [BOOTSTRAP] Token refresh attempt $attempt failed (network/timeout): $refreshError',
+                );
+                if (attempt < 3) {
+                  await Future.delayed(const Duration(milliseconds: 200));
+                  continue;
+                }
+                debugPrint(
+                  '⚠️ [BOOTSTRAP] Token refresh failed after 3 rapid tries -> confirming offline with Supabase',
+                );
+                await _applySupabaseUnreachable('token refresh failed');
+                break;
+              } else {
+                // Check for refresh_token race - safeRefresh already retried with native token
+                final lower = refreshError.toString().toLowerCase();
+                if (lower.contains('refresh_token_already_used') ||
+                    lower.contains('already used')) {
+                  debugPrint(
+                    '⚠️ [BOOTSTRAP] Token refresh race (already_used) - native may have refreshed, continuing with current session',
+                  );
+                  // If native refreshed, currentSession should now be valid
+                  if (Supabase.instance.client.auth.currentSession != null) {
+                    refreshSucceeded = true;
+
+                    // Token may have been refreshed by native: invalidate providers for recovery
+                    unawaited(
+                      Future.microtask(() {
+                        try {
+                          if (bootstrapUser != null) {
+                            container.invalidate(
+                              recentChatsProvider(bootstrapUser.id),
+                            );
+                            container.invalidate(
+                              recentMatchesProvider(bootstrapUser.id),
+                            );
+                            container.invalidate(matchNotificationProvider);
+                          }
+                          debugPrint(
+                            '✅ [BOOTSTRAP] Invalidated providers after native token refresh (race recovery)',
+                          );
+                        } catch (e) {
+                          debugPrint(
+                            '⚠️ [BOOTSTRAP] Provider invalidation after race recovery failed: $e',
+                          );
+                        }
+                      }),
+                    );
+                  }
+                } else {
+                  debugPrint(
+                    '⏱️ [BOOTSTRAP] Token refresh failed (expected if refresh token also expired): $refreshError',
+                  );
+                }
+                break;
               }
-            } catch (_) {}
-          } else {
-            await Supabase.instance.client.auth.getUser();
-            debugPrint('✅ [BOOTSTRAP] Web session JWT is valid');
+            }
           }
-        } catch (e) {
-          final errorMsg = e.toString().toLowerCase();
-          if (errorMsg.contains('invalid jwt') ||
-              errorMsg.contains('jwt expired') ||
-              errorMsg.contains('unauthorized') ||
-              errorMsg.contains('403') ||
-              errorMsg.contains('401')) {
-            debugPrint('❌ [BOOTSTRAP] Web session JWT is INVALID: $e. Clearing persistence and reloading.');
-            try {
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.remove('supabase.auth.token');
-              if (kIsWeb) {
-                 // html.window.location.reload();
-                 // return _BootstrapInitResult(supabaseUrl: supabaseUrl, supabaseAnonKey: supabaseAnonKey);
-                 debugPrint('🔄 [BOOTSTRAP] Web session cleared (error). Continuing to Auth Screen without reload.');
-              }
-            } catch (_) {}
+          if (!refreshSucceeded && !offlineCacheManager.isSupabaseAvailable) {
+            debugPrint(
+              '⏱️ [BOOTSTRAP] Skipping getUser due to offline after refresh',
+            );
           } else {
-            debugPrint('⚠️ [BOOTSTRAP] Web session validation error (non-auth): $e');
+            // Yield after the network round trip so the UI can paint a frame.
+            await Future.delayed(Duration.zero);
+          }
+        }
+
+        if (!offlineCacheManager.isSupabaseAvailable) {
+          debugPrint('⏱️ [BOOTSTRAP] Skipping getUser (already offline)');
+        } else {
+          bool validationDone = false;
+          for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+              await Supabase.instance.client.auth.getUser().timeout(
+                const Duration(milliseconds: 1200),
+              );
+              // Clear any stale OAuth error stored during code exchange attempt —
+              // the session is valid, so the error was spurious.
+              try {
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.remove('oauth_bootstrap_error');
+              } catch (_) {}
+              debugPrint('✅ [BOOTSTRAP] Session JWT is valid');
+              validationDone = true;
+              break;
+            } catch (e) {
+              final isNetwork =
+                  e is TimeoutException || isExpectedOfflineFailure(e);
+              if (isNetwork) {
+                debugPrint(
+                  '⚠️ [BOOTSTRAP] getUser attempt $attempt failed (network/timeout): $e',
+                );
+                if (attempt < 3) {
+                  await Future.delayed(const Duration(milliseconds: 200));
+                  continue;
+                }
+                debugPrint(
+                  '⚠️ [BOOTSTRAP] getUser failed after 3 rapid tries -> confirming offline, using cached session',
+                );
+                await _applySupabaseUnreachable('getUser failed');
+                break;
+              }
+              // POLICY: never auto-sign-out here. An expired/invalid JWT on
+              // cold start (e.g. access token expired while the app was
+              // closed) must NOT log the user out. Keep the cached session
+              // so the user stays logged in; a later refresh will renew it.
+              // Only auth.forced_sign_out_days or an explicit user logout
+              // may clear the session.
+              final errorMsg = e.toString().toLowerCase();
+              if (errorMsg.contains('invalid jwt') ||
+                  errorMsg.contains('jwt expired') ||
+                  errorMsg.contains('token is expired') ||
+                  errorMsg.contains('unauthorized') ||
+                  errorMsg.contains('403') ||
+                  errorMsg.contains('401')) {
+                debugPrint(
+                  '⏱️ [BOOTSTRAP] Session JWT validation failed ($e) — keeping cached session, NOT signing out (permissive session policy)',
+                );
+                unawaited(
+                  SessionService.persistSignOutReason(
+                    reason: e.toString(),
+                    source: 'bootstrapGetUser-kept-session',
+                  ),
+                );
+              } else {
+                debugPrint(
+                  '⚠️ [BOOTSTRAP] Session validation error (non-auth): $e',
+                );
+              }
+              validationDone = true;
+              break;
+            }
+          }
+          if (!validationDone) {
+            debugPrint('⚠️ [BOOTSTRAP] Validation loop ended without result');
           }
         }
       }
     }
 
-    var user = Supabase.instance.client.auth.currentUser;
-    if (user == null && Supabase.instance.client.auth.currentSession != null) {
-      try {
-        final refreshed = await Supabase.instance.client.auth.getUser();
-        user = refreshed.user;
-      } catch (_) {}
+    // Never auto-clear: keep whatever session the SDK recovered, even if
+    // its JWT failed validation above (it may just be expired; a later
+    // refresh will renew it).
+    bootstrapUser = Supabase.instance.client.auth.currentUser;
+    if (bootstrapUser == null &&
+        Supabase.instance.client.auth.currentSession != null) {
+      if (!offlineCacheManager.isSupabaseAvailable) {
+        debugPrint(
+          '⏱️ [BOOTSTRAP] Skipping bootstrapUser getUser fallback (offline)',
+        );
+      } else {
+        try {
+          final refreshed = await Supabase.instance.client.auth
+              .getUser()
+              .timeout(const Duration(milliseconds: 1200));
+          bootstrapUser = refreshed.user;
+        } catch (e) {
+          final isNetwork =
+              e is TimeoutException || isExpectedOfflineFailure(e);
+          if (isNetwork) {
+            debugPrint(
+              '⚠️ [BOOTSTRAP] bootstrapUser getUser timeout/network -> confirming offline',
+            );
+            await _applySupabaseUnreachable('bootstrapUser getUser failed');
+          } else {
+            debugPrint('⚠️ [BOOTSTRAP] bootstrapUser getUser error: $e');
+          }
+        }
+      }
     }
 
-    if (user != null) {
-      String? url;
-      try {
-        final dynamic c = Supabase.instance.client;
-        url = (c.supabaseUrl as String?)?.trim();
-      } catch (_) {}
-      debugPrint('[BGSESSION] bootstrap: scheduling registerSession userId=${user.id} url=$url');
+    setRuntimeSupabaseConfig(url: supabaseUrl, anonKey: supabaseAnonKey);
+
+    // Schedule BGSESSION after the first frame so the cold-start paint is not
+    // further delayed. The coordinator coalesces and debounces these calls.
+    if (bootstrapUser != null) {
+      final url = runtimeSupabaseUrl;
+      debugPrint(
+        '[BGSESSION] bootstrap: scheduling registerSession userId=${bootstrapUser.id} url=$url',
+      );
       if (kIsWeb) {
         try {
-          WebNotificationService.setServiceWorkerUserId(user.id);
+          WebNotificationService.setServiceWorkerUserId(bootstrapUser.id);
         } catch (_) {}
       }
       final platformText = kIsWeb
           ? 'web'
           : defaultTargetPlatform == TargetPlatform.android
-              ? 'android'
-              : defaultTargetPlatform == TargetPlatform.iOS
-                  ? 'ios'
-                  : 'unknown';
+          ? 'android'
+          : defaultTargetPlatform == TargetPlatform.iOS
+          ? 'ios'
+          : 'unknown';
+      final capturedUserId = bootstrapUser.id;
       unawaited(
-        SessionService.registerSession(user.id, platform: platformText).catchError((e, st) {
-          _reportNonFatal(e as Object, st as StackTrace);
+        Future<void>.delayed(const Duration(milliseconds: 50), () {
+          if (!BootstrapDeferral.isAppReady) return;
+          SessionRegistrationCoordinator.instance.schedule(
+            userId: capturedUserId,
+            platform: platformText,
+            source: 'bootstrap',
+          );
         }),
       );
     }
   } catch (e) {
-    supabaseError = e.toString();
+    final errorMessage = e.toString();
+    final isTimeout =
+        e is TimeoutException ||
+        errorMessage.toLowerCase().contains('timeout') ||
+        errorMessage.contains('TimeoutException');
+    final isNetwork = isTimeout || isExpectedOfflineFailure(e);
+
+    if (isNetwork) {
+      debugPrint(
+        '⚠️ [BOOTSTRAP] Supabase initialization failed (network/timeout) - will use offline mode with cached data: $e',
+      );
+      // Supabase never came up, so it cannot be reached: offline, and the gate
+      // below is skipped because there is nothing left to confirm.
+      offlineCacheManager.setSupabaseAvailability(false, force: true);
+      // Ensure runtime config is still set so providers can read cached data paths
+      try {
+        setRuntimeSupabaseConfig(url: supabaseUrl, anonKey: supabaseAnonKey);
+      } catch (_) {}
+      // Try to recover persisted session so authProvider can show cached user immediately
+      try {
+        await SessionService.recoverPersistedSupabaseSession(
+          timeout: const Duration(seconds: 1),
+        );
+      } catch (_) {}
+    } else {
+      debugPrint(
+        '❌ [BOOTSTRAP] Supabase initialization error (not timeout/network): $e',
+      );
+      supabaseError = errorMessage;
+    }
   }
 
   if (supabaseError != null) {
@@ -941,88 +2919,259 @@ Future<_BootstrapInitResult> _bootstrapInitialize(ProviderContainer container) a
   // Note: We deliberately do NOT await localDbInitFuture here.
   // This allows the UI to render "Loading..." states instead of blocking on splash screen.
 
-  _runtimeSupabaseUrl = supabaseUrl;
-  _runtimeSupabaseAnonKey = supabaseAnonKey;
-
   try {
     container.read(outboxSyncProvider);
   } catch (e, st) {
     _reportNonFatal(e, st);
   }
 
-  ResumeDiagnostics.setEnabled(false);
+  // Initialize encrypted cache and chat key provider for current user.
+  // These touch local storage + crypto and were previously awaited on the
+  // critical startup path. The chat UI gates on chatKeyProvider via its own
+  // loading state, so deferring past the first frame keeps the initial paint
+  // snappy without affecting correctness.
+  final currentUser =
+      bootstrapUser ?? Supabase.instance.client.auth.currentUser;
+  if (currentUser != null) {
+    final capturedUserId = currentUser.id;
+    unawaited(_runPostFrameChatKeyInit(capturedUserId));
+  }
+
+  ResumeDiagnostics.log('Bootstrap initialization completed');
 
   return _BootstrapInitResult(
     supabaseUrl: supabaseUrl,
     supabaseAnonKey: supabaseAnonKey,
+    prefersImmediateAppReveal: prefersImmediateAppReveal,
   );
 }
 
+/// Lightweight coordinator that signals when the first real app frame has
+/// rendered, so other bootstrap tasks can be safely unblocked without
+/// re-introducing the cold-start jank they used to cause.
+class BootstrapDeferral {
+  BootstrapDeferral._();
+  static bool _appReady = false;
+  static bool get isAppReady => _appReady;
+  static void markAppReady() {
+    if (_appReady) return;
+    _appReady = true;
+  }
+}
+
+Future<void> _runPostFrameChatKeyInit(String userId) async {
+  // Wait until the first real frame has rendered, then yield once more so
+  // frame production has a chance to recover from the bootstrap load.
+  while (!BootstrapDeferral.isAppReady) {
+    await Future.delayed(const Duration(milliseconds: 30));
+  }
+  await Future.delayed(Duration.zero);
+  try {
+    await EncryptedCacheService.instance.initialize(userId);
+    debugPrint('⏱️ [BOOTSTRAP] EncryptedCacheService initialized');
+  } catch (e, st) {
+    _reportNonFatal(e, st);
+  }
+  try {
+    container.read(chatKeyProvider);
+    final chatKeyNotifier = container.read(chatKeyProvider.notifier);
+    await chatKeyNotifier.initializationComplete;
+    final keyState = container.read(chatKeyProvider);
+    debugPrint(
+      '⏱️ [BOOTSTRAP] ChatKeyProvider loaded: isLoaded=${keyState.isLoaded} activeKey=${keyState.activeKey?.id} isLocked=${keyState.isLocked} hasLocalKey=${keyState.privateKeyBytes != null} hasRecoveryKey=${keyState.hasRecoveryKey} hasPasswordWrapper=${keyState.hasPasswordWrapper}',
+    );
+    // Key rotation removed: Keys are never automatically replaced to ensure all messages remain readable
+    if (keyState.isLoaded && keyState.activeKey == null) {
+      // Only set up encryption if no key exists at all (new user)
+      await chatKeyNotifier.setupEncryption();
+      debugPrint('⏱️ [BOOTSTRAP] Chat encryption set up for new user');
+    }
+    debugPrint('⏱️ [BOOTSTRAP] ChatKeyProvider initialized');
+  } catch (e, st) {
+    // Best-effort bootstrap: a rejected/expired token, a rate-limited backend
+    // or a DB error must not surface as a framework error. The provider keeps
+    // local-only state and retries (30s timer / resume refresh).
+    debugPrint('⏱️ [BOOTSTRAP] ChatKeyProvider setup deferred: $e');
+    debugPrintStack(stackTrace: st, label: 'ChatKeyProvider setup deferred');
+  }
+}
+
+/// The single online/offline decision point of the bootstrap.
+///
+/// Runs while the splash is still up, so it uses [kSupabaseStartupProbeTimeout]
+/// rather than the monitor's generous budget: a live `health_check` answers in
+/// a few hundred milliseconds, while a stalled database does not answer for
+/// ~5.3s (Kong) — the SDK spent ~11s on that one call, which is what kept the
+/// flashing logo on screen for 13s. The request is cancelled when the budget
+/// expires instead of being left to run.
+///
+/// One attempt, no confirming attempt: a false negative only costs a
+/// cached-data splash, because the runtime monitor keeps the full budget,
+/// confirms within seconds and restores the online state by itself.
+///
+/// Goes offline with `force: true` so the splash is not additionally delayed by
+/// OfflineCacheManager's grace period. Returns true when the app may talk to
+/// Supabase.
+Future<bool> _applySupabaseReachabilityGate() async {
+  final stopwatch = Stopwatch()..start();
+  final result = await probeSupabaseReachability(
+    timeout: startupSupabaseProbeBudget(),
+    log: (message) => debugPrint('⏱️ [BOOTSTRAP] $message'),
+  );
+  stopwatch.stop();
+  if (result.isReachable) {
+    debugPrint(
+      '✅ [BOOTSTRAP] Supabase reachable -> online (${stopwatch.elapsedMilliseconds}ms)',
+    );
+    return true;
+  }
+  debugPrint(
+    '⏱️ [BOOTSTRAP] Supabase unreachable after ${stopwatch.elapsedMilliseconds}ms '
+    '($result) -> offline, serving cached data. The connectivity monitor will '
+    'keep probing and will restore online mode as soon as Supabase answers.',
+  );
+  offlineCacheManager.setSupabaseAvailability(false, force: true);
+  return false;
+}
+
+/// Confirms a Supabase round trip before the app is forced offline.
+///
+/// A single failed auth/REST call is not evidence of being offline: cold-start
+/// DNS + TLS on mobile routinely exceeds a second or two, and forcing offline
+/// here also clears `forceOnline`, which disables background matching and stops
+/// GPS for every user on a merely slow network. So the confirmation is a real
+/// `health_check` round trip with a larger budget — never a transport hint and
+/// never a generic internet probe, because a working internet with an
+/// unreachable Supabase is offline for this app. Returns true when offline mode
+/// was applied.
+Future<bool> _applySupabaseUnreachable(String reason) async {
+  final result = await probeSupabaseReachability(
+    confirm: true,
+    log: (message) => debugPrint('⏱️ [BOOTSTRAP] $message'),
+  );
+  if (result.isReachable) {
+    debugPrint(
+      '⏱️ [BOOTSTRAP] $reason -> Supabase reachable, staying online (slow response, not offline)',
+    );
+    return false;
+  }
+  debugPrint(
+    '⏱️ [BOOTSTRAP] $reason -> Supabase unreachable ($result), forcing offline mode',
+  );
+  offlineCacheManager.setSupabaseAvailability(false, force: true);
+  return true;
+}
+
+/// Validates the cached Supabase session best-effort.
+///
+/// POLICY: this must NEVER sign the user out. An expired/invalid JWT,
+/// a failed refresh, or a `refresh_token_already_used` race must keep the
+/// cached session so the user stays logged in (offline-capable). The only
+/// automatic logout allowed app-wide is `auth.forced_sign_out_days` (see
+/// `checkForcedSignOut` in auth_provider.dart); every other logout must be
+/// an explicit user action via the UI.
 Future<bool> _ensureValidSupabaseSessionOrSignOut() async {
   final session = supabase.auth.currentSession;
   if (session == null) return false;
-  if (kIsWeb) {
-    final now = DateTime.now().millisecondsSinceEpoch / 1000;
-    final exp = session.expiresAt;
-    if (exp != null && exp <= now) {
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.remove('supabase.auth.token');
-        if (kIsWeb) {
-          html.window.location.reload();
-          return false;
-        }
-      } catch (_) {}
-      try {
-        await supabase.auth.signOut(scope: SignOutScope.local);
-      } catch (_) {}
-      return false;
+
+  if (session.accessToken.trim().isEmpty) {
+    // Keep the session object; a later refresh may still succeed once the
+    // refresh token is retried. Signing out here would log the user out
+    // for a transient malformed cache entry.
+    debugPrint(
+      '⚠️ [_ensureValidSession] access token empty — keeping cached session, NOT signing out',
+    );
+    unawaited(
+      SessionService.persistSignOutReason(
+        reason: 'Access token is empty (kept session)',
+        source: 'ensureValidSession',
+      ),
+    );
+    return true;
+  }
+
+  // Proactively refresh if token is expired or about to expire.
+  final now = DateTime.now().millisecondsSinceEpoch / 1000;
+  final exp = session.expiresAt;
+  if (exp != null && exp <= now + 30) {
+    try {
+      await SessionService.safeRefreshSession(
+        timeout: const Duration(seconds: 5),
+      ).timeout(const Duration(seconds: 5));
+    } catch (e) {
+      final lower = e.toString().toLowerCase();
+      if (lower.contains('refresh_token_already_used') ||
+          lower.contains('already used')) {
+        debugPrint(
+          '⚠️ [_ensureValidSession] refresh race already_used - keeping cached session',
+        );
+        // Native may have refreshed concurrently; either way keep the user
+        // logged in with whatever session is cached now.
+        return true;
+      }
+      if (e is TimeoutException || isExpectedOfflineFailure(e)) {
+        debugPrint(
+          '⚠️ [_ensureValidSession] refresh timeout/network - using cached session',
+        );
+        await _applySupabaseUnreachable('auth refresh timeout/network');
+        return true;
+      }
+      // Refresh failed for any other reason: keep the cached session and
+      // fall through to the getUser() probe below (which itself never
+      // signs out anymore).
+      debugPrint(
+        '⚠️ [_ensureValidSession] refresh failed (${e.runtimeType}) — keeping cached session',
+      );
     }
-    if (session.accessToken.trim().isEmpty) {
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.remove('supabase.auth.token');
-        if (kIsWeb) {
-          html.window.location.reload();
-          return false;
-        }
-      } catch (_) {}
-      try {
-        await supabase.auth.signOut(scope: SignOutScope.local);
-      } catch (_) {}
-      return false;
+    final refreshedSession = supabase.auth.currentSession;
+    if (refreshedSession == null) {
+      // The SDK cleared the in-memory session during a failed refresh.
+      // Do NOT propagate this as a logout: the persisted snapshot (if any)
+      // will be recovered by auth_provider's non-explicit sign-out guard.
+      // Report "ok" so deferred tasks (background service, profile sync)
+      // don't treat this as logged-out; the auth stream remains the single
+      // source of truth for routing.
+      debugPrint(
+        '⚠️ [_ensureValidSession] refresh left no in-memory session — keeping login state, NOT signing out',
+      );
+      unawaited(
+        SessionService.persistSignOutReason(
+          reason: 'Session refresh failed - no session returned (kept login)',
+          source: 'ensureValidSession',
+        ),
+      );
+      return true;
     }
+    // A refresh that returns the same access token is not a failure that
+    // warrants a logout or a web reload — just keep using it.
   }
 
   try {
-    await supabase.auth.getUser();
+    // auth.getUser() is a full network round trip. 1.5s was far too tight for a
+    // cold mobile connection and turned every slow start into a forced-offline
+    // event that also cleared forceOnline.
+    await supabase.auth.getUser().timeout(const Duration(seconds: 5));
     return true;
   } catch (e) {
-    final lower = e.toString().toLowerCase();
-    final shouldSignOut = lower.contains('invalid jwt') ||
-        lower.contains('jwt expired') ||
-        lower.contains('token is expired') ||
-        lower.contains('invalid refresh token') ||
-        lower.contains('refresh_token_not_found') ||
-        lower.contains('refresh token not found') ||
-        lower.contains('refresh_token_already_used') ||
-        lower.contains('already used') ||
-        lower.contains('unauthorized') ||
-        lower.contains('not authorized');
-    if (shouldSignOut) {
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.remove('supabase.auth.token');
-        if (kIsWeb) {
-          html.window.location.reload();
-          return false;
-        }
-      } catch (_) {}
-      try {
-        await supabase.auth.signOut(scope: SignOutScope.local);
-      } catch (_) {}
-      return false;
+    if (e is TimeoutException || isExpectedOfflineFailure(e)) {
+      debugPrint(
+        '⚠️ [_ensureValidSession] getUser timeout/network - using cached session',
+      );
+      await _applySupabaseUnreachable('getUser timeout/network');
+      return true;
     }
+    // Any auth error here (invalid/expired JWT, 401/403, refresh-token
+    // errors, unauthorized, ...) must NOT sign out. Persist for
+    // diagnostics and keep the cached session.
+    debugPrint(
+      '⚠️ [_ensureValidSession] getUser failed ($e) — keeping cached session, NOT signing out',
+    );
+    unawaited(
+      SessionService.persistSignOutReason(
+        reason: '${e.toString()} (kept session)',
+        source: 'ensureValidSession',
+      ),
+    );
     return true;
   }
 }
@@ -1033,49 +3182,143 @@ Future<void> _runDeferredTasks({
   required String supabaseAnonKey,
 }) async {
   try {
-    container.read(authStateProvider);
-    
+    // Wait for auth state provider to emit its initial event before checking user.
+    // This ensures the expired-session cleanup from bootstrap has propagated into
+    // the Riverpod layer, so we never start user-specific tasks with a stale JWT.
+    // Bounded: a stalled auth stream must not park these tasks forever.
+    final authWaitDeadline = DateTime.now().add(const Duration(seconds: 5));
+    var authValue = container.read(authStateProvider);
+    while (authValue.isLoading && DateTime.now().isBefore(authWaitDeadline)) {
+      await Future.delayed(const Duration(milliseconds: 30));
+      authValue = container.read(authStateProvider);
+    }
+    final user = authValue.asData?.value.session?.user;
+
     // Use default translations directly instead of reading the provider synchronously.
     // The provider might be in a loading state where strings are empty (e.g., during setLocale).
     // Default translations are always available and cover critical keys like bgNotificationTitle.
     final bgTitle = LocalizationState.defaultTranslation('bgNotificationTitle');
     final bgText = LocalizationState.defaultTranslation('bgNotificationText');
 
-    unawaited(BackgroundService.initialize(
-      supabaseUrl: supabaseUrl,
-      supabaseKey: supabaseAnonKey,
-      notificationTitle: bgTitle,
-      notificationText: bgText,
-    ));
+    unawaited(
+      BackgroundService.initialize(
+        supabaseUrl: supabaseUrl,
+        supabaseKey: supabaseAnonKey,
+        notificationTitle: bgTitle,
+        notificationText: bgText,
+      ),
+    );
 
-    unawaited(Future.delayed(const Duration(milliseconds: 500), () {
-      unawaited(_initializeFcmForCurrentUser());
-    }));
+    unawaited(
+      Future.delayed(const Duration(milliseconds: 500), () {
+        unawaited(_initializeFcmForCurrentUser());
+      }),
+    );
 
-    final user = supabase.auth.currentUser;
+    // Notification reliability: if the app cold-started offline, the FCM
+    // token fetch and session registration were skipped — the user would be
+    // unreachable by push until the next app start. Re-attempt whenever
+    // Supabase connectivity is restored. Registration is idempotent and
+    // deduped (SessionRegistrationCoordinator cooldown + server upsert).
+    onSupabaseResume(() {
+      unawaited(
+        Future.delayed(const Duration(seconds: 2), () {
+          unawaited(_initializeFcmForCurrentUser());
+        }),
+      );
+    });
     if (user != null) {
-      final ok = await _ensureValidSupabaseSessionOrSignOut();
+      // Warm the dashboard online/nearby stats now (cold start with a
+      // persisted session) so the home screen can paint the correct online
+      // count immediately instead of showing a placeholder while its own
+      // fetch completes.
+      unawaited(warmDashboardStatsForUser(user.id));
+      var ok = false;
+      if (offlineCacheManager.isSupabaseAvailable) {
+        ok = await _ensureValidSupabaseSessionOrSignOut();
+      } else {
+        ok = true;
+        debugPrint('⏱️ [BOOTSTRAP] Skipping session validation (offline)');
+      }
       if (ok) {
+        debugPrint('🔍 [BG] bootstrap: session ok, deferring native start');
         // Wait for visibility provider to initialize and calculate effective visibility
         // This prevents starting the background service with incorrect visibility state
         final visibilityNotifier = container.read(isVisibleProvider.notifier);
         await visibilityNotifier.waitForInitialization();
-        
-        BackgroundService.start();
+        debugPrint(
+          '🔍 [BG] bootstrap: visibility initialized, scheduling start',
+        );
 
-        unawaited(Future.delayed(const Duration(milliseconds: 900), () async {
-          try {
-            await container.read(profileSyncProvider).syncProfile(user.id);
-          } catch (e, st) {
-            _reportNonFatal(e, st);
-          }
-        }));
+        // Defer BackgroundService.start() past the first frame. The
+        // background FlutterEngine init + Vulkan backend bring-up shows
+        // up on the logcat as `Skipped 41 frames!` + a 1.4 s Davey on
+        // the second frame on the moto g54 5G. The BGSESSION coordinator
+        // already debounces the first registerSession by 1.2 s, so
+        // pushing the start by 2 s doesn't delay map visibility by more
+        // than ~0.8 s beyond that.
+        unawaited(
+          Future<void>.delayed(const Duration(milliseconds: 2000), () {
+            if (!BootstrapDeferral.isAppReady) return;
+            BackgroundService.start();
+          }),
+        );
 
-        unawaited(Future.delayed(const Duration(milliseconds: 1300), () async {
-          await container.read(isVisibleProvider.notifier).ensureServiceStarted();
-        }));
+        // Dump the native service's in-memory event log once per process
+        // start, shortly after BackgroundService.start() above has run. The
+        // flutter console only shows log tags containing "flutter", so the
+        // native Log.i lines never appear there — this dump surfaces what the
+        // service actually did (ACTION_START, foreground promotion, GPS
+        // polling, fixes, blockers) even after the activity was destroyed
+        // and recreated (swipe-away + reopen), when the lifecycle observer's
+        // `resumed` transition never fires.
+        unawaited(
+          Future<void>.delayed(const Duration(milliseconds: 2600), () async {
+            try {
+              final diag = await BackgroundService.getDiagnostics();
+              debugPrint(
+                '🔍 Native background service diagnostics (post-start):',
+              );
+              if (diag.isEmpty) {
+                debugPrint('🔍   (empty buffer)');
+              } else {
+                for (final line in diag) {
+                  debugPrint('🔍   $line');
+                }
+              }
+            } catch (e) {
+              debugPrint('🔍 Failed to fetch diagnostics (post-start): $e');
+            }
+          }),
+        );
 
-        container.read(userProfileProvider(user.id));
+        // Defer the bootstrap profile sync until well past the first frame.
+        // The first Davey on cold start is ~3.6 s and the post-frame
+        // "Skipped 88 frames" is dominated by this sync's response
+        // processing (RPC parse + Hive write + provider invalidation).
+        // The UI shows the cached profile from the local DB the whole
+        // time, so pushing the sync out to 4 s after init-complete moves
+        // the jank out of the first ~5 s window without any user-visible
+        // regression.
+        unawaited(
+          Future.delayed(const Duration(milliseconds: 4000), () async {
+            try {
+              await container
+                  .read(profileSyncProvider)
+                  .syncProfile(user.id, source: 'app-bootstrap-startup');
+            } catch (e, st) {
+              _reportNonFatal(e, st);
+            }
+          }),
+        );
+
+        unawaited(
+          Future.delayed(const Duration(milliseconds: 1300), () async {
+            await container
+                .read(isVisibleProvider.notifier)
+                .ensureServiceStarted();
+          }),
+        );
 
         final pending = AppShortcuts.consumePendingTabIndex();
         if (pending != null) {
@@ -1089,39 +3332,251 @@ Future<void> _runDeferredTasks({
 
   unawaited(
     Future.delayed(const Duration(milliseconds: 800), () {
+      unawaited(() async {
+        try {
+          await appConfigService.initialize();
+        } catch (e, st) {
+          _reportNonFatal(e, st);
+        }
+        try {
+          await Future.wait([
+            TimeOfDayRanges.loadFromConfig(),
+            UserProfile.loadMatchRadiusConfig(),
+            ProfileSyncService.loadConfig(),
+          ]);
+        } catch (e, st) {
+          _reportNonFatal(e, st);
+        }
+      }());
+    }),
+  );
+
+  // Defer the Supabase health check past the first frame. It's a 1-RPC
+  // call (health_check), the response processing is light, but the
+  // method-channel round-trip lands on the Android UI thread, so doing
+  // it during the first-frame jank window is wasted work.
+  unawaited(
+    Future.delayed(const Duration(milliseconds: 4000), () {
       unawaited(
-        appConfigService.initialize().catchError(
-              (e, st) => _reportNonFatal(e as Object, st as StackTrace),
-            ),
+        _performSupabaseHealthCheck().catchError(
+          (e, st) => _reportNonFatal(e as Object, st as StackTrace),
+        ),
       );
     }),
   );
 
+  // Pre-warm map tiles for every cached match minimap snapshot so match
+  // location maps render offline. Online-only, budgeted, de-duplicated per
+  // session; re-run after syncs (GlobalHomeSyncManager) picks up new matches.
   unawaited(
-    Future.delayed(const Duration(milliseconds: 1200), () {
+    Future.delayed(const Duration(milliseconds: 6000), () {
+      // print(), not debugPrint(): the global debugPrint filter in _mainSync
+      // drops anything without a whitelisted keyword.
+      print('[MapTiles] deferred minimap warm firing (+6s)');
       unawaited(
-        _performSupabaseHealthCheck().catchError(
-              (e, st) => _reportNonFatal(e as Object, st as StackTrace),
-            ),
+        MapTileCacheService.instance
+            .warmCachedMatchMinimaps()
+            .catchError((_) {}),
+      );
+    }),
+  );
+
+  // Merge any offline places the native background service recorded while
+  // the UI was closed into the encrypted trail and upload them (no-ops when
+  // offline or when Retro Matching is not enabled).
+  unawaited(
+    Future.delayed(const Duration(milliseconds: 9000), () {
+      unawaited(
+        OfflineTrailService.instance
+            .uploadPendingTrail()
+            .catchError((_) => 0),
       );
     }),
   );
 
   if (kIsWeb) {
-    unawaited(_deferredBackgroundInit(
-      container: container,
-      supabaseUrl: supabaseUrl,
-      supabaseKey: supabaseAnonKey,
-    ));
-  } else {
-    unawaited(Future.delayed(const Duration(milliseconds: 1500), () {
-      unawaited(_deferredBackgroundInit(
+    unawaited(
+      _deferredBackgroundInit(
         container: container,
         supabaseUrl: supabaseUrl,
         supabaseKey: supabaseAnonKey,
-      ));
-    }));
+      ),
+    );
+  } else {
+    // Defer the deferred background init past the first frame. It
+    // includes MobileLocalNotificationService.initialize() (a method-
+    // channel call that lands on the Android UI thread) and
+    // SharedPreferences reads, all of which would otherwise pile onto
+    // the first ~3.6 s of jank.
+    unawaited(
+      Future.delayed(const Duration(milliseconds: 4000), () {
+        unawaited(
+          _deferredBackgroundInit(
+            container: container,
+            supabaseUrl: supabaseUrl,
+            supabaseKey: supabaseAnonKey,
+          ),
+        );
+      }),
+    );
   }
+
+  // Watch auth state changes to initialize chat keys on login
+  // (handles web and other flows where user logs in after bootstrap).
+  // Tracks which user the chatKeyProvider was initialized for: after a
+  // logout/login with a different user on the same device the provider
+  // must be re-initialized (and its in-memory decryption caches purged),
+  // otherwise it keeps serving the previous user's private key and the
+  // new user's messages/previews stay undecryptable.
+  String? authKeyInitializedUserId;
+  unawaited(() async {
+    debugPrint('⏱️ [AUTH] Subscribing to auth state stream');
+    await for (final authState
+        in Supabase.instance.client.auth.onAuthStateChange) {
+      final session = authState.session;
+      final userId = session?.user.id;
+
+      // While a non-login OAuth exchange is in flight (a calendar import
+      // borrowing the social sign-in flow to get a provider access token), the
+      // only account this loop should act on is the anchor - the one already
+      // signed in. Acting on the transient provider session would reset the
+      // chat key provider, invalidate the dashboard/chat-count providers and
+      // force the tab back to Home, yanking the user out of the screen they
+      // started the import from. This listener is on the raw auth stream, so
+      // the auth *router* guard does not cover it.
+      if (AuthTransitionGuard.shouldDeferAuthEvent(userId)) {
+        debugPrint(
+          '⏱️ [AUTH] deferring auth handling for $userId — calendar OAuth in '
+          'flight (anchor ${AuthTransitionGuard.anchorUserId})',
+        );
+        continue;
+      }
+
+      if (userId == null) {
+        debugPrint('⏱️ [AUTH] Signed out — resetting chat key provider');
+        final signedOutUserId = authKeyInitializedUserId;
+        authKeyInitializedUserId = null;
+        try {
+          container.invalidate(chatKeyProvider);
+          ChatKeyService.instance.clearMemoryCaches();
+        } catch (_) {}
+        // Drop the outgoing user's home-screen providers and the shared
+        // dashboard/unread/tab state so the next account on this device
+        // rebuilds them from scratch (cold-start loading gate) instead of
+        // reusing the previous account's resolved values. Covers sign-out
+        // paths that bypass MainNavigationScreen._handleLogout.
+        try {
+          if (signedOutUserId != null && signedOutUserId.isNotEmpty) {
+            container.invalidate(recentMatchesProvider(signedOutUserId));
+            container.invalidate(recentChatsProvider(signedOutUserId));
+            container.invalidate(userChatIdsProvider(signedOutUserId));
+            container.invalidate(userProfileProvider(signedOutUserId));
+            container.invalidate(initialHomeSyncProvider(signedOutUserId));
+            try {
+              container
+                  .read(profileSyncStateProvider(signedOutUserId).notifier)
+                  .reset();
+              container
+                  .read(profileSyncProvider)
+                  .invalidateUser(signedOutUserId);
+            } catch (_) {}
+          }
+          container.invalidate(dashboardStatsProvider);
+          container.invalidate(totalUnreadChatCountProvider);
+          container.invalidate(matchChatStartExpiryWarningProvider);
+          try {
+            container.read(navigationIndexProvider.notifier).setIndex(0);
+          } catch (_) {}
+        } catch (_) {}
+        continue;
+      }
+      try {
+        await EncryptedCacheService.instance.initialize(userId);
+        // Per-user cache key is ready: re-encrypt any legacy plaintext
+        // chat-translation prefs left by older builds (privacy at rest).
+        unawaited(migrateLegacyTranslationPrefs());
+      } catch (_) {}
+      try {
+        container.read(chatKeyProvider);
+        final chatKeyNotifier = container.read(chatKeyProvider.notifier);
+        if (authKeyInitializedUserId != userId) {
+          final previousUserId = authKeyInitializedUserId;
+          if (previousUserId != null && previousUserId.isNotEmpty) {
+            // Direct account switch (signedIn for a different user with no
+            // signedOut interlude): wipe the outgoing user's on-device cache
+            // (matches/chats/messages/profile/minimap snapshots) so the new
+            // account's device holds only its own data — same privacy rules
+            // as an explicit logout.
+            try {
+              final localDb = await LocalDbService.instance;
+              await localDb.clearUserData(previousUserId);
+            } catch (_) {}
+            try {
+              final prefs = await SharedPreferences.getInstance();
+              final staleKeys = prefs
+                  .getKeys()
+                  .where((k) => k.startsWith('chat_translation:'))
+                  .toList();
+              // The outgoing user's per-user translation-toggle map.
+              staleKeys.add('translation_states_$previousUserId');
+              for (final key in staleKeys) {
+                try {
+                  await prefs.remove(key);
+                } catch (_) {}
+              }
+            } catch (_) {}
+            try {
+              container
+                  .read(profileSyncStateProvider(previousUserId).notifier)
+                  .reset();
+              container
+                  .read(profileSyncProvider)
+                  .invalidateUser(previousUserId);
+            } catch (_) {}
+          }
+          authKeyInitializedUserId = userId;
+          debugPrint(
+            '⏱️ [AUTH] User changed to $userId — re-initializing chat key provider',
+          );
+          // Direct account switch (signedIn for a different user with no
+          // signedOut interlude): reset the shared home-screen state so the
+          // new account waits for its own data like a cold start instead of
+          // reusing the previous account's dashboard counts, badges or tab.
+          try {
+            container.invalidate(dashboardStatsProvider);
+            container.invalidate(totalUnreadChatCountProvider);
+            container.invalidate(matchChatStartExpiryWarningProvider);
+            try {
+              container.read(navigationIndexProvider.notifier).setIndex(0);
+            } catch (_) {}
+          } catch (_) {}
+          await chatKeyNotifier.refresh();
+        } else {
+          await chatKeyNotifier.initializationComplete;
+        }
+        final keyState = container.read(chatKeyProvider);
+        debugPrint(
+          '⏱️ [AUTH] ChatKeyProvider re-check: isLoaded=${keyState.isLoaded} activeKey=${keyState.activeKey?.id} isLocked=${keyState.isLocked} hasLocalKey=${keyState.privateKeyBytes != null} hasRecoveryKey=${keyState.hasRecoveryKey} hasPasswordWrapper=${keyState.hasPasswordWrapper}',
+        );
+        // Key rotation removed: Keys are never automatically replaced to ensure all messages remain readable
+        if (keyState.isLoaded && keyState.activeKey == null) {
+          // Only set up encryption if no key exists at all (new user)
+          await chatKeyNotifier.setupEncryption();
+          debugPrint('⏱️ [AUTH] Chat encryption set up for new user');
+        }
+      } catch (e, st) {
+        // Same as the cold-start path: this extra setup attempt is a
+        // convenience, not a gate. A rejected token or rate-limited backend
+        // leaves chat encryption unconfigured until the provider's retry
+        // succeeds, which is preferable to a framework-level error.
+        debugPrint('⏱️ [AUTH] ChatKeyProvider setup deferred: $e');
+        debugPrintStack(
+          stackTrace: st,
+          label: 'ChatKeyProvider setup deferred',
+        );
+      }
+    }
+  }());
 }
 
 /// Simple sanity check that the Supabase client can talk to your backend.
@@ -1130,19 +3585,28 @@ Future<void> _runDeferredTasks({
 Future<void> _performSupabaseHealthCheck() async {
   try {
     debugPrint('⏱️ [BOOTSTRAP] Performing Supabase health check...');
-    // Explicitly check if headers are present before call
-    final headers = supabase.headers;
-    if (!headers.containsKey('apikey')) {
-      debugPrint('🛑 [BOOTSTRAP] CRITICAL: "apikey" header missing from Supabase client headers!');
-    } else {
-      debugPrint('✅ [BOOTSTRAP] "apikey" header is present.');
-    }
 
-    await supabase.rpc('health_check').maybeSingle();
+    // The transport hint is never a reason to skip this: connectivity_plus is
+    // unreliable (it reports [none] on a healthy Windows network) and says
+    // nothing about upstream reachability. The RPC's own timeout and failure
+    // handling is the real signal. The budget is platform-scaled (5s desktop,
+    // 10s mobile) so a slow cold start is not mistaken for an outage.
+    final timeout = platformProbeTimeout(const Duration(seconds: 5));
+    await supabase
+        .rpc('health_check')
+        .maybeSingle()
+        .timeout(
+          timeout,
+          onTimeout: () {
+            throw TimeoutException(
+              'Health check timeout after ${timeout.inSeconds} seconds',
+            );
+          },
+        );
     debugPrint('✅ [BOOTSTRAP] Supabase health check passed.');
   } catch (e) {
-    debugPrint('🛑 [BOOTSTRAP] Supabase health check failed: $e');
-    // We don't rethrow because it's non-fatal for bootstrap, 
+    debugPrint('⏭️ [BOOTSTRAP] Supabase health check failed (non-fatal): $e');
+    // We don't rethrow because it's non-fatal for bootstrap,
     // but useful to know.
   }
 }
@@ -1162,7 +3626,11 @@ Future<void> _deferredBackgroundInit({
     try {
       final initial = await BackgroundService.getInitialRoute();
       final raw = initial?['tabIndex'];
-      final parsed = raw is int ? raw : raw is String ? int.tryParse(raw.trim()) : null;
+      final parsed = raw is int
+          ? raw
+          : raw is String
+          ? int.tryParse(raw.trim())
+          : null;
       if (parsed != null && parsed >= 0 && parsed <= 4) {
         AppShortcuts.setPendingTabIndex(parsed);
         try {
@@ -1171,78 +3639,107 @@ Future<void> _deferredBackgroundInit({
       }
     } catch (_) {}
 
-    // Set up token refresh listener
-    supabase.auth.onAuthStateChange.listen((event) async {
-      if (event.event == AuthChangeEvent.initialSession ||
-          event.event == AuthChangeEvent.signedIn) {
-        final ok = await _ensureValidSupabaseSessionOrSignOut();
-        if (!ok) return;
-        final userId = supabase.auth.currentUser?.id;
-        if (userId != null && userId.isNotEmpty) {
+    // Listen for sign-in / sign-out / token-refresh events during the session.
+    // Cold-start initialSession is already handled by bootstrap + _runDeferredTasks,
+    // so only `signedIn` is processed here to avoid duplicate work.
+    supabase.auth.onAuthStateChange.listen(
+      (event) async {
+        if (event.event == AuthChangeEvent.signedIn) {
+          final ok = await _ensureValidSupabaseSessionOrSignOut();
+          if (!ok) return;
+          final userId = supabase.auth.currentUser?.id;
+          if (userId != null && userId.isNotEmpty) {
+            // Warm the dashboard online/nearby stats now (before the home
+            // screen builds) so the online count is displayed immediately
+            // when the dashboard first renders.
+            unawaited(warmDashboardStatsForUser(userId));
+            // Visibility-independent heartbeat: keeps the user counted online
+            // even when invisible (GPS — the normal heartbeat — is stopped
+            // then). Server-side, is_online requires an active session row,
+            // which registerSession below creates.
+            UserActivityService.instance.startHeartbeat(userId);
+            if (kIsWeb) {
+              try {
+                WebNotificationService.setServiceWorkerUserId(userId);
+              } catch (_) {}
+            }
+            final platformText = kIsWeb
+                ? 'web'
+                : defaultTargetPlatform == TargetPlatform.android
+                ? 'android'
+                : defaultTargetPlatform == TargetPlatform.iOS
+                ? 'ios'
+                : 'unknown';
+            final url = runtimeSupabaseUrl;
+            debugPrint(
+              '[BGSESSION] authListener: scheduling registerSession userId=$userId url=$url event=${event.event.name}',
+            );
+            SessionRegistrationCoordinator.instance.schedule(
+              userId: userId,
+              platform: platformText,
+              source: 'auth-signed-in',
+            );
+
+            unawaited(_clearStaleProfilesForUser(userId));
+
+            // Process any pending referral
+            // 1. Check local storage (Deep Link)
+            unawaited(
+              container
+                  .read(referralServiceProvider)
+                  .processPendingReferral(userId),
+            );
+
+            // 2. If no referral processed, check fingerdebugPrint (Deferred Deep Link)
+            unawaited(
+              _hasReferral(userId).then((hasReferral) async {
+                if (!hasReferral) {
+                  final code = await container
+                      .read(referralServiceProvider)
+                      .checkPendingReferralFromFingerprint();
+                  if (code != null) {
+                    await container
+                        .read(referralServiceProvider)
+                        .handleIncomingReferralCode(code);
+                    await container
+                        .read(referralServiceProvider)
+                        .processPendingReferral(userId);
+                  }
+                }
+              }),
+            );
+          }
+          unawaited(_initializeFcmForCurrentUser());
+        }
+        if (event.event == AuthChangeEvent.signedOut) {
+          UserActivityService.instance.stopHeartbeat();
+          try {
+            await BackgroundService.updateToken(null, refreshToken: null);
+          } catch (_) {}
+          try {
+            await BackgroundService.stop();
+          } catch (_) {}
           if (kIsWeb) {
             try {
-              WebNotificationService.setServiceWorkerUserId(userId);
-            } catch (_) {
-            }
-          }
-          final platformText = kIsWeb
-              ? 'web'
-              : defaultTargetPlatform == TargetPlatform.android
-                  ? 'android'
-                  : defaultTargetPlatform == TargetPlatform.iOS
-                      ? 'ios'
-                      : 'unknown';
-          String? url;
-          try {
-            final dynamic c = Supabase.instance.client;
-            url = (c.supabaseUrl as String?)?.trim();
-          } catch (_) {}
-          debugPrint('[BGSESSION] authListener: scheduling registerSession userId=$userId url=$url event=${event.event.name}');
-          unawaited(
-            SessionService.registerSession(userId, platform: platformText).catchError((e, st) {
-              _reportNonFatal(e as Object, st as StackTrace);
-            }),
-          );
-          
-          // Process any pending referral
-          // 1. Check local storage (Deep Link)
-          unawaited(container.read(referralServiceProvider).processPendingReferral(userId));
-          
-          // 2. If no referral processed, check fingerprint (Deferred Deep Link)
-          unawaited(_hasReferral(userId).then((hasReferral) async {
-            if (!hasReferral) {
-               final code = await container.read(referralServiceProvider).checkPendingReferralFromFingerprint();
-               if (code != null) {
-                 await container.read(referralServiceProvider).handleIncomingReferralCode(code);
-                 await container.read(referralServiceProvider).processPendingReferral(userId);
-               }
-            }
-          }));
-        }
-        unawaited(_initializeFcmForCurrentUser());
-      }
-      if (event.event == AuthChangeEvent.signedOut) {
-        if (kIsWeb) {
-          try {
-            WebNotificationService.clearServiceWorkerUserId();
-          } catch (_) {
+              WebNotificationService.clearServiceWorkerUserId();
+            } catch (_) {}
           }
         }
-      }
-      if (event.event == AuthChangeEvent.tokenRefreshed) {
-        final session = supabase.auth.currentSession;
-        if (session?.accessToken != null) {
-          BackgroundService.updateToken(
-            session!.accessToken,
-            refreshToken: session.refreshToken,
-          );
+        if (event.event == AuthChangeEvent.tokenRefreshed) {
+          final session = supabase.auth.currentSession;
+          if (session?.accessToken != null) {
+            BackgroundService.updateToken(
+              session!.accessToken,
+              refreshToken: session.refreshToken,
+            );
+          }
         }
-      }
-    }, onError: (error) {
-      // Handle stream errors (e.g. Invalid Refresh Token) to prevent app crash
-    });
-  } catch (_) {
-  }
+      },
+      onError: (error) {
+        // Handle stream errors (e.g. Invalid Refresh Token) to prevent app crash
+      },
+    );
+  } catch (_) {}
 }
 
 /// App shown when Supabase keys are missing
@@ -1266,16 +3763,16 @@ class MissingSupabaseKeyApp extends StatelessWidget {
     }
 
     if (kIsWeb && (missingUrl || missingKey)) {
-      lines.add(
-        LocalizationState.defaultTranslation('supabaseWebQueryTip'),
-      );
+      lines.add(LocalizationState.defaultTranslation('supabaseWebQueryTip'));
       lines.add(
         LocalizationState.defaultTranslation('supabaseWebQueryExample'),
       );
     }
 
     return Scaffold(
-      appBar: AppBar(title: Text(LocalizationState.defaultTranslation('configRequired'))),
+      appBar: AppBar(
+        title: Text(LocalizationState.defaultTranslation('configRequired')),
+      ),
       body: Padding(
         padding: const EdgeInsets.all(20.0),
         child: Column(
@@ -1319,7 +3816,9 @@ class SupabaseInitErrorApp extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            LocalizationState.defaultTranslation('generalDetails'),
+                            LocalizationState.defaultTranslation(
+                              'generalDetails',
+                            ),
                             style: const TextStyle(fontWeight: FontWeight.w600),
                           ),
                           const SizedBox(height: 8),
@@ -1335,7 +3834,9 @@ class SupabaseInitErrorApp extends StatelessWidget {
                 width: double.infinity,
                 child: ElevatedButton(
                   onPressed: onRetry,
-                  child: Text(LocalizationState.defaultTranslation('generalRetry')),
+                  child: Text(
+                    LocalizationState.defaultTranslation('generalRetry'),
+                  ),
                 ),
               ),
             ],
@@ -1352,9 +3853,7 @@ class _SmoothScrollBehavior extends ScrollBehavior {
 
   @override
   ScrollPhysics getScrollPhysics(BuildContext context) {
-    return const ClampingScrollPhysics().applyTo(
-      const BouncingScrollPhysics(),
-    );
+    return const ClampingScrollPhysics().applyTo(const BouncingScrollPhysics());
   }
 }
 
@@ -1365,7 +3864,8 @@ class MatchMeApp extends ConsumerStatefulWidget {
   ConsumerState<MatchMeApp> createState() => _MatchMeAppState();
 }
 
-class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObserver {
+class _MatchMeAppState extends ConsumerState<MatchMeApp>
+    with WidgetsBindingObserver {
   QuickActions? _quickActions;
   String? _lastQuickActionsLang;
   bool _quickActionsListenerRegistered = false;
@@ -1373,8 +3873,14 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
   bool _deferredTasksStarted = false;
   bool _translationSyncRunning = false;
   DateTime? _lastTranslationSyncAt;
+  DateTime? _lastResumeSyncAt;
 
-
+  /// The account the auth router is currently rendering. Retained so a
+  /// transient provider session (see [AuthTransitionGuard]) can be ignored
+  /// without tearing this user's screen down.
+  User? _lastRenderedAuthUser;
+  ProviderSubscription<AsyncValue<ConnectivityHealth>>?
+  _connectivityUiStatusSub;
 
   void _maybeUpdateQuickActions(LocalizationState l10n) {
     if (_quickActions == null) return;
@@ -1388,10 +3894,26 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
     unawaited(() async {
       try {
         await _quickActions!.setShortcutItems(<ShortcutItem>[
-          ShortcutItem(type: 'matchme_home', localizedTitle: l10n.getString('navHome'), icon: 'home'),
-          ShortcutItem(type: 'matchme_matches', localizedTitle: l10n.getString('navMatches'), icon: 'favorite'),
-          ShortcutItem(type: 'matchme_chats', localizedTitle: l10n.getString('navChats'), icon: 'message'),
-          ShortcutItem(type: 'matchme_profile', localizedTitle: l10n.getString('navProfile'), icon: 'contact'),
+          ShortcutItem(
+            type: 'matchme_home',
+            localizedTitle: l10n.getString('navHome'),
+            icon: 'home',
+          ),
+          ShortcutItem(
+            type: 'matchme_matches',
+            localizedTitle: l10n.getString('navMatches'),
+            icon: 'favorite',
+          ),
+          ShortcutItem(
+            type: 'matchme_chats',
+            localizedTitle: l10n.getString('navChats'),
+            icon: 'message',
+          ),
+          ShortcutItem(
+            type: 'matchme_profile',
+            localizedTitle: l10n.getString('navProfile'),
+            icon: 'contact',
+          ),
         ]);
       } on PlatformException {
         _quickActionsDisabled = true;
@@ -1411,16 +3933,123 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
   /// Also marks user as offline when the page is closed.
   void _installWebRealtimeVisibilityDisconnect() {
     if (!kIsWeb) return;
+    final listenerInstalledAt = DateTime.now();
+    // When the tab was last hidden. Used to skip the re-sync round-trip on
+    // quick focus switches (Alt-Tab back and forth, minimize/maximize): those
+    // fire hidden->visible within a second or two, and re-syncing +
+    // invalidating providers on every one of them makes the home screen flash
+    // (providers go back to loading, ads rebuild, impressions re-fire).
+    DateTime? lastHiddenAt;
     try {
       html.document.addEventListener('visibilitychange', (_) {
         try {
-          if (html.document.visibilityState == 'hidden' || html.document.hidden == true) {
+          if (html.document.visibilityState == 'hidden' ||
+              html.document.hidden == true) {
+            lastHiddenAt = DateTime.now();
             debugPrint('🔌 [Web] Disconnecting Supabase Realtime (tab hidden)');
             Supabase.instance.client.realtime.disconnect();
           } else {
+            // Skip rapid hidden->visible bounces (window focus switches,
+            // minimize/maximize). The socket reconnect alone is enough to
+            // resume realtime; a full re-sync is only worthwhile after the
+            // tab was actually hidden for a while.
+            final hiddenFor = lastHiddenAt == null
+                ? Duration.zero
+                : DateTime.now().difference(lastHiddenAt!);
+            lastHiddenAt = null;
+            if (hiddenFor < const Duration(seconds: 10)) {
+              debugPrint(
+                '🔌 [Web] Tab visible after brief hide '
+                '(${hiddenFor.inMilliseconds}ms) - reconnecting socket only, '
+                'skipping re-sync to avoid UI flicker',
+              );
+              // ignore: invalid_use_of_internal_member
+              if (!_shouldConnectRealtime()) return;
+              // ignore: invalid_use_of_internal_member
+              Supabase.instance.client.realtime.connect();
+              return;
+            }
             debugPrint('🔌 [Web] Reconnecting Supabase Realtime (tab visible)');
             // ignore: invalid_use_of_internal_member
+            if (!_shouldConnectRealtime()) {
+              debugPrint(
+                'ðŸ”Œ [Web] Skipping Supabase Realtime reconnect (tab visible, no authenticated user)',
+              );
+              return;
+            }
+            // ignore: invalid_use_of_internal_member
             Supabase.instance.client.realtime.connect();
+
+            // Re-sync profile and settings when tab becomes visible
+            // This ensures gender/age preferences, radius, and other settings are current
+            // Use addPostFrameCallback to ensure we're not inside a frame callback,
+            // avoiding Flutter web engine assertion from IndexedDB microtask re-entrancy.
+            // Suppress for the first 30s after install — the browser fires a spurious
+            // 'visible' event during initial page load that would otherwise re-run the
+            // cold-start sync (ProfileSyncService + visibility re-sync) on top of the
+            // bootstrap that just finished.
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              Future.delayed(const Duration(milliseconds: 200), () {
+                try {
+                  if (DateTime.now().difference(listenerInstalledAt) <
+                      const Duration(seconds: 30)) {
+                    return;
+                  }
+                  final userId = Supabase.instance.client.auth.currentUser?.id;
+                  if (userId != null && mounted) {
+                    debugPrint(
+                      '🔄 [Web] Re-syncing profile after tab visibility restored',
+                    );
+                    ref
+                        .read(profileSyncProvider)
+                        .syncProfile(userId, source: 'web-tab-visible');
+
+                    // Force a full chats re-sync so any translation-toggle
+                    // changes (or other `public.chats` row updates) made on
+                    // other devices while this tab was hidden are reflected
+                    // immediately. The sync writes into the local DB, so the
+                    // existing `recentChatsProvider` stream emits the update
+                    // WITHOUT going through a loading state (no UI flash).
+                    //
+                    // NOTE: do NOT `ref.invalidate(recentChatsProvider)` here.
+                    // Invalidating disposes the provider, flips every watcher
+                    // back to loading (the home screen shows spinners / a
+                    // full-screen loader), tears down healthy realtime
+                    // channels and re-creates them — on every tab switch that
+                    // reads as a visible "twitch". Channels are only recreated
+                    // when realtime was actually torn down by a real offline
+                    // (SupabaseRealtimeManager.pauseAll), mirroring the mobile
+                    // app-resume path below.
+                    try {
+                      debugPrint(
+                        '🔄 [Web] Re-syncing chats after tab visibility restored',
+                      );
+                      // Fire-and-forget; do not block the visibility handler
+                      unawaited(
+                        ref
+                            .read(globalSyncManagerProvider)
+                            .syncChatsNow(userId, force: true),
+                      );
+                      if (SupabaseRealtimeManager.instance.isPaused) {
+                        ref.invalidate(recentChatsProvider(userId));
+                      }
+                      // Note: We do NOT increment translation version here to avoid
+                      // flashing of translated text when the web tab is hidden/shown.
+                      // The chat sync already refreshes message data, and translation
+                      // providers will naturally re-evaluate if the data changes.
+                    } catch (e) {
+                      debugPrint(
+                        '⚠️ [Web] Failed to sync chats on visibility change: $e',
+                      );
+                    }
+                  }
+                } catch (e) {
+                  debugPrint(
+                    '⚠️ [Web] Failed to sync profile on visibility change: $e',
+                  );
+                }
+              });
+            });
           }
         } catch (e) {
           debugPrint('🔌 [Web] Realtime visibility handler error: $e');
@@ -1431,7 +4060,7 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
           Supabase.instance.client.realtime.disconnect();
         } catch (_) {}
       }
-      
+
       // Mark user as offline when page is closed (beforeunload for modern browsers)
       void markOfflineOnClose(_) {
         final userId = supabase.auth.currentUser?.id;
@@ -1439,22 +4068,26 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
           debugPrint('🔌 [Web] Page closing - marking user as offline');
           // Use sendBeacon for reliable delivery during page unload
           final offlineData = jsonEncode({'p_user_id': userId});
-          final supabaseUrl = _runtimeSupabaseUrl!;
+          final supabaseUrl = runtimeSupabaseUrl!;
           final beaconUrl = '$supabaseUrl/rest/v1/rpc/set_user_offline';
           final beaconSent = html.sendOfflineBeacon(beaconUrl, offlineData);
-          
+
           if (beaconSent) {
             debugPrint('✅ [Web] Offline beacon sent successfully');
           } else {
             debugPrint('⚠️ [Web] Beacon failed, falling back to RPC');
             // Fall back to regular RPC call
-            supabase.rpc('set_user_offline', params: {'p_user_id': userId}).catchError((e) {
-              debugPrint('⚠️ [Web] Failed to set user offline on close: $e');
-            });
+            supabase
+                .rpc('set_user_offline', params: {'p_user_id': userId})
+                .catchError((e) {
+                  debugPrint(
+                    '⚠️ [Web] Failed to set user offline on close: $e',
+                  );
+                });
           }
         }
       }
-      
+
       html.window.addEventListener('beforeunload', markOfflineOnClose);
       html.window.addEventListener('pagehide', markOfflineOnClose);
       html.window.addEventListener('unload', disconnectOnUnload);
@@ -1463,7 +4096,9 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
 
   @override
   void initState() {
-    debugPrint('⏱️ [MatchMeApp] initState at ${DateTime.now().millisecondsSinceEpoch}');
+    debugPrint(
+      '⏱️ [MatchMeApp] initState at ${DateTime.now().millisecondsSinceEpoch}',
+    );
     super.initState();
     WidgetsBinding.instance.addObserver(this);
 
@@ -1477,20 +4112,42 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
       unawaited(AdminBroadcastService.replayPendingBlueNotifications());
       _translatePendingMessages();
     });
+    _connectivityUiStatusSub = ref.listenManual<AsyncValue<ConnectivityHealth>>(
+      connectivityHealthProvider,
+      (previous, next) {
+        final previousStatus = previous?.asData?.value;
+        final nextStatus = next.asData?.value;
+        if (nextStatus == null) return;
+        final traceMessage =
+            '[CONNECTIVITY_TRACE] ui_state_change '
+            'ts=${DateTime.now().toIso8601String()} '
+            'from=${previousStatus?.describe() ?? 'none'} '
+            'to=${nextStatus.describe()}';
+        debugPrint(traceMessage);
+        unawaited(
+          PlatformTraceLogger.trace('MatchMeConnectivityUI', traceMessage),
+        );
+      },
+      fireImmediately: true,
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      debugPrint('⏱️ [MatchMeApp] First Frame Rendered at ${DateTime.now().millisecondsSinceEpoch}');
+      debugPrint(
+        '⏱️ [MatchMeApp] First Frame Rendered at ${DateTime.now().millisecondsSinceEpoch}',
+      );
 
       if (_deferredTasksStarted) return;
       _deferredTasksStarted = true;
 
-      final url = _runtimeSupabaseUrl;
-      final key = _runtimeSupabaseAnonKey;
+      final url = runtimeSupabaseUrl;
+      final key = runtimeSupabaseAnonKey;
       if (url != null && url.isNotEmpty && key != null && key.isNotEmpty) {
-        unawaited(_runDeferredTasks(
-          container: container,
-          supabaseUrl: url,
-          supabaseAnonKey: key,
-        ));
+        unawaited(
+          _runDeferredTasks(
+            container: container,
+            supabaseUrl: url,
+            supabaseAnonKey: key,
+          ),
+        );
       }
     });
 
@@ -1508,7 +4165,8 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
     // "Best effort" home-screen quick actions (long-press app icon).
     // Note: iOS has no "pin shortcut" prompt; Android pinning is handled separately.
     try {
-      if (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.android) {
+      if (defaultTargetPlatform == TargetPlatform.iOS ||
+          defaultTargetPlatform == TargetPlatform.android) {
         _quickActions = const QuickActions();
         _quickActions!.initialize((shortcutType) {
           int? tab;
@@ -1545,8 +4203,7 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
         // Keep titles up-to-date with runtime locale changes.
         // Listener is registered once in build() to avoid ref.listen calls outside of a build context.
       }
-    } catch (_) {
-    }
+    } catch (_) {}
 
     // Handle notification taps delivered from native (Android singleTop onNewIntent).
     // This complements cold-start deep links (initialRoute) and the BackgroundService getInitialRoute flow.
@@ -1565,12 +4222,16 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
           }
 
           final payload = <String, dynamic>{
-            if (sharedText != null && sharedText.isNotEmpty) 'sharedText': sharedText,
-            if (sharedFilePath != null && sharedFilePath.isNotEmpty) 'sharedFilePath': sharedFilePath,
+            if (sharedText != null && sharedText.isNotEmpty)
+              'sharedText': sharedText,
+            if (sharedFilePath != null && sharedFilePath.isNotEmpty)
+              'sharedFilePath': sharedFilePath,
           };
 
           try {
-            container.read(pendingAddEventShareProvider.notifier).setPayload(payload);
+            container
+                .read(pendingAddEventShareProvider.notifier)
+                .setPayload(payload);
           } catch (_) {}
 
           AppShortcuts.setPendingTabIndex(3);
@@ -1590,22 +4251,24 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
         final routeFromNative = (map['route'] as String?)?.trim();
         final tabIndex = _parseTabIndex(map['tabIndex']);
 
-        final effectiveRoute = (routeFromNative != null && routeFromNative.isNotEmpty)
+        final effectiveRoute =
+            (routeFromNative != null && routeFromNative.isNotEmpty)
             ? routeFromNative
             : (matchId != null && matchId.isNotEmpty)
-                ? '/chat/$matchId'
-                : null;
+            ? '/chat/$matchId'
+            : null;
 
         if (tabIndex != null && tabIndex >= 0 && tabIndex <= 4) {
           AppShortcuts.setPendingTabIndex(tabIndex);
           try {
             container.read(navigationIndexProvider.notifier).setIndex(tabIndex);
-          } catch (_) {
-          }
+          } catch (_) {}
           return;
         }
 
-        if (effectiveRoute == null || !effectiveRoute.startsWith('/chat/')) return;
+        if (effectiveRoute == null || !effectiveRoute.startsWith('/chat/')) {
+          return;
+        }
 
         final nav = navigatorKey.currentState;
         if (nav == null) {
@@ -1623,22 +4286,25 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
 
         nav.pushNamed(effectiveRoute);
       });
-    } catch (_) {
-    }
+    } catch (_) {}
 
     // Re-apply system UI overlay styles at runtime to handle OEM quirks (e.g., Moto Android 15)
     void applyOverlays() {
       try {
         // Force both top and bottom system overlays visible (manual) and apply style
-        SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: [SystemUiOverlay.top, SystemUiOverlay.bottom]);
-        SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-          statusBarColor: Colors.white,
-          statusBarIconBrightness: Brightness.dark,
-          systemNavigationBarColor: Colors.white,
-          systemNavigationBarIconBrightness: Brightness.dark,
-        ));
-      } catch (_) {
-      }
+        SystemChrome.setEnabledSystemUIMode(
+          SystemUiMode.manual,
+          overlays: [SystemUiOverlay.top, SystemUiOverlay.bottom],
+        );
+        SystemChrome.setSystemUIOverlayStyle(
+          const SystemUiOverlayStyle(
+            statusBarColor: Colors.white,
+            statusBarIconBrightness: Brightness.dark,
+            systemNavigationBarColor: Colors.white,
+            systemNavigationBarIconBrightness: Brightness.dark,
+          ),
+        );
+      } catch (_) {}
     }
 
     // Apply immediately and retry after short delays to handle OEM resets
@@ -1655,7 +4321,9 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
       // Defer notification permission request until after first frame to avoid blocking startup and
       // to prevent plugin channel timing issues on some devices.
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        unawaited(PermissionHelper.requestNotificationPermission().catchError((_) {}));
+        unawaited(
+          PermissionHelper.requestNotificationPermission().catchError((_) {}),
+        );
       });
     }
   }
@@ -1663,60 +4331,144 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _connectivityUiStatusSub?.close();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
+    ResumeDiagnostics.logThrottled(
+      'Root app lifecycle changed: $state',
+      category: 'root-lifecycle-$state',
+      minIntervalMs: 250,
+    );
 
-    // When app goes to background, ensure Android background service is ready for realtime notifications
     if (state == AppLifecycleState.paused) {
-      // Notify background service to activate realtime monitoring
-      BackgroundService.updateAppForeground(false);
-      AdminBroadcastService.setAppInForeground(false);
+      // Hand live-location broadcasting to the native service
+      try {
+        unawaited(
+          ref.read(locationShareProvider.notifier).handleAppBackgrounded(),
+        );
+      } catch (_) {}
 
-      // Disconnect Supabase Realtime to save battery
-      // FCM will handle notifications while we are away
-      debugPrint('🔌 Disconnecting Supabase Realtime socket (App Backgrounded)');
-      Supabase.instance.client.realtime.disconnect();
-    }
-    // When app is detached (killed), mark user as offline immediately
-    else if (state == AppLifecycleState.detached) {
-      debugPrint('🔌 App detached - marking user as offline');
-      // Mark user as offline in the database so online counts update immediately
-      final userId = supabase.auth.currentUser?.id;
-      if (userId != null) {
-        // Use synchronous-like call - fire and forget but try to complete
-        supabase.rpc('set_user_offline', params: {'p_user_id': userId}).catchError((e) {
-          debugPrint('⚠️ Failed to set user offline on detach: $e');
-        });
-      }
+      // Keep Realtime connected even when screen is off - messages should still arrive
+      debugPrint(
+        '🔌 App paused (screen off) - keeping Realtime connected for message delivery',
+      );
       BackgroundService.updateAppForeground(false);
       AdminBroadcastService.setAppInForeground(false);
-    }
-    // When app is resumed (not in background), hide the background service notification
-    else if (state == AppLifecycleState.resumed) {
-      // Reconnect Supabase Realtime
-      debugPrint('🔌 Reconnecting Supabase Realtime socket (App Resumed)');
-      // ignore: invalid_use_of_internal_member
-      Supabase.instance.client.realtime.connect();
+    } else if (state == AppLifecycleState.hidden) {
+      try {
+        unawaited(
+          ref.read(locationShareProvider.notifier).handleAppBackgrounded(),
+        );
+      } catch (_) {}
+
+      debugPrint(
+        '🔌 App hidden - keeping Realtime connected for message delivery',
+      );
+      BackgroundService.updateAppForeground(false);
+      AdminBroadcastService.setAppInForeground(false);
+    } else if (state == AppLifecycleState.detached) {
+      try {
+        unawaited(
+          ref.read(locationShareProvider.notifier).handleAppBackgrounded(),
+        );
+      } catch (_) {}
+      debugPrint('🔌 App detached - cleanup');
+      BackgroundService.updateAppForeground(false);
+      AdminBroadcastService.setAppInForeground(false);
+    } else if (state == AppLifecycleState.resumed) {
+      unawaited(ResumeRouteRestore.clearPendingRoute());
+      // Dump the native background service's event log BEFORE telling it the
+      // UI is foreground again, so the snapshot reflects the background period.
+      () async {
+        final diag = await BackgroundService.getDiagnostics();
+        debugPrint('🔍 Native background service diagnostics (resumed):');
+        if (diag.isEmpty) {
+          debugPrint('🔍   (empty buffer)');
+        } else {
+          for (final line in diag) {
+            debugPrint('🔍   $line');
+          }
+        }
+      }();
+
+      // Realtime stays connected, no need to reconnect
+      debugPrint('🔌 App resumed - Realtime already connected');
 
       BackgroundService.updateAppForeground(true);
       AdminBroadcastService.setAppInForeground(true);
       unawaited(AdminBroadcastService.replayPendingBlueNotifications());
 
+      // Take back live-location broadcasting from the native service and
+      // rejoin position/control channels + reconcile missed signals against
+      // the DB. Channels stay alive across short screen off/on; only a real
+      // offline (SupabaseRealtimeManager.pauseAll() → realtime.disconnect())
+      // drops them, and resumeAll() + provider reconnect paths re-create them.
+      try {
+        unawaited(ref.read(locationShareProvider.notifier).handleAppResumed());
+      } catch (_) {}
+
       // When app resumes from background, translate any pending messages that arrived while closed
       // This ensures all messages show translated versions in the chat history
       _translatePendingMessages();
-    }
 
-    // When app resumes, ensure locale is properly maintained and reconnect realtime subscriptions
-    if (state == AppLifecycleState.resumed) {
-      // Force a rebuild to ensure locale and text direction are maintained
-      if (mounted) {
-        setState(() {});
+      // Reconcile missed DB changes via REST. Realtime channels stay subscribed
+      // across short screen off/on (paused/hidden no longer disconnect), so do
+      // NOT invalidate recentChatsProvider on every resume — that disposes
+      // healthy chat + location-signal channels and forces the duplicate
+      // "Subscribed successfully" / "Signal channel subscribed" logs.
+      // Only recreate the provider when realtime was actually torn down
+      // (real offline → SupabaseRealtimeManager.pauseAll()).
+      //
+      // Note: We do NOT increment the translation version here. The chat messages
+      // provider sync already refreshes message data, and translation providers
+      // will naturally re-evaluate if the underlying message data changes.
+      // Incrementing the translation version would cause all translation providers
+      // to re-evaluate even when nothing changed, causing visible flashing of
+      // translated text when the screen turns back on.
+      final resumedUserId = supabase.auth.currentUser?.id;
+      if (resumedUserId != null && mounted) {
+        try {
+          // Coalesce rapid duplicate resumed events (inactive → resumed plus
+          // visibility/connectivity observers firing together on screen-on).
+          final now = DateTime.now();
+          if (_lastResumeSyncAt != null &&
+              now.difference(_lastResumeSyncAt!) < const Duration(seconds: 5)) {
+            debugPrint('🔄 App resume sync skipped (coalesced)');
+          } else {
+            _lastResumeSyncAt = now;
+            final hadRealtimeDisconnect =
+                SupabaseRealtimeManager.instance.isPaused;
+            debugPrint(
+              '🔄 Re-syncing chats after app resumed (hadDisconnect=$hadRealtimeDisconnect)',
+            );
+            unawaited(
+              ref
+                  .read(globalSyncManagerProvider)
+                  .syncChatsNow(resumedUserId, force: true),
+            );
+            // Recreate realtime channels only if they were actually paused.
+            // resumeAll() (via ConnectivityRestoreCoordinator) re-creates
+            // manager-owned channels; invalidating here re-creates the
+            // recentChatsProvider-owned chat channels after a real offline.
+            if (hadRealtimeDisconnect) {
+              ref.invalidate(recentChatsProvider(resumedUserId));
+            }
+          }
+        } catch (e) {
+          debugPrint('⚠️ Failed to sync chats on app resume: $e');
+        }
       }
+
+      // NOTE: no forced setState() here on purpose. Locale and text
+      // direction are driven by providers (localizationProvider), so every
+      // resume used to rebuild the entire widget tree — remounting ad
+      // widgets, re-firing impressions and making the home screen visibly
+      // "twitch" on web whenever the window lost/regained focus. Provider
+      // emissions already rebuild exactly the widgets that need it.
     }
   }
 
@@ -1734,8 +4486,7 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
 
     final now = DateTime.now();
     if (_lastTranslationSyncAt != null &&
-        now.difference(_lastTranslationSyncAt!) <
-            const Duration(seconds: 20)) {
+        now.difference(_lastTranslationSyncAt!) < const Duration(seconds: 20)) {
       return;
     }
 
@@ -1743,6 +4494,8 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
     _lastTranslationSyncAt = now;
     unawaited(() async {
       try {
+        // Let first resumed frame settle before doing translation-related network/db work.
+        await Future.delayed(const Duration(milliseconds: 1200));
         await ref.read(pendingMessageTranslationProvider.future);
       } catch (e) {
         debugPrint('⚠️ Startup translation sync trigger failed: $e');
@@ -1788,7 +4541,9 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
 
   @override
   Widget build(BuildContext context) {
-    debugPrint('⏱️ [MatchMeApp] build at ${DateTime.now().millisecondsSinceEpoch}');
+    debugPrint(
+      '⏱️ [MatchMeApp] build at ${DateTime.now().millisecondsSinceEpoch}',
+    );
     final localization = ref.watch(localizationProvider);
     final authState = ref.watch(authStateProvider);
 
@@ -1816,18 +4571,18 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
         }
       }
 
-      String oauthErrorMessage(LocalizationState l10n, String? description) {
+      String oauthErrorKey(String? description) {
         final d = (description ?? '').trim();
         final lower = d.toLowerCase();
         if (lower.contains('already registered') ||
             lower.contains('already exists') ||
             lower.contains('user already registered')) {
-          return l10n.getString('authOAuthAccountExists');
+          return 'authOAuthAccountExists';
         }
         if (lower.contains('cancel') || lower.contains('canceled')) {
-          return l10n.getString('authOAuthCancelled');
+          return 'authOAuthCancelled';
         }
-        return d.isNotEmpty ? d : l10n.getString('authOAuthFailed');
+        return 'authOAuthFailed';
       }
 
       final fragmentParams = parseFragmentParams(uri.fragment);
@@ -1837,35 +4592,59 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
       };
 
       final isSupabaseOAuthCallback =
-          kIsWeb && (uri.path == '/auth/callback' || uri.path.startsWith('/auth/callback'));
-      final hasOAuthError = allParams.containsKey('error') || allParams.containsKey('error_description');
-      final hasOAuthCode = allParams.containsKey('code') || uri.fragment.contains('code=');
+          kIsWeb &&
+          (uri.path == '/auth/callback' ||
+              uri.path.startsWith('/auth/callback'));
+      final hasOAuthError =
+          allParams.containsKey('error') ||
+          allParams.containsKey('error_description');
+      final hasOAuthCode =
+          allParams.containsKey('code') || uri.fragment.contains('code=');
 
       if (isSupabaseOAuthCallback && (hasOAuthCode || hasOAuthError)) {
         WidgetsBinding.instance.addPostFrameCallback((_) async {
           try {
-            final l10n = container.read(localizationProvider);
             if (hasOAuthError) {
-              final msg = oauthErrorMessage(
-                l10n,
+              final key = oauthErrorKey(
                 allParams['error_description'] ?? allParams['error'],
               );
-              container.read(authUiMessageProvider.notifier).setMessage(msg);
+              final rawError =
+                  allParams['error_description'] ?? allParams['error'] ?? '';
+              String pendingProvider = '';
+              try {
+                final prefs = await SharedPreferences.getInstance();
+                pendingProvider =
+                    prefs.getString('pending_oauth_provider') ?? '';
+                await prefs.remove('pending_oauth_provider');
+              } catch (_) {}
+              container
+                  .read(authUiMessageProvider.notifier)
+                  .setMessage('$key|||$rawError|||$pendingProvider');
             } else {
               await Supabase.instance.client.auth.getSessionFromUrl(Uri.base);
             }
-          } catch (_) {
+          } catch (error) {
             try {
-              final l10n = container.read(localizationProvider);
-              container.read(authUiMessageProvider.notifier).setMessage(
-                    l10n.getString('authOAuthFailed'),
-                  );
+              // Detect which OAuth provider was being used
+              String providerName = '';
+              try {
+                final prefs = await SharedPreferences.getInstance();
+                providerName = prefs.getString('pending_oauth_provider') ?? '';
+                await prefs.remove('pending_oauth_provider');
+              } catch (_) {}
+              // Format the message as key|||rawError|||providerName for auth_screen.dart
+              final msg = 'authOAuthProviderFailed|||$error|||$providerName';
+              container.read(authUiMessageProvider.notifier).setMessage(msg);
             } catch (_) {}
           } finally {
             try {
               if (kIsWeb) {
-                final cleaned = Uri.base.replace(path: '/', query: '', fragment: '');
-                html.window.history.replaceState(null, '', cleaned.toString());
+                final cleaned = Uri.base.replace(
+                  path: '/',
+                  query: '',
+                  fragment: '',
+                );
+                html.window.history.replaceState('', cleaned.toString());
               }
             } catch (_) {}
           }
@@ -1876,16 +4655,21 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
       // Check if this is an OAuth redirect (has code in fragment or query)
       final hasCodeInFragment = uri.fragment.contains('code=');
       final hasCodeInQuery =
-          uri.queryParameters.containsKey('code') || uri.query.contains('code=');
+          uri.queryParameters.containsKey('code') ||
+          uri.query.contains('code=');
       if (kIsWeb && (hasCodeInFragment || hasCodeInQuery)) {
         // Handle async OAuth processing
         WidgetsBinding.instance.addPostFrameCallback((_) async {
           try {
             // Initialize MSAL first if not already initialized
-            var clientId =
-                const String.fromEnvironment('OUTLOOK_CLIENT_ID', defaultValue: '').trim();
-            var tenantId =
-                const String.fromEnvironment('OUTLOOK_TENANT_ID', defaultValue: '').trim();
+            var clientId = const String.fromEnvironment(
+              'OUTLOOK_CLIENT_ID',
+              defaultValue: '',
+            ).trim();
+            var tenantId = const String.fromEnvironment(
+              'OUTLOOK_TENANT_ID',
+              defaultValue: '',
+            ).trim();
             var redirectUri = const String.fromEnvironment(
               'OUTLOOK_REDIRECT_URI',
               defaultValue: '',
@@ -1902,7 +4686,7 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
             if (redirectUri.isEmpty) {
               redirectUri = 'http://localhost:5000';
             }
-            
+
             if (clientId.isNotEmpty && tenantId.isNotEmpty) {
               if (!OutlookWebAuth.instance.isInitialized) {
                 await OutlookWebAuth.instance.initialize(
@@ -1911,15 +4695,16 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
                   redirectUri: redirectUri,
                 );
               }
-              
+
               // Now handle the redirect callback
-              final token = await OutlookWebAuth.instance.handleRedirectCallback();
+              final token = await OutlookWebAuth.instance
+                  .handleRedirectCallback();
               if (token != null) {
                 // Automatically sync Outlook calendars
                 try {
                   final calendarService = CalendarSyncService();
                   await calendarService.retrieveOutlookCalendars();
-                  
+
                   // Navigate to calendar sync screen
                   if (navigatorKey.currentState != null) {
                     navigatorKey.currentState!.pushNamedAndRemoveUntil(
@@ -1927,22 +4712,38 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
                       (route) => false,
                     );
                   }
-                } catch (_) {
-                }
-              } else {
-              }
+                } catch (_) {}
+              } else {}
             }
           } catch (_) {
           } finally {
             try {
-              final cleaned = Uri.base.replace(path: '/', query: '', fragment: '');
-              html.window.history.replaceState(null, '', cleaned.toString());
+              final cleaned = Uri.base.replace(
+                path: '/',
+                query: '',
+                fragment: '',
+              );
+              html.window.history.replaceState('', cleaned.toString());
             } catch (_) {}
           }
         });
-        
+
         // Return null to show home screen while processing
         return null;
+      }
+
+      // Android/iOS deliver custom-scheme OAuth callbacks (e.g.
+      // com.example.matchme://login-callback?code=...) to the navigator as
+      // "/?code=...". The app_links listener in _setupDeepLinkHandler has
+      // already processed the URI, so swallow this route instead of crashing
+      // the navigator with an unknown-route exception.
+      if (!kIsWeb &&
+          (uri.path.isEmpty || uri.path == '/') &&
+          uri.queryParameters.containsKey('code')) {
+        return MaterialPageRoute(
+          settings: settings,
+          builder: (context) => const _OAuthCallbackSplash(),
+        );
       }
 
       // Handle /invite?code=XYZ
@@ -1970,6 +4771,22 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
     }
 
     final appRoutes = <String, WidgetBuilder>{
+      ResumeRouteRestore.settingsRoute: (context) => const SettingsScreen(),
+      ResumeRouteRestore.notificationsSettingsRoute: (context) =>
+          const NotificationsSettingsScreen(),
+      ResumeRouteRestore.notificationInboxRoute: (context) =>
+          const NotificationInboxScreen(),
+      ResumeRouteRestore.securityCenterRoute: (context) =>
+          const SecurityCenterScreen(),
+      '/subscription-payment': (context) {
+        final args =
+            ModalRoute.of(context)?.settings.arguments as Map<String, dynamic>?;
+        return SubscriptionPaymentScreen(
+          tier: args?['tier'] ?? 'gold',
+          duration: args?['duration'] ?? 'monthly',
+          priceInCents: args?['priceInCents'] ?? 2999,
+        );
+      },
       '/chat': (context) {
         // This route exists for legacy navigation; notification deep-links should use /chat/<matchId>.
         final rawArgs = ModalRoute.of(context)?.settings.arguments;
@@ -1978,7 +4795,9 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
           final otherNameRaw = (args['otherUserName'] ?? '').toString();
           return ChatScreen(
             matchId: args['matchId'],
-            otherUserName: otherNameRaw.trim().isEmpty ? 'Chat' : otherNameRaw.formatAsFirstNameLastInitial(),
+            otherUserName: otherNameRaw.trim().isEmpty
+                ? 'Chat'
+                : otherNameRaw.formatAsFirstNameLastInitial(),
             otherUserId: args['otherUserId'] ?? '',
           );
         }
@@ -1988,7 +4807,13 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
       },
     };
 
-    if (localization.isLoading && localization.supportedLanguages.isEmpty) {
+    // Skip localization loading screen when offline - we have all local data
+    // needed to show the app immediately. The authState check below handles
+    // the real startup gate.
+    final isOffline = !offlineCacheManager.isSupabaseAvailable;
+    if (!isOffline &&
+        localization.isLoading &&
+        localization.supportedLanguages.isEmpty) {
       // Keep routing enabled even while localization is still loading so cold-start deep links
       // like /chat/<matchId> don't get rejected as an unknown initialRoute.
       return MaterialApp(
@@ -1996,9 +4821,7 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
         navigatorKey: navigatorKey,
         onGenerateRoute: appOnGenerateRoute,
         routes: appRoutes,
-        home: Scaffold(
-          body: Center(child: CircularProgressIndicator()),
-        ),
+        home: const StartupLoaderScaffold(),
       );
     }
 
@@ -2011,23 +4834,54 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
       // digit glyphs come from a Latin font (normal, non-spaced digits).
       // Hebrew glyphs will be provided by the Hebrew font via fallbacks.
       selectedTextTheme = baseTextTheme.apply(fontFamily: 'Noto Sans');
-
     } else if (lang == 'ar') {
       selectedTextTheme = baseTextTheme.apply(fontFamily: 'Noto Sans Arabic');
     } else {
       selectedTextTheme = baseTextTheme.apply(fontFamily: 'Noto Sans');
     }
 
+    // Emoji and CJK glyphs intentionally do NOT ship with the app: every
+    // supported target provides them itself. Android, iOS and Windows each
+    // install a colour emoji font, so the fallbacks below are enough and the
+    // build stays ~10-24 MB smaller than bundling NotoColorEmoji.ttf.
+    //
+    // Naming the platform fonts is required, not optional. Flutter resolves a
+    // missing glyph by walking `fontFamily` then `fontFamilyFallback`; a
+    // platform font that is not named is never consulted, so an unnamed
+    // "Noto Color Emoji" meant Android could silently fall through to a
+    // monochrome symbol font and draw every emoji as a flat outline.
+    //
+    // Colour fonts come before the monochrome symbol fonts on purpose.
+    // Noto Sans Symbols / Symbols2 have no colour glyphs, so if they are
+    // reached first the emoji are already drawn flat. Bundling a font would
+    // also be a downgrade: it is a hard override, so iOS would lose Apple
+    // Color Emoji, which renders better than any alternative.
+    //
+    // Two separate paths, and they are often confused:
+    //   * lib/widgets/emoji_widget.dart renders twemoji PNG images. It is
+    //     used only for the reaction picker, displayed reactions, and the
+    //     composer's emoji button — a curated set of 22 images.
+    //   * Everything else, including any emoji a user TYPES into a message,
+    //     bio, event name or search field, is ordinary text and resolves
+    //     through the font fallbacks above. This is why the fonts matter and
+    //     why the image set cannot replace them: it is a fixed list, and user
+    //     input is not.
+    //
+    // Verified on: Android, iOS, Windows. The web build renders with
+    // CanvasKit, which maintains its own font collection and does not inherit
+    // the browser's DOM font fallback, so web emoji resolution is worth
+    // confirming in Chrome, Safari, Firefox and Edge before release.
     final List<String> emojiFallbacks = [
+      'Apple Color Emoji',
+      'Segoe UI Emoji',
       'Noto Color Emoji',
+      'Twemoji Mozilla',
+      'EmojiOne Color',
       'Noto Sans Symbols',
       'Noto Sans Symbols2',
       'Noto Serif',
-      'Segoe UI Emoji',
-      'Apple Color Emoji',
       'Noto Sans Hebrew',
       'Noto Sans Arabic',
-      'Noto Sans TC',
     ];
 
     // Make a local copy of the fallbacks and ensure for Hebrew locales the
@@ -2038,22 +4892,41 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
       themeFallbacks.insert(0, 'Noto Sans Hebrew');
     }
 
-    final TextTheme finalTextTheme =
-        _normalizeTextTheme(selectedTextTheme, themeFallbacks);
+    final TextTheme finalTextTheme = _normalizeTextTheme(
+      selectedTextTheme,
+      themeFallbacks,
+    );
 
     // Theme mode controlled by provider
     final themeMode = ref.watch(themeModeProvider);
+    final currentUserId = authState.asData?.value.session?.user.id;
+    final currentUserProfile = currentUserId == null
+        ? null
+        : ref.watch(userProfileProvider(currentUserId)).asData?.value;
+    final isBirthdayToday = _isUsersBirthdayToday(
+      dateOfBirth: currentUserProfile?.dateOfBirth,
+      userTimezone: currentUserProfile?.userTimezone,
+    );
+    final darkSecondary = const Color(0xFFEC4899);
+    final darkSurface = const Color(0xFF0F172A);
+    final darkOnSurface = const Color(0xFFE6EEF8);
+    final lightSecondary = const Color(0xFFEC4899);
+    final lightTertiary = const Color(0xFFF59E0B);
+    final lightSurface = const Color(0xFFF8FAFC);
+    final lightOnSurface = const Color(0xFF1E293B);
 
     // Dark theme
-    final colorSchemeDark = ColorScheme.fromSeed(
-      seedColor: const Color(0xFF6366F1),
-      brightness: Brightness.dark,
-    ).copyWith(
-      primary: const Color(0xFF6366F1),
-      secondary: const Color(0xFFEC4899),
-      surface: const Color(0xFF0F172A),
-      onSurface: const Color(0xFFE6EEF8),
-    );
+    final colorSchemeDark =
+        AppThemeTokens.applyDarkPrimary(
+          ColorScheme.fromSeed(
+            seedColor: AppThemeTokens.darkSeedColor,
+            brightness: Brightness.dark,
+          ),
+        ).copyWith(
+          secondary: darkSecondary,
+          surface: darkSurface,
+          onSurface: darkOnSurface,
+        );
 
     final darkTheme = ThemeData(
       useMaterial3: true,
@@ -2072,28 +4945,59 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
           color: colorSchemeDark.onSurface,
         ),
       ),
-      textTheme: finalTextTheme.apply(bodyColor: Colors.white, displayColor: Colors.white),
+      navigationBarTheme: NavigationBarThemeData(
+        backgroundColor: colorSchemeDark.surface,
+        indicatorColor: colorSchemeDark.primary.withValues(alpha: 0.18),
+        surfaceTintColor: Colors.transparent,
+        elevation: 2,
+        labelTextStyle: WidgetStatePropertyAll(
+          const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+        ),
+      ),
+      navigationRailTheme: NavigationRailThemeData(
+        backgroundColor: colorSchemeDark.surface,
+        indicatorColor: colorSchemeDark.primary.withValues(alpha: 0.18),
+        selectedIconTheme: IconThemeData(color: colorSchemeDark.primary),
+        unselectedIconTheme: IconThemeData(
+          color: colorSchemeDark.onSurfaceVariant,
+        ),
+        selectedLabelTextStyle: TextStyle(
+          fontWeight: FontWeight.w600,
+          color: colorSchemeDark.primary,
+        ),
+        unselectedLabelTextStyle: TextStyle(
+          color: colorSchemeDark.onSurfaceVariant,
+        ),
+      ),
+      textTheme: finalTextTheme.apply(
+        bodyColor: Colors.white,
+        displayColor: Colors.white,
+      ),
       // Semantic success colors for status indicators (dark)
       extensions: const <ThemeExtension<dynamic>>[
         // success = green-400, successContainer = green-900 translucent
         // Chosen to be visible on dark backgrounds
-        SemanticColors(success: Color(0xFF34D399), successContainer: Color(0xFF052E16)),
+        SemanticColors(
+          success: Color(0xFF34D399),
+          successContainer: Color(0xFF052E16),
+        ),
       ],
     );
 
     // Light theme color scheme declared here so we can reference 'surface' consistently
-    final colorSchemeLight = ColorScheme.fromSeed(
-      seedColor: const Color(0xFF6366F1), // Modern indigo
-      brightness: Brightness.light,
-    ).copyWith(
-      primary: const Color(0xFF6366F1),
-      secondary: const Color(0xFFEC4899), // Pink accent
-      tertiary: const Color(0xFFF59E0B), // Amber
-      surface: const Color(0xFFF8FAFC), // Light gray background
-      onPrimary: Colors.white,
-      onSecondary: Colors.white,
-      onSurface: const Color(0xFF1E293B), // Dark slate
-    );
+    final colorSchemeLight =
+        AppThemeTokens.applyLightPrimary(
+          ColorScheme.fromSeed(
+            seedColor: AppThemeTokens.lightSeedColor,
+            brightness: Brightness.light,
+          ),
+        ).copyWith(
+          secondary: lightSecondary,
+          tertiary: lightTertiary,
+          surface: lightSurface,
+          onSecondary: Colors.white,
+          onSurface: lightOnSurface,
+        );
 
     return MaterialApp(
       debugShowCheckedModeBanner: false,
@@ -2119,73 +5023,93 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
         try {
           final currentTheme = Theme.of(context);
           final bool isDark = currentTheme.brightness == Brightness.dark;
-          final Color statusBarColor = currentTheme.appBarTheme.backgroundColor ?? currentTheme.colorScheme.surface;
+          final Color statusBarColor =
+              currentTheme.appBarTheme.backgroundColor ??
+              currentTheme.colorScheme.surface;
           final Color navBarColor = currentTheme.scaffoldBackgroundColor;
-          SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
-            statusBarColor: statusBarColor,
-            statusBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
-            systemNavigationBarColor: navBarColor,
-            systemNavigationBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
-          ));
-        } catch (_) {
-        }
+          SystemChrome.setSystemUIOverlayStyle(
+            SystemUiOverlayStyle(
+              statusBarColor: statusBarColor,
+              statusBarIconBrightness: isDark
+                  ? Brightness.light
+                  : Brightness.dark,
+              systemNavigationBarColor: navBarColor,
+              systemNavigationBarIconBrightness: isDark
+                  ? Brightness.light
+                  : Brightness.dark,
+            ),
+          );
+        } catch (_) {}
+        // NO-TRUNCATION POLICY (global safety net):
+        // 1. Clamp ambient text scaling so a 200% OS font cannot blow up
+        //    fixed chrome (AppBar, tabs, badges, buttons) beyond what any
+        //    finite phone can lay out. Body content still wraps/scrolls and
+        //    shows 100% of its string; only the *scale factor* is bounded.
+        // 2. Per-widget, `SafeText` (wrap) and `ShrinkText` (auto-shrink)
+        //    in lib/widgets/safe_text.dart guarantee no ellipsis/clip.
         // ✅ Mouse wheel smoothing applied app-wide
         // Always wrap the app content in a SafeArea so all screens respect Android status/navigation bars
         // Additionally add a visual fallback overlay for Android devices that ignore status/nav bar color
-        return ScrollConfiguration(
-          behavior: const _SmoothScrollBehavior(),
-          child: Builder(builder: (context) {
-            final bool isAndroid = defaultTargetPlatform == TargetPlatform.android;
-            final EdgeInsets padding = MediaQuery.of(context).padding;
-            final Color barColor = Theme.of(context).scaffoldBackgroundColor;
-            final Widget content = child ?? const SizedBox.shrink();
+        return MediaQuery.withClampedTextScaling(
+          minScaleFactor: 0.85,
+          maxScaleFactor: 1.35,
+          child: ScrollConfiguration(
+            behavior: const _SmoothScrollBehavior(),
+            child: Builder(
+              builder: (context) {
+                final bool isAndroid =
+                    defaultTargetPlatform == TargetPlatform.android;
+                final EdgeInsets padding = MediaQuery.of(context).padding;
+                final Color barColor = Theme.of(
+                  context,
+                ).scaffoldBackgroundColor;
+                // Text scaler is already clamped by the ancestor above.
+                // Bold-text is intentionally preserved (accessibility):
+                // wrapping + clamp absorbs its extra width.
+                final Widget content = child ?? const SizedBox.shrink();
 
-            return Stack(
-              children: [
-                if (isAndroid) SafeArea(child: content) else content,
-                if (isAndroid && padding.top > 0)
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    top: 0,
-                    child: Container(
-                      height: padding.top,
-                      color: barColor,
+                return Stack(
+                  children: [
+                    if (isAndroid) SafeArea(child: content) else content,
+                    if (isAndroid && padding.top > 0)
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        top: 0,
+                        child: Container(height: padding.top, color: barColor),
+                      ),
+                    if (isAndroid && padding.bottom > 0)
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        child: Container(
+                          height: padding.bottom,
+                          color: barColor,
+                        ),
+                      ),
+                    if (isAndroid && padding.left > 0)
+                      Positioned(
+                        left: 0,
+                        top: 0,
+                        bottom: 0,
+                        child: Container(width: padding.left, color: barColor),
+                      ),
+                    if (isAndroid && padding.right > 0)
+                      Positioned(
+                        right: 0,
+                        top: 0,
+                        bottom: 0,
+                        child: Container(width: padding.right, color: barColor),
+                      ),
+                    Positioned.fill(
+                      child: BirthdayOverlay(isBirthdayToday: isBirthdayToday),
                     ),
-                  ),
-                if (isAndroid && padding.bottom > 0)
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    child: Container(
-                      height: padding.bottom,
-                      color: barColor,
-                    ),
-                  ),
-                if (isAndroid && padding.left > 0)
-                  Positioned(
-                    left: 0,
-                    top: 0,
-                    bottom: 0,
-                    child: Container(
-                      width: padding.left,
-                      color: barColor,
-                    ),
-                  ),
-                if (isAndroid && padding.right > 0)
-                  Positioned(
-                    right: 0,
-                    top: 0,
-                    bottom: 0,
-                    child: Container(
-                      width: padding.right,
-                      color: barColor,
-                    ),
-                  ),
-              ],
-            );
-          }),
+                  ],
+                );
+              },
+            ),
+          ),
         );
       },
       theme: ThemeData(
@@ -2194,23 +5118,20 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
         // Add a conservative fontFamilyFallback so ASCII digits can fall back to a Latin font
         // with more conventional digit glyphs when needed. This helps avoid proportional or
         // spaced digit glyphs showing up unexpectedly in Hebrew UI due to font fallbacks.
-        fontFamilyFallback: ['Noto Sans', 'Roboto', 'Segoe UI', 'Helvetica Neue'],
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF6366F1), // Modern indigo
-          brightness: Brightness.light,
-        ).copyWith(
-          primary: const Color(0xFF6366F1),
-          secondary: const Color(0xFFEC4899), // Pink accent
-          tertiary: const Color(0xFFF59E0B), // Amber
-          surface: const Color(0xFFF8FAFC), // Light gray background
-          onPrimary: Colors.white,
-          onSecondary: Colors.white,
-          onSurface: const Color(0xFF1E293B), // Dark slate
-        ),
+        fontFamilyFallback: [
+          'Noto Sans',
+          'Roboto',
+          'Segoe UI',
+          'Helvetica Neue',
+        ],
+        colorScheme: colorSchemeLight,
         // Semantic success colors for status indicators (light)
         extensions: const <ThemeExtension<dynamic>>[
           // success = green-500, successContainer = light green background
-          SemanticColors(success: Color(0xFF10B981), successContainer: Color(0xFFDCFCE7)),
+          SemanticColors(
+            success: Color(0xFF10B981),
+            successContainer: Color(0xFFDCFCE7),
+          ),
         ],
 
         appBarTheme: AppBarTheme(
@@ -2262,16 +5183,33 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
           ),
         ),
-        bottomNavigationBarTheme: BottomNavigationBarThemeData(
+        navigationBarTheme: NavigationBarThemeData(
           backgroundColor: colorSchemeLight.surface,
-          selectedItemColor: colorSchemeLight.primary,
-          unselectedItemColor: colorSchemeLight.onSurface.withValues(alpha:0.6),
-          selectedLabelStyle: const TextStyle(fontWeight: FontWeight.w600),
-          elevation: 8,
+          indicatorColor: colorSchemeLight.primary.withValues(alpha: 0.14),
+          surfaceTintColor: Colors.transparent,
+          elevation: 2,
+          labelTextStyle: WidgetStatePropertyAll(
+            const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+        ),
+        navigationRailTheme: NavigationRailThemeData(
+          backgroundColor: colorSchemeLight.surface,
+          indicatorColor: colorSchemeLight.primary.withValues(alpha: 0.14),
+          selectedIconTheme: IconThemeData(color: colorSchemeLight.primary),
+          unselectedIconTheme: IconThemeData(
+            color: colorSchemeLight.onSurfaceVariant,
+          ),
+          selectedLabelTextStyle: TextStyle(
+            fontWeight: FontWeight.w600,
+            color: colorSchemeLight.primary,
+          ),
+          unselectedLabelTextStyle: TextStyle(
+            color: colorSchemeLight.onSurfaceVariant,
+          ),
         ),
         cardTheme: CardThemeData(
           elevation: 4,
-          shadowColor: Colors.black.withValues(alpha:0.1),
+          shadowColor: Colors.black.withValues(alpha: 0.1),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
           ),
@@ -2279,12 +5217,10 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
         ),
         chipTheme: ChipThemeData(
           backgroundColor: colorSchemeLight.surfaceContainerHighest,
-          selectedColor: colorSchemeLight.primary.withValues(alpha:0.1),
+          selectedColor: colorSchemeLight.primary.withValues(alpha: 0.1),
           checkmarkColor: colorSchemeLight.primary,
           labelStyle: TextStyle(color: colorSchemeLight.onSurface),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
-          ),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         ),
         inputDecorationTheme: InputDecorationTheme(
           border: OutlineInputBorder(
@@ -2293,37 +5229,46 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
           ),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: colorSchemeLight.surfaceContainerHighest),
+            borderSide: BorderSide(
+              color: colorSchemeLight.surfaceContainerHighest,
+            ),
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
             borderSide: BorderSide(color: colorSchemeLight.primary, width: 2),
           ),
-          labelStyle: TextStyle(color: colorSchemeLight.onSurface.withValues(alpha:0.7)),
+          labelStyle: TextStyle(
+            color: colorSchemeLight.onSurface.withValues(alpha: 0.7),
+          ),
           filled: true,
           fillColor: colorSchemeLight.surface,
         ),
-        textTheme: finalTextTheme.apply(bodyColor: colorSchemeLight.onSurface, displayColor: colorSchemeLight.onSurface).copyWith(
-          headlineLarge: finalTextTheme.headlineLarge?.copyWith(
-            inherit: true,
-            fontWeight: FontWeight.w700,
-            letterSpacing: -0.5,
-          ),
-          headlineMedium: finalTextTheme.headlineMedium?.copyWith(
-            inherit: true,
-            fontWeight: FontWeight.w600,
-            letterSpacing: -0.25,
-          ),
-          titleLarge: finalTextTheme.titleLarge?.copyWith(
-            inherit: true,
-            fontWeight: FontWeight.w600,
-          ),
-          bodyLarge: finalTextTheme.bodyLarge?.copyWith(
-            inherit: true,
-            fontWeight: FontWeight.w400,
-            height: 1.5,
-          ),
-        ),
+        textTheme: finalTextTheme
+            .apply(
+              bodyColor: colorSchemeLight.onSurface,
+              displayColor: colorSchemeLight.onSurface,
+            )
+            .copyWith(
+              headlineLarge: finalTextTheme.headlineLarge?.copyWith(
+                inherit: true,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.5,
+              ),
+              headlineMedium: finalTextTheme.headlineMedium?.copyWith(
+                inherit: true,
+                fontWeight: FontWeight.w600,
+                letterSpacing: -0.25,
+              ),
+              titleLarge: finalTextTheme.titleLarge?.copyWith(
+                inherit: true,
+                fontWeight: FontWeight.w600,
+              ),
+              bodyLarge: finalTextTheme.bodyLarge?.copyWith(
+                inherit: true,
+                fontWeight: FontWeight.w400,
+                height: 1.5,
+              ),
+            ),
         dividerTheme: DividerThemeData(
           color: colorSchemeLight.surfaceContainerHighest,
           thickness: 1,
@@ -2336,18 +5281,49 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp> with WidgetsBindingObse
             final user = state.session?.user;
             if (user == null) {
               return const AuthScreen();
-            } else {
-              return ProfileCheckScreen(user: user);
             }
+            // A calendar import borrows the social sign-in flow to obtain a
+            // provider access token, which transiently creates a session for
+            // the *provider* account. Honouring it would swap the entire widget
+            // tree to that account and dump the user on its home screen, so
+            // keep rendering the account they are actually signed in as until
+            // the original session is restored.
+            if (AuthTransitionGuard.shouldIgnoreSessionFor(user.id)) {
+              debugPrint(
+                '[Auth] ignoring transient provider session for ${user.id} '
+                '(calendar OAuth in flight, anchor '
+                '${AuthTransitionGuard.anchorUserId})',
+              );
+              final anchor = _lastRenderedAuthUser;
+              if (anchor != null &&
+                  anchor.id == AuthTransitionGuard.anchorUserId) {
+                // Keep showing the account the user is really signed in as.
+                return ProfileCheckScreen(
+                  key: ValueKey(anchor.id),
+                  user: anchor,
+                );
+              }
+              // No usable anchor (cold start mid-transition): hold a neutral
+              // screen rather than switching to the provider account.
+              return const StartupLoaderScaffold();
+            }
+            _lastRenderedAuthUser = user;
+            // Key by user id so a different account signing in on the same
+            // device gets a fresh ProfileCheckScreen state (loading gate,
+            // cached profile future) instead of reusing the previous user's
+            // already-resolved home screen — same sequence as a cold start.
+            return ProfileCheckScreen(key: ValueKey(user.id), user: user);
           },
           loading: () {
-            return const Scaffold(
-              body: Center(child: CircularProgressIndicator()),
-            );
+            return const StartupLoaderScaffold();
           },
           error: (err, stack) {
             return Scaffold(
-              body: Center(child: Text('${LocalizationState.defaultTranslation('authStreamError')}: $err')),
+              body: Center(
+                child: Text(
+                  LocalizationState.defaultTranslation('authStreamError'),
+                ),
+              ),
             );
           },
         ),
@@ -2401,15 +5377,69 @@ class _ChatRouteRecoveryState extends State<_ChatRouteRecovery> {
   }
 }
 
+/// Neutral route shown when a custom-scheme OAuth callback deep link
+/// (e.g. com.example.matchme://login-callback?code=...) is delivered to the
+/// navigator as "/?code=...". The app_links listener has already handled the
+/// code, so we simply pop back to the screen below instead of crashing the
+/// navigator with an unknown-route exception.
+class _OAuthCallbackSplash extends StatefulWidget {
+  const _OAuthCallbackSplash();
+
+  @override
+  State<_OAuthCallbackSplash> createState() => _OAuthCallbackSplashState();
+}
+
+class _OAuthCallbackSplashState extends State<_OAuthCallbackSplash> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final navigator = Navigator.of(context, rootNavigator: true);
+      if (navigator.canPop()) navigator.pop();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Keep this screen visually neutral; it should be popped immediately.
+    return const Scaffold(body: SizedBox.shrink());
+  }
+}
+
 class _DeepLinkChatHandler extends ConsumerStatefulWidget {
   final String matchId;
   const _DeepLinkChatHandler({required this.matchId});
 
   @override
-  ConsumerState<_DeepLinkChatHandler> createState() => _DeepLinkChatHandlerState();
+  ConsumerState<_DeepLinkChatHandler> createState() =>
+      _DeepLinkChatHandlerState();
 }
 
-class _DeepLinkChatHandlerState extends ConsumerState<_DeepLinkChatHandler> with WidgetsBindingObserver {
+class _DeepLinkChatHandlerState extends ConsumerState<_DeepLinkChatHandler>
+    with WidgetsBindingObserver {
+  static const Duration _resolveTimeout = Duration(seconds: 4);
+
+  bool _resolutionStarted = false;
+  bool _resolutionFinished = false;
+  bool _didRouteFromHere = false;
+  Timer? _resolveSafetyTimer;
+
+  @override
+  void dispose() {
+    _resolveSafetyTimer?.cancel();
+    _resolveSafetyTimer = null;
+    super.dispose();
+  }
+
+  void _routeOffSplash() {
+    if (_didRouteFromHere || !mounted) return;
+    final navigator = Navigator.of(context, rootNavigator: true);
+    if (!navigator.canPop()) return;
+    _didRouteFromHere = true;
+    navigator.pop();
+  }
+
   String _wrapLtrIsolateIfNeeded(String text) {
     final t = text.trim();
     if (t.isEmpty) return text;
@@ -2424,13 +5454,33 @@ class _DeepLinkChatHandlerState extends ConsumerState<_DeepLinkChatHandler> with
     return text;
   }
 
+  String _capNameWord(String word) {
+    if (word.isEmpty) return word;
+    final hyphenParts = word.split('-');
+    return hyphenParts
+        .map((h) {
+          if (h.isEmpty) return h;
+          return h
+              .split("'")
+              .map((s) {
+                if (s.isEmpty) return s;
+                final lower = s.toLowerCase();
+                return '${lower[0].toUpperCase()}${lower.substring(1)}';
+              })
+              .join("'");
+        })
+        .join('-');
+  }
+
   String _maskDisplayName(String? fullName) {
-    final raw = (fullName ?? '').trim();
+    final raw = (fullName ?? '')
+        .replaceAll(RegExp('[\u200E\u200F\u202A-\u202E]'), '')
+        .trim();
     if (raw.isEmpty) return 'Unknown User';
     final parts = raw.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
     if (parts.isEmpty) return 'Unknown User';
-    if (parts.length == 1) return parts.first;
-    final first = parts.first;
+    if (parts.length == 1) return _capNameWord(parts.first);
+    final first = _capNameWord(parts.first);
     final last = parts.last;
     final lastInitial = last.isNotEmpty ? last[0].toUpperCase() : '';
     final masked = lastInitial.isEmpty ? first : '$first $lastInitial.';
@@ -2461,19 +5511,30 @@ class _DeepLinkChatHandlerState extends ConsumerState<_DeepLinkChatHandler> with
       }());
       PermissionCoordinator.handleOnResume(context, ref);
     });
-    _resolveChat();
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
+    _kickResolve();
+    // Safety net: never leave the user stuck on the splash. If we still
+    // haven't routed away after the timeout, pop ourselves off the stack so
+    // the user is sent back to the previous screen.
+    _resolveSafetyTimer = Timer(_resolveTimeout, () {
+      if (!mounted || _resolutionFinished) return;
+      debugPrint(
+        '⏱️ [DeepLinkChat] Resolve timed out after '
+        '${_resolveTimeout.inSeconds}s — popping splash',
+      );
+      _routeOffSplash();
+    });
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
+    ResumeDiagnostics.logThrottled(
+      'Permission-aware lifecycle changed: $state',
+      category: 'permission-lifecycle-$state',
+      minIntervalMs: 250,
+    );
     if (state != AppLifecycleState.resumed) return;
+    unawaited(ResumeRouteRestore.clearPendingRoute());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (Supabase.instance.client.auth.currentUser == null) return;
@@ -2482,92 +5543,160 @@ class _DeepLinkChatHandlerState extends ConsumerState<_DeepLinkChatHandler> with
     });
   }
 
+  void _kickResolve() {
+    if (_resolutionStarted) return;
+    _resolutionStarted = true;
+    // Fire-and-forget; _resolveChat manages its own errors and finalisation.
+    unawaited(_resolveChat());
+  }
+
+  void _markResolved() {
+    _resolutionFinished = true;
+    _resolveSafetyTimer?.cancel();
+    _resolveSafetyTimer = null;
+  }
+
   Future<void> _resolveChat() async {
     try {
       final supabase = Supabase.instance.client;
-      final currentUserId = supabase.auth.currentUser?.id;
+      var currentUserId = supabase.auth.currentUser?.id;
 
-      if (currentUserId != null) {
-        // Use maybeSingle() to handle potential duplicates or missing rows gracefully
-        final matchData = await supabase
-            .from('matches')
-            .select('user1_id, user2_id')
-            .eq('id', widget.matchId)
-            .limit(1)
-            .maybeSingle();
-
-        if (matchData == null) {
-          if (mounted) Navigator.of(context).pop();
+      // If the auth state isn't ready yet (cold start before the persisted
+      // session is restored, or a transient gap right after sign-in), wait
+      // briefly for it instead of silently giving up — otherwise the user
+      // gets stuck on the splash with no ChatScreen to navigate to.
+      if (currentUserId == null) {
+        currentUserId = await _awaitSignedInUser();
+        if (currentUserId == null) {
+          // No signed-in user at all. Pop ourselves so we don't strand the
+          // user on a permanent splash.
+          _routeOffSplash();
           return;
         }
+      }
 
-        final otherUserId = matchData['user1_id'] == currentUserId
-            ? matchData['user2_id']
-            : matchData['user1_id'];
+      // Use maybeSingle() to handle potential duplicates or missing rows gracefully
+      final matchData = await supabase
+          .from('matches')
+          .select('user1_id, user2_id')
+          .eq('id', widget.matchId)
+          .limit(1)
+          .maybeSingle();
 
-        String resolvedName = '';
+      if (matchData == null) {
+        _markResolved();
+        _routeOffSplash();
+        return;
+      }
 
-        // Prefer users.name as a reliable fallback (matches server-side notification logic).
+      final otherUserId = matchData['user1_id'] == currentUserId
+          ? matchData['user2_id']
+          : matchData['user1_id'];
+
+      String resolvedName = '';
+
+      // Prefer users.name as a reliable fallback (matches server-side notification logic).
+      try {
+        final userRow = await supabase
+            .from('users')
+            .select('name')
+            .eq('id', otherUserId)
+            .limit(1)
+            .maybeSingle();
+        final n = userRow?['name']?.toString().trim();
+        if (n != null && n.isNotEmpty) {
+          resolvedName = n;
+        }
+      } catch (_) {}
+
+      // Then try user_profiles (can have multiple intent rows; pick one that has fullName).
+      if (resolvedName.isEmpty) {
         try {
-          final userRow = await supabase
-              .from('users')
-              .select('name')
-              .eq('id', otherUserId)
-              .limit(1)
-              .maybeSingle();
-          final n = userRow?['name']?.toString().trim();
-          if (n != null && n.isNotEmpty) {
-            resolvedName = n;
-          }
-        } catch (_) {}
+          final List profiles = await supabase
+              .from('user_profiles')
+              .select('profile_data')
+              .eq('user_id', otherUserId);
 
-        // Then try user_profiles (can have multiple intent rows; pick one that has fullName).
-        if (resolvedName.isEmpty) {
-          try {
-            final List profiles = await supabase
-                .from('user_profiles')
-                .select('profile_data')
-                .eq('user_id', otherUserId);
-
-            for (final row in profiles) {
-              final pd = (row as Map<String, dynamic>)['profile_data'];
-              if (pd is Map && pd['fullName'] != null) {
-                final n = pd['fullName']?.toString().trim();
-                if (n != null && n.isNotEmpty) {
-                  resolvedName = n;
-                  break;
-                }
+          for (final row in profiles) {
+            final pd = (row as Map<String, dynamic>)['profile_data'];
+            if (pd is Map && pd['fullName'] != null) {
+              final n = pd['fullName']?.toString().trim();
+              if (n != null && n.isNotEmpty) {
+                resolvedName = n;
+                break;
               }
             }
-          } catch (_) {}
-        }
+          }
+        } catch (_) {}
+      }
 
-        final otherUserName = _maskDisplayName(resolvedName);
+      final otherUserName = _maskDisplayName(resolvedName);
 
-        if (mounted) {
-          Navigator.of(context).pushReplacement(
-            MaterialPageRoute(
-              builder: (context) => ChatScreen(
-                matchId: widget.matchId,
-                otherUserName: otherUserName,
-                otherUserId: otherUserId,
-              ),
+      if (mounted) {
+        _markResolved();
+        _didRouteFromHere = true;
+        Navigator.of(context, rootNavigator: true).pushReplacement(
+          MaterialPageRoute(
+            builder: (context) => ChatScreen(
+              matchId: widget.matchId,
+              otherUserName: otherUserName,
+              otherUserId: otherUserId,
             ),
-          );
-        }
+          ),
+        );
       }
     } catch (e) {
+      debugPrint('⚠️ [DeepLinkChat] Resolve failed: $e');
       if (mounted) {
-        Navigator.of(context).pop(); // Go back if failed
+        _markResolved();
+        _routeOffSplash();
       }
     }
   }
 
+  /// Waits up to [timeout] for a signed-in user to become available, polling
+  /// `supabase.auth.currentUser`. Returns the user id, or `null` if the
+  /// timeout elapses / the user is genuinely not signed in.
+  Future<String?> _awaitSignedInUser({
+    Duration timeout = const Duration(seconds: 3),
+    Duration pollInterval = const Duration(milliseconds: 100),
+  }) async {
+    final supabase = Supabase.instance.client;
+    final start = DateTime.now();
+    while (DateTime.now().difference(start) < timeout) {
+      if (!mounted) return null;
+      final id = supabase.auth.currentUser?.id;
+      if (id != null && id.isNotEmpty) return id;
+      // If the auth provider has reported a definitive signed-out state we
+      // can stop early — there's no point waiting.
+      final authAsync = ref.read(authStateProvider);
+      if (authAsync.hasValue) {
+        final session = authAsync.value?.session;
+        if (session == null) return null;
+      }
+      await Future.delayed(pollInterval);
+    }
+    return supabase.auth.currentUser?.id;
+  }
+
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      body: Center(child: CircularProgressIndicator()),
-    );
+    // Re-attempt resolution if the auth state arrives after our initial
+    // attempt found no signed-in user. This handles the cold-start / deep-
+    // link case where the session is still being restored.
+    ref.listen<AsyncValue<AuthState>>(authStateProvider, (previous, next) {
+      if (_resolutionFinished) return;
+      next.whenData((state) {
+        final userId = state.session?.user.id;
+        if (userId != null && userId.isNotEmpty) {
+          _kickResolve();
+        } else if (state.session == null) {
+          _markResolved();
+          _routeOffSplash();
+        }
+      });
+    });
+    return const StartupLoaderScaffold();
   }
 }
 
@@ -2584,12 +5713,16 @@ class _ReferralHandlerState extends ConsumerState<_ReferralHandler> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       () async {
-        await ref.read(referralServiceProvider).handleIncomingReferralCode(widget.code);
+        await ref
+            .read(referralServiceProvider)
+            .handleIncomingReferralCode(widget.code);
         final user = Supabase.instance.client.auth.currentUser;
         if (user != null) {
           final hasReferral = await _hasReferral(user.id);
           if (!hasReferral) {
-            await ref.read(referralServiceProvider).processPendingReferral(user.id);
+            await ref
+                .read(referralServiceProvider)
+                .processPendingReferral(user.id);
           }
         }
         if (mounted) {
@@ -2598,13 +5731,30 @@ class _ReferralHandlerState extends ConsumerState<_ReferralHandler> {
       }();
     });
   }
+
   @override
-  Widget build(BuildContext context) => const Scaffold(body: Center(child: CircularProgressIndicator()));
+  Widget build(BuildContext context) => const StartupLoaderScaffold();
+}
+
+/// Pre-cache all translations during bootstrap to ensure offline support
+
+Future<void> _clearStaleProfilesForUser(String userId) async {
+  try {
+    final db = await LocalDbService.instance;
+    await db.clearStaleLocalProfilesForUser(userId);
+    UserActivityService.instance.reset();
+  } catch (e) {
+    debugPrint('[Profile] clearStaleLocalProfilesForUser failed: $e');
+  }
 }
 
 Future<bool> _hasReferral(String userId) async {
   try {
-    final res = await Supabase.instance.client.from('referrals').select('id').eq('referee_id', userId).maybeSingle();
+    final res = await Supabase.instance.client
+        .from('referrals')
+        .select('id')
+        .eq('referee_id', userId)
+        .maybeSingle();
     return res != null;
   } catch (e) {
     return false;

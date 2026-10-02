@@ -12,7 +12,16 @@
           "package_name": "com.example.matchme"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "988596890235-1oeoj6d55l9f5gbenkmicfpej66es9rp.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.matchme",
+            "sha1_cert": "53:55:01:FC:72:6E:3B:00:8A:26:BD:A1:24:2F:67:4D:AC:65:AF:AC"
+          }
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyB2HEiC8Jksvakjgp4FfMNUhx2JK45DTqs"

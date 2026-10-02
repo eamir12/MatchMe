@@ -20,7 +20,7 @@ final class LocalizationProvider
         argument: null,
         retry: null,
         name: r'localizationProvider',
-        isAutoDispose: true,
+        isAutoDispose: false,
         dependencies: null,
         $allTransitiveDependencies: null,
       );
@@ -41,13 +41,13 @@ final class LocalizationProvider
   }
 }
 
-String _$localizationHash() => r'b5bf83f237c1dd194bdf7a55e2a136aa17ebab24';
+String _$localizationHash() => r'c08dbb27675caecc2c357d470ed9f1362d61389e';
 
 abstract class _$Localization extends $Notifier<LocalizationState> {
   LocalizationState build();
   @$mustCallSuper
   @override
-  void runBuild() {
+  WhenComplete runBuild() {
     final ref = this.ref as $Ref<LocalizationState, LocalizationState>;
     final element =
         ref.element
@@ -57,6 +57,6 @@ abstract class _$Localization extends $Notifier<LocalizationState> {
               Object?,
               Object?
             >;
-    element.handleCreate(ref, build);
+    return element.handleCreate(ref, build);
   }
 }

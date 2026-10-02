@@ -15,6 +15,8 @@ import 'package:matchme/utils/unit_utils.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:uuid/uuid.dart';
 import 'package:intl/intl.dart';
+import 'package:matchme/theme/app_button_styles.dart';
+import 'package:matchme/utils/directional_icons.dart';
 
 class InvisibilityRulesScreen extends ConsumerStatefulWidget {
   final String? highlightRuleId;
@@ -27,7 +29,8 @@ class InvisibilityRulesScreen extends ConsumerStatefulWidget {
 }
 
 class _InvisibilityRulesScreenState
-    extends ConsumerState<InvisibilityRulesScreen> with WidgetsBindingObserver {
+    extends ConsumerState<InvisibilityRulesScreen>
+    with WidgetsBindingObserver {
   final Map<String, GlobalKey> _ruleKeys = {};
   final ScrollController _scrollController = ScrollController();
 
@@ -58,7 +61,9 @@ class _InvisibilityRulesScreenState
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      unawaited(ref.read(invisibilityRulesProvider.notifier).syncFromSupabase());
+      unawaited(
+        ref.read(invisibilityRulesProvider.notifier).syncFromSupabase(),
+      );
     }
   }
 
@@ -155,7 +160,7 @@ class _InvisibilityRulesScreenState
                 ],
               ),
             ),
-            Icon(Icons.arrow_forward_ios, color: color, size: 16),
+            Icon(directionalForwardIos(context), color: color, size: 16),
           ],
         ),
       ),
@@ -189,36 +194,33 @@ class _InvisibilityRulesScreenState
       key: isHighlighted ? _ruleKeys[ruleId] : null,
       margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
-        color:
-            isHighlighted
-                ? color.withValues(alpha: 0.15)
-                : (isPast
-                    ? Theme.of(
+        color: isHighlighted
+            ? color.withValues(alpha: 0.15)
+            : (isPast
+                  ? Theme.of(
                       context,
                     ).colorScheme.onSurface.withValues(alpha: 0.05)
-                    : color.withValues(alpha: 0.05)),
+                  : color.withValues(alpha: 0.05)),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color:
-              isHighlighted
-                  ? color
-                  : (isPast
-                      ? Theme.of(
+          color: isHighlighted
+              ? color
+              : (isPast
+                    ? Theme.of(
                         context,
                       ).colorScheme.onSurface.withValues(alpha: 0.1)
-                      : color.withValues(alpha: 0.1)),
+                    : color.withValues(alpha: 0.1)),
           width: isHighlighted ? 2 : 1,
         ),
-        boxShadow:
-            isHighlighted
-                ? [
-                  BoxShadow(
-                    color: color.withValues(alpha: 0.3),
-                    blurRadius: 8,
-                    spreadRadius: 0,
-                  ),
-                ]
-                : null,
+        boxShadow: isHighlighted
+            ? [
+                BoxShadow(
+                  color: color.withValues(alpha: 0.3),
+                  blurRadius: 8,
+                  spreadRadius: 0,
+                ),
+              ]
+            : null,
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -260,14 +262,13 @@ class _InvisibilityRulesScreenState
                   child: Text(
                     title,
                     maxLines: 3,
-                    overflow: TextOverflow.ellipsis,
+                    overflow: TextOverflow.visible,
                     style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w500,
-                      color:
-                          isPast
-                              ? Theme.of(context).disabledColor
-                              : Theme.of(context).colorScheme.onSurface,
+                      color: isPast
+                          ? Theme.of(context).disabledColor
+                          : Theme.of(context).colorScheme.onSurface,
                       decoration: isPast ? TextDecoration.lineThrough : null,
                     ),
                   ),
@@ -322,27 +323,24 @@ class _InvisibilityRulesScreenState
                   onPressed: () async {
                     final confirmed = await showDialog<bool>(
                       context: context,
-                      builder:
-                          (context) => AlertDialog(
-                            title: Text(l10n.getString('confirmDelete')),
-                            content: Text(
-                              l10n.getString('confirmDeleteInvisibilityRule'),
-                            ),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Navigator.pop(context, false),
-                                child: Text(l10n.getString('generalCancel')),
-                              ),
-                              ElevatedButton(
-                                onPressed: () => Navigator.pop(context, true),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor:
-                                      Theme.of(context).colorScheme.error,
-                                ),
-                                child: Text(l10n.getString('generalDelete')),
-                              ),
-                            ],
+                      builder: (context) => AlertDialog(
+                        title: Text(l10n.getString('confirmDelete')),
+                        content: Text(
+                          l10n.getString('confirmDeleteInvisibilityRule'),
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            style: AppButtonStyles.tertiaryButton(context),
+                            child: Text(l10n.getString('generalCancel')),
                           ),
+                          ElevatedButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            style: AppButtonStyles.destructiveButton(context),
+                            child: Text(l10n.getString('generalDelete')),
+                          ),
+                        ],
+                      ),
                     );
                     if (confirmed == true) {
                       onDelete();
@@ -419,18 +417,16 @@ class _InvisibilityRulesScreenState
           });
 
           final accuracyText = position.accuracy.toStringAsFixed(0);
-          final message =
-              position.accuracy > 50
-                  ? '${l10n.getString('settingsLocationSuccess')} ($accuracyText${l10n.getString('settingsAccuracyMeters')} - ${l10n.getString('settingsConsiderIncreasingRadius')} ${formatDistanceWithImperial(position.accuracy * 2, ref.watch(unitSystemProvider).maybeWhen(data: (useImperial) => useImperial, orElse: () => false), l10n)})'
-                  : '${l10n.getString('settingsLocationSuccess')} ($accuracyText${l10n.getString('settingsAccuracyMeters')})';
+          final message = position.accuracy > 50
+              ? '${l10n.getString('settingsLocationSuccess')} ($accuracyText${l10n.getString('settingsAccuracyMeters')} - ${l10n.getString('settingsConsiderIncreasingRadius')} ${formatDistanceWithImperial(position.accuracy * 2, ref.watch(unitSystemProvider).maybeWhen(data: (useImperial) => useImperial, orElse: () => false), l10n)})'
+              : '${l10n.getString('settingsLocationSuccess')} ($accuracyText${l10n.getString('settingsAccuracyMeters')})';
 
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(message),
-              duration:
-                  position.accuracy > 50
-                      ? const Duration(seconds: 5)
-                      : const Duration(seconds: 3),
+              duration: position.accuracy > 50
+                  ? const Duration(seconds: 5)
+                  : const Duration(seconds: 3),
             ),
           );
         } else if (isDialogOpen && context.mounted) {
@@ -485,149 +481,140 @@ class _InvisibilityRulesScreenState
 
     showDialog(
       context: context,
-      builder:
-          (context) => StatefulBuilder(
-            builder: (context, setState) {
-              // Auto-fetch location on dialog open
-              if (!hasAutoFetched) {
-                hasAutoFetched = true;
-                fetchCurrentLocation(setState);
-              }
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) {
+          // Auto-fetch location on dialog open
+          if (!hasAutoFetched) {
+            hasAutoFetched = true;
+            fetchCurrentLocation(setState);
+          }
 
-              // Ensure cursor starts on the name field
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (!mounted) return;
-                if (isDialogOpen && nameFocusNode.canRequestFocus) {
-                  nameFocusNode.requestFocus();
-                }
-              });
+          // Ensure cursor starts on the name field
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            if (isDialogOpen && nameFocusNode.canRequestFocus) {
+              nameFocusNode.requestFocus();
+            }
+          });
 
-              return AlertDialog(
-                title: Text(l10n.getString('settingsLocationRules')),
-                content: SizedBox(
-                  width: double.maxFinite,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(l10n.getString('settingsLocationRulesDesc')),
-                      const SizedBox(height: 16),
-                      TextFormField(
-                        controller: nameController,
-                        focusNode: nameFocusNode,
-                        autofocus: true,
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          fontFeatures: const [],
+          return AlertDialog(
+            scrollable: true,
+            title: Text(l10n.getString('settingsLocationRules')),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(l10n.getString('settingsLocationRulesDesc')),
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    controller: nameController,
+                    focusNode: nameFocusNode,
+                    autofocus: true,
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodyMedium?.copyWith(fontFeatures: const []),
+                    decoration: InputDecoration(
+                      labelText: l10n.getString('settingsLocationName'),
+                      hintText: l10n.getString('settingsLocationNameHint'),
+                      prefixIcon: const Icon(Icons.location_on),
+                    ),
+                    onChanged: (value) {
+                      setState(() => locationName = value);
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  if (isFetchingLocation)
+                    Row(
+                      children: [
+                        SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
                         ),
-                        decoration: InputDecoration(
-                          labelText: l10n.getString('settingsLocationName'),
-                          hintText: l10n.getString('settingsLocationNameHint'),
-                          prefixIcon: const Icon(Icons.location_on),
-                        ),
-                        onChanged: (value) {
-                          setState(() => locationName = value);
-                        },
-                      ),
-                      const SizedBox(height: 12),
-                      if (isFetchingLocation)
-                        Row(
-                          children: [
-                            SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              l10n.getString('settingsGettingPreciseLocation'),
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: Colors.blue,
-                              ),
-                            ),
-                          ],
-                        ),
-                      if (!isFetchingLocation &&
-                          latitude != null &&
-                          longitude != null)
+                        const SizedBox(width: 8),
                         Text(
-                          '${l10n.getString('settingsLocationPrefix')}: ${latitude!.toStringAsFixed(6)}, ${longitude!.toStringAsFixed(6)}',
+                          l10n.getString('settingsGettingPreciseLocation'),
                           style: const TextStyle(
                             fontSize: 12,
-                            color: Colors.green,
+                            color: Colors.blue,
                           ),
                         ),
-                      const SizedBox(height: 12),
-                      ElevatedButton.icon(
-                        onPressed:
-                            isFetchingLocation
-                                ? null
-                                : () => fetchCurrentLocation(setState),
-                        icon: const Icon(Icons.my_location),
-                        label: Text(
-                          l10n.getString('settingsUseCurrentLocation'),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        '${l10n.getString('settingsRadius')}: ${formatDistanceWithImperial(radiusMeters, ref.watch(unitSystemProvider).maybeWhen(data: (useImperial) => useImperial, orElse: () => false), l10n)}',
-                        style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      Slider(
-                        value: radiusMeters,
-                        min: 5.0,
-                        max: 500.0,
-                        divisions: 99,
-                        label: formatDistanceWithImperial(
-                          radiusMeters,
-                          ref
-                              .watch(unitSystemProvider)
-                              .maybeWhen(
-                                data: (useImperial) => useImperial,
-                                orElse: () => false,
-                              ),
-                          l10n,
-                        ),
-                        onChanged: (value) {
-                          setState(() => radiusMeters = value);
-                        },
-                      ),
-                      Text(
-                        kIsWeb
-                            ? '${l10n.getString('settingsLocationRadiusDesc')} (${l10n.getString('settingsWebGpsAccuracy')})'
-                            : '${l10n.getString('settingsLocationRadiusDesc')} (${l10n.getString('settingsMobileGpsAccuracy')})',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
+                      ],
+                    ),
+                  if (!isFetchingLocation &&
+                      latitude != null &&
+                      longitude != null)
+                    Text(
+                      '${l10n.getString('settingsLocationPrefix')}: ${latitude!.toStringAsFixed(6)}, ${longitude!.toStringAsFixed(6)}',
+                      style: const TextStyle(fontSize: 12, color: Colors.green),
+                    ),
+                  const SizedBox(height: 12),
+                  ElevatedButton.icon(
+                    onPressed: isFetchingLocation
+                        ? null
+                        : () => fetchCurrentLocation(setState),
+                    icon: const Icon(Icons.my_location),
+                    label: Text(l10n.getString('settingsUseCurrentLocation')),
                   ),
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () {
-                      isDialogOpen = false;
-                      Navigator.pop(context);
+                  const SizedBox(height: 16),
+                  Text(
+                    '${l10n.getString('settingsRadius')}: ${formatDistanceWithImperial(radiusMeters, ref.watch(unitSystemProvider).maybeWhen(data: (useImperial) => useImperial, orElse: () => false), l10n)}',
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  Slider(
+                    value: radiusMeters,
+                    min: 5.0,
+                    max: 500.0,
+                    divisions: 99,
+                    label: formatDistanceWithImperial(
+                      radiusMeters,
+                      ref
+                          .watch(unitSystemProvider)
+                          .maybeWhen(
+                            data: (useImperial) => useImperial,
+                            orElse: () => false,
+                          ),
+                      l10n,
+                    ),
+                    onChanged: (value) {
+                      setState(() => radiusMeters = value);
                     },
-                    child: Text(l10n.getString('generalCancel')),
                   ),
-                  ElevatedButton(
-                    onPressed:
-                        (locationName.isNotEmpty &&
-                                latitude != null &&
-                                longitude != null)
-                            ? () => saveLocationRule()
-                            : null,
-                    child: Text(l10n.getString('generalSave')),
+                  Text(
+                    kIsWeb
+                        ? '${l10n.getString('settingsLocationRadiusDesc')} (${l10n.getString('settingsWebGpsAccuracy')})'
+                        : '${l10n.getString('settingsLocationRadiusDesc')} (${l10n.getString('settingsMobileGpsAccuracy')})',
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    textAlign: TextAlign.center,
                   ),
                 ],
-              );
-            },
-          ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  isDialogOpen = false;
+                  Navigator.pop(context);
+                },
+                child: Text(l10n.getString('generalCancel')),
+              ),
+              ElevatedButton(
+                onPressed:
+                    (locationName.isNotEmpty &&
+                        latitude != null &&
+                        longitude != null)
+                    ? () => saveLocationRule()
+                    : null,
+                child: Text(l10n.getString('generalSave')),
+              ),
+            ],
+          );
+        },
+      ),
     ).then((_) {
       isDialogOpen = false;
       nameController.dispose();
@@ -682,658 +669,555 @@ class _InvisibilityRulesScreenState
 
     showDialog(
       context: context,
-      builder:
-          (context) => StatefulBuilder(
-            builder:
-                (context, setState) => AlertDialog(
-                  title: Text(l10n.getString('settingsDateTimeRange')),
-                  content: SizedBox(
-                    width: double.maxFinite,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          l10n.getString('settingsDateTimeRangeDesc'),
-                          style: const TextStyle(fontSize: 13),
-                        ),
-                        const SizedBox(height: 20),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          scrollable: true,
+          title: Text(l10n.getString('settingsDateTimeRange')),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  l10n.getString('settingsDateTimeRangeDesc'),
+                  style: const TextStyle(fontSize: 13),
+                ),
+                const SizedBox(height: 20),
 
-                        // Start Date & Time
-                        Text(
-                          l10n.getString('settingsStart'),
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onSurface.withValues(alpha: 0.7),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            Expanded(
-                              flex: 3,
-                              child: OutlinedButton.icon(
-                                onPressed: () async {
-                                  final now = DateTime.now();
-                                  final date = await showLabeledDatePicker(
+                // Start Date & Time
+                Text(
+                  l10n.getString('settingsStart'),
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.onSurface.withValues(alpha: 0.7),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      flex: 3,
+                      child: OutlinedButton.icon(
+                        onPressed: () async {
+                          final now = DateTime.now();
+                          final date = await showLabeledDatePicker(
+                            context,
+                            l10n.getString('settingsSelectStartDate'),
+                            startDateTime ?? now,
+                            now,
+                            now.add(const Duration(days: 365)),
+                          );
+                          if (date != null) {
+                            if (!context.mounted) return;
+                            setState(
+                              () => startDateTime = DateTime(
+                                date.year,
+                                date.month,
+                                date.day,
+                                startTime.hour,
+                                startTime.minute,
+                              ),
+                            );
+
+                            // Auto-show time picker after date selection
+                            if (context.mounted) {
+                              final time = await showLabeledTimePicker(
+                                context,
+                                l10n.getString('settingsStartTime'),
+                                startTime,
+                              );
+                              if (time != null) {
+                                setState(() {
+                                  startTime = time;
+                                  startDateTime = DateTime(
+                                    date.year,
+                                    date.month,
+                                    date.day,
+                                    time.hour,
+                                    time.minute,
+                                  );
+                                });
+
+                                // Auto-show end date picker after start time selected
+                                if (context.mounted && endDateTime == null) {
+                                  final endDate = await showLabeledDatePicker(
                                     context,
-                                    l10n.getString('settingsSelectStartDate'),
-                                    startDateTime ?? now,
-                                    now,
+                                    l10n.getString('settingsSelectEndDate'),
+                                    date.isAfter(now) ? date : now,
+                                    date,
                                     now.add(const Duration(days: 365)),
                                   );
-                                  if (date != null) {
-                                    if (!context.mounted) return;
+                                  if (endDate != null) {
                                     setState(
-                                      () =>
-                                          startDateTime = DateTime(
-                                            date.year,
-                                            date.month,
-                                            date.day,
-                                            startTime.hour,
-                                            startTime.minute,
-                                          ),
+                                      () => endDateTime = DateTime(
+                                        endDate.year,
+                                        endDate.month,
+                                        endDate.day,
+                                        endTime.hour,
+                                        endTime.minute,
+                                      ),
                                     );
 
-                                    // Auto-show time picker after date selection
+                                    // Auto-show end time picker
                                     if (context.mounted) {
-                                      final time = await showLabeledTimePicker(
-                                        context,
-                                        l10n.getString('settingsStartTime'),
-                                        startTime,
-                                      );
-                                      if (time != null) {
-                                        setState(() {
-                                          startTime = time;
-                                          startDateTime = DateTime(
-                                            date.year,
-                                            date.month,
-                                            date.day,
-                                            time.hour,
-                                            time.minute,
-                                          );
-                                        });
+                                      // If same day, end time must be after start time
+                                      final isSameDay =
+                                          endDate.year == date.year &&
+                                          endDate.month == date.month &&
+                                          endDate.day == date.day;
 
-                                        // Auto-show end date picker after start time selected
-                                        if (context.mounted &&
-                                            endDateTime == null) {
-                                          final endDate =
-                                              await showLabeledDatePicker(
+                                      final endTimeResult =
+                                          await showLabeledTimePicker(
+                                            context,
+                                            l10n.getString('settingsEndTime'),
+                                            isSameDay
+                                                ? TimeOfDay(
+                                                    hour: time.hour + 1 > 23
+                                                        ? 23
+                                                        : time.hour + 1,
+                                                    minute: time.minute,
+                                                  )
+                                                : endTime,
+                                          );
+                                      if (endTimeResult != null) {
+                                        // Validate end time is after start time on same day
+                                        if (isSameDay) {
+                                          final startMinutes =
+                                              time.hour * 60 + time.minute;
+                                          final endMinutes =
+                                              endTimeResult.hour * 60 +
+                                              endTimeResult.minute;
+                                          if (endMinutes <= startMinutes) {
+                                            if (context.mounted) {
+                                              ScaffoldMessenger.of(
                                                 context,
-                                                l10n.getString(
-                                                  'settingsSelectEndDate',
-                                                ),
-                                                date.isAfter(now) ? date : now,
-                                                date,
-                                                now.add(
-                                                  const Duration(days: 365),
+                                              ).showSnackBar(
+                                                SnackBar(
+                                                  content: Text(
+                                                    l10n.getString(
+                                                      'settingsEndTimeAfterStart',
+                                                    ),
+                                                  ),
                                                 ),
                                               );
-                                          if (endDate != null) {
-                                            setState(
-                                              () =>
-                                                  endDateTime = DateTime(
-                                                    endDate.year,
-                                                    endDate.month,
-                                                    endDate.day,
-                                                    endTime.hour,
-                                                    endTime.minute,
-                                                  ),
-                                            );
-
-                                            // Auto-show end time picker
-                                            if (context.mounted) {
-                                              // If same day, end time must be after start time
-                                              final isSameDay =
-                                                  endDate.year == date.year &&
-                                                  endDate.month == date.month &&
-                                                  endDate.day == date.day;
-
-                                              final endTimeResult =
-                                                  await showLabeledTimePicker(
-                                                    context,
-                                                    l10n.getString(
-                                                      'settingsEndTime',
-                                                    ),
-                                                    isSameDay
-                                                        ? TimeOfDay(
-                                                          hour:
-                                                              time.hour + 1 > 23
-                                                                  ? 23
-                                                                  : time.hour +
-                                                                      1,
-                                                          minute: time.minute,
-                                                        )
-                                                        : endTime,
-                                                  );
-                                              if (endTimeResult != null) {
-                                                // Validate end time is after start time on same day
-                                                if (isSameDay) {
-                                                  final startMinutes =
-                                                      time.hour * 60 +
-                                                      time.minute;
-                                                  final endMinutes =
-                                                      endTimeResult.hour * 60 +
-                                                      endTimeResult.minute;
-                                                  if (endMinutes <=
-                                                      startMinutes) {
-                                                    if (context.mounted) {
-                                                      ScaffoldMessenger.of(
-                                                        context,
-                                                      ).showSnackBar(
-                                                        SnackBar(
-                                                          content: Text(
-                                                            l10n.getString(
-                                                              'settingsEndTimeAfterStart',
-                                                            ),
-                                                          ),
-                                                        ),
-                                                      );
-                                                    }
-                                                    return;
-                                                  }
-                                                }
-                                                if (!context.mounted) return;
-                                                setState(() {
-                                                  endTime = endTimeResult;
-                                                  endDateTime = DateTime(
-                                                    endDate.year,
-                                                    endDate.month,
-                                                    endDate.day,
-                                                    endTimeResult.hour,
-                                                    endTimeResult.minute,
-                                                  );
-                                                });
-                                              }
                                             }
+                                            return;
                                           }
                                         }
+                                        if (!context.mounted) return;
+                                        setState(() {
+                                          endTime = endTimeResult;
+                                          endDateTime = DateTime(
+                                            endDate.year,
+                                            endDate.month,
+                                            endDate.day,
+                                            endTimeResult.hour,
+                                            endTimeResult.minute,
+                                          );
+                                        });
                                       }
                                     }
                                   }
-                                },
-                                icon: const Icon(
-                                  Icons.calendar_today,
-                                  size: 18,
-                                ),
-                                label: Text(
-                                  startDateTime != null
-                                      ? DateFormat.yMd(
-                                        _getSystemLocale(context),
-                                      ).format(startDateTime!)
-                                      : l10n.getString('settingsSelectDate'),
-                                  style: const TextStyle(fontSize: 14),
-                                ),
-                                style: OutlinedButton.styleFrom(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 12,
-                                    vertical: 12,
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              flex: 2,
-                              child: OutlinedButton.icon(
-                                onPressed:
-                                    startDateTime != null
-                                        ? () async {
-                                          final time =
-                                              await showLabeledTimePicker(
-                                                context,
-                                                l10n.getString(
-                                                  'settingsStartTime',
-                                                ),
-                                                startTime,
-                                              );
-                                          if (time != null) {
-                                            if (!context.mounted) return;
-                                            setState(() {
-                                              startTime = time;
-                                              startDateTime = DateTime(
-                                                startDateTime!.year,
-                                                startDateTime!.month,
-                                                startDateTime!.day,
-                                                time.hour,
-                                                time.minute,
-                                              );
-                                            });
-
-                                            // Auto-show end date picker after start time modified manually
-                                            if (context.mounted &&
-                                                endDateTime == null) {
-                                              final now = DateTime.now();
-                                              final endDate =
-                                                  await showLabeledDatePicker(
-                                                    context,
-                                                    l10n.getString(
-                                                      'settingsSelectEndDate',
-                                                    ),
-                                                    startDateTime!.isAfter(now)
-                                                        ? startDateTime!
-                                                        : now,
-                                                    startDateTime!,
-                                                    now.add(
-                                                      const Duration(days: 365),
-                                                    ),
-                                                  );
-                                              if (endDate != null &&
-                                                  context.mounted) {
-                                                setState(
-                                                  () =>
-                                                      endDateTime = DateTime(
-                                                        endDate.year,
-                                                        endDate.month,
-                                                        endDate.day,
-                                                        endTime.hour,
-                                                        endTime.minute,
-                                                      ),
-                                                );
-
-                                                // Auto-show end time picker
-                                                final isSameDay =
-                                                    endDate.year ==
-                                                        startDateTime!.year &&
-                                                    endDate.month ==
-                                                        startDateTime!.month &&
-                                                    endDate.day ==
-                                                        startDateTime!.day;
-
-                                                final endTimeResult =
-                                                    await showLabeledTimePicker(
-                                                      context,
-                                                      l10n.getString(
-                                                        'settingsEndTime',
-                                                      ),
-                                                      isSameDay
-                                                          ? TimeOfDay(
-                                                            hour:
-                                                                time.hour + 1 >
-                                                                        23
-                                                                    ? 23
-                                                                    : time.hour +
-                                                                        1,
-                                                            minute: time.minute,
-                                                          )
-                                                          : endTime,
-                                                    );
-                                                if (endTimeResult != null) {
-                                                  if (isSameDay) {
-                                                    final startMinutes =
-                                                        time.hour * 60 +
-                                                        time.minute;
-                                                    final endMinutes =
-                                                        endTimeResult.hour *
-                                                            60 +
-                                                        endTimeResult.minute;
-                                                    if (endMinutes <=
-                                                        startMinutes) {
-                                                      if (context.mounted) {
-                                                        ScaffoldMessenger.of(
-                                                          context,
-                                                        ).showSnackBar(
-                                                          SnackBar(
-                                                            content: Text(
-                                                              l10n.getString(
-                                                                'settingsEndTimeAfterStart',
-                                                              ),
-                                                            ),
-                                                          ),
-                                                        );
-                                                      }
-                                                      return;
-                                                    }
-                                                  }
-                                                  setState(() {
-                                                    endTime = endTimeResult;
-                                                    endDateTime = DateTime(
-                                                      endDate.year,
-                                                      endDate.month,
-                                                      endDate.day,
-                                                      endTimeResult.hour,
-                                                      endTimeResult.minute,
-                                                    );
-                                                  });
-                                                }
-                                              }
-                                            }
-                                          }
-                                        }
-                                        : null,
-                                icon: const Icon(Icons.access_time, size: 18),
-                                label: Text(
-                                  _formatTime(context, startTime),
-                                  style: const TextStyle(fontSize: 14),
-                                ),
-                                style: OutlinedButton.styleFrom(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 12,
-                                    vertical: 12,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 16),
-
-                        // End Date & Time
-                        Text(
-                          l10n.getString('settingsEnd'),
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onSurface.withValues(alpha: 0.7),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            Expanded(
-                              flex: 3,
-                              child: OutlinedButton.icon(
-                                onPressed:
-                                    startDateTime != null
-                                        ? () async {
-                                          final now = DateTime.now();
-                                          final date =
-                                              await showLabeledDatePicker(
-                                                context,
-                                                l10n.getString(
-                                                  'settingsSelectEndDate',
-                                                ),
-                                                endDateTime ??
-                                                    startDateTime ??
-                                                    now,
-                                                startDateTime!,
-                                                now.add(
-                                                  const Duration(days: 365),
-                                                ),
-                                              );
-                                          if (date != null) {
-                                            setState(
-                                              () =>
-                                                  endDateTime = DateTime(
-                                                    date.year,
-                                                    date.month,
-                                                    date.day,
-                                                    endTime.hour,
-                                                    endTime.minute,
-                                                  ),
-                                            );
-
-                                            // Auto-show time picker after date selection
-                                            if (context.mounted) {
-                                              // If same day, end time must be after start time
-                                              final isSameDay =
-                                                  date.year ==
-                                                      startDateTime!.year &&
-                                                  date.month ==
-                                                      startDateTime!.month &&
-                                                  date.day ==
-                                                      startDateTime!.day;
-
-                                              final time =
-                                                  await showLabeledTimePicker(
-                                                    context,
-                                                    l10n.getString(
-                                                      'settingsEndTime',
-                                                    ),
-                                                    isSameDay
-                                                        ? TimeOfDay(
-                                                          hour:
-                                                              startTime.hour +
-                                                                          1 >
-                                                                      23
-                                                                  ? 23
-                                                                  : startTime
-                                                                          .hour +
-                                                                      1,
-                                                          minute:
-                                                              startTime.minute,
-                                                        )
-                                                        : endTime,
-                                                  );
-                                              if (time != null) {
-                                                // Validate end time is after start time on same day
-                                                if (isSameDay) {
-                                                  final startMinutes =
-                                                      startTime.hour * 60 +
-                                                      startTime.minute;
-                                                  final endMinutes =
-                                                      time.hour * 60 +
-                                                      time.minute;
-                                                  if (endMinutes <=
-                                                      startMinutes) {
-                                                    if (context.mounted) {
-                                                      ScaffoldMessenger.of(
-                                                        context,
-                                                      ).showSnackBar(
-                                                        SnackBar(
-                                                          content: Text(
-                                                            l10n.getString(
-                                                              'settingsEndTimeAfterStart',
-                                                            ),
-                                                          ),
-                                                        ),
-                                                      );
-                                                    }
-                                                    return;
-                                                  }
-                                                }
-                                                if (!context.mounted) return;
-                                                setState(() {
-                                                  endTime = time;
-                                                  endDateTime = DateTime(
-                                                    date.year,
-                                                    date.month,
-                                                    date.day,
-                                                    time.hour,
-                                                    time.minute,
-                                                  );
-                                                });
-                                              }
-                                            }
-                                          }
-                                        }
-                                        : null,
-                                icon: const Icon(
-                                  Icons.calendar_today,
-                                  size: 18,
-                                ),
-                                label: Text(
-                                  endDateTime != null
-                                      ? DateFormat.yMd(
-                                        _getSystemLocale(context),
-                                      ).format(endDateTime!)
-                                      : l10n.getString('settingsSelectDate'),
-                                  style: const TextStyle(fontSize: 14),
-                                ),
-                                style: OutlinedButton.styleFrom(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 12,
-                                    vertical: 12,
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              flex: 2,
-                              child: OutlinedButton.icon(
-                                onPressed:
-                                    endDateTime != null
-                                        ? () async {
-                                          // If same day, end time must be after start time
-                                          final isSameDay =
-                                              endDateTime!.year ==
-                                                  startDateTime!.year &&
-                                              endDateTime!.month ==
-                                                  startDateTime!.month &&
-                                              endDateTime!.day ==
-                                                  startDateTime!.day;
-
-                                          final time =
-                                              await showLabeledTimePicker(
-                                                context,
-                                                l10n.getString(
-                                                  'settingsEndTime',
-                                                ),
-                                                endTime,
-                                              );
-                                          if (time != null) {
-                                            // Validate end time is after start time on same day
-                                            if (isSameDay) {
-                                              final startMinutes =
-                                                  startTime.hour * 60 +
-                                                  startTime.minute;
-                                              final endMinutes =
-                                                  time.hour * 60 + time.minute;
-                                              if (endMinutes <= startMinutes) {
-                                                if (context.mounted) {
-                                                  ScaffoldMessenger.of(
-                                                    context,
-                                                  ).showSnackBar(
-                                                    SnackBar(
-                                                      content: Text(
-                                                        l10n.getString(
-                                                          'settingsEndTimeAfterStart',
-                                                        ),
-                                                      ),
-                                                    ),
-                                                  );
-                                                }
-                                                return;
-                                              }
-                                            }
-                                            setState(() {
-                                              endTime = time;
-                                              endDateTime = DateTime(
-                                                endDateTime!.year,
-                                                endDateTime!.month,
-                                                endDateTime!.day,
-                                                time.hour,
-                                                time.minute,
-                                              );
-                                            });
-                                          }
-                                        }
-                                        : null,
-                                icon: const Icon(Icons.access_time, size: 18),
-                                label: Text(
-                                  _formatTime(context, endTime),
-                                  style: const TextStyle(fontSize: 14),
-                                ),
-                                style: OutlinedButton.styleFrom(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 12,
-                                    vertical: 12,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-
-                        // Helper text
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.primary.withValues(alpha: 0.08),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.info_outline,
-                                size: 16,
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.primary.withValues(alpha: 0.7),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  l10n.getString('settingsTimesDefaultAllDay'),
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurface
-                                        .withValues(alpha: 0.9),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: Text(l10n.getString('generalCancel')),
-                    ),
-                    FilledButton(
-                      onPressed:
-                          startDateTime != null && endDateTime != null
-                              ? () async {
-                                // Final validation: ensure end is after start
-                                if (endDateTime!.isBefore(startDateTime!) ||
-                                    endDateTime!.isAtSameMomentAs(
-                                      startDateTime!,
-                                    )) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        l10n.getString(
-                                          'settingsEndDateTimeAfterStart',
-                                        ),
-                                      ),
-                                    ),
-                                  );
-                                  return;
-                                }
-
-                                final rule = DateTimeRangeRule(
-                                  id: const Uuid().v4(),
-                                  startDateTime: startDateTime!,
-                                  endDateTime: endDateTime!,
-                                );
-                                await ref
-                                    .read(invisibilityRulesProvider.notifier)
-                                    .addDateTimeRangeRule(rule);
-                                if (context.mounted) {
-                                  Navigator.pop(
-                                    context,
-                                  );
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        l10n.getString(
-                                          'settingsDateTimeRangeRuleAdded',
-                                        ),
-                                      ),
-                                    ),
-                                  );
                                 }
                               }
-                              : null,
-                      child: Text(l10n.getString('generalSave')),
+                            }
+                          }
+                        },
+                        icon: const Icon(Icons.calendar_today, size: 18),
+                        label: Text(
+                          startDateTime != null
+                              ? DateFormat.yMd(
+                                  _getSystemLocale(context),
+                                ).format(startDateTime!)
+                              : l10n.getString('settingsSelectDate'),
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                        style: AppButtonStyles.secondaryButton(context),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      flex: 2,
+                      child: OutlinedButton.icon(
+                        onPressed: startDateTime != null
+                            ? () async {
+                                final time = await showLabeledTimePicker(
+                                  context,
+                                  l10n.getString('settingsStartTime'),
+                                  startTime,
+                                );
+                                if (time != null) {
+                                  if (!context.mounted) return;
+                                  setState(() {
+                                    startTime = time;
+                                    startDateTime = DateTime(
+                                      startDateTime!.year,
+                                      startDateTime!.month,
+                                      startDateTime!.day,
+                                      time.hour,
+                                      time.minute,
+                                    );
+                                  });
+
+                                  // Auto-show end date picker after start time modified manually
+                                  if (context.mounted && endDateTime == null) {
+                                    final now = DateTime.now();
+                                    final endDate = await showLabeledDatePicker(
+                                      context,
+                                      l10n.getString('settingsSelectEndDate'),
+                                      startDateTime!.isAfter(now)
+                                          ? startDateTime!
+                                          : now,
+                                      startDateTime!,
+                                      now.add(const Duration(days: 365)),
+                                    );
+                                    if (endDate != null && context.mounted) {
+                                      setState(
+                                        () => endDateTime = DateTime(
+                                          endDate.year,
+                                          endDate.month,
+                                          endDate.day,
+                                          endTime.hour,
+                                          endTime.minute,
+                                        ),
+                                      );
+
+                                      // Auto-show end time picker
+                                      final isSameDay =
+                                          endDate.year == startDateTime!.year &&
+                                          endDate.month ==
+                                              startDateTime!.month &&
+                                          endDate.day == startDateTime!.day;
+
+                                      final endTimeResult =
+                                          await showLabeledTimePicker(
+                                            context,
+                                            l10n.getString('settingsEndTime'),
+                                            isSameDay
+                                                ? TimeOfDay(
+                                                    hour: time.hour + 1 > 23
+                                                        ? 23
+                                                        : time.hour + 1,
+                                                    minute: time.minute,
+                                                  )
+                                                : endTime,
+                                          );
+                                      if (endTimeResult != null) {
+                                        if (isSameDay) {
+                                          final startMinutes =
+                                              time.hour * 60 + time.minute;
+                                          final endMinutes =
+                                              endTimeResult.hour * 60 +
+                                              endTimeResult.minute;
+                                          if (endMinutes <= startMinutes) {
+                                            if (context.mounted) {
+                                              ScaffoldMessenger.of(
+                                                context,
+                                              ).showSnackBar(
+                                                SnackBar(
+                                                  content: Text(
+                                                    l10n.getString(
+                                                      'settingsEndTimeAfterStart',
+                                                    ),
+                                                  ),
+                                                ),
+                                              );
+                                            }
+                                            return;
+                                          }
+                                        }
+                                        setState(() {
+                                          endTime = endTimeResult;
+                                          endDateTime = DateTime(
+                                            endDate.year,
+                                            endDate.month,
+                                            endDate.day,
+                                            endTimeResult.hour,
+                                            endTimeResult.minute,
+                                          );
+                                        });
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            : null,
+                        icon: const Icon(Icons.access_time, size: 18),
+                        label: Text(
+                          _formatTime(context, startTime),
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                        style: AppButtonStyles.secondaryButton(context),
+                      ),
                     ),
                   ],
                 ),
+                const SizedBox(height: 16),
+
+                // End Date & Time
+                Text(
+                  l10n.getString('settingsEnd'),
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.onSurface.withValues(alpha: 0.7),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      flex: 3,
+                      child: OutlinedButton.icon(
+                        onPressed: startDateTime != null
+                            ? () async {
+                                final now = DateTime.now();
+                                final date = await showLabeledDatePicker(
+                                  context,
+                                  l10n.getString('settingsSelectEndDate'),
+                                  endDateTime ?? startDateTime ?? now,
+                                  startDateTime!,
+                                  now.add(const Duration(days: 365)),
+                                );
+                                if (date != null) {
+                                  setState(
+                                    () => endDateTime = DateTime(
+                                      date.year,
+                                      date.month,
+                                      date.day,
+                                      endTime.hour,
+                                      endTime.minute,
+                                    ),
+                                  );
+
+                                  // Auto-show time picker after date selection
+                                  if (context.mounted) {
+                                    // If same day, end time must be after start time
+                                    final isSameDay =
+                                        date.year == startDateTime!.year &&
+                                        date.month == startDateTime!.month &&
+                                        date.day == startDateTime!.day;
+
+                                    final time = await showLabeledTimePicker(
+                                      context,
+                                      l10n.getString('settingsEndTime'),
+                                      isSameDay
+                                          ? TimeOfDay(
+                                              hour: startTime.hour + 1 > 23
+                                                  ? 23
+                                                  : startTime.hour + 1,
+                                              minute: startTime.minute,
+                                            )
+                                          : endTime,
+                                    );
+                                    if (time != null) {
+                                      // Validate end time is after start time on same day
+                                      if (isSameDay) {
+                                        final startMinutes =
+                                            startTime.hour * 60 +
+                                            startTime.minute;
+                                        final endMinutes =
+                                            time.hour * 60 + time.minute;
+                                        if (endMinutes <= startMinutes) {
+                                          if (context.mounted) {
+                                            ScaffoldMessenger.of(
+                                              context,
+                                            ).showSnackBar(
+                                              SnackBar(
+                                                content: Text(
+                                                  l10n.getString(
+                                                    'settingsEndTimeAfterStart',
+                                                  ),
+                                                ),
+                                              ),
+                                            );
+                                          }
+                                          return;
+                                        }
+                                      }
+                                      if (!context.mounted) return;
+                                      setState(() {
+                                        endTime = time;
+                                        endDateTime = DateTime(
+                                          date.year,
+                                          date.month,
+                                          date.day,
+                                          time.hour,
+                                          time.minute,
+                                        );
+                                      });
+                                    }
+                                  }
+                                }
+                              }
+                            : null,
+                        icon: const Icon(Icons.calendar_today, size: 18),
+                        label: Text(
+                          endDateTime != null
+                              ? DateFormat.yMd(
+                                  _getSystemLocale(context),
+                                ).format(endDateTime!)
+                              : l10n.getString('settingsSelectDate'),
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                        style: AppButtonStyles.secondaryButton(context),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      flex: 2,
+                      child: OutlinedButton.icon(
+                        onPressed: endDateTime != null
+                            ? () async {
+                                // If same day, end time must be after start time
+                                final isSameDay =
+                                    endDateTime!.year == startDateTime!.year &&
+                                    endDateTime!.month ==
+                                        startDateTime!.month &&
+                                    endDateTime!.day == startDateTime!.day;
+
+                                final time = await showLabeledTimePicker(
+                                  context,
+                                  l10n.getString('settingsEndTime'),
+                                  endTime,
+                                );
+                                if (time != null) {
+                                  // Validate end time is after start time on same day
+                                  if (isSameDay) {
+                                    final startMinutes =
+                                        startTime.hour * 60 + startTime.minute;
+                                    final endMinutes =
+                                        time.hour * 60 + time.minute;
+                                    if (endMinutes <= startMinutes) {
+                                      if (context.mounted) {
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          SnackBar(
+                                            content: Text(
+                                              l10n.getString(
+                                                'settingsEndTimeAfterStart',
+                                              ),
+                                            ),
+                                          ),
+                                        );
+                                      }
+                                      return;
+                                    }
+                                  }
+                                  setState(() {
+                                    endTime = time;
+                                    endDateTime = DateTime(
+                                      endDateTime!.year,
+                                      endDateTime!.month,
+                                      endDateTime!.day,
+                                      time.hour,
+                                      time.minute,
+                                    );
+                                  });
+                                }
+                              }
+                            : null,
+                        icon: const Icon(Icons.access_time, size: 18),
+                        label: Text(
+                          _formatTime(context, endTime),
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                        style: AppButtonStyles.secondaryButton(context),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+
+                // Helper text
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.primary.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.info_outline,
+                        size: 16,
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.primary.withValues(alpha: 0.7),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          l10n.getString('settingsTimesDefaultAllDay'),
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurface.withValues(alpha: 0.9),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(l10n.getString('generalCancel')),
+            ),
+            FilledButton(
+              onPressed: startDateTime != null && endDateTime != null
+                  ? () async {
+                      // Final validation: ensure end is after start
+                      if (endDateTime!.isBefore(startDateTime!) ||
+                          endDateTime!.isAtSameMomentAs(startDateTime!)) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              l10n.getString('settingsEndDateTimeAfterStart'),
+                            ),
+                          ),
+                        );
+                        return;
+                      }
+
+                      final rule = DateTimeRangeRule(
+                        id: const Uuid().v4(),
+                        startDateTime: startDateTime!,
+                        endDateTime: endDateTime!,
+                      );
+                      await ref
+                          .read(invisibilityRulesProvider.notifier)
+                          .addDateTimeRangeRule(rule);
+                      if (context.mounted) {
+                        Navigator.pop(context);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              l10n.getString('settingsDateTimeRangeRuleAdded'),
+                            ),
+                          ),
+                        );
+                      }
+                    }
+                  : null,
+              child: Text(l10n.getString('generalSave')),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1375,301 +1259,272 @@ class _InvisibilityRulesScreenState
 
     showDialog(
       context: context,
-      builder:
-          (context) => StatefulBuilder(
-            builder:
-                (context, setState) => AlertDialog(
-                  title: Text(l10n.getString('settingsDayTimeRange')),
-                  content: SizedBox(
-                    width: double.maxFinite,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          l10n.getString('settingsDayTimeRangeDesc'),
-                          style: const TextStyle(fontSize: 13),
-                        ),
-                        const SizedBox(height: 20),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          scrollable: true,
+          title: Text(l10n.getString('settingsDayTimeRange')),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  l10n.getString('settingsDayTimeRangeDesc'),
+                  style: const TextStyle(fontSize: 13),
+                ),
+                const SizedBox(height: 20),
 
-                        // Day selection section
-                        Text(
-                          l10n.getString('settingsDays'),
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onSurface.withValues(alpha: 0.7),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: List.generate(7, (index) {
-                            final dayIndex =
-                                index + 1; // 1 = Monday, 7 = Sunday
-                            final isSelected = selectedDays.contains(dayIndex);
-                            return FilterChip(
-                              label: Text(daysOfWeek[index]),
-                              selected: isSelected,
-                              onSelected: (selected) {
-                                setState(() {
-                                  if (selected) {
-                                    selectedDays.add(dayIndex);
-                                  } else {
-                                    selectedDays.remove(dayIndex);
-                                  }
-                                });
-                              },
-                              backgroundColor:
-                                  Theme.of(
-                                    context,
-                                  ).colorScheme.surfaceContainerHighest,
-                              selectedColor: Theme.of(
-                                context,
-                              ).colorScheme.tertiary.withValues(alpha: 0.2),
-                              checkmarkColor:
-                                  Theme.of(context).colorScheme.tertiary,
-                            );
-                          }),
-                        ),
-                        const SizedBox(height: 20),
-
-                        // Time range section
-                        Text(
-                          l10n.getString('settingsTimeRange'),
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onSurface.withValues(alpha: 0.7),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: OutlinedButton.icon(
-                                onPressed: () async {
-                                  final picked = await showLabeledTimePicker(
-                                    context,
-                                    l10n.getString('settingsStartTime'),
-                                    startTime,
-                                  );
-                                  if (picked != null) {
-                                    setState(() => startTime = picked);
-
-                                    // Auto-show end time picker after start time selected
-                                    if (context.mounted) {
-                                      final endTimeResult =
-                                          await showLabeledTimePicker(
-                                            context,
-                                            l10n.getString('settingsEndTime'),
-                                            TimeOfDay(
-                                              hour:
-                                                  picked.hour + 1 > 23
-                                                      ? 23
-                                                      : picked.hour + 1,
-                                              minute: picked.minute,
-                                            ),
-                                          );
-                                      if (endTimeResult != null) {
-                                        // Validate end time is after start time
-                                        final startMinutes =
-                                            picked.hour * 60 + picked.minute;
-                                        final endMinutes =
-                                            endTimeResult.hour * 60 +
-                                            endTimeResult.minute;
-                                        if (endMinutes <= startMinutes) {
-                                          if (context.mounted) {
-                                            ScaffoldMessenger.of(
-                                              context,
-                                            ).showSnackBar(
-                                              SnackBar(
-                                                content: Text(
-                                                  l10n.getString(
-                                                    'settingsEndTimeAfterStart',
-                                                  ),
-                                                ),
-                                              ),
-                                            );
-                                          }
-                                          return;
-                                        }
-                                        setState(() => endTime = endTimeResult);
-                                      }
-                                    }
-                                  }
-                                },
-                                icon: const Icon(Icons.access_time, size: 18),
-                                label: Text(
-                                  _formatTime(context, startTime),
-                                  style: const TextStyle(fontSize: 14),
-                                ),
-                                style: OutlinedButton.styleFrom(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 12,
-                                    vertical: 12,
-                                  ),
-                                ),
-                              ),
-                            ),
-                            Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                              ),
-                              child: Text(
-                                l10n.getString('settingsTo'),
-                                style: TextStyle(
-                                  color: Theme.of(context).colorScheme.onSurface
-                                      .withValues(alpha: 0.7),
-                                ),
-                              ),
-                            ),
-                            Expanded(
-                              child: OutlinedButton.icon(
-                                onPressed: () async {
-                                  final picked = await showLabeledTimePicker(
-                                    context,
-                                    l10n.getString('settingsEndTime'),
-                                    endTime,
-                                  );
-                                  if (picked != null) {
-                                    // Validate end time is after start time
-                                    final startMinutes =
-                                        startTime.hour * 60 + startTime.minute;
-                                    final endMinutes =
-                                        picked.hour * 60 + picked.minute;
-                                    if (endMinutes <= startMinutes) {
-                                      if (context.mounted) {
-                                        ScaffoldMessenger.of(
-                                          context,
-                                        ).showSnackBar(
-                                          SnackBar(
-                                            content: Text(
-                                              l10n.getString(
-                                                'settingsEndTimeAfterStart',
-                                              ),
-                                            ),
-                                          ),
-                                        );
-                                      }
-                                      return;
-                                    }
-                                    setState(() => endTime = picked);
-                                  }
-                                },
-                                icon: const Icon(Icons.access_time, size: 18),
-                                label: Text(
-                                  _formatTime(context, endTime),
-                                  style: const TextStyle(fontSize: 14),
-                                ),
-                                style: OutlinedButton.styleFrom(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 12,
-                                    vertical: 12,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-
-                        // Helper text
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.tertiary.withValues(alpha: 0.08),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.info_outline,
-                                size: 16,
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.tertiary.withValues(alpha: 0.7),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  l10n.getString('settingsTimesDefaultAllDay'),
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurface
-                                        .withValues(alpha: 0.9),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
+                // Day selection section
+                Text(
+                  l10n.getString('settingsDays'),
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.onSurface.withValues(alpha: 0.7),
                   ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: Text(l10n.getString('generalCancel')),
-                    ),
-                    FilledButton(
-                      onPressed:
-                          selectedDays.isNotEmpty
-                              ? () async {
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: List.generate(7, (index) {
+                    final dayIndex = index + 1; // 1 = Monday, 7 = Sunday
+                    final isSelected = selectedDays.contains(dayIndex);
+                    return FilterChip(
+                      label: Text(daysOfWeek[index]),
+                      selected: isSelected,
+                      onSelected: (selected) {
+                        setState(() {
+                          if (selected) {
+                            selectedDays.add(dayIndex);
+                          } else {
+                            selectedDays.remove(dayIndex);
+                          }
+                        });
+                      },
+                      backgroundColor: Theme.of(
+                        context,
+                      ).colorScheme.surfaceContainerHighest,
+                      selectedColor: Theme.of(
+                        context,
+                      ).colorScheme.tertiary.withValues(alpha: 0.2),
+                      checkmarkColor: Theme.of(context).colorScheme.tertiary,
+                    );
+                  }),
+                ),
+                const SizedBox(height: 20),
+
+                // Time range section
+                Text(
+                  l10n.getString('settingsTimeRange'),
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.onSurface.withValues(alpha: 0.7),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () async {
+                          final picked = await showLabeledTimePicker(
+                            context,
+                            l10n.getString('settingsStartTime'),
+                            startTime,
+                          );
+                          if (picked != null) {
+                            setState(() => startTime = picked);
+
+                            // Auto-show end time picker after start time selected
+                            if (context.mounted) {
+                              final endTimeResult = await showLabeledTimePicker(
+                                context,
+                                l10n.getString('settingsEndTime'),
+                                TimeOfDay(
+                                  hour: picked.hour + 1 > 23
+                                      ? 23
+                                      : picked.hour + 1,
+                                  minute: picked.minute,
+                                ),
+                              );
+                              if (endTimeResult != null) {
                                 // Validate end time is after start time
                                 final startMinutes =
-                                    startTime.hour * 60 + startTime.minute;
+                                    picked.hour * 60 + picked.minute;
                                 final endMinutes =
-                                    endTime.hour * 60 + endTime.minute;
+                                    endTimeResult.hour * 60 +
+                                    endTimeResult.minute;
                                 if (endMinutes <= startMinutes) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        l10n.getString(
-                                          'settingsEndTimeAfterStart',
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          l10n.getString(
+                                            'settingsEndTimeAfterStart',
+                                          ),
                                         ),
                                       ),
-                                    ),
-                                  );
+                                    );
+                                  }
                                   return;
                                 }
-
-                                final rule = DayTimeRangeRule(
-                                  id: const Uuid().v4(),
-                                  daysOfWeek: selectedDays.toList(),
-                                  startTime: startTime,
-                                  endTime: endTime,
-                                );
-                                await ref
-                                    .read(invisibilityRulesProvider.notifier)
-                                    .addDayTimeRangeRule(rule);
-                                if (!context.mounted) return;
-                                Navigator.pop(context);
+                                setState(() => endTime = endTimeResult);
+                              }
+                            }
+                          }
+                        },
+                        icon: const Icon(Icons.access_time, size: 18),
+                        label: Text(
+                          _formatTime(context, startTime),
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                        style: AppButtonStyles.secondaryButton(context),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      child: Text(
+                        l10n.getString('settingsTo'),
+                        style: TextStyle(
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onSurface.withValues(alpha: 0.7),
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () async {
+                          final picked = await showLabeledTimePicker(
+                            context,
+                            l10n.getString('settingsEndTime'),
+                            endTime,
+                          );
+                          if (picked != null) {
+                            // Validate end time is after start time
+                            final startMinutes =
+                                startTime.hour * 60 + startTime.minute;
+                            final endMinutes = picked.hour * 60 + picked.minute;
+                            if (endMinutes <= startMinutes) {
+                              if (context.mounted) {
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   SnackBar(
                                     content: Text(
                                       l10n.getString(
-                                        'settingsDayTimeRangeRuleAdded',
+                                        'settingsEndTimeAfterStart',
                                       ),
                                     ),
                                   ),
                                 );
                               }
-                              : null,
-                      child: Text(l10n.getString('generalSave')),
+                              return;
+                            }
+                            setState(() => endTime = picked);
+                          }
+                        },
+                        icon: const Icon(Icons.access_time, size: 18),
+                        label: Text(
+                          _formatTime(context, endTime),
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                        style: AppButtonStyles.secondaryButton(context),
+                      ),
                     ),
                   ],
                 ),
+                const SizedBox(height: 12),
+
+                // Helper text
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.tertiary.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.info_outline,
+                        size: 16,
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.tertiary.withValues(alpha: 0.7),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          l10n.getString('settingsTimesDefaultAllDay'),
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurface.withValues(alpha: 0.9),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(l10n.getString('generalCancel')),
+            ),
+            FilledButton(
+              onPressed: selectedDays.isNotEmpty
+                  ? () async {
+                      // Validate end time is after start time
+                      final startMinutes =
+                          startTime.hour * 60 + startTime.minute;
+                      final endMinutes = endTime.hour * 60 + endTime.minute;
+                      if (endMinutes <= startMinutes) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              l10n.getString('settingsEndTimeAfterStart'),
+                            ),
+                          ),
+                        );
+                        return;
+                      }
+
+                      final rule = DayTimeRangeRule(
+                        id: const Uuid().v4(),
+                        daysOfWeek: selectedDays.toList(),
+                        startTime: startTime,
+                        endTime: endTime,
+                      );
+                      await ref
+                          .read(invisibilityRulesProvider.notifier)
+                          .addDayTimeRangeRule(rule);
+                      if (!context.mounted) return;
+                      Navigator.pop(context);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            l10n.getString('settingsDayTimeRangeRuleAdded'),
+                          ),
+                        ),
+                      );
+                    }
+                  : null,
+              child: Text(l10n.getString('generalSave')),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1715,18 +1570,16 @@ class _InvisibilityRulesScreenState
           });
 
           final accuracyText = position.accuracy.toStringAsFixed(0);
-          final message =
-              position.accuracy > 50
-                  ? '${l10n.getString('settingsLocationSuccess')} ($accuracyText${l10n.getString('settingsAccuracyMeters')} - ${l10n.getString('settingsConsiderIncreasingRadius')} ${formatDistanceWithImperial(position.accuracy * 2, ref.watch(unitSystemProvider).maybeWhen(data: (useImperial) => useImperial, orElse: () => false), l10n)})'
-                  : '${l10n.getString('settingsLocationSuccess')} ($accuracyText${l10n.getString('settingsAccuracyMeters')})';
+          final message = position.accuracy > 50
+              ? '${l10n.getString('settingsLocationSuccess')} ($accuracyText${l10n.getString('settingsAccuracyMeters')} - ${l10n.getString('settingsConsiderIncreasingRadius')} ${formatDistanceWithImperial(position.accuracy * 2, ref.watch(unitSystemProvider).maybeWhen(data: (useImperial) => useImperial, orElse: () => false), l10n)})'
+              : '${l10n.getString('settingsLocationSuccess')} ($accuracyText${l10n.getString('settingsAccuracyMeters')})';
 
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(message),
-              duration:
-                  position.accuracy > 50
-                      ? const Duration(seconds: 5)
-                      : const Duration(seconds: 3),
+              duration: position.accuracy > 50
+                  ? const Duration(seconds: 5)
+                  : const Duration(seconds: 3),
             ),
           );
         } else if (isDialogOpen && context.mounted) {
@@ -1756,7 +1609,9 @@ class _InvisibilityRulesScreenState
         }
 
         final current = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+          ),
         ).timeout(const Duration(seconds: 10));
 
         if (isDialogOpen && context.mounted) {
@@ -1778,170 +1633,153 @@ class _InvisibilityRulesScreenState
 
     showDialog(
       context: context,
-      builder:
-          (context) => StatefulBuilder(
-            builder:
-                (context, setState) {
-                  if (!hasAutoFetched) {
-                    hasAutoFetched = true;
-                    fetchCurrentLocation(setState);
-                  }
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) {
+          if (!hasAutoFetched) {
+            hasAutoFetched = true;
+            fetchCurrentLocation(setState);
+          }
 
-                  return AlertDialog(
-                    title: Text(l10n.getString('settingsEditLocationRule')),
-                    content: SizedBox(
-                      width: double.maxFinite,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(l10n.getString('settingsLocationRulesDesc')),
-                          const SizedBox(height: 16),
-                          TextFormField(
-                            initialValue: locationName,
-                            style: Theme.of(context).textTheme.bodyMedium
-                                ?.copyWith(fontFeatures: const []),
-                            decoration: InputDecoration(
-                              labelText: l10n.getString('settingsLocationName'),
-                              hintText: l10n.getString(
-                                'settingsLocationNameHint',
-                              ),
-                              prefixIcon: const Icon(Icons.location_on),
-                            ),
-                            onChanged: (value) {
-                              setState(() => locationName = value);
-                            },
-                          ),
-                          const SizedBox(height: 12),
-                          if (isFetchingLocation)
-                            Row(
-                              children: [
-                                SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                Text(
-                                  l10n.getString(
-                                    'settingsGettingPreciseLocation',
-                                  ),
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.blue,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          if (!isFetchingLocation &&
-                              latitude != null &&
-                              longitude != null)
-                            Text(
-                              '${l10n.getString('settingsLocationPrefix')}: ${latitude!.toStringAsFixed(6)}, ${longitude!.toStringAsFixed(6)}',
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: Colors.green,
-                              ),
-                            ),
-                          const SizedBox(height: 12),
-                          ElevatedButton.icon(
-                            onPressed:
-                                isFetchingLocation
-                                    ? null
-                                    : () => fetchCurrentLocation(setState),
-                            icon: const Icon(Icons.my_location),
-                            label: Text(
-                              l10n.getString('settingsUseCurrentLocation'),
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          Text(
-                            '${l10n.getString('settingsRadius')}: ${formatDistanceWithImperial(radiusMeters, ref.watch(unitSystemProvider).maybeWhen(data: (useImperial) => useImperial, orElse: () => false), l10n)}',
-                            style: const TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          Slider(
-                            value: radiusMeters,
-                            min: 5.0,
-                            max: 500.0,
-                            divisions: 99,
-                            label: formatDistanceWithImperial(
-                              radiusMeters,
-                              ref
-                                  .watch(unitSystemProvider)
-                                  .maybeWhen(
-                                    data: (useImperial) => useImperial,
-                                    orElse: () => false,
-                                  ),
-                              l10n,
-                            ),
-                            onChanged: (value) {
-                              setState(() => radiusMeters = value);
-                            },
-                          ),
-                          Text(
-                            kIsWeb
-                                ? '${l10n.getString('settingsLocationRadiusDesc')} (${l10n.getString('settingsWebGpsAccuracy')})'
-                                : '${l10n.getString('settingsLocationRadiusDesc')} (${l10n.getString('settingsMobileGpsAccuracy')})',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Colors.grey,
-                            ),
-                            textAlign: TextAlign.center,
-                          ),
-                        ],
-                      ),
+          return AlertDialog(
+            scrollable: true,
+            title: Text(l10n.getString('settingsEditLocationRule')),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(l10n.getString('settingsLocationRulesDesc')),
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    initialValue: locationName,
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodyMedium?.copyWith(fontFeatures: const []),
+                    decoration: InputDecoration(
+                      labelText: l10n.getString('settingsLocationName'),
+                      hintText: l10n.getString('settingsLocationNameHint'),
+                      prefixIcon: const Icon(Icons.location_on),
                     ),
-                    actions: [
-                      TextButton(
-                        onPressed: () {
-                          isDialogOpen = false;
-                          Navigator.pop(context);
-                        },
-                        child: Text(l10n.getString('generalCancel')),
-                      ),
-                      ElevatedButton(
-                        onPressed:
-                            locationName.isNotEmpty &&
-                                    latitude != null &&
-                                    longitude != null
-                                ? () async {
-                                  final updatedRule = LocationRule(
-                                    id: rule.id,
-                                    name: locationName,
-                                    latitude: latitude!,
-                                    longitude: longitude!,
-                                    radiusMeters: radiusMeters,
-                                  );
-                                  await ref
-                                      .read(invisibilityRulesProvider.notifier)
-                                      .updateLocationRule(updatedRule);
-                                  ref
-                                      .read(currentLocationProvider.notifier)
-                                      .refreshLocation();
-                                  isDialogOpen = false;
-                                  if (!context.mounted) return;
-                                  Navigator.pop(context);
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        l10n.getString(
-                                          'settingsLocationRuleUpdated',
-                                        ),
-                                      ),
-                                    ),
-                                  );
-                                }
-                                : null,
-                        child: Text(l10n.getString('generalSave')),
-                      ),
-                    ],
-                  );
+                    onChanged: (value) {
+                      setState(() => locationName = value);
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  if (isFetchingLocation)
+                    Row(
+                      children: [
+                        SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          l10n.getString('settingsGettingPreciseLocation'),
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.blue,
+                          ),
+                        ),
+                      ],
+                    ),
+                  if (!isFetchingLocation &&
+                      latitude != null &&
+                      longitude != null)
+                    Text(
+                      '${l10n.getString('settingsLocationPrefix')}: ${latitude!.toStringAsFixed(6)}, ${longitude!.toStringAsFixed(6)}',
+                      style: const TextStyle(fontSize: 12, color: Colors.green),
+                    ),
+                  const SizedBox(height: 12),
+                  ElevatedButton.icon(
+                    onPressed: isFetchingLocation
+                        ? null
+                        : () => fetchCurrentLocation(setState),
+                    icon: const Icon(Icons.my_location),
+                    label: Text(l10n.getString('settingsUseCurrentLocation')),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    '${l10n.getString('settingsRadius')}: ${formatDistanceWithImperial(radiusMeters, ref.watch(unitSystemProvider).maybeWhen(data: (useImperial) => useImperial, orElse: () => false), l10n)}',
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  Slider(
+                    value: radiusMeters,
+                    min: 5.0,
+                    max: 500.0,
+                    divisions: 99,
+                    label: formatDistanceWithImperial(
+                      radiusMeters,
+                      ref
+                          .watch(unitSystemProvider)
+                          .maybeWhen(
+                            data: (useImperial) => useImperial,
+                            orElse: () => false,
+                          ),
+                      l10n,
+                    ),
+                    onChanged: (value) {
+                      setState(() => radiusMeters = value);
+                    },
+                  ),
+                  Text(
+                    kIsWeb
+                        ? '${l10n.getString('settingsLocationRadiusDesc')} (${l10n.getString('settingsWebGpsAccuracy')})'
+                        : '${l10n.getString('settingsLocationRadiusDesc')} (${l10n.getString('settingsMobileGpsAccuracy')})',
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  isDialogOpen = false;
+                  Navigator.pop(context);
                 },
-          ),
+                child: Text(l10n.getString('generalCancel')),
+              ),
+              ElevatedButton(
+                onPressed:
+                    locationName.isNotEmpty &&
+                        latitude != null &&
+                        longitude != null
+                    ? () async {
+                        final updatedRule = LocationRule(
+                          id: rule.id,
+                          name: locationName,
+                          latitude: latitude!,
+                          longitude: longitude!,
+                          radiusMeters: radiusMeters,
+                        );
+                        await ref
+                            .read(invisibilityRulesProvider.notifier)
+                            .updateLocationRule(updatedRule);
+                        ref
+                            .read(currentLocationProvider.notifier)
+                            .refreshLocation();
+                        isDialogOpen = false;
+                        if (!context.mounted) return;
+                        Navigator.pop(context);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              l10n.getString('settingsLocationRuleUpdated'),
+                            ),
+                          ),
+                        );
+                      }
+                    : null,
+                child: Text(l10n.getString('generalSave')),
+              ),
+            ],
+          );
+        },
+      ),
     );
   }
 
@@ -1955,107 +1793,104 @@ class _InvisibilityRulesScreenState
 
     showDialog(
       context: context,
-      builder:
-          (context) => StatefulBuilder(
-            builder:
-                (context, setState) => AlertDialog(
-                  title: Text(l10n.getString('settingsDateRangeRules')),
-                  content: SizedBox(
-                    width: double.maxFinite,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(l10n.getString('settingsDateRangeRulesDesc')),
-                        const SizedBox(height: 16),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                onPressed: () async {
-                                  final picked = await showDatePicker(
-                                    context: context,
-                                    initialDate: startDate,
-                                    firstDate: DateTime.now(),
-                                    lastDate: DateTime.now().add(
-                                      const Duration(days: 365),
-                                    ),
-                                  );
-                                  if (picked != null) {
-                                    setState(() => startDate = picked);
-                                  }
-                                },
-                                icon: const Icon(Icons.calendar_today),
-                                label: Text(
-                                  DateFormat.yMd(
-                                    _getSystemLocale(context),
-                                  ).format(startDate),
-                                ),
-                              ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          scrollable: true,
+          title: Text(l10n.getString('settingsDateRangeRules')),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(l10n.getString('settingsDateRangeRulesDesc')),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () async {
+                          final picked = await showDatePicker(
+                            context: context,
+                            initialDate: startDate,
+                            firstDate: DateTime.now(),
+                            lastDate: DateTime.now().add(
+                              const Duration(days: 365),
                             ),
-                            const SizedBox(width: 8),
-                            Text(l10n.getString('settingsTo')),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                onPressed: () async {
-                                  final picked = await showDatePicker(
-                                    context: context,
-                                    initialDate: endDate,
-                                    firstDate: startDate,
-                                    lastDate: DateTime.now().add(
-                                      const Duration(days: 365),
-                                    ),
-                                  );
-                                  if (picked != null) {
-                                    setState(() => endDate = picked);
-                                  }
-                                },
-                                icon: const Icon(Icons.calendar_today),
-                                label: Text(
-                                  DateFormat.yMd(
-                                    _getSystemLocale(context),
-                                  ).format(endDate),
-                                ),
-                              ),
-                            ),
-                          ],
+                          );
+                          if (picked != null) {
+                            setState(() => startDate = picked);
+                          }
+                        },
+                        icon: const Icon(Icons.calendar_today),
+                        label: Text(
+                          DateFormat.yMd(
+                            _getSystemLocale(context),
+                          ).format(startDate),
                         ),
-                      ],
+                      ),
                     ),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: Text(l10n.getString('generalCancel')),
-                    ),
-                    ElevatedButton(
-                      onPressed: () async {
-                        final updatedRule = DateRangeRule(
-                          id: rule.id,
-                          startDate: startDate,
-                          endDate: endDate,
-                        );
-                        await ref
-                            .read(invisibilityRulesProvider.notifier)
-                            .updateDateRangeRule(updatedRule);
-                        if (context.mounted) {
-                          Navigator.pop(
-                            context,
-                          );
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(
-                                l10n.getString('settingsDateRangeRuleUpdated'),
-                              ),
+                    const SizedBox(width: 8),
+                    Text(l10n.getString('settingsTo')),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () async {
+                          final picked = await showDatePicker(
+                            context: context,
+                            initialDate: endDate,
+                            firstDate: startDate,
+                            lastDate: DateTime.now().add(
+                              const Duration(days: 365),
                             ),
                           );
-                        }
-                      },
-                      child: Text(l10n.getString('generalSave')),
+                          if (picked != null) {
+                            setState(() => endDate = picked);
+                          }
+                        },
+                        icon: const Icon(Icons.calendar_today),
+                        label: Text(
+                          DateFormat.yMd(
+                            _getSystemLocale(context),
+                          ).format(endDate),
+                        ),
+                      ),
                     ),
                   ],
                 ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(l10n.getString('generalCancel')),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final updatedRule = DateRangeRule(
+                  id: rule.id,
+                  startDate: startDate,
+                  endDate: endDate,
+                );
+                await ref
+                    .read(invisibilityRulesProvider.notifier)
+                    .updateDateRangeRule(updatedRule);
+                if (context.mounted) {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        l10n.getString('settingsDateRangeRuleUpdated'),
+                      ),
+                    ),
+                  );
+                }
+              },
+              child: Text(l10n.getString('generalSave')),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -2069,88 +1904,87 @@ class _InvisibilityRulesScreenState
 
     showDialog(
       context: context,
-      builder:
-          (context) => StatefulBuilder(
-            builder:
-                (context, setState) => AlertDialog(
-                  title: Text(l10n.getString('settingsTimeRangeRules')),
-                  content: SizedBox(
-                    width: double.maxFinite,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(l10n.getString('settingsTimeRangeRulesDesc')),
-                        const SizedBox(height: 16),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                onPressed: () async {
-                                  final picked = await showTimePicker(
-                                    context: context,
-                                    initialTime: startTime,
-                                  );
-                                  if (picked != null) {
-                                    setState(() => startTime = picked);
-                                  }
-                                },
-                                icon: const Icon(Icons.schedule),
-                                label: Text(_formatTime(context, startTime)),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(l10n.getString('settingsTo')),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                onPressed: () async {
-                                  final picked = await showTimePicker(
-                                    context: context,
-                                    initialTime: endTime,
-                                  );
-                                  if (picked != null) {
-                                    setState(() => endTime = picked);
-                                  }
-                                },
-                                icon: const Icon(Icons.schedule),
-                                label: Text(_formatTime(context, endTime)),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          scrollable: true,
+          title: Text(l10n.getString('settingsTimeRangeRules')),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(l10n.getString('settingsTimeRangeRulesDesc')),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () async {
+                          final picked = await showTimePicker(
+                            context: context,
+                            initialTime: startTime,
+                          );
+                          if (picked != null) {
+                            setState(() => startTime = picked);
+                          }
+                        },
+                        icon: const Icon(Icons.schedule),
+                        label: Text(_formatTime(context, startTime)),
+                      ),
                     ),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: Text(l10n.getString('generalCancel')),
-                    ),
-                    ElevatedButton(
-                      onPressed: () async {
-                        final updatedRule = TimeRangeRule(
-                          id: rule.id,
-                          startTime: startTime,
-                          endTime: endTime,
-                        );
-                        await ref
-                            .read(invisibilityRulesProvider.notifier)
-                            .updateTimeRangeRule(updatedRule);
-                        if (!context.mounted) return;
-                        Navigator.pop(context);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                              l10n.getString('settingsTimeRangeRuleUpdated'),
-                            ),
-                          ),
-                        );
-                      },
-                      child: Text(l10n.getString('generalSave')),
+                    const SizedBox(width: 8),
+                    Text(l10n.getString('settingsTo')),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () async {
+                          final picked = await showTimePicker(
+                            context: context,
+                            initialTime: endTime,
+                          );
+                          if (picked != null) {
+                            setState(() => endTime = picked);
+                          }
+                        },
+                        icon: const Icon(Icons.schedule),
+                        label: Text(_formatTime(context, endTime)),
+                      ),
                     ),
                   ],
                 ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(l10n.getString('generalCancel')),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final updatedRule = TimeRangeRule(
+                  id: rule.id,
+                  startTime: startTime,
+                  endTime: endTime,
+                );
+                await ref
+                    .read(invisibilityRulesProvider.notifier)
+                    .updateTimeRangeRule(updatedRule);
+                if (!context.mounted) return;
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      l10n.getString('settingsTimeRangeRuleUpdated'),
+                    ),
+                  ),
+                );
+              },
+              child: Text(l10n.getString('generalSave')),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -2172,85 +2006,77 @@ class _InvisibilityRulesScreenState
 
     showDialog(
       context: context,
-      builder:
-          (context) => StatefulBuilder(
-            builder:
-                (context, setState) => AlertDialog(
-                  title: Text(l10n.getString('settingsDayOfWeekRules')),
-                  content: SizedBox(
-                    width: double.maxFinite,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(l10n.getString('settingsDayOfWeekRulesDesc')),
-                        const SizedBox(height: 16),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: List.generate(7, (index) {
-                            final dayIndex =
-                                index + 1; // 1 = Monday, 7 = Sunday
-                            final isSelected = selectedDays.contains(dayIndex);
-                            return FilterChip(
-                              label: Text(daysOfWeek[index]),
-                              selected: isSelected,
-                              onSelected: (selected) {
-                                setState(() {
-                                  if (selected) {
-                                    selectedDays.add(dayIndex);
-                                  } else {
-                                    selectedDays.remove(dayIndex);
-                                  }
-                                });
-                              },
-                              backgroundColor: Colors.grey.shade100,
-                              selectedColor: Theme.of(
-                                context,
-                              ).colorScheme.secondary.withValues(alpha: 0.2),
-                              checkmarkColor:
-                                  Theme.of(context).colorScheme.secondary,
-                            );
-                          }),
-                        ),
-                      ],
-                    ),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: Text(l10n.getString('generalCancel')),
-                    ),
-                    ElevatedButton(
-                      onPressed:
-                          selectedDays.isNotEmpty
-                              ? () async {
-                                final updatedRule = DayOfWeekRule(
-                                  id: rule.id,
-                                  daysOfWeek: selectedDays.toList(),
-                                );
-                                await ref
-                                    .read(invisibilityRulesProvider.notifier)
-                                    .updateDayOfWeekRule(updatedRule);
-                                if (!context.mounted) return;
-                                Navigator.pop(
-                                  context,
-                                );
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      l10n.getString(
-                                        'settingsDayOfWeekRuleUpdated',
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              }
-                              : null,
-                      child: Text(l10n.getString('generalSave')),
-                    ),
-                  ],
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          scrollable: true,
+          title: Text(l10n.getString('settingsDayOfWeekRules')),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(l10n.getString('settingsDayOfWeekRulesDesc')),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: List.generate(7, (index) {
+                    final dayIndex = index + 1; // 1 = Monday, 7 = Sunday
+                    final isSelected = selectedDays.contains(dayIndex);
+                    return FilterChip(
+                      label: Text(daysOfWeek[index]),
+                      selected: isSelected,
+                      onSelected: (selected) {
+                        setState(() {
+                          if (selected) {
+                            selectedDays.add(dayIndex);
+                          } else {
+                            selectedDays.remove(dayIndex);
+                          }
+                        });
+                      },
+                      backgroundColor: Colors.grey.shade100,
+                      selectedColor: Theme.of(
+                        context,
+                      ).colorScheme.secondary.withValues(alpha: 0.2),
+                      checkmarkColor: Theme.of(context).colorScheme.secondary,
+                    );
+                  }),
                 ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(l10n.getString('generalCancel')),
+            ),
+            ElevatedButton(
+              onPressed: selectedDays.isNotEmpty
+                  ? () async {
+                      final updatedRule = DayOfWeekRule(
+                        id: rule.id,
+                        daysOfWeek: selectedDays.toList(),
+                      );
+                      await ref
+                          .read(invisibilityRulesProvider.notifier)
+                          .updateDayOfWeekRule(updatedRule);
+                      if (!context.mounted) return;
+                      Navigator.pop(context);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            l10n.getString('settingsDayOfWeekRuleUpdated'),
+                          ),
+                        ),
+                      );
+                    }
+                  : null,
+              child: Text(l10n.getString('generalSave')),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -2264,132 +2090,121 @@ class _InvisibilityRulesScreenState
 
     showDialog(
       context: context,
-      builder:
-          (context) => StatefulBuilder(
-            builder:
-                (context, setState) => AlertDialog(
-                  title: Text(l10n.getString('settingsEditDateTimeRange')),
-                  content: SizedBox(
-                    width: double.maxFinite,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(l10n.getString('settingsEditDateTimeRangeDesc')),
-                        const SizedBox(height: 16),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                onPressed: () async {
-                                  final date = await showDatePicker(
-                                    context: context,
-                                    initialDate: startDateTime,
-                                    firstDate: DateTime.now(),
-                                    lastDate: DateTime.now().add(
-                                      const Duration(days: 365),
-                                    ),
-                                  );
-                                  if (!context.mounted || date == null) return;
-                                  final time = await showTimePicker(
-                                    context: context,
-                                    initialTime: TimeOfDay.fromDateTime(
-                                      startDateTime,
-                                    ),
-                                  );
-                                  if (!context.mounted || time == null) return;
-                                  setState(
-                                    () =>
-                                        startDateTime = DateTime(
-                                          date.year,
-                                          date.month,
-                                          date.day,
-                                          time.hour,
-                                          time.minute,
-                                        ),
-                                  );
-                                },
-                                icon: const Icon(Icons.date_range),
-                                label: Text(
-                                  _formatDateTime(context, startDateTime),
-                                ),
-                              ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          scrollable: true,
+          title: Text(l10n.getString('settingsEditDateTimeRange')),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(l10n.getString('settingsEditDateTimeRangeDesc')),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () async {
+                          final date = await showDatePicker(
+                            context: context,
+                            initialDate: startDateTime,
+                            firstDate: DateTime.now(),
+                            lastDate: DateTime.now().add(
+                              const Duration(days: 365),
                             ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                onPressed: () async {
-                                  final date = await showDatePicker(
-                                    context: context,
-                                    initialDate: endDateTime,
-                                    firstDate: startDateTime,
-                                    lastDate: DateTime.now().add(
-                                      const Duration(days: 365),
-                                    ),
-                                  );
-                                  if (!context.mounted || date == null) return;
-                                  final time = await showTimePicker(
-                                    context: context,
-                                    initialTime: TimeOfDay.fromDateTime(
-                                      endDateTime,
-                                    ),
-                                  );
-                                  if (!context.mounted || time == null) return;
-                                  setState(
-                                    () =>
-                                        endDateTime = DateTime(
-                                          date.year,
-                                          date.month,
-                                          date.day,
-                                          time.hour,
-                                          time.minute,
-                                        ),
-                                  );
-                                },
-                                icon: const Icon(Icons.date_range),
-                                label: Text(
-                                  _formatDateTime(context, endDateTime),
-                                ),
-                              ),
+                          );
+                          if (!context.mounted || date == null) return;
+                          final time = await showTimePicker(
+                            context: context,
+                            initialTime: TimeOfDay.fromDateTime(startDateTime),
+                          );
+                          if (!context.mounted || time == null) return;
+                          setState(
+                            () => startDateTime = DateTime(
+                              date.year,
+                              date.month,
+                              date.day,
+                              time.hour,
+                              time.minute,
                             ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: Text(l10n.getString('generalCancel')),
-                    ),
-                    ElevatedButton(
-                      onPressed: () async {
-                        final updatedRule = DateTimeRangeRule(
-                          id: rule.id,
-                          startDateTime: startDateTime,
-                          endDateTime: endDateTime,
-                        );
-                        await ref
-                            .read(invisibilityRulesProvider.notifier)
-                            .updateDateTimeRangeRule(updatedRule);
-                        if (!context.mounted) return;
-                        Navigator.pop(context);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                              l10n.getString('settingsDateTimeRangeUpdated'),
-                            ),
-                          ),
-                        );
-                      },
-                      child: Text(l10n.getString('generalSave')),
+                          );
+                        },
+                        icon: const Icon(Icons.date_range),
+                        label: Text(_formatDateTime(context, startDateTime)),
+                      ),
                     ),
                   ],
                 ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () async {
+                          final date = await showDatePicker(
+                            context: context,
+                            initialDate: endDateTime,
+                            firstDate: startDateTime,
+                            lastDate: DateTime.now().add(
+                              const Duration(days: 365),
+                            ),
+                          );
+                          if (!context.mounted || date == null) return;
+                          final time = await showTimePicker(
+                            context: context,
+                            initialTime: TimeOfDay.fromDateTime(endDateTime),
+                          );
+                          if (!context.mounted || time == null) return;
+                          setState(
+                            () => endDateTime = DateTime(
+                              date.year,
+                              date.month,
+                              date.day,
+                              time.hour,
+                              time.minute,
+                            ),
+                          );
+                        },
+                        icon: const Icon(Icons.date_range),
+                        label: Text(_formatDateTime(context, endDateTime)),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(l10n.getString('generalCancel')),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final updatedRule = DateTimeRangeRule(
+                  id: rule.id,
+                  startDateTime: startDateTime,
+                  endDateTime: endDateTime,
+                );
+                await ref
+                    .read(invisibilityRulesProvider.notifier)
+                    .updateDateTimeRangeRule(updatedRule);
+                if (!context.mounted) return;
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      l10n.getString('settingsDateTimeRangeUpdated'),
+                    ),
+                  ),
+                );
+              },
+              child: Text(l10n.getString('generalSave')),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -2413,126 +2228,119 @@ class _InvisibilityRulesScreenState
 
     showDialog(
       context: context,
-      builder:
-          (context) => StatefulBuilder(
-            builder:
-                (context, setState) => AlertDialog(
-                  title: Text(l10n.getString('settingsEditDayTimeRange')),
-                  content: SizedBox(
-                    width: double.maxFinite,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(l10n.getString('settingsEditDayTimeRangeDesc')),
-                        const SizedBox(height: 16),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: List.generate(7, (index) {
-                            final dayIndex =
-                                index + 1; // 1 = Monday, 7 = Sunday
-                            final isSelected = selectedDays.contains(dayIndex);
-                            return FilterChip(
-                              label: Text(daysOfWeek[index]),
-                              selected: isSelected,
-                              onSelected: (selected) {
-                                setState(() {
-                                  if (selected) {
-                                    selectedDays.add(dayIndex);
-                                  } else {
-                                    selectedDays.remove(dayIndex);
-                                  }
-                                });
-                              },
-                              backgroundColor:
-                                  Theme.of(
-                                    context,
-                                  ).colorScheme.surfaceContainerHighest,
-                              selectedColor: Theme.of(
-                                context,
-                              ).colorScheme.tertiary.withValues(alpha: 0.2),
-                              checkmarkColor:
-                                  Theme.of(context).colorScheme.tertiary,
-                            );
-                          }),
-                        ),
-                        const SizedBox(height: 16),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                onPressed: () async {
-                                  final picked = await showTimePicker(
-                                    context: context,
-                                    initialTime: startTime,
-                                  );
-                                  if (picked != null) {
-                                    setState(() => startTime = picked);
-                                  }
-                                },
-                                icon: const Icon(Icons.schedule),
-                                label: Text(_formatTime(context, startTime)),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(l10n.getString('settingsTo')),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                onPressed: () async {
-                                  final picked = await showTimePicker(
-                                    context: context,
-                                    initialTime: endTime,
-                                  );
-                                  if (picked != null) {
-                                    setState(() => endTime = picked);
-                                  }
-                                },
-                                icon: const Icon(Icons.schedule),
-                                label: Text(_formatTime(context, endTime)),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          scrollable: true,
+          title: Text(l10n.getString('settingsEditDayTimeRange')),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(l10n.getString('settingsEditDayTimeRangeDesc')),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: List.generate(7, (index) {
+                    final dayIndex = index + 1; // 1 = Monday, 7 = Sunday
+                    final isSelected = selectedDays.contains(dayIndex);
+                    return FilterChip(
+                      label: Text(daysOfWeek[index]),
+                      selected: isSelected,
+                      onSelected: (selected) {
+                        setState(() {
+                          if (selected) {
+                            selectedDays.add(dayIndex);
+                          } else {
+                            selectedDays.remove(dayIndex);
+                          }
+                        });
+                      },
+                      backgroundColor: Theme.of(
+                        context,
+                      ).colorScheme.surfaceContainerHighest,
+                      selectedColor: Theme.of(
+                        context,
+                      ).colorScheme.tertiary.withValues(alpha: 0.2),
+                      checkmarkColor: Theme.of(context).colorScheme.tertiary,
+                    );
+                  }),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () async {
+                          final picked = await showTimePicker(
+                            context: context,
+                            initialTime: startTime,
+                          );
+                          if (picked != null) {
+                            setState(() => startTime = picked);
+                          }
+                        },
+                        icon: const Icon(Icons.schedule),
+                        label: Text(_formatTime(context, startTime)),
+                      ),
                     ),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: Text(l10n.getString('generalCancel')),
-                    ),
-                    ElevatedButton(
-                      onPressed:
-                          selectedDays.isNotEmpty
-                              ? () async {
-                                final updatedRule = DayTimeRangeRule(
-                                  id: rule.id,
-                                  daysOfWeek: selectedDays.toList(),
-                                  startTime: startTime,
-                                  endTime: endTime,
-                                );
-                                await ref
-                                    .read(invisibilityRulesProvider.notifier)
-                                    .updateDayTimeRangeRule(updatedRule);
-                                if (!context.mounted) return;
-                                Navigator.pop(context);
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      l10n.getString(
-                                        'settingsDayTimeRangeUpdated',
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              }
-                              : null,
-                      child: Text(l10n.getString('generalSave')),
+                    const SizedBox(width: 8),
+                    Text(l10n.getString('settingsTo')),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () async {
+                          final picked = await showTimePicker(
+                            context: context,
+                            initialTime: endTime,
+                          );
+                          if (picked != null) {
+                            setState(() => endTime = picked);
+                          }
+                        },
+                        icon: const Icon(Icons.schedule),
+                        label: Text(_formatTime(context, endTime)),
+                      ),
                     ),
                   ],
                 ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(l10n.getString('generalCancel')),
+            ),
+            ElevatedButton(
+              onPressed: selectedDays.isNotEmpty
+                  ? () async {
+                      final updatedRule = DayTimeRangeRule(
+                        id: rule.id,
+                        daysOfWeek: selectedDays.toList(),
+                        startTime: startTime,
+                        endTime: endTime,
+                      );
+                      await ref
+                          .read(invisibilityRulesProvider.notifier)
+                          .updateDayTimeRangeRule(updatedRule);
+                      if (!context.mounted) return;
+                      Navigator.pop(context);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            l10n.getString('settingsDayTimeRangeUpdated'),
+                          ),
+                        ),
+                      );
+                    }
+                  : null,
+              child: Text(l10n.getString('generalSave')),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -2540,7 +2348,9 @@ class _InvisibilityRulesScreenState
   Widget build(BuildContext context) {
     final l10n = ref.watch(localizationProvider);
     final invisibilityRules = ref.watch(invisibilityRulesProvider);
-    final activeRuleIds = ref.watch(activeRuleIdsProvider);
+    final activeRuleIds = ref.watch(
+      activeRuleIdsProvider.select((state) => state),
+    );
 
     return Scaffold(
       appBar: AppBar(
@@ -2660,10 +2470,9 @@ class _InvisibilityRulesScreenState
                 onEdit: () => _showEditLocationRuleDialog(context, l10n, rule),
                 isPast: false,
                 enabled: rule.enabled,
-                onToggle:
-                    (value) => ref
-                        .read(invisibilityRulesProvider.notifier)
-                        .toggleLocationRuleEnabled(rule.id),
+                onToggle: (value) => ref
+                    .read(invisibilityRulesProvider.notifier)
+                    .toggleLocationRuleEnabled(rule.id),
                 ruleId: rule.id,
                 type: 'location',
                 isActive: activeRuleIds.containsKey(rule.id),
@@ -2683,10 +2492,9 @@ class _InvisibilityRulesScreenState
                 onEdit: () => _showEditDateRangeRuleDialog(context, l10n, rule),
                 isPast: false,
                 enabled: rule.enabled,
-                onToggle:
-                    (value) => ref
-                        .read(invisibilityRulesProvider.notifier)
-                        .toggleDateRangeRuleEnabled(rule.id),
+                onToggle: (value) => ref
+                    .read(invisibilityRulesProvider.notifier)
+                    .toggleDateRangeRuleEnabled(rule.id),
                 ruleId: rule.id,
                 type: 'dateRange',
                 isActive: activeRuleIds.containsKey(rule.id),
@@ -2706,10 +2514,9 @@ class _InvisibilityRulesScreenState
                 onEdit: () => _showEditTimeRangeRuleDialog(context, l10n, rule),
                 isPast: false,
                 enabled: rule.enabled,
-                onToggle:
-                    (value) => ref
-                        .read(invisibilityRulesProvider.notifier)
-                        .toggleTimeRangeRuleEnabled(rule.id),
+                onToggle: (value) => ref
+                    .read(invisibilityRulesProvider.notifier)
+                    .toggleTimeRangeRuleEnabled(rule.id),
                 ruleId: rule.id,
                 type: 'timeRange',
                 isActive: activeRuleIds.containsKey(rule.id),
@@ -2729,10 +2536,9 @@ class _InvisibilityRulesScreenState
                 onEdit: () => _showEditDayOfWeekRuleDialog(context, l10n, rule),
                 isPast: false,
                 enabled: rule.enabled,
-                onToggle:
-                    (value) => ref
-                        .read(invisibilityRulesProvider.notifier)
-                        .toggleDayOfWeekRuleEnabled(rule.id),
+                onToggle: (value) => ref
+                    .read(invisibilityRulesProvider.notifier)
+                    .toggleDayOfWeekRuleEnabled(rule.id),
                 ruleId: rule.id,
                 type: 'dayOfWeek',
                 isActive: activeRuleIds.containsKey(rule.id),
@@ -2750,22 +2556,17 @@ class _InvisibilityRulesScreenState
                     .read(invisibilityRulesProvider.notifier)
                     .removeDateTimeRangeRule(rule.id),
                 canEdit: !isPast,
-                onEdit:
-                    isPast
-                        ? null
-                        : () => _showEditDateTimeRangeRuleDialog(
-                          context,
-                          l10n,
-                          rule,
-                        ),
+                onEdit: isPast
+                    ? null
+                    : () =>
+                          _showEditDateTimeRangeRuleDialog(context, l10n, rule),
                 isPast: isPast,
                 enabled: rule.enabled,
-                onToggle:
-                    isPast
-                        ? null
-                        : (value) => ref
-                            .read(invisibilityRulesProvider.notifier)
-                            .toggleDateTimeRangeRuleEnabled(rule.id),
+                onToggle: isPast
+                    ? null
+                    : (value) => ref
+                          .read(invisibilityRulesProvider.notifier)
+                          .toggleDateTimeRangeRuleEnabled(rule.id),
                 ruleId: rule.id,
                 type: 'dateTimeRange',
                 isActive: activeRuleIds.containsKey(rule.id),
@@ -2782,14 +2583,13 @@ class _InvisibilityRulesScreenState
                     .read(invisibilityRulesProvider.notifier)
                     .removeDayTimeRangeRule(rule.id),
                 canEdit: true,
-                onEdit:
-                    () => _showEditDayTimeRangeRuleDialog(context, l10n, rule),
+                onEdit: () =>
+                    _showEditDayTimeRangeRuleDialog(context, l10n, rule),
                 isPast: false,
                 enabled: rule.enabled,
-                onToggle:
-                    (value) => ref
-                        .read(invisibilityRulesProvider.notifier)
-                        .toggleDayTimeRangeRuleEnabled(rule.id),
+                onToggle: (value) => ref
+                    .read(invisibilityRulesProvider.notifier)
+                    .toggleDayTimeRangeRuleEnabled(rule.id),
                 ruleId: rule.id,
                 type: 'dayTimeRange',
                 isActive: activeRuleIds.containsKey(rule.id),

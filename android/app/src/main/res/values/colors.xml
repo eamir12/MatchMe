@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#FFFFFF</color>
+    <!-- Accent behind monochrome notification icons (FCM / system tray) -->
+    <color name="notification_accent">#5C6BC0</color>
 </resources>

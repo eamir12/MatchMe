@@ -6,10 +6,7 @@ import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/utils/time_of_day_ranges.dart';
 import 'package:matchme/providers/user_preferences_provider.dart';
 
-bool effectiveUse24HourFormat(
-  BuildContext context,
-  TimeFormatPreference pref,
-) {
+bool effectiveUse24HourFormat(BuildContext context, TimeFormatPreference pref) {
   switch (pref) {
     case TimeFormatPreference.h24:
       return true;
@@ -49,7 +46,9 @@ String formatTimeOfDay(
   if (l10n.currentLocale.languageCode == 'he') {
     // Use shared day-period ranges
     final dt = DateTime.now();
-    final period = TimeOfDayRanges.periodFromDateTime(DateTime(dt.year, dt.month, dt.day, time.hour, time.minute));
+    final period = TimeOfDayRanges.periodFromDateTime(
+      DateTime(dt.year, dt.month, dt.day, time.hour, time.minute),
+    );
     final suffixKey = switch (period) {
       DayPeriodName.morning => 'timeMorning',
       DayPeriodName.afternoon => 'timeAfternoon',
@@ -85,7 +84,9 @@ String formatDateAndTimeOfDateTimeWithPrefs(
   DateTime dateTime,
 ) {
   final timeStr = formatTimeOfDateTimeWithPrefs(context, ref, l10n, dateTime);
-  final dateStr = DateFormat.yMMMMd(l10n.currentLocale.toLanguageTag()).format(dateTime);
+  final dateStr = DateFormat.yMMMMd(
+    l10n.currentLocale.toLanguageTag(),
+  ).format(dateTime);
   return '$dateStr · $timeStr';
 }
 
@@ -94,7 +95,8 @@ String formatDateAndTimeOfDateTimeWithPrefs(
 int calculateAgeFromDate(DateTime birthDate, {DateTime? now}) {
   final DateTime reference = now ?? DateTime.now();
   int age = reference.year - birthDate.year;
-  if (reference.month < birthDate.month || (reference.month == birthDate.month && reference.day < birthDate.day)) {
+  if (reference.month < birthDate.month ||
+      (reference.month == birthDate.month && reference.day < birthDate.day)) {
     age -= 1;
   }
   return age;
@@ -106,9 +108,10 @@ String formatCountdownHms(Duration remaining) {
   final hours = d.inHours;
   final minutes = d.inMinutes.remainder(60);
   final seconds = d.inSeconds.remainder(60);
-  final hh = hours.toString().padLeft(2, '0');
   final mm = minutes.toString().padLeft(2, '0');
   final ss = seconds.toString().padLeft(2, '0');
+  if (hours <= 0) return '$mm:$ss';
+  final hh = hours.toString().padLeft(2, '0');
   return '$hh:$mm:$ss';
 }
 
@@ -126,9 +129,10 @@ String formatCountdownHmsWithPrefs(
   final minutes = d.inMinutes.remainder(60);
   final seconds = d.inSeconds.remainder(60);
 
-  final hh = use24 ? hours.toString().padLeft(2, '0') : hours.toString();
   final mm = minutes.toString().padLeft(2, '0');
   final ss = seconds.toString().padLeft(2, '0');
+  if (hours <= 0) return '$mm:$ss';
+  final hh = use24 ? hours.toString().padLeft(2, '0') : hours.toString();
   return '$hh:$mm:$ss';
 }
 
@@ -184,7 +188,7 @@ String formatDurationWords(LocalizationState l10n, Duration remaining) {
       singularKey: 'durationHour',
       pluralKey: 'durationHours',
     );
-    return '$dayText $hourText';
+    return '$dayText, $hourText';
   }
 
   if (d.inHours > 0) {
@@ -201,7 +205,7 @@ String formatDurationWords(LocalizationState l10n, Duration remaining) {
       singularKey: 'durationMinute',
       pluralKey: 'durationMinutes',
     );
-    return '$hourText $minuteText';
+    return '$hourText, $minuteText';
   }
 
   if (d.inMinutes > 0) {
@@ -215,5 +219,3 @@ String formatDurationWords(LocalizationState l10n, Duration remaining) {
 
   return l10n.getString('durationLessThanOneMinute');
 }
-
-

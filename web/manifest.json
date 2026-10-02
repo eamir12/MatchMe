@@ -1,7 +1,7 @@
 {
     "name": "matchme",
     "short_name": "matchme",
-    "gcm_sender_id": "103953800507",
+    "gcm_sender_id": "988596890235",
     "start_url": "./",
     "display": "standalone",
     "background_color": "#0175C2",

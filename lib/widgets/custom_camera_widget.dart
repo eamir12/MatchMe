@@ -26,6 +26,7 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
   List<CameraDescription> _cameras = [];
   bool _isCameraInitialized = false;
   bool _isCapturing = false;
+  bool _hasCameraError = false;
 
   @override
   void initState() {
@@ -35,10 +36,11 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
 
   Future<void> _initializeCamera() async {
     try {
-      _cameras = await availableCameras();
-      
+      _cameras = await availableCameras().timeout(const Duration(seconds: 15));
+
       if (_cameras.isEmpty) {
         if (mounted) {
+          setState(() => _hasCameraError = true);
           final l10n = ref.read(localizationProvider);
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(l10n.getString('cameraNoCamerasAvailable'))),
@@ -49,7 +51,7 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
 
       // Find the desired camera (front or rear)
       CameraDescription? selectedCamera;
-      
+
       if (widget.useFrontCamera) {
         // Try to find front camera
         selectedCamera = _cameras.firstWhere(
@@ -70,8 +72,8 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
         enableAudio: false,
       );
 
-      await _controller!.initialize();
-      
+      await _controller!.initialize().timeout(const Duration(seconds: 15));
+
       if (mounted) {
         setState(() {
           _isCameraInitialized = true;
@@ -79,6 +81,7 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
       }
     } catch (e) {
       if (mounted) {
+        setState(() => _hasCameraError = true);
         final l10n = ref.read(localizationProvider);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -95,7 +98,9 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
   }
 
   Future<void> _captureImage() async {
-    if (_controller == null || !_controller!.value.isInitialized || _isCapturing) {
+    if (_controller == null ||
+        !_controller!.value.isInitialized ||
+        _isCapturing) {
       return;
     }
 
@@ -106,13 +111,12 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
     try {
       // Take the picture
       final XFile file = await _controller!.takePicture();
-      
+
       // Read the file as bytes
       final Uint8List bytes = await file.readAsBytes();
-      
+
       // Return the image bytes
       widget.onImageCaptured(bytes);
-      
     } catch (e) {
       if (mounted) {
         final l10n = ref.read(localizationProvider);
@@ -136,11 +140,11 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
 
   void _switchCamera() {
     if (_cameras.length < 2) return;
-    
+
     // Find the opposite camera
     CameraDescription? newCamera;
     final currentCamera = _controller!.description;
-    
+
     if (currentCamera.lensDirection == CameraLensDirection.front) {
       newCamera = _cameras.firstWhere(
         (camera) => camera.lensDirection == CameraLensDirection.back,
@@ -192,12 +196,30 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
   @override
   Widget build(BuildContext context) {
     final l10n = ref.watch(localizationProvider);
+    if (_hasCameraError) {
+      return Scaffold(
+        appBar: AppBar(title: Text(l10n.getString('cameraTitle'))),
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline, size: 48, color: Colors.grey),
+              const SizedBox(height: 16),
+              Text(l10n.getString('cameraNotAvailable')),
+              const SizedBox(height: 24),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text(l10n.getString('generalBack')),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     if (!_isCameraInitialized) {
       return Scaffold(
         appBar: AppBar(title: Text(l10n.getString('cameraTitle'))),
-        body: const Center(
-          child: CircularProgressIndicator(),
-        ),
+        body: const Center(child: CircularProgressIndicator()),
       );
     }
 
@@ -219,10 +241,8 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
       body: Stack(
         children: [
           // Camera preview
-          Positioned.fill(
-            child: CameraPreview(_controller!),
-          ),
-          
+          Positioned.fill(child: CameraPreview(_controller!)),
+
           // Capture button
           Positioned(
             bottom: 30,
@@ -232,9 +252,9 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
               child: FloatingActionButton(
                 onPressed: _isCapturing ? null : _captureImage,
                 backgroundColor: _isCapturing ? Colors.grey : Colors.blue,
-                child: _isCapturing 
-                  ? const CircularProgressIndicator(color: Colors.white)
-                  : const Icon(Icons.camera_alt, size: 30),
+                child: _isCapturing
+                    ? const CircularProgressIndicator(color: Colors.white)
+                    : const Icon(Icons.camera_alt, size: 30),
               ),
             ),
           ),

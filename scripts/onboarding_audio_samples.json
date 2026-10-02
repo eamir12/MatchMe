@@ -1,0 +1,17 @@
+{
+  "_note": "Comparison samples: 2 beats x 3 locales, using current tour copy (locale_provider.dart + latest onboarding migrations). Subtitles keep the ellipsis; the generator normalizes it to sentence breaks for speech, mirroring VoiceGuidanceService._naturalizeForSpeech.",
+  "samples": [
+    {
+      "id": "onboardingBeatWelcome1",
+      "en": "Welcome to MatchMe… MatchMe helps you find people nearby who share your interests and intentions. Build a profile, set your preferences, and the app quietly finds compatible people around you. Tap Next to move ahead, or Skip to leave the tour at any time.",
+      "es": "Bienvenido a MatchMe… Este breve recorrido te muestra lo que puede hacer la app y cómo usarla. Toca Siguiente para avanzar, o Saltar para salir del recorrido en cualquier momento.",
+      "he": "ברוכים הבאים ל-MatchMe… הסיור הקצר הזה מסביר מה האפליקציה יודעת לעשות ואיך משתמשים בה. הקישו על הבא כדי להתקדם, או על דלג כדי לצאת מהסיור בכל רגע."
+    },
+    {
+      "id": "onboardingBeatHome1",
+      "en": "This is your home screen, your daily dashboard… Everything on MatchMe is reachable from here with one tap. Watch the switch at the top: it takes you offline and invisible… then brings you back online again.",
+      "es": "Esta es tu pantalla de inicio, tu panel diario… Todo en MatchMe está a un solo toque desde aquí. Mira el interruptor de arriba: te pone invisible por un momento… y luego te devuelve en línea.",
+      "he": "זה מסך הבית שלכם, לוח הבקרה היומי… הכול ב-MatchMe נגיש מכאן בנגיעה אחת. צפו במתג למעלה: הוא הופך אתכם לבלתי נראים לרגע… ואז מחזיר אתכם למקוון."
+    }
+  ]
+}

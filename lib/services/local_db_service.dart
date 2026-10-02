@@ -8,6 +8,10 @@ import 'dart:convert'; // For jsonEncode/Decode
 import 'dart:async';
 import 'package:matchme/utils/resume_diagnostics.dart';
 import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/services/encrypted_cache_service.dart';
+import 'package:matchme/services/hive_encryption_service.dart';
+import 'package:matchme/utils/encrypted_text_guard.dart';
+import 'package:matchme/utils/translation_edit_marker.dart';
 
 // --- Hive Box Names (Unchanged) ---
 const String _kProfileBox = 'userProfileBox';
@@ -25,10 +29,53 @@ const String _kTranslationsBox = 'translationsBox';
 // New options box name:
 const String _kOptionsBox = 'optionHierarchyBox';
 
+// Encrypted chat boxes
+const String _kChatOutboxBox = 'chatOutboxBox';
+
+// Offline trail (places recorded while offline for retroactive matching)
+const String _kOfflineTrailBox = 'offlineTrailBox';
+const int _kOfflineTrailMaxPoints = 2000;
+
+// Settings box keys
+const String _kSubscriptionTiersKey = 'subscription_tiers_cache';
+
+/// A single message that matched a full-text search.
+///
+/// [field] records whether the hit was on the original text, the machine
+/// translation, or a quoted reply, so the UI can say which. Searching
+/// translated text matters: a Hebrew speaker searching an English word (or the
+/// reverse) finds nothing unless the translation is searched too.
+class MessageSearchHit {
+  const MessageSearchHit({
+    required this.matchId,
+    required this.messageId,
+    required this.field,
+    required this.senderId,
+    required this.createdAt,
+    required this.snippet,
+  });
+
+  final String matchId;
+  final String messageId;
+
+  /// 'original', 'translated' or 'reply'.
+  final String field;
+  final String senderId;
+  final String createdAt;
+
+  /// Surrounding text with the match visible, for display in the row.
+  final String snippet;
+}
+
 class LocalDbService {
   static LocalDbService? _instance;
-  static Future<LocalDbService> get instance async {
+  static LocalDbService get shared {
     _instance ??= LocalDbService();
+    return _instance!;
+  }
+
+  static Future<LocalDbService> get instance async {
+    _instance ??= shared;
     await _instance!.init();
     return _instance!;
   }
@@ -44,38 +91,65 @@ class LocalDbService {
   Box<String>? _eventsBox;
   Box<String>? _settingsBox;
   Box<String>? _translationsBox;
+  Box<String>? _chatOutboxBox;
   Box? _optionsBox;
+  Box<String>? _offlineTrailBox;
   bool _initialized = false;
+  bool _optionalWarmupStarted = false;
+
+  Completer<void>? _initCompleter;
 
   Future<void> init() async {
     if (_initialized) return;
+    if (_initCompleter != null) {
+      // Already initializing, wait for it to complete
+      return _initCompleter!.future;
+    }
+    _initCompleter = Completer<void>();
     final start = DateTime.now();
     ResumeDiagnostics.log('LocalDb.init start');
 
     try {
-      _profileBox ??= await Hive.openBox(_kProfileBox);
-      _matchesBox ??= await Hive.openBox<String>(_kMatchesBox);
-      _chatsBox ??= await Hive.openBox<String>(_kChatsBox);
-      _messagesBox ??= await Hive.openBox<String>(_kChatMessagesBox);
-      _outboxBox ??= await Hive.openBox<String>(_kOutboxBox);
-      _profileOutboxBox ??= await Hive.openBox<String>(_kProfileOutboxBox);
-      _visibilityOutboxBox ??= await Hive.openBox<String>(_kVisibilityOutboxBox);
-      _invisibilityRulesOutboxBox ??= await Hive.openBox<String>(_kInvisibilityRulesOutboxBox);
-      _eventsBox ??= await Hive.openBox<String>(_kEventsBox);
-      _settingsBox ??= await Hive.openBox<String>(_kSettingsBox);
-      _translationsBox ??= await Hive.openBox<String>(_kTranslationsBox);
-      _optionsBox ??= await Hive.openBox(_kOptionsBox);
+      // Open startup-critical boxes ENCRYPTED (AES-256, key in Keystore/
+      // Keychain via HiveEncryptionService). Migration from legacy plaintext
+      // boxes is handled inside openEncryptedBox (copy -> delete -> reopen).
+      final crypto = HiveEncryptionService.instance;
+      await Future.wait([
+        crypto
+            .openEncryptedBoxDynamic(_kProfileBox)
+            .then((box) => _profileBox = box),
+        crypto
+            .openEncryptedBox<String>(_kMatchesBox)
+            .then((box) => _matchesBox = box),
+        crypto
+            .openEncryptedBox<String>(_kChatsBox)
+            .then((box) => _chatsBox = box),
+        crypto
+            .openEncryptedBox<String>(_kChatMessagesBox)
+            .then((box) => _messagesBox = box),
+        crypto
+            .openEncryptedBox<String>(_kSettingsBox)
+            .then((box) => _settingsBox = box),
+        crypto
+            .openEncryptedBox<String>(_kTranslationsBox)
+            .then((box) => _translationsBox = box),
+      ]);
       _initialized = true;
+      _initCompleter!.complete();
+      _initCompleter = null;
+      _warmOptionalBoxesInBackground();
 
       if (kIsWeb) {
-        debugPrint('🔍 [WEB] LocalDb.init - All boxes opened successfully');
+        // print('🔍 [WEB] LocalDb.init - All boxes opened successfully');
         // Perform a quick health check on web
         await _performWebStorageHealthCheck();
       }
     } catch (e) {
       ResumeDiagnostics.log('LocalDb.init failed: $e');
+      _initCompleter!.completeError(e);
+      _initCompleter = null;
       if (kIsWeb) {
-        debugPrint('🔍 [WEB] LocalDb.init - FAILED: $e');
+        // print('🔍 [WEB] LocalDb.init - FAILED: $e');
         // Try recovery for web
         await _attemptWebStorageRecovery();
       }
@@ -84,6 +158,39 @@ class LocalDbService {
 
     final duration = DateTime.now().difference(start).inMilliseconds;
     ResumeDiagnostics.log('LocalDb.init completed in ${duration}ms');
+  }
+
+  void _warmOptionalBoxesInBackground() {
+    if (_optionalWarmupStarted) return;
+    _optionalWarmupStarted = true;
+    unawaited(() async {
+      try {
+        // Open optional boxes ENCRYPTED in parallel.
+        final crypto = HiveEncryptionService.instance;
+        await Future.wait([
+          crypto
+              .openEncryptedBox<String>(_kOutboxBox)
+              .then((box) => _outboxBox = box),
+          crypto
+              .openEncryptedBox<String>(_kProfileOutboxBox)
+              .then((box) => _profileOutboxBox = box),
+          crypto
+              .openEncryptedBox<String>(_kVisibilityOutboxBox)
+              .then((box) => _visibilityOutboxBox = box),
+          crypto
+              .openEncryptedBox<String>(_kInvisibilityRulesOutboxBox)
+              .then((box) => _invisibilityRulesOutboxBox = box),
+          crypto
+              .openEncryptedBox<String>(_kEventsBox)
+              .then((box) => _eventsBox = box),
+          crypto
+              .openEncryptedBoxDynamic(_kOptionsBox)
+              .then((box) => _optionsBox = box),
+        ]);
+      } catch (e) {
+        // print('LocalDb optional warmup failed: $e');
+      }
+    }());
   }
 
   // Web-specific storage health check and recovery methods
@@ -101,18 +208,18 @@ class LocalDbService {
       await box.delete(testKey);
 
       if (retrievedValue == testValue) {
-        debugPrint('🔍 [WEB] Storage health check: PASSED');
+        // print('🔍 [WEB] Storage health check: PASSED');
       } else {
-        debugPrint('🔍 [WEB] Storage health check: FAILED - read/write test failed');
+        // print('🔍 [WEB] Storage health check: FAILED - read/write test failed');
       }
     } catch (e) {
-      debugPrint('🔍 [WEB] Storage health check: FAILED - $e');
+      // print('🔍 [WEB] Storage health check: FAILED - $e');
       // Don't try recovery here as it might cause issues during init
     }
   }
 
   Future<void> _attemptWebStorageRecovery() async {
-    debugPrint('🔍 [WEB] Attempting storage recovery...');
+    // print('🔍 [WEB] Attempting storage recovery...');
 
     try {
       // Try to reset initialization state and retry
@@ -129,6 +236,7 @@ class LocalDbService {
       _settingsBox = null;
       _translationsBox = null;
       _optionsBox = null;
+      _optionalWarmupStarted = false;
 
       // Try to clear any corrupted boxes
       await Hive.deleteBoxFromDisk(_kProfileBox);
@@ -144,13 +252,13 @@ class LocalDbService {
       await Hive.deleteBoxFromDisk(_kTranslationsBox);
       await Hive.deleteBoxFromDisk(_kOptionsBox);
 
-      debugPrint('🔍 [WEB] Cleared corrupted boxes, retrying initialization...');
+      // print('🔍 [WEB] Cleared corrupted boxes, retrying initialization...');
 
       // Retry initialization
       await init();
-      debugPrint('🔍 [WEB] Storage recovery: SUCCESS');
+      // print('🔍 [WEB] Storage recovery: SUCCESS');
     } catch (e) {
-      debugPrint('🔍 [WEB] Storage recovery: FAILED - $e');
+      // print('🔍 [WEB] Storage recovery: FAILED - $e');
       // If recovery fails, we'll let the error propagate
       rethrow;
     }
@@ -158,64 +266,145 @@ class LocalDbService {
 
   // --- Box Getters (Optimized) ---
   Future<Box> _getProfileBox() async {
-    if (_profileBox == null) await init();
+    if (_profileBox == null) {
+      await init();
+      _profileBox ??= await HiveEncryptionService.instance
+          .openEncryptedBoxDynamic(_kProfileBox);
+    }
     return _profileBox!;
   }
 
   Future<Box<String>> _getMatchesBox() async {
-    if (_matchesBox == null) await init();
+    if (_matchesBox == null) {
+      await init();
+      _matchesBox ??= await HiveEncryptionService.instance
+          .openEncryptedBox<String>(_kMatchesBox);
+    }
     return _matchesBox!;
   }
 
   Future<Box<String>> _getChatsBox() async {
-    if (_chatsBox == null) await init();
+    if (_chatsBox == null) {
+      await init();
+      _chatsBox ??= await HiveEncryptionService.instance
+          .openEncryptedBox<String>(_kChatsBox);
+    }
     return _chatsBox!;
   }
 
   Future<Box<String>> _getMessagesBox() async {
-    if (_messagesBox == null) await init();
+    if (_messagesBox == null) {
+      await init();
+      _messagesBox ??= await HiveEncryptionService.instance
+          .openEncryptedBox<String>(_kChatMessagesBox);
+    }
     return _messagesBox!;
   }
 
   Future<Box<String>> _getOutboxBox() async {
-    if (_outboxBox == null) await init();
+    if (_outboxBox == null) {
+      await init();
+      _outboxBox ??= await HiveEncryptionService.instance
+          .openEncryptedBox<String>(_kOutboxBox);
+    }
     return _outboxBox!;
   }
 
   Future<Box<String>> _getProfileOutboxBox() async {
-    if (_profileOutboxBox == null) await init();
+    if (_profileOutboxBox == null) {
+      await init();
+      _profileOutboxBox ??= await HiveEncryptionService.instance
+          .openEncryptedBox<String>(_kProfileOutboxBox);
+    }
     return _profileOutboxBox!;
   }
 
   Future<Box<String>> _getVisibilityOutboxBox() async {
-    if (_visibilityOutboxBox == null) await init();
+    if (_visibilityOutboxBox == null) {
+      await init();
+      _visibilityOutboxBox ??= await HiveEncryptionService.instance
+          .openEncryptedBox<String>(_kVisibilityOutboxBox);
+    }
     return _visibilityOutboxBox!;
   }
 
   Future<Box<String>> _getInvisibilityRulesOutboxBox() async {
-    if (_invisibilityRulesOutboxBox == null) await init();
+    if (_invisibilityRulesOutboxBox == null) {
+      await init();
+      _invisibilityRulesOutboxBox ??= await HiveEncryptionService.instance
+          .openEncryptedBox<String>(_kInvisibilityRulesOutboxBox);
+    }
     return _invisibilityRulesOutboxBox!;
   }
 
   Future<Box<String>> _getEventsBox() async {
-    if (_eventsBox == null) await init();
+    if (_eventsBox == null) {
+      await init();
+      _eventsBox ??= await HiveEncryptionService.instance
+          .openEncryptedBox<String>(_kEventsBox);
+    }
     return _eventsBox!;
   }
 
   Future<Box<String>> _getSettingsBox() async {
-    if (_settingsBox == null) await init();
+    if (_settingsBox == null) {
+      await init();
+      _settingsBox ??= await HiveEncryptionService.instance
+          .openEncryptedBox<String>(_kSettingsBox);
+    }
     return _settingsBox!;
   }
 
   Future<Box<String>> _getTranslationsBox() async {
-    if (_translationsBox == null) await init();
+    if (_translationsBox == null) {
+      await init();
+      _translationsBox ??= await HiveEncryptionService.instance
+          .openEncryptedBox<String>(_kTranslationsBox);
+    }
     return _translationsBox!;
   }
 
+  Future<Box<String>> _getChatOutboxBox() async {
+    if (_chatOutboxBox == null) {
+      await init();
+      _chatOutboxBox ??= await HiveEncryptionService.instance
+          .openEncryptedBox<String>(_kChatOutboxBox);
+    }
+    return _chatOutboxBox!;
+  }
+
+  Future<Box<String>> _getOfflineTrailBox() async {
+    _offlineTrailBox ??= await HiveEncryptionService.instance
+        .openEncryptedBox<String>(_kOfflineTrailBox);
+    return _offlineTrailBox!;
+  }
+
   // --- Profile Methods ---
-  Future<void> saveLocalProfile(String userId, Map<String, dynamic> profileData) async {
+  Future<void> saveLocalProfile(
+    String userId,
+    Map<String, dynamic> profileData,
+  ) async {
     final box = await _getProfileBox();
     await box.put(userId, jsonEncode(profileData));
+  }
+
+  /// Removes profile rows left from a previous login (same device, different account).
+  Future<void> clearStaleLocalProfilesForUser(String currentUserId) async {
+    final keepId = currentUserId.trim();
+    if (keepId.isEmpty) return;
+    try {
+      final box = await _getProfileBox();
+      final toDelete = <dynamic>[];
+      for (final key in box.keys) {
+        final k = key.toString();
+        if (k == keepId) continue;
+        if (k.startsWith('other_user_')) continue;
+        toDelete.add(key);
+      }
+      for (final key in toDelete) {
+        await box.delete(key);
+      }
+    } catch (_) {}
   }
 
   Stream<Map<String, dynamic>?> watchLocalProfile(String userId) async* {
@@ -241,16 +430,27 @@ class LocalDbService {
       if (raw == null) return <String>{};
       final decoded = jsonDecode(raw);
       if (decoded is List) {
-        return decoded.map((e) => e.toString()).where((e) => e.isNotEmpty).toSet();
+        final result = <String>{};
+        for (final e in decoded) {
+          final str = e.toString();
+          if (str.isNotEmpty) result.add(str);
+        }
+        return result;
       }
     } catch (_) {}
     return <String>{};
   }
 
-  Future<void> setApprovedPrimaryPhotos(String userId, Set<String> photos) async {
+  Future<void> setApprovedPrimaryPhotos(
+    String userId,
+    Set<String> photos,
+  ) async {
     final box = await _getSettingsBox();
     final cleaned = photos.where((e) => e.isNotEmpty).toSet();
-    await box.put('approved_primary_photos_$userId', jsonEncode(cleaned.toList()));
+    await box.put(
+      'approved_primary_photos_$userId',
+      jsonEncode(cleaned.toList()),
+    );
   }
 
   Future<void> addApprovedPrimaryPhoto(String userId, String photoPath) async {
@@ -259,34 +459,174 @@ class LocalDbService {
     if (current.contains(photoPath)) return;
     current.add(photoPath);
     final box = await _getSettingsBox();
-    await box.put('approved_primary_photos_$userId', jsonEncode(current.toList()));
+    await box.put(
+      'approved_primary_photos_$userId',
+      jsonEncode(current.toList()),
+    );
   }
 
-  Future<void> removeApprovedPrimaryPhoto(String userId, String photoPath) async {
+  Future<void> removeApprovedPrimaryPhoto(
+    String userId,
+    String photoPath,
+  ) async {
     if (photoPath.isEmpty) return;
     final current = await loadApprovedPrimaryPhotos(userId);
     if (!current.contains(photoPath)) return;
     current.remove(photoPath);
     final box = await _getSettingsBox();
-    await box.put('approved_primary_photos_$userId', jsonEncode(current.toList()));
+    await box.put(
+      'approved_primary_photos_$userId',
+      jsonEncode(current.toList()),
+    );
   }
 
   // --- Home Screen List Methods ---
-  Future<void> saveMatches(List<Map<String, dynamic>> matches) async {
+  Future<bool> saveMatches(
+    String userId,
+    List<Map<String, dynamic>> matches,
+  ) async {
     final box = await _getMatchesBox();
-    await box.put('recent_matches', jsonEncode(matches));
+    final key = 'recent_matches_$userId';
+    // Avoid Hive watch event when nothing changed - prevents visible list flicker
+    // on every 15s sync when data is identical.
+    try {
+      final existing = box.get(key);
+      final next = jsonEncode(matches);
+      if (existing == next) return false;
+    } catch (_) {}
+    await box.put(key, jsonEncode(matches));
+    return true;
   }
 
-  Future<void> addOrUpdateMatch(Map<String, dynamic> matchData) async {
+  /// Returns true only when this user has a complete, locally readable home
+  /// snapshot. Empty match/chat lists are valid snapshots: the important
+  /// distinction is between "the server confirmed there are none" (a stored
+  /// empty list) and "we have not fetched this account yet" (no key at all).
+  ///
+  /// This is intentionally scoped to the user. It is used by the startup gate
+  /// to decide whether a relaunch can render from disk while a refresh runs in
+  /// the background, without allowing a first login to show a partial home.
+  Future<bool> hasCompleteHomeCache(String userId) async {
+    if (userId.trim().isEmpty) return false;
+    try {
+      final profile = await getLocalProfile(userId);
+      if (profile == null) return false;
+
+      final matchesBox = await _getMatchesBox();
+      final chatsBox = await _getChatsBox();
+      final matches = matchesBox.get('recent_matches_$userId');
+      final chats = chatsBox.get('recent_chats_$userId');
+      if (matches is! String || chats is! String) return false;
+
+      // Treat malformed cache rows as a cache miss so the normal server-sync
+      // path repairs them instead of exposing a misleading empty home.
+      if (jsonDecode(matches) is! List || jsonDecode(chats) is! List) {
+        return false;
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Deletes expired matches (no chat, expiry in past) from local cache for [userId].
+  /// Called periodically and after sync to ensure UI instantly reflects expiry
+  /// even before the server cron has deleted the row.
+  Future<int> pruneExpiredMatches(String userId, Set<String> chatIds) async {
     final box = await _getMatchesBox();
-    final currentMatches = box.get('recent_matches');
-    
+    final key = 'recent_matches_$userId';
+    final raw = box.get(key);
+    if (raw == null) return 0;
+    List<Map<String, dynamic>> list;
+    try {
+      list = (jsonDecode(raw) as List).cast<Map<String, dynamic>>();
+    } catch (_) {
+      return 0;
+    }
+    final now = DateTime.now().toUtc();
+    final retained = <Map<String, dynamic>>[];
+    int pruned = 0;
+    // Also check local messages box - if messages exist, match has a chat even if
+    // chats cache hasn't synced yet (prevents deleting Ingela-type matches).
+    Box<String>? msgBox;
+    try {
+      msgBox = await _getMessagesBox();
+    } catch (_) {}
+    for (final json in list) {
+      final matchId = (json['match_id'] ?? json['id'])?.toString() ?? '';
+      if (matchId.isEmpty) {
+        retained.add(json);
+        continue;
+      }
+      if (chatIds.contains(matchId)) {
+        retained.add(json);
+        continue;
+      }
+      if (msgBox != null) {
+        try {
+          final rawMsgs = msgBox.get(matchId);
+          if (rawMsgs != null &&
+              rawMsgs.trim().isNotEmpty &&
+              rawMsgs.trim() != '[]') {
+            retained.add(json);
+            continue;
+          }
+        } catch (_) {}
+      }
+      final createdAtStr = json['created_at']?.toString();
+      if (createdAtStr == null || createdAtStr.isEmpty) {
+        retained.add(json);
+        continue;
+      }
+      final createdAt = DateTime.tryParse(createdAtStr);
+      if (createdAt == null) {
+        retained.add(json);
+        continue;
+      }
+      final windowRaw = json['chat_start_window_seconds'];
+      final extRaw = json['chat_start_extension_seconds'];
+      final window = windowRaw is int
+          ? windowRaw
+          : int.tryParse(windowRaw?.toString() ?? '') ?? 86400;
+      final ext = extRaw is int
+          ? extRaw
+          : int.tryParse(extRaw?.toString() ?? '') ?? 0;
+      final expiry = createdAt.toUtc().add(Duration(seconds: window + ext));
+      if (expiry.isAfter(now)) {
+        retained.add(json);
+      } else {
+        pruned++;
+      }
+    }
+    if (pruned > 0) {
+      await box.put(key, jsonEncode(retained));
+    }
+    return pruned;
+  }
+
+  Future<void> addOrUpdateMatch(
+    String userId,
+    Map<String, dynamic> matchData,
+  ) async {
+    final box = await _getMatchesBox();
+    final key = 'recent_matches_$userId';
+    final currentMatches = box.get(key);
+
     List<Map<String, dynamic>> matches = [];
     if (currentMatches != null) {
-      matches = (jsonDecode(currentMatches) as List).cast<Map<String, dynamic>>();
+      matches = (jsonDecode(currentMatches) as List)
+          .cast<Map<String, dynamic>>();
     }
-    
-    // Create the match object with consistent keys
+
+    // Preserve previous_locations from existing cache (realtime INSERT has no history)
+    Map<String, dynamic>? existingForId;
+    for (final m in matches) {
+      if (m['match_id'] == matchData['id']) {
+        existingForId = m;
+        break;
+      }
+    }
+    // Create the match object with consistent keys (including coarse map + rematch)
     final match = {
       'match_id': matchData['id'],
       'user1_id': matchData['user1_id'],
@@ -297,24 +637,112 @@ class LocalDbService {
       'event_name': matchData['event_name'],
       'event_link': matchData['event_link'],
       'created_at': matchData['created_at'],
+      if (matchData['match_occurrence'] != null)
+        'match_occurrence': matchData['match_occurrence'],
+      if (matchData['map_center_lat'] != null)
+        'map_center_lat': matchData['map_center_lat'],
+      if (matchData['map_center_lng'] != null)
+        'map_center_lng': matchData['map_center_lng'],
+      if (matchData['map_zoom'] != null) 'map_zoom': matchData['map_zoom'],
+      if (matchData['chat_start_window_seconds'] != null)
+        'chat_start_window_seconds': matchData['chat_start_window_seconds'],
+      if (matchData['chat_start_extension_seconds'] != null)
+        'chat_start_extension_seconds':
+            matchData['chat_start_extension_seconds'],
+      if (matchData['chat_start_extension_count'] != null)
+        'chat_start_extension_count': matchData['chat_start_extension_count'],
+      if (matchData['expires_at'] != null)
+        'expires_at': matchData['expires_at'],
+      if (matchData['has_extended'] != null)
+        'has_extended': matchData['has_extended'],
+      if (matchData['previous_locations'] != null)
+        'previous_locations': matchData['previous_locations']
+      else if (matchData['locations_history'] != null)
+        'previous_locations': matchData['locations_history']
+      else if (existingForId?['previous_locations'] != null)
+        'previous_locations': existingForId!['previous_locations'],
     };
-    
+
     // Remove if already exists (update case)
     matches.removeWhere((m) => m['match_id'] == match['match_id']);
-    
+
     // Add to the beginning
     matches.insert(0, match);
 
-    await box.put('recent_matches', jsonEncode(matches));
+    await box.put(key, jsonEncode(matches));
   }
 
-  Future<void> deleteMatch(String matchId) async {
+  Future<void> deleteMatch(String matchId, {required String userId}) async {
     final box = await _getMatchesBox();
-    final currentMatches = box.get('recent_matches');
+    final key = 'recent_matches_$userId';
+    final currentMatches = box.get(key);
     if (currentMatches != null) {
-      final matches = (jsonDecode(currentMatches) as List).cast<Map<String, dynamic>>();
-      final updatedMatches = matches.where((match) => match['match_id'] != matchId).toList();
-      await box.put('recent_matches', jsonEncode(updatedMatches));
+      final matches = (jsonDecode(currentMatches) as List)
+          .cast<Map<String, dynamic>>();
+      final updatedMatches = matches
+          .where((match) => match['match_id'] != matchId)
+          .toList();
+      await box.put(key, jsonEncode(updatedMatches));
+    }
+  }
+
+  /// Persist the displayable match-location (minimap) snapshot for [matchId]
+  /// in local storage so the match profile minimap renders offline.
+  /// Called whenever the profile has fresh displayable locations (online).
+  Future<void> saveMatchMinimapSnapshot(
+    String matchId,
+    List<Map<String, dynamic>> locations,
+  ) async {
+    try {
+      if (matchId.isEmpty || locations.isEmpty) return;
+      final box = await _getSettingsBox();
+      await box.put('match_minimap_$matchId', jsonEncode(locations));
+    } catch (_) {}
+  }
+
+  /// Load the persisted minimap snapshot for [matchId] (offline fallback).
+  /// Returns an empty list when nothing was cached yet.
+  Future<List<Map<String, dynamic>>> getMatchMinimapSnapshot(
+    String matchId,
+  ) async {
+    try {
+      if (matchId.isEmpty) return const [];
+      final box = await _getSettingsBox();
+      final raw = box.get('match_minimap_$matchId');
+      if (raw == null || raw.isEmpty) return const [];
+      final decoded = jsonDecode(raw) as List;
+      return decoded
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// All persisted minimap snapshots keyed by matchId. Used to pre-warm the
+  /// map tile cache so every known match location renders offline.
+  Future<Map<String, List<Map<String, dynamic>>>>
+  getAllMatchMinimapSnapshots() async {
+    try {
+      final box = await _getSettingsBox();
+      final result = <String, List<Map<String, dynamic>>>{};
+      for (final key in box.keys) {
+        final k = key.toString();
+        if (!k.startsWith('match_minimap_')) continue;
+        final raw = box.get(key);
+        if (raw == null || raw.isEmpty) continue;
+        try {
+          final decoded = jsonDecode(raw) as List;
+          result[k.substring('match_minimap_'.length)] = decoded
+              .whereType<Map>()
+              .map((e) => Map<String, dynamic>.from(e))
+              .toList();
+        } catch (_) {}
+      }
+      return result;
+    } catch (_) {
+      return const {};
     }
   }
 
@@ -325,8 +753,11 @@ class LocalDbService {
     final globalKey = 'recent_chats';
     final globalChats = box.get(globalKey);
     if (globalChats != null) {
-      final chats = (jsonDecode(globalChats) as List).cast<Map<String, dynamic>>();
-      final updatedChats = chats.where((chat) => chat['match_id'] != matchId).toList();
+      final chats = (jsonDecode(globalChats) as List)
+          .cast<Map<String, dynamic>>();
+      final updatedChats = chats
+          .where((chat) => chat['match_id'] != matchId)
+          .toList();
       await box.put(globalKey, jsonEncode(updatedChats));
     }
 
@@ -335,14 +766,17 @@ class LocalDbService {
       final userKey = 'recent_chats_$userId';
       final userChats = box.get(userKey);
       if (userChats != null) {
-        final chats = (jsonDecode(userChats) as List).cast<Map<String, dynamic>>();
-        final updatedChats = chats.where((chat) => chat['match_id'] != matchId).toList();
+        final chats = (jsonDecode(userChats) as List)
+            .cast<Map<String, dynamic>>();
+        final updatedChats = chats
+            .where((chat) => chat['match_id'] != matchId)
+            .toList();
         await box.put(userKey, jsonEncode(updatedChats));
       }
     }
 
     // Also clear all associated data for this chat
-    debugPrint('🗑️ deleteChat: Clearing all data for chat $matchId');
+    // print('🗑️ deleteChat: Clearing all data for chat $matchId');
     await clearChatMessages(matchId);
     if (userId != null && userId.isNotEmpty) {
       await clearChatTranslationSettings(userId, matchId);
@@ -367,25 +801,89 @@ class LocalDbService {
     await box.put('recent_chats', jsonEncode(chats));
   }
 
-  Future<void> updateChatLastMessageTranslation(String userId, String matchId, String lastMessageId, String? translatedText) async {
+  Future<void> updateChatLastMessageTranslation(
+    String userId,
+    String matchId,
+    String lastMessageId,
+    String? translatedText, {
+    String? targetLanguage,
+    String? editedAt,
+  }) async {
     final box = await _getChatsBox();
     final key = 'recent_chats_$userId';
     final currentChats = box.get(key);
     if (currentChats == null) return;
 
-    final chats = (jsonDecode(currentChats) as List).cast<Map<String, dynamic>>();
+    var chats = (jsonDecode(currentChats) as List)
+        .cast<Map<String, dynamic>>();
 
     // Find and update the chat with this matchId and lastMessageId
+    var rowIndex = -1;
     for (int i = 0; i < chats.length; i++) {
-      if (chats[i]['match_id'] == matchId && chats[i]['last_message_id'] == lastMessageId) {
-        if (translatedText == null || translatedText.trim().isEmpty) {
-          chats[i].remove('last_message_translated');
-        } else {
-          chats[i]['last_message_translated'] = translatedText;
-        }
-        await box.put(key, jsonEncode(chats));
+      if (chats[i]['match_id'] == matchId &&
+          chats[i]['last_message_id'] == lastMessageId) {
+        rowIndex = i;
         break;
       }
+    }
+    if (rowIndex == -1 &&
+        translatedText != null &&
+        translatedText.trim().isNotEmpty) {
+      // Stale preview row: the chat's last_message_id advanced (or was never
+      // set) before this translation landed, so the id check below would drop
+      // a valid translation and wedge the preview blank — while the open chat
+      // (which reads the messages box) shows it fine. Recompute the preview
+      // from the messages box first; when the translated message is still the
+      // latest, the row matches afterwards and the write below proceeds.
+      // Clearing calls (translatedText == null) intentionally skip this: they
+      // must never resurrect a row for a superseded message.
+      try {
+        await recomputeChatLastMessagePreviewFromMessages(userId, matchId);
+        final refreshed = box.get(key);
+        if (refreshed != null) {
+          chats = (jsonDecode(refreshed) as List)
+              .cast<Map<String, dynamic>>();
+          for (int i = 0; i < chats.length; i++) {
+            if (chats[i]['match_id'] == matchId &&
+                chats[i]['last_message_id'] == lastMessageId) {
+              rowIndex = i;
+              break;
+            }
+          }
+        }
+      } catch (_) {}
+      if (rowIndex == -1) return;
+    }
+    if (rowIndex != -1) {
+      final i = rowIndex;
+        // Never store raw ciphertext as a preview. Callers in the realtime and
+        // sync-fallback notification paths can hand us the RPC's
+        // last_message_translated column, which is base64 ciphertext for v1
+        // messages and unreadable for the user. Clearing the field leaves the
+        // chat list preview blank until the decrypt path produces real text.
+        if (looksLikeEncryptedBlob(translatedText)) {
+          translatedText = null;
+        }
+        if (translatedText == null || translatedText.trim().isEmpty) {
+          chats[i].remove('last_message_translated');
+          chats[i].remove('last_message_target_language');
+          chats[i].remove('last_message_translated_edited_at');
+        } else {
+          chats[i]['last_message_translated'] = translatedText;
+          if (targetLanguage != null) {
+            chats[i]['last_message_target_language'] = targetLanguage;
+          }
+          // Bind the preview to the content version it was made for. An edit
+          // keeps `last_message_id` the same, so this marker is the only thing
+          // that distinguishes a translation of the current text from one of
+          // the text before the edit. Callers that don't know the message's
+          // `edited_at` pass null, which matches only a never-edited message —
+          // the same fail-safe direction as `translationEditMarkersMatch`.
+          if (editedAt != null) {
+            chats[i]['last_message_translated_edited_at'] = editedAt;
+          }
+        }
+        await box.put(key, jsonEncode(chats));
     }
   }
 
@@ -404,20 +902,110 @@ class LocalDbService {
     return val == '1' || val == 'true';
   }
 
+  /// Clear cached translations for specific message IDs in a match.
+  ///
+  /// Clears both the legacy fields (`translated_text` / `translated_lang`) and
+  /// the current plaintext cache fields (`content_translated` /
+  /// `translated_target_language`) so that Phase 2 decryption and
+  /// `translationFamilyProvider` re-evaluate the message for the current UI
+  /// language instead of serving a stale translation from a previous language.
+  ///
+  /// The encrypted translation payload (`content_translated_encrypted` /
+  /// `content_translated_nonce` / `content_translated_encrypted_cache`) is
+  /// cleared as well: the translation AAD binds the target language but NOT
+  /// the original content, so a stored blob made for pre-edit content still
+  /// decrypts after an edit and would be served as a stale translation.
+  /// Dropping it forces a fresh translate-proxy round trip. The authoritative
+  /// copy lives in Supabase, so nothing is lost — the provider refetches it
+  /// when needed.
+  Future<void> clearCachedTranslationsForMessages(
+    String matchId,
+    List<String> messageIds,
+  ) async {
+    if (messageIds.isEmpty) return;
+
+    final messagesBox = await _getMessagesBox();
+    final currentMessages = messagesBox.get(matchId);
+    if (currentMessages != null) {
+      try {
+        final messages = (jsonDecode(currentMessages) as List)
+            .cast<Map<String, dynamic>>();
+        final messageIdSet = messageIds.toSet();
+        var changed = false;
+        for (int i = 0; i < messages.length; i++) {
+          final msgId = messages[i]['id']?.toString();
+          if (msgId != null && messageIdSet.contains(msgId)) {
+            // Legacy fields (old schema)
+            if (messages[i].containsKey('translated_text') ||
+                messages[i].containsKey('translated_lang')) {
+              messages[i].remove('translated_text');
+              messages[i].remove('translated_lang');
+              changed = true;
+            }
+            // Current plaintext cache fields — clearing these forces Phase 2
+            // to re-decrypt content_translated_encrypted for the new UI language,
+            // and forces translationFamilyProvider into Case A (re-translate).
+            if (messages[i].containsKey('content_translated') ||
+                messages[i].containsKey('translated_target_language')) {
+              messages[i].remove('content_translated');
+              messages[i].remove('translated_target_language');
+              changed = true;
+            }
+            // Encrypted translation payload — must go together with the
+            // plaintext above (see method doc): after a message edit the old
+            // blob still decrypts and would be served as a stale translation.
+            if (messages[i].containsKey('content_translated_encrypted') ||
+                messages[i].containsKey('content_translated_nonce') ||
+                messages[i].containsKey('content_translated_encrypted_cache')) {
+              messages[i].remove('content_translated_encrypted');
+              messages[i].remove('content_translated_nonce');
+              messages[i].remove('content_translated_encrypted_cache');
+              changed = true;
+            }
+            // Reply translation — clear when the parent message's translation
+            // is cleared so the reply quote re-evaluates against the new content.
+            if (messages[i].containsKey('reply_to_content_translated')) {
+              messages[i].remove('reply_to_content_translated');
+              changed = true;
+            }
+          }
+        }
+        if (changed) {
+          await messagesBox.put(matchId, jsonEncode(messages));
+        }
+      } catch (_) {
+        // ignore parse errors
+      }
+    }
+  }
+
   /// Clear any cached translations for a given match (messages and recent chat entries).
   /// If [userId] is provided, it will also clear the per-user recent chats key (`recent_chats_$userId`).
-  Future<void> clearCachedTranslationsForMatch(String matchId, {String? userId}) async {
+  Future<void> clearCachedTranslationsForMatch(
+    String matchId, {
+    String? userId,
+  }) async {
     // 1) Clear message-level cached translations
     final messagesBox = await _getMessagesBox();
     final currentMessages = messagesBox.get(matchId);
     if (currentMessages != null) {
       try {
-        final messages = (jsonDecode(currentMessages) as List).cast<Map<String, dynamic>>();
+        final messages = (jsonDecode(currentMessages) as List)
+            .cast<Map<String, dynamic>>();
         var changed = false;
         for (int i = 0; i < messages.length; i++) {
-          if (messages[i].containsKey('translated_text') || messages[i].containsKey('translated_lang')) {
+          // Legacy fields (old schema)
+          if (messages[i].containsKey('translated_text') ||
+              messages[i].containsKey('translated_lang')) {
             messages[i].remove('translated_text');
             messages[i].remove('translated_lang');
+            changed = true;
+          }
+          // Current plaintext cache fields
+          if (messages[i].containsKey('content_translated') ||
+              messages[i].containsKey('translated_target_language')) {
+            messages[i].remove('content_translated');
+            messages[i].remove('translated_target_language');
             changed = true;
           }
         }
@@ -435,10 +1023,12 @@ class LocalDbService {
     final globalChats = box.get(globalKey);
     if (globalChats != null) {
       try {
-        final chats = (jsonDecode(globalChats) as List).cast<Map<String, dynamic>>();
+        final chats = (jsonDecode(globalChats) as List)
+            .cast<Map<String, dynamic>>();
         var changed = false;
         for (int i = 0; i < chats.length; i++) {
-          if (chats[i]['match_id'] == matchId && chats[i].containsKey('last_message_translated')) {
+          if (chats[i]['match_id'] == matchId &&
+              chats[i].containsKey('last_message_translated')) {
             chats[i].remove('last_message_translated');
             changed = true;
           }
@@ -455,10 +1045,12 @@ class LocalDbService {
       final userChats = box.get(userKey);
       if (userChats != null) {
         try {
-          final chats = (jsonDecode(userChats) as List).cast<Map<String, dynamic>>();
+          final chats = (jsonDecode(userChats) as List)
+              .cast<Map<String, dynamic>>();
           var changed = false;
           for (int i = 0; i < chats.length; i++) {
-            if (chats[i]['match_id'] == matchId && chats[i].containsKey('last_message_translated')) {
+            if (chats[i]['match_id'] == matchId &&
+                chats[i].containsKey('last_message_translated')) {
               chats[i].remove('last_message_translated');
               changed = true;
             }
@@ -479,109 +1071,251 @@ class LocalDbService {
   Future<void> deleteMessage(String matchId, String messageId) async {
     final box = await _getMessagesBox();
     final messages = await getMessages(matchId);
-    final updatedMessages = messages.where((m) => m['id'] != messageId).toList();
+    final updatedMessages = messages
+        .where((m) => m['id'] != messageId)
+        .toList();
     await box.put(matchId, jsonEncode(updatedMessages));
   }
 
-  Stream<List<Map<String, dynamic>>> watchMatches() async* {
-    ResumeDiagnostics.log('LocalDb.watchMatches called');
+  Stream<List<Map<String, dynamic>>> watchMatches(String userId) async* {
+    ResumeDiagnostics.log('LocalDb.watchMatches called for userId=$userId');
+
     final box = await _getMatchesBox();
-    final currentMatches = box.get('recent_matches');
+    final key = 'recent_matches_$userId';
+
+    // Yield initial value
+    final currentMatches = box.get(key);
     if (currentMatches != null) {
-      ResumeDiagnostics.log('LocalDb.watchMatches yielding ${jsonDecode(currentMatches).length} items (initial)');
-      yield (jsonDecode(currentMatches) as List).cast<Map<String, dynamic>>();
-    } else {
-      ResumeDiagnostics.log('LocalDb.watchMatches yielding 0 items (initial)');
-      yield [];
-    }
-    yield* box.watch(key: 'recent_matches').map((event) {
-      if (event.value != null && !event.deleted) {
-        final parsed = (jsonDecode(event.value) as List).cast<Map<String, dynamic>>();
-        // Throttle high-frequency events to avoid log spam
-        ResumeDiagnostics.logThrottled('LocalDb.watchMatches event: ${parsed.length} items', category: 'watchMatches.event', minIntervalMs: 1000);
-        return parsed;
+      try {
+        yield (jsonDecode(currentMatches) as List).cast<Map<String, dynamic>>();
+      } catch (_) {
+        yield const [];
       }
-      ResumeDiagnostics.log('LocalDb.watchMatches event: empty or deleted');
-      return [];
-    });
+    } else {
+      yield const [];
+    }
+
+    // Watch for changes
+    await for (final event in box.watch(key: key)) {
+      if (event.value != null && !event.deleted) {
+        try {
+          yield (jsonDecode(event.value) as List).cast<Map<String, dynamic>>();
+        } catch (_) {
+          yield const [];
+        }
+      } else {
+        yield const [];
+      }
+    }
   }
 
-  Future<void> saveChats(String userId, List<Map<String, dynamic>> chats) async {
+  Future<void> saveChats(
+    String userId,
+    List<Map<String, dynamic>> chats,
+  ) async {
     try {
       final box = await _getChatsBox();
 
-    // Merge with existing per-user cache to preserve cached translations
-    final key = 'recent_chats_$userId';
-    final currentChats = box.get(key);
-    if (currentChats != null) {
-      try {
-        final existing = (jsonDecode(currentChats) as List).cast<Map<String, dynamic>>();
-        final Map<String, Map<String, dynamic>> existingByMatch = {
-          for (var c in existing) (c['match_id']?.toString() ?? ''): c,
-        };
+      bool looksLikeEncryptedPreview(String? value) =>
+          looksLikeEncryptedBlob(value);
 
-        for (int i = 0; i < chats.length; i++) {
-          final incoming = chats[i];
-          final matchId = incoming['match_id']?.toString() ?? '';
-          if (matchId.isEmpty) continue;
+      // Merge with existing per-user cache to preserve cached translations
+      final key = 'recent_chats_$userId';
+      final currentChats = box.get(key);
+      if (currentChats != null) {
+        try {
+          final existing = (jsonDecode(currentChats) as List)
+              .cast<Map<String, dynamic>>();
+          final Map<String, Map<String, dynamic>> existingByMatch = {
+            for (var c in existing) (c['match_id']?.toString() ?? ''): c,
+          };
 
-          final existingEntry = existingByMatch[matchId];
-          if (existingEntry != null) {
-            // IMPORTANT: Always use server-provided translation_enabled and translation_language
-            // Supabase is the source of truth. When a chat is deleted and recreated,
-            // the client cache must reset to server values (default false).
-            // Do NOT preserve cached translation settings.
-            
-            // Only preserve cached last_message_translated if it's for the same message
-            // (to avoid flicker when showing preview).
-            final incomingTranslated = incoming['last_message_translated'] as String?;
-            final existingTranslated = existingEntry['last_message_translated'] as String?;
-            final incomingLastId = incoming['last_message_id']?.toString();
-            final existingLastId = existingEntry['last_message_id']?.toString();
+          for (int i = 0; i < chats.length; i++) {
+            final incoming = chats[i];
+            final matchId = incoming['match_id']?.toString() ?? '';
+            if (matchId.isEmpty) continue;
 
-            if ((incomingTranslated == null || incomingTranslated.isEmpty) &&
-                existingTranslated != null && existingTranslated.isNotEmpty &&
-                incomingLastId != null && existingLastId != null &&
-                incomingLastId == existingLastId) {
-              incoming['last_message_translated'] = existingTranslated;
+            final existingEntry = existingByMatch[matchId];
+            if (existingEntry != null) {
+              // IMPORTANT: Always use server-provided translation_enabled and translation_language
+              // Supabase is the source of truth. When a chat is deleted and recreated,
+              // the client cache must reset to server values (default false).
+              // Do NOT preserve cached translation settings.
+
+              // Preserve existing last_message when the server returns it empty
+              // (e.g. for v1 encrypted messages where the server doesn't have
+              // the decrypted content).  The local DB may have a decrypted preview
+              // set by recomputeChatLastMessagePreviewFromMessages.
+              final incomingMsg = incoming['last_message'] as String?;
+              final existingMsg = existingEntry['last_message'] as String?;
+              final incomingEncryptedPreview =
+                  incoming['last_message_content_original_encrypted']
+                      as String?;
+              final incomingScheme =
+                  incoming['last_message_encryption_scheme'] as String?;
+              final existingLooksEncrypted =
+                  incomingScheme == 'v1' &&
+                  existingMsg != null &&
+                  (existingMsg == incomingEncryptedPreview ||
+                      looksLikeEncryptedPreview(existingMsg));
+              if ((incomingMsg == null || incomingMsg.isEmpty) &&
+                  existingMsg != null &&
+                  existingMsg.isNotEmpty &&
+                  !existingLooksEncrypted) {
+                incoming['last_message'] = existingMsg;
+              }
+
+              // Track the last message's `edited_at`. The server reports it
+              // (get_user_recent_chats.last_message_edited_at); keep the cached
+              // value when a sync cannot supply one so the marker comparison
+              // below stays meaningful across syncs.
+              final incomingEditedAt = normalizeEditMarker(
+                incoming['last_message_edited_at'],
+              );
+              if (incomingEditedAt != null) {
+                incoming['last_message_edited_at'] = incomingEditedAt;
+              } else if (existingEntry['last_message_edited_at'] != null) {
+                incoming['last_message_edited_at'] =
+                    existingEntry['last_message_edited_at'];
+              }
+
+              // Only preserve cached last_message_translated if it's for the same
+              // message AND was made for the message's current content (to avoid
+              // flicker when showing preview).
+              var incomingTranslated =
+                  incoming['last_message_translated'] as String?;
+              final existingTranslated =
+                  existingEntry['last_message_translated'] as String?;
+              final incomingLastId = incoming['last_message_id']?.toString();
+              final existingLastId = existingEntry['last_message_id']
+                  ?.toString();
+
+              // A preview that is still raw ciphertext must never reach the
+              // cache: get_user_recent_chats exposes
+              // content_translated_encrypted in this column, and any sync whose
+              // Phase 3 decryption could not run (chat key not loaded yet, peer
+              // key unavailable, or a "#pending#" translation claim holding the
+              // row) would otherwise persist a blob that ChatListItem paints
+              // verbatim. Dropping it lets the decrypt path — or the last known
+              // good plaintext below — fill in instead.
+              final existingIsBlob = looksLikeEncryptedPreview(
+                existingTranslated,
+              );
+              if (looksLikeEncryptedPreview(incomingTranslated)) {
+                incoming['last_message_translated'] = null;
+                incomingTranslated = null;
+              }
+
+              if ((incomingTranslated == null || incomingTranslated.isEmpty) &&
+                  existingTranslated != null &&
+                  existingTranslated.isNotEmpty &&
+                  !existingIsBlob &&
+                  incomingLastId != null &&
+                  existingLastId != null &&
+                  incomingLastId == existingLastId &&
+                  translationEditMarkersMatch(
+                    existingEntry['last_message_translated_edited_at']
+                        ?.toString(),
+                    incomingEditedAt ??
+                        existingEntry['last_message_edited_at']?.toString(),
+                  )) {
+                incoming['last_message_translated'] = existingTranslated;
+                final existingTranslatedMarker =
+                    existingEntry['last_message_translated_edited_at'];
+                if (existingTranslatedMarker != null) {
+                  incoming['last_message_translated_edited_at'] =
+                      existingTranslatedMarker;
+                }
+              } else if (incomingTranslated == null ||
+                  incomingTranslated.isEmpty) {
+                // Nothing usable in this sync. Drop any inherited marker so a
+                // translation cached for a previous version of this message is
+                // never re-adopted on the next sync — the edit changed the
+                // content while keeping the id, so the id alone cannot catch it.
+                incoming.remove('last_message_translated_edited_at');
+              }
             }
           }
+        } catch (_) {
+          // If merge fails for any reason, fall back to overwriting cache
         }
-      } catch (_) {
-        // If merge fails for any reason, fall back to overwriting cache
       }
-    }
 
-    if (kIsWeb) {
-      debugPrint('🔍 [WEB] saveChats - Storing ${chats.length} chats to local DB key: $key');
-      for (final chat in chats) {
-        debugPrint('🔍 [WEB] Storing Chat: match_id=${chat['match_id']}, unread_count=${chat['unread_count']}, other_user_name="${chat['other_user_name']}", last_message="${chat['last_message']}"');
+      if (kIsWeb) {
+        // print('🔍 [WEB] saveChats - Storing ${chats.length} chats to local DB key: $key');
+        for (final _ in chats) {
+          // print('🔍 [WEB] Storing Chat: match_id=${_['match_id']}, unread_count=${_['unread_count']}, other_user_name="${_['other_user_name']}", last_message="${_['last_message']}"');
+        }
       }
-    }
 
-    await box.put(key, jsonEncode(chats));
+      // Only write if the cache actually changed to avoid emitting duplicate
+      // Hive watch events that cause the UI to rebuild unnecessarily.
+      // Strip server-side metadata fields that can change without semantic
+      // difference (e.g. updated_at from a database trigger) so that the
+      // comparison only reflects meaningful user-visible data changes.
+      List<Map<String, dynamic>> stripMeta(List<Map<String, dynamic>> rows) {
+        return rows
+            .map((r) => Map<String, dynamic>.from(r)..remove('updated_at'))
+            .toList();
+      }
 
-    if (kIsWeb) {
-      debugPrint('🔍 [WEB] saveChats - Successfully stored ${chats.length} chats');
-    }
-  } catch (e) {
-    debugPrint('LocalDb.saveChats failed: $e');
-    if (kIsWeb) {
-      debugPrint('🔍 [WEB] saveChats - FAILED: $e');
-      // On web, storage failures are more common. Try a simpler approach.
-      try {
+      final newValue = jsonEncode(stripMeta(chats));
+      final raw = box.get(key);
+      final String currentValue = () {
+        if (raw is String) {
+          try {
+            final decoded = jsonDecode(raw);
+            if (decoded is List) {
+              final parsed = decoded
+                  .map((e) => Map<String, dynamic>.from(e as Map))
+                  .toList();
+              return jsonEncode(stripMeta(parsed));
+            }
+          } catch (_) {}
+          return raw;
+        }
+        return '';
+      }();
+      if (currentValue == newValue) {
+        if (kIsWeb) {
+          // No-op: identical cache, skip write
+        }
+      } else {
+        // Re-serialize with metadata for storage (so the cached copy is complete)
+        await box.put(key, jsonEncode(chats));
+      }
+
+      if (kIsWeb) {
+        // print('🔍 [WEB] saveChats - Successfully stored ${chats.length} chats');
+      }
+    } catch (e) {
+      // print('LocalDb.saveChats failed: $e');
+      if (kIsWeb) {
+        // print('🔍 [WEB] saveChats - FAILED: $e');
         final box = await _getChatsBox();
         final key = 'recent_chats_$userId';
-        // Skip the merge logic and just save directly
-        await box.put(key, jsonEncode(chats));
-        debugPrint('🔍 [WEB] saveChats - Recovered with simple save');
-      } catch (recoveryError) {
-        debugPrint('🔍 [WEB] saveChats - Recovery also failed: $recoveryError');
+        final newValue = jsonEncode(chats);
+        final currentValue = box.get(key);
+        if (currentValue is String && currentValue == newValue) {
+          if (kIsWeb) {
+            // print('🔍 [WEB] saveChats - Skipping identical cache write for $key');
+          }
+        } else {
+          await box.put(key, newValue);
+        }
+        try {
+          final box = await _getChatsBox();
+          final key = 'recent_chats_$userId';
+          // Skip the merge logic and just save directly
+          await box.put(key, jsonEncode(chats));
+          // print('🔍 [WEB] saveChats - Recovered with simple save');
+        } catch (recoveryError) {
+          // print('🔍 [WEB] saveChats - Recovery also failed: $recoveryError');
+        }
       }
+      rethrow;
     }
-    rethrow;
   }
-}
 
   /// Clear unread_count for a specific match in the cached recent chats for [userId].
   /// This is used to optimistically clear badges locally when a user enters a chat.
@@ -591,7 +1325,8 @@ class LocalDbService {
     final current = box.get(key);
     if (current == null) return;
     try {
-      final List<Map<String, dynamic>> parsed = (jsonDecode(current) as List).cast<Map<String, dynamic>>();
+      final List<Map<String, dynamic>> parsed = (jsonDecode(current) as List)
+          .cast<Map<String, dynamic>>();
       bool changed = false;
       final updated = parsed.map((c) {
         if ((c['match_id']?.toString() ?? '') == matchId) {
@@ -614,7 +1349,10 @@ class LocalDbService {
 
   /// Mark that a 'translations auto-disabled' notification is pending for this match.
   /// Stored on the per-user recent chats entry if [userId] is provided, and on the global cache.
-  Future<void> markTranslationNotificationPending(String matchId, {String? userId}) async {
+  Future<void> markTranslationNotificationPending(
+    String matchId, {
+    String? userId,
+  }) async {
     final box = await _getChatsBox();
 
     // Global list
@@ -622,7 +1360,8 @@ class LocalDbService {
     final globalChats = box.get(globalKey);
     if (globalChats != null) {
       try {
-        final chats = (jsonDecode(globalChats) as List).cast<Map<String, dynamic>>();
+        final chats = (jsonDecode(globalChats) as List)
+            .cast<Map<String, dynamic>>();
         var changed = false;
         for (int i = 0; i < chats.length; i++) {
           if (chats[i]['match_id'] == matchId) {
@@ -642,7 +1381,8 @@ class LocalDbService {
       final userChats = box.get(userKey);
       if (userChats != null) {
         try {
-          final chats = (jsonDecode(userChats) as List).cast<Map<String, dynamic>>();
+          final chats = (jsonDecode(userChats) as List)
+              .cast<Map<String, dynamic>>();
           var changed = false;
           for (int i = 0; i < chats.length; i++) {
             if (chats[i]['match_id'] == matchId) {
@@ -659,7 +1399,10 @@ class LocalDbService {
   }
 
   /// Check whether a 'translations auto-disabled' notification is pending for this match.
-  Future<bool> isTranslationNotificationPending(String matchId, {String? userId}) async {
+  Future<bool> isTranslationNotificationPending(
+    String matchId, {
+    String? userId,
+  }) async {
     final box = await _getChatsBox();
 
     if (userId != null && userId.isNotEmpty) {
@@ -667,7 +1410,8 @@ class LocalDbService {
       final userChats = box.get(userKey);
       if (userChats != null) {
         try {
-          final chats = (jsonDecode(userChats) as List).cast<Map<String, dynamic>>();
+          final chats = (jsonDecode(userChats) as List)
+              .cast<Map<String, dynamic>>();
           for (final c in chats) {
             if ((c['match_id']?.toString() ?? '') == matchId) {
               if (c['translation_auto_disabled_unread'] == true) return true;
@@ -681,7 +1425,8 @@ class LocalDbService {
     final globalChats = box.get(globalKey);
     if (globalChats != null) {
       try {
-        final chats = (jsonDecode(globalChats) as List).cast<Map<String, dynamic>>();
+        final chats = (jsonDecode(globalChats) as List)
+            .cast<Map<String, dynamic>>();
         for (final c in chats) {
           if ((c['match_id']?.toString() ?? '') == matchId) {
             if (c['translation_auto_disabled_unread'] == true) return true;
@@ -694,17 +1439,22 @@ class LocalDbService {
   }
 
   /// Clear the 'translations auto-disabled' pending notification flag for this match.
-  Future<void> clearTranslationNotificationPending(String matchId, {String? userId}) async {
+  Future<void> clearTranslationNotificationPending(
+    String matchId, {
+    String? userId,
+  }) async {
     final box = await _getChatsBox();
 
     final globalKey = 'recent_chats';
     final globalChats = box.get(globalKey);
     if (globalChats != null) {
       try {
-        final chats = (jsonDecode(globalChats) as List).cast<Map<String, dynamic>>();
+        final chats = (jsonDecode(globalChats) as List)
+            .cast<Map<String, dynamic>>();
         var changed = false;
         for (int i = 0; i < chats.length; i++) {
-          if (chats[i]['match_id'] == matchId && chats[i]['translation_auto_disabled_unread'] == true) {
+          if (chats[i]['match_id'] == matchId &&
+              chats[i]['translation_auto_disabled_unread'] == true) {
             chats[i].remove('translation_auto_disabled_unread');
             changed = true;
           }
@@ -718,10 +1468,12 @@ class LocalDbService {
       final userChats = box.get(userKey);
       if (userChats != null) {
         try {
-          final chats = (jsonDecode(userChats) as List).cast<Map<String, dynamic>>();
+          final chats = (jsonDecode(userChats) as List)
+              .cast<Map<String, dynamic>>();
           var changed = false;
           for (int i = 0; i < chats.length; i++) {
-            if (chats[i]['match_id'] == matchId && chats[i]['translation_auto_disabled_unread'] == true) {
+            if (chats[i]['match_id'] == matchId &&
+                chats[i]['translation_auto_disabled_unread'] == true) {
               chats[i].remove('translation_auto_disabled_unread');
               changed = true;
             }
@@ -733,13 +1485,19 @@ class LocalDbService {
   }
 
   /// Update translation flags for a specific match in the cached recent chats for [userId].
-  Future<void> updateChatTranslation(String userId, String matchId, bool enabled, String? language) async {
+  Future<void> updateChatTranslation(
+    String userId,
+    String matchId,
+    bool enabled,
+    String? language,
+  ) async {
     final box = await _getChatsBox();
     final key = 'recent_chats_$userId';
     final current = box.get(key);
     if (current == null) return;
     try {
-      final List<Map<String, dynamic>> parsed = (jsonDecode(current) as List).cast<Map<String, dynamic>>();
+      final List<Map<String, dynamic>> parsed = (jsonDecode(current) as List)
+          .cast<Map<String, dynamic>>();
       bool changed = false;
       final updated = parsed.map((c) {
         if ((c['match_id']?.toString() ?? '') == matchId) {
@@ -772,34 +1530,36 @@ class LocalDbService {
       final userChats = box.get(userKey);
       if (userChats != null) {
         try {
-          final chats = (jsonDecode(userChats) as List).cast<Map<String, dynamic>>();
+          final chats = (jsonDecode(userChats) as List)
+              .cast<Map<String, dynamic>>();
           final chat = chats.firstWhere(
-            (c) => (c['match_id']?.toString() ?? '') == matchId, 
-            orElse: () => <String, dynamic>{}
+            (c) => (c['match_id']?.toString() ?? '') == matchId,
+            orElse: () => <String, dynamic>{},
           );
           if (chat.isNotEmpty) {
-             return (chat['translation_enabled'] ?? false) == true;
+            return (chat['translation_enabled'] ?? false) == true;
           }
         } catch (_) {}
       }
     }
-    
+
     // Fallback to global key (legacy)
     final globalKey = 'recent_chats';
     final globalChats = box.get(globalKey);
     if (globalChats != null) {
       try {
-        final chats = (jsonDecode(globalChats) as List).cast<Map<String, dynamic>>();
+        final chats = (jsonDecode(globalChats) as List)
+            .cast<Map<String, dynamic>>();
         final chat = chats.firstWhere(
-          (c) => (c['match_id']?.toString() ?? '') == matchId, 
-          orElse: () => <String, dynamic>{}
+          (c) => (c['match_id']?.toString() ?? '') == matchId,
+          orElse: () => <String, dynamic>{},
         );
         if (chat.isNotEmpty) {
-           return (chat['translation_enabled'] ?? false) == true;
+          return (chat['translation_enabled'] ?? false) == true;
         }
       } catch (_) {}
     }
-    
+
     return false;
   }
 
@@ -809,33 +1569,34 @@ class LocalDbService {
     final currentChats = box.get(key);
 
     if (kIsWeb) {
-      debugPrint('🔍 [WEB] watchChats - Watching key: $key');
+      // print('🔍 [WEB] watchChats - Watching key: $key');
     }
 
     if (currentChats != null) {
-      final chats = (jsonDecode(currentChats) as List).cast<Map<String, dynamic>>();
+      final chats = (jsonDecode(currentChats) as List)
+          .cast<Map<String, dynamic>>();
       if (kIsWeb) {
-        debugPrint('🔍 [WEB] watchChats - Initial yield: ${chats.length} chats');
-        for (final chat in chats) {
-          debugPrint('🔍 [WEB] Initial Chat: match_id=${chat['match_id']}, unread_count=${chat['unread_count']}, other_user_name="${chat['other_user_name']}"');
+        // print('🔍 [WEB] watchChats - Initial yield: ${chats.length} chats');
+        for (final _ in chats) {
+          // print('🔍 [WEB] Initial Chat: match_id=${_['match_id']}, unread_count=${_['unread_count']}, other_user_name="${_['other_user_name']}"');
         }
       }
       yield chats;
     } else {
       if (kIsWeb) {
-        debugPrint('🔍 [WEB] watchChats - Initial yield: no chats found');
+        // print('🔍 [WEB] watchChats - Initial yield: no chats found');
       }
       yield [];
     }
     yield* box.watch(key: key).map((event) {
       final chats = event.value != null && !event.deleted
-        ? (jsonDecode(event.value) as List).cast<Map<String, dynamic>>()
-        : <Map<String, dynamic>>[];
+          ? (jsonDecode(event.value) as List).cast<Map<String, dynamic>>()
+          : <Map<String, dynamic>>[];
 
       if (kIsWeb) {
-        debugPrint('🔍 [WEB] watchChats - Stream update: ${chats.length} chats');
-        for (final chat in chats) {
-          debugPrint('🔍 [WEB] Stream Chat: match_id=${chat['match_id']}, unread_count=${chat['unread_count']}, other_user_name="${chat['other_user_name']}"');
+        // print('🔍 [WEB] watchChats - Stream update: ${chats.length} chats');
+        for (final _ in chats) {
+          // print('🔍 [WEB] Stream Chat: match_id=${_['match_id']}, unread_count=${_['unread_count']}, other_user_name="${_['other_user_name']}"');
         }
       }
 
@@ -849,12 +1610,183 @@ class LocalDbService {
     final currentMessages = box.get(matchId);
     if (currentMessages != null) {
       try {
-        return (jsonDecode(currentMessages) as List).cast<Map<String, dynamic>>();
+        final messages = (jsonDecode(currentMessages) as List)
+            .cast<Map<String, dynamic>>();
+        // Normalize ID fields to strings to prevent alignment bugs when
+        // Supabase returns them as numbers (common on web) — the chat UI
+        // compares senderId == currentUserId and a numeric type would
+        // make the comparison fail, showing the message on the wrong side.
+        for (final msg in messages) {
+          if (msg['id'] != null && msg['id'] is! String) {
+            msg['id'] = msg['id'].toString();
+          }
+          if (msg['sender_id'] != null && msg['sender_id'] is! String) {
+            msg['sender_id'] = msg['sender_id'].toString();
+          }
+          if (msg['match_id'] != null && msg['match_id'] is! String) {
+            msg['match_id'] = msg['match_id'].toString();
+          }
+        }
+        // NOTE: We intentionally do NOT decrypt `content_*_encrypted_cache`
+        // here. Decrypting every cached message is a sequential AES-GCM loop
+        // (~ms per message, all on the single Dart isolate), so a chat with
+        // 100+ cached messages would block this Future for 10+ seconds and
+        // leave the chat UI stuck on its loading spinner until it returns.
+        // The chat-key provider (chatKeyProvider) is the source of truth for
+        // decryption; the chat provider's Phase 2 loop decrypts messages
+        // in parallel via Future.wait and persists the result through
+        // `mergeMessages`. The cache itself remains in the row for the
+        // locked-user fallback (no chat key available) — Phase 2's
+        // `if (decryptedOriginal == null) { decryptFromCache(...) }` block
+        // reads it directly.
+        return messages;
       } catch (_) {
         return [];
       }
     }
     return [];
+  }
+
+  /// Full-text search across cached message bodies.
+  ///
+  /// Runs entirely on-device. Messages are end-to-end encrypted, so the server
+  /// holds only ciphertext and *cannot* search them — shipping a trigram index
+  /// or plaintext search would mean handing the server every message, which
+  /// would undo the product's core privacy property. Searching locally is not
+  /// a compromise here; it is the only design that keeps the promise.
+  ///
+  /// Scope is the messages cached for [matchIds], i.e. chats this device has
+  /// already synced. Anything never fetched cannot be decrypted here, so it is
+  /// not searchable — that limit is inherent to the encryption, not a shortcut.
+  ///
+  /// Yielding to the event loop between chats keeps the UI responsive; the
+  /// per-chat decode of a large history is not free.
+  Future<List<MessageSearchHit>> searchCachedMessages(
+    String query, {
+    required List<String> matchIds,
+    int maxMessagesPerChat = 400,
+    int maxHits = 200,
+  }) async {
+    final needle = query.trim().toLowerCase();
+    if (needle.isEmpty || matchIds.isEmpty) return const [];
+
+    final box = await _getMessagesBox();
+    final hits = <MessageSearchHit>[];
+
+    for (final matchId in matchIds) {
+      if (hits.length >= maxHits) break;
+      final raw = box.get(matchId);
+      if (raw == null) continue;
+
+      final List<Map<String, dynamic>> messages;
+      try {
+        messages = (jsonDecode(raw) as List).cast<Map<String, dynamic>>();
+      } catch (_) {
+        continue;
+      }
+
+      // Newest first: the most recent thing said is what people usually mean.
+      final start = messages.length > maxMessagesPerChat
+          ? messages.length - maxMessagesPerChat
+          : 0;
+
+      for (var i = messages.length - 1; i >= start; i--) {
+        if (hits.length >= maxHits) break;
+        final msg = messages[i];
+        final id = msg['id']?.toString() ?? '';
+
+        var matched = false;
+        for (final field in const [
+          ('content_original', 'original'),
+          ('content_translated', 'translated'),
+          ('translated_text', 'translated'),
+          ('reply_to_content', 'reply'),
+          ('reply_to_content_translated', 'reply'),
+        ]) {
+          final text = msg[field.$1]?.toString();
+          if (text == null || text.isEmpty) continue;
+          if (!text.toLowerCase().contains(needle)) continue;
+
+          hits.add(
+            MessageSearchHit(
+              matchId: matchId,
+              messageId: id,
+              field: field.$2,
+              senderId: msg['sender_id']?.toString() ?? '',
+              createdAt: msg['created_at']?.toString() ?? '',
+              snippet: _searchSnippet(text, needle),
+            ),
+          );
+          // One hit per message keeps the result list readable; the first
+          // field that matches wins.
+          matched = true;
+          break;
+        }
+        if (matched) continue;
+
+        // Same field coverage as the in-chat search, but for end-to-end
+        // encrypted rows the server returns null plaintext: the decrypted
+        // text lives only in the local DCK-encrypted backup. Decrypt it
+        // lazily (only when plaintext didn't match) so encrypted chats are
+        // searchable exactly like open chats.
+        for (final field in const [
+          ('content_original_encrypted_cache', 'original'),
+          ('content_translated_encrypted_cache', 'translated'),
+        ]) {
+          final cached = msg[field.$1]?.toString();
+          if (cached == null || cached.isEmpty) continue;
+          String? text;
+          try {
+            text = await EncryptedCacheService.instance.decryptFromCache(
+              cached,
+            );
+          } catch (_) {
+            text = null;
+          }
+          if (text == null || text.isEmpty) continue;
+          if (!text.toLowerCase().contains(needle)) continue;
+          hits.add(
+            MessageSearchHit(
+              matchId: matchId,
+              messageId: id,
+              field: field.$2,
+              senderId: msg['sender_id']?.toString() ?? '',
+              createdAt: msg['created_at']?.toString() ?? '',
+              snippet: _searchSnippet(text, needle),
+            ),
+          );
+          break;
+        }
+
+        // Keep the UI responsive while walking large encrypted histories:
+        // the decrypt above is sequential local AES, so yield periodically.
+        if ((messages.length - 1 - i) % 25 == 24) {
+          await Future<void>.delayed(Duration.zero);
+        }
+      }
+
+      // Give the event loop a turn so a large search cannot jank the list.
+      await Future<void>.delayed(Duration.zero);
+    }
+
+    return hits;
+  }
+
+  /// A window of [text] around the first case-insensitive [needle].
+  static String _searchSnippet(String text, String needle, {int radius = 42}) {
+    final flat = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final index = flat.toLowerCase().indexOf(needle);
+    if (index < 0) return flat;
+    if (flat.length <= radius * 2) return flat;
+
+    var start = index - radius;
+    if (start < 0) start = 0;
+    var end = index + needle.length + radius;
+    if (end > flat.length) end = flat.length;
+
+    final prefix = start > 0 ? '…' : '';
+    final suffix = end < flat.length ? '…' : '';
+    return '$prefix${flat.substring(start, end)}$suffix';
   }
 
   Future<String?> getLatestMessageTimestamp(String matchId) async {
@@ -872,7 +1804,10 @@ class LocalDbService {
     return messages.first['created_at'] as String?;
   }
 
-  Future<Map<String, dynamic>?> getMessageById(String matchId, String messageId) async {
+  Future<Map<String, dynamic>?> getMessageById(
+    String matchId,
+    String messageId,
+  ) async {
     final messages = await getMessages(matchId);
     try {
       return messages.firstWhere((m) => m['id'].toString() == messageId);
@@ -896,7 +1831,11 @@ class LocalDbService {
   /// Local cache helpers for reactors per-message. Reactors are stored inside the message
   /// object under a key `reactors` which is a map from reaction string -> List<Map>
   /// Each reactor map shape: { user_id, display_name?, photo? }
-  Future<List<Map<String, dynamic>>> getCachedReactors(String matchId, String messageId, String reaction) async {
+  Future<List<Map<String, dynamic>>> getCachedReactors(
+    String matchId,
+    String messageId,
+    String reaction,
+  ) async {
     final msg = await getMessageById(matchId, messageId);
     if (msg == null) return [];
     final reactorsContainer = msg['reactors'];
@@ -907,21 +1846,32 @@ class LocalDbService {
           return list.cast<Map<String, dynamic>>();
         } catch (_) {
           // fallback: attempt to coerce
-          return list.map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e as Map)).toList();
+          return list
+              .map<Map<String, dynamic>>(
+                (e) => Map<String, dynamic>.from(e as Map),
+              )
+              .toList();
         }
       }
     }
     return [];
   }
 
-  Future<void> saveCachedReactors(String matchId, String messageId, String reaction, List<Map<String, dynamic>> reactors) async {
+  Future<void> saveCachedReactors(
+    String matchId,
+    String messageId,
+    String reaction,
+    List<Map<String, dynamic>> reactors,
+  ) async {
     final box = await _getMessagesBox();
     final messages = await getMessages(matchId);
     final index = messages.indexWhere((m) => m['id']?.toString() == messageId);
     if (index == -1) return;
     final msg = Map<String, dynamic>.from(messages[index]);
-    final reactorsContainer = (msg['reactors'] is Map) ? Map<String, dynamic>.from(msg['reactors']) : <String, dynamic>{};
-    
+    final reactorsContainer = (msg['reactors'] is Map)
+        ? Map<String, dynamic>.from(msg['reactors'])
+        : <String, dynamic>{};
+
     // Deduplicate reactors by user_id before saving
     final seenUserIds = <String>{};
     final deduplicatedReactors = reactors.where((r) {
@@ -932,14 +1882,17 @@ class LocalDbService {
       seenUserIds.add(userId);
       return true;
     }).toList();
-    
+
     reactorsContainer[reaction] = deduplicatedReactors;
     msg['reactors'] = reactorsContainer;
     messages[index] = msg;
     await box.put(matchId, jsonEncode(messages));
   }
 
-  Future<void> clearMessageReactorCache(String matchId, String messageId) async {
+  Future<void> clearMessageReactorCache(
+    String matchId,
+    String messageId,
+  ) async {
     final box = await _getMessagesBox();
     final messages = await getMessages(matchId);
     final index = messages.indexWhere((m) => m['id']?.toString() == messageId);
@@ -952,23 +1905,64 @@ class LocalDbService {
     }
   }
 
-
   /// Adds new messages to local cache and marks them as delivered locally.
   /// Returns list of message IDs that should have their delivery status synced to the server.
-  Future<List<String>> addMessages(String matchId, List<Map<String, dynamic>> newMessages, {String? currentUserId}) async {
+  Future<List<String>> addMessages(
+    String matchId,
+    List<Map<String, dynamic>> newMessages, {
+    String? currentUserId,
+  }) async {
     if (newMessages.isEmpty) {
       return [];
     }
     final box = await _getMessagesBox();
     final oldMessages = await getMessages(matchId);
-    final existingIds = oldMessages.map((m) => m['id']).toSet();
-    final uniqueNewMessages = newMessages.where((m) => !existingIds.contains(m['id'])).toList();
+    final existingIds = <dynamic>{};
+    final oldById = <String, Map<String, dynamic>>{};
+    for (final m in oldMessages) {
+      final id = m['id']?.toString();
+      if (id != null) {
+        existingIds.add(id);
+        oldById[id] = m;
+      }
+    }
+    final uniqueNewMessages = <Map<String, dynamic>>[];
+    final mergeUpdates = <Map<String, dynamic>>[];
+    for (final m in newMessages) {
+      final id = m['id']?.toString();
+      if (id != null && existingIds.contains(id)) {
+        // The sender's own optimistic message can be echoed back from the
+        // realtime subscription with the same id.  In that case we need to
+        // clear `isPending` (the server doesn't carry that field) so the
+        // bubble flips from the clock icon to the single checkmark the
+        // moment Supabase confirms the row.  Without this, the optimistic
+        // row is never updated and the bubble stays stuck on the clock
+        // until the next full sync.
+        final old = oldById[id];
+        if (old != null && old['isPending'] == true) {
+          print(
+            '✅ [addMessages] Server echo for own optimistic msg=$id — clearing isPending',
+          );
+          mergeUpdates.add({'id': id, 'isPending': false});
+        }
+      } else {
+        uniqueNewMessages.add(m);
+      }
+    }
 
-    if (uniqueNewMessages.isEmpty) {
+    if (uniqueNewMessages.isEmpty && mergeUpdates.isEmpty) {
       return [];
     }
 
-    // Track which messages need RPC calls (from other user, not yet delivered)
+    if (uniqueNewMessages.isNotEmpty) {
+      print('✅ [addMessages] Adding ${uniqueNewMessages.length} new messages');
+    }
+    if (mergeUpdates.isNotEmpty) {
+      print(
+        '✅ [addMessages] Merging status for ${mergeUpdates.length} existing message(s) (isPending=false)',
+      );
+    }
+
     final messagesToMarkDelivered = <String>[];
 
     // Do NOT mark new messages as delivered locally
@@ -976,25 +1970,45 @@ class LocalDbService {
     for (final msg in uniqueNewMessages) {
       final msgId = msg['id'];
       final senderId = msg['sender_id'];
-      final currentDelivered = msg['delivered_at'];
-      debugPrint('📥 addMessages: Processing message $msgId (delivered_at=$currentDelivered, sender=$senderId)');
-      
+      final _ = msg['delivered_at'];
+      // print('📥 addMessages: Processing message $msgId (delivered_at=$_, sender=$senderId)');
+
       // IMPORTANT: Do NOT mark incoming messages as delivered locally!
       // Only queue them for RPC marking. The server will update delivered_at.
       // When messages are re-synced, they'll have the actual server delivered_at value.
-      if (currentUserId != null && senderId != null && senderId != currentUserId && (msg['delivered_at'] == null || msg['delivered_at'] == '')) {
+      if (currentUserId != null &&
+          senderId != null &&
+          senderId != currentUserId &&
+          (msg['delivered_at'] == null || msg['delivered_at'] == '')) {
         messagesToMarkDelivered.add(msgId.toString());
-        debugPrint('📤 addMessages: Queued $msgId for RPC delivery marking (from other user)');
+        // print('📤 addMessages: Queued $msgId for RPC delivery marking (from other user)');
       }
     }
 
-    final combinedMessages = [...oldMessages, ...uniqueNewMessages];
+    // Apply the isPending=false merge updates on the existing rows.
+    Map<String, Map<String, dynamic>> workingById = {
+      for (final m in oldMessages)
+        (m['id']?.toString() ?? ''): Map<String, dynamic>.from(m),
+    };
+    for (final upd in mergeUpdates) {
+      final id = upd['id']?.toString();
+      if (id != null && workingById.containsKey(id)) {
+        workingById[id]!.addAll(upd);
+      }
+    }
+    final working = workingById.values.toList();
+    final combinedMessages = [...working, ...uniqueNewMessages];
     await box.put(matchId, jsonEncode(combinedMessages));
-    
+    print('✅ [addMessages] Total: ${combinedMessages.length} messages');
+
     return messagesToMarkDelivered;
   }
 
-  Future<void> replaceMessage(String matchId, String tempId, Map<String, dynamic> realMessage) async {
+  Future<void> replaceMessage(
+    String matchId,
+    String tempId,
+    Map<String, dynamic> realMessage,
+  ) async {
     final box = await _getMessagesBox();
     final messages = await getMessages(matchId);
 
@@ -1009,7 +2023,101 @@ class LocalDbService {
     }
   }
 
-  Future<void> mergeMessages(String matchId, List<Map<String, dynamic>> incomingMessages) async {
+  /// Lightweight, status-only update for a single message.
+  ///
+  /// Updates only the status fields passed in (read_at / delivered_at /
+  /// reaction_summary / my_reaction / edited_at / content_original) for the
+  /// matching message and writes the list back to the messages box.  No full
+  /// re-query or re-decrypt is performed — this is the path used when a
+  /// realtime event reports that only the delivery/read/react state of a
+  /// message changed, so the chat UI updates the checkmark/double-check
+  /// instantly without triggering a multi-second re-sync.
+  ///
+  /// Any parameter left as `null` is left untouched.  Pass
+  /// [clearMyReaction] = true to explicitly remove the local `my_reaction`
+  /// marker.
+  Future<void> mergeMessageStatus(
+    String matchId,
+    String messageId, {
+    String? deliveredAt,
+    String? readAt,
+    Map? reactionSummary,
+    String? myReaction,
+    bool clearMyReaction = false,
+    String? editedAt,
+    String? contentOriginal,
+  }) async {
+    if (matchId.isEmpty || messageId.isEmpty) return;
+    try {
+      final box = await _getMessagesBox();
+      final messages = await getMessages(matchId);
+      final index = messages.indexWhere(
+        (m) => m['id']?.toString() == messageId,
+      );
+      if (index == -1) return;
+      final msg = Map<String, dynamic>.from(messages[index]);
+      var changed = false;
+      if (deliveredAt != null && msg['delivered_at'] != deliveredAt) {
+        msg['delivered_at'] = deliveredAt;
+        changed = true;
+      }
+      if (readAt != null && msg['read_at'] != readAt) {
+        msg['read_at'] = readAt;
+        changed = true;
+      }
+      if (reactionSummary != null) {
+        // Normalize keys/values to match mergeMessages so equality works.
+        // Accepts `Map<dynamic, dynamic>` shapes from realtime payloads and
+        // coerces to `Map<String, int>` for the local cache.
+        final cleaned = <String, int>{};
+        reactionSummary.forEach((k, v) {
+          final key = k.toString().trim();
+          if (key.isEmpty) return;
+          final intVal = v is int
+              ? v
+              : (v is num ? v.toInt() : (int.tryParse(v.toString()) ?? 0));
+          if (intVal > 0) cleaned[key] = intVal;
+        });
+        final existing = msg['reaction_summary'];
+        final isSame =
+            existing is Map &&
+            existing.length == cleaned.length &&
+            cleaned.entries.every((e) => existing[e.key] == e.value);
+        if (!isSame) {
+          msg['reaction_summary'] = cleaned;
+          changed = true;
+        }
+      }
+      if (clearMyReaction) {
+        if (msg.containsKey('my_reaction')) {
+          msg.remove('my_reaction');
+          changed = true;
+        }
+      } else if (myReaction != null && msg['my_reaction'] != myReaction) {
+        msg['my_reaction'] = myReaction;
+        changed = true;
+      }
+      if (editedAt != null && msg['edited_at'] != editedAt) {
+        msg['edited_at'] = editedAt;
+        changed = true;
+      }
+      if (contentOriginal != null &&
+          msg['content_original'] != contentOriginal) {
+        msg['content_original'] = contentOriginal;
+        changed = true;
+      }
+      if (!changed) return;
+      messages[index] = msg;
+      await box.put(matchId, jsonEncode(messages));
+    } catch (_) {
+      // Best-effort: a status-only merge failure must not break the chat UI.
+    }
+  }
+
+  Future<void> mergeMessages(
+    String matchId,
+    List<Map<String, dynamic>> incomingMessages,
+  ) async {
     final box = await _getMessagesBox();
     final oldMessages = await getMessages(matchId);
 
@@ -1024,17 +2132,79 @@ class LocalDbService {
       final oldReactionSummary = oldMsg?['reaction_summary'];
       final oldMyReaction = oldMsg?['my_reaction'] as String?;
 
+      // Detect an edit: the original content (plaintext or ciphertext) or
+      // edited_at changed. In that case any cached translation of the OLD
+      // content is stale and must be dropped instead of preserved — the
+      // message needs to be retranslated for the current UI language.
+      bool contentChanged = false;
+      if (oldMsg != null) {
+        final oldOriginal = oldMsg['content_original']?.toString();
+        final hasNewOriginal = incomingMsg.containsKey('content_original');
+        final newOriginal = hasNewOriginal
+            ? incomingMsg['content_original']?.toString()
+            : null;
+        if (hasNewOriginal &&
+            newOriginal != null &&
+            newOriginal.isNotEmpty &&
+            newOriginal != 'null' &&
+            oldOriginal != null &&
+            oldOriginal.isNotEmpty &&
+            oldOriginal != 'null' &&
+            newOriginal != oldOriginal) {
+          contentChanged = true;
+        }
+        final hasNewEnc = incomingMsg.containsKey('content_original_encrypted');
+        final newEnc = hasNewEnc
+            ? incomingMsg['content_original_encrypted']?.toString()
+            : null;
+        final oldEnc = oldMsg['content_original_encrypted']?.toString();
+        if (hasNewEnc &&
+            newEnc != null &&
+            newEnc.isNotEmpty &&
+            oldEnc != null &&
+            oldEnc.isNotEmpty &&
+            newEnc != oldEnc) {
+          contentChanged = true;
+        }
+        final hasNewEdited = incomingMsg.containsKey('edited_at');
+        final newEdited = hasNewEdited
+            ? incomingMsg['edited_at']?.toString()
+            : null;
+        final oldEdited = oldMsg['edited_at']?.toString();
+        if (hasNewEdited &&
+            newEdited != null &&
+            newEdited.isNotEmpty &&
+            newEdited != oldEdited) {
+          contentChanged = true;
+        }
+        // Server clears the encrypted translation payload on edit
+        // (edit_chat_message sets content_translated_encrypted = NULL).
+        // If the incoming row drops a previously-present encrypted
+        // translation without supplying fresh plaintext, treat it as an
+        // edit so the stale local plaintext is not kept.
+        if (incomingMsg.containsKey('content_translated_encrypted') &&
+            incomingMsg['content_translated_encrypted'] == null &&
+            oldMsg['content_translated_encrypted'] != null) {
+          final freshPlain = incomingMsg['content_translated']?.toString();
+          if (freshPlain == null || freshPlain.isEmpty) {
+            contentChanged = true;
+          }
+        }
+      }
+
       // Prefer incoming server-side values when present (e.g., updated reaction_summary)
       // Fall back to old local values only when incoming doesn't provide them.
       // Normalize reaction_summary keys: remove empty keys and coerce values to int
       Map<String, int>? normalizeReactionSummary(dynamic rs) {
         if (rs == null) return null;
         if (rs is Map) {
-          final out = <String,int>{};
+          final out = <String, int>{};
           rs.forEach((k, v) {
             final key = (k?.toString() ?? '').trim();
             if (key.isEmpty) return; // drop empty keys
-            final intVal = (v is num) ? v.toInt() : int.tryParse(v?.toString() ?? '') ?? 0;
+            final intVal = (v is num)
+                ? v.toInt()
+                : int.tryParse(v?.toString() ?? '') ?? 0;
             if (intVal > 0) out[key] = intVal;
           });
           return out;
@@ -1042,35 +2212,139 @@ class LocalDbService {
         return null;
       }
 
-      final mergedReactionSummary = normalizeReactionSummary(incomingMsg['reaction_summary']) ?? normalizeReactionSummary(oldReactionSummary);
-      final mergedMyReaction = (incomingMsg['my_reaction'] == '' ? null : (incomingMsg['my_reaction'] ?? oldMyReaction));
+      final mergedReactionSummary =
+          normalizeReactionSummary(incomingMsg['reaction_summary']) ??
+          normalizeReactionSummary(oldReactionSummary);
+      final mergedMyReaction = (incomingMsg['my_reaction'] == ''
+          ? null
+          : (incomingMsg['my_reaction'] ?? oldMyReaction));
 
       // Use server translation if available, otherwise fall back to local cache
-      // This ensures new translations from translate-proxy aren't overwritten
+      // This ensures new translations from translate-proxy aren't overwritten.
+      // When the message content was edited, the old cached translation is
+      // stale and must NOT be preserved — the message needs retranslation.
       final incomingTranslation = incomingMsg['content_translated'] as String?;
-      final incomingTranslationLang = incomingMsg['translated_target_language'] as String?;
-      
-      final mergedTranslation = (incomingTranslation != null && incomingTranslation.isNotEmpty) 
-          ? incomingTranslation 
-          : oldTranslation;
-      final mergedTranslationLang = (incomingTranslationLang != null && incomingTranslationLang.isNotEmpty) 
-          ? incomingTranslationLang 
-          : oldTranslationLang;
+      final incomingTranslationLang =
+          incomingMsg['translated_target_language'] as String?;
 
-      messageMap[incomingMsg['id'].toString()] = {
+      final mergedTranslation = contentChanged
+          ? ((incomingTranslation != null && incomingTranslation.isNotEmpty)
+                ? incomingTranslation
+                : null)
+          : ((incomingTranslation != null && incomingTranslation.isNotEmpty)
+                ? incomingTranslation
+                : oldTranslation);
+      final mergedTranslationLang = contentChanged
+          ? ((incomingTranslationLang != null &&
+                    incomingTranslationLang.isNotEmpty)
+                ? incomingTranslationLang
+                : null)
+          : ((incomingTranslationLang != null &&
+                    incomingTranslationLang.isNotEmpty)
+                ? incomingTranslationLang
+                : oldTranslationLang);
+
+      final mergedRow = {
+        ...?oldMsg,
         ...incomingMsg,
         'translated_text': mergedTranslation,
         'translated_lang': mergedTranslationLang,
         'reaction_summary': mergedReactionSummary,
         'my_reaction': mergedMyReaction,
       };
+
+      if (!contentChanged) {
+        final incomingReplyTrans =
+            incomingMsg['reply_to_content_translated'] as String?;
+        if ((incomingReplyTrans == null || incomingReplyTrans.isEmpty) &&
+            oldMsg != null) {
+          final oldReplyTrans =
+              oldMsg['reply_to_content_translated'] as String?;
+          if (oldReplyTrans != null && oldReplyTrans.isNotEmpty) {
+            mergedRow['reply_to_content_translated'] = oldReplyTrans;
+          }
+        }
+        // Preserve locally resolved reply originals/senders + offline
+        // fallbacks that the server never sends (only reply_to_message_id).
+        if (oldMsg != null) {
+          final incomingReplyContent =
+              incomingMsg['reply_to_content']?.toString();
+          if ((incomingReplyContent == null || incomingReplyContent.isEmpty)) {
+            final oldReplyContent = oldMsg['reply_to_content']?.toString();
+            if (oldReplyContent != null && oldReplyContent.isNotEmpty) {
+              mergedRow['reply_to_content'] = oldReplyContent;
+              final oldReplySender = oldMsg['reply_to_sender_id'];
+              if (oldReplySender != null) {
+                mergedRow['reply_to_sender_id'] = oldReplySender;
+              }
+            }
+          }
+          if (mergedRow['content_original_encrypted_cache'] == null &&
+              oldMsg['content_original_encrypted_cache'] != null) {
+            mergedRow['content_original_encrypted_cache'] =
+                oldMsg['content_original_encrypted_cache'];
+          }
+          if (mergedRow['content_translated_encrypted_cache'] == null &&
+              oldMsg['content_translated_encrypted_cache'] != null) {
+            mergedRow['content_translated_encrypted_cache'] =
+                oldMsg['content_translated_encrypted_cache'];
+          }
+          if (mergedRow['reactors'] == null && oldMsg['reactors'] is Map) {
+            mergedRow['reactors'] = oldMsg['reactors'];
+          }
+        }
+      }
+      if (contentChanged) {
+        // Drop stale local plaintext translation caches when the content
+        // changed and no fresh translation was supplied. Otherwise the
+        // spread above would keep the old translation and the UI would
+        // show it as if it were for the new content.
+        final freshTranslated = incomingMsg['content_translated']?.toString();
+        if (freshTranslated == null || freshTranslated.isEmpty) {
+          mergedRow.remove('content_translated');
+          mergedRow.remove('content_translated_encrypted_cache');
+        }
+        final freshTarget = incomingMsg['translated_target_language']
+            ?.toString();
+        if (freshTarget == null || freshTarget.isEmpty) {
+          mergedRow.remove('translated_target_language');
+        }
+        if (mergedTranslation == null) {
+          mergedRow.remove('translated_text');
+        }
+        if (mergedTranslationLang == null) {
+          mergedRow.remove('translated_lang');
+        }
+        // When the ciphertext changed but no fresh decrypted plaintext was
+        // supplied (the typical realtime edit payload carries only encrypted
+        // columns), drop the stale decrypted original so Phase 2 re-decrypts
+        // the new ciphertext instead of reusing the old text. Without this,
+        // Phase 2's `contentOriginal.isEmpty` guard would skip decryption and
+        // the bubble would keep showing the pre-edit text with no retranslation.
+        final freshOriginal = incomingMsg['content_original']?.toString();
+        final hasNewEncForOriginal = incomingMsg.containsKey(
+          'content_original_encrypted',
+        );
+        if ((freshOriginal == null ||
+                freshOriginal.isEmpty ||
+                freshOriginal == 'null') &&
+            hasNewEncForOriginal) {
+          mergedRow.remove('content_original');
+          mergedRow.remove('content_original_encrypted_cache');
+        }
+      }
+      messageMap[incomingMsg['id'].toString()] = mergedRow;
     }
 
     final combinedList = messageMap.values.toList();
 
     combinedList.sort((a, b) {
-      final aDate = DateTime.tryParse(a['created_at'] ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final bDate = DateTime.tryParse(b['created_at'] ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final aDate =
+          DateTime.tryParse(a['created_at'] ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+      final bDate =
+          DateTime.tryParse(b['created_at'] ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0);
       return aDate.compareTo(bDate);
     });
 
@@ -1079,32 +2353,79 @@ class LocalDbService {
     for (final msg in combinedList) {
       final rs = msg['reaction_summary'];
       if (rs is Map) {
-        final cleaned = <String,int>{};
+        final cleaned = <String, int>{};
         rs.forEach((k, v) {
           final key = (k?.toString() ?? '').trim();
           if (key.isEmpty) return;
-          final intVal = (v is num) ? v.toInt() : int.tryParse(v?.toString() ?? '') ?? 0;
+          final intVal = (v is num)
+              ? v.toInt()
+              : int.tryParse(v?.toString() ?? '') ?? 0;
           if (intVal > 0) cleaned[key] = intVal;
         });
         msg['reaction_summary'] = cleaned;
       }
     }
 
-    await box.put(matchId, jsonEncode(combinedList));
+    // Memory + local storage: backfill the DCK-encrypted backup for any newly
+    // decrypted plaintext merged here (e.g. Phase 2 writes via mergeMessages).
+    // Without this, the backup only exists after saveMessages, so a restart
+    // before the next full sync would lose the offline-decrypt fallback.
+    try {
+      final cacheService = EncryptedCacheService.instance;
+      if (cacheService.currentDck != null) {
+        for (final msg in combinedList) {
+          final scheme = msg['encryption_scheme'] as String?;
+          if (scheme == 'v1' || scheme == null) {
+            final original = msg['content_original'] as String?;
+            if (original != null &&
+                original.isNotEmpty &&
+                msg['content_original_encrypted'] != null &&
+                msg['content_original_encrypted_cache'] == null) {
+              msg['content_original_encrypted_cache'] = await cacheService
+                  .encryptForCache(original);
+            }
+            final translated = msg['content_translated'] as String?;
+            if (translated != null &&
+                translated.isNotEmpty &&
+                msg['content_translated_encrypted'] != null &&
+                msg['content_translated_encrypted_cache'] == null) {
+              msg['content_translated_encrypted_cache'] = await cacheService
+                  .encryptForCache(translated);
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    // Only write if the data actually changed to prevent infinite watch loops
+    final newData = jsonEncode(combinedList);
+    final oldData = box.get(matchId);
+    if (newData != oldData) {
+      await box.put(matchId, newData);
+    }
+    // Removed logging to reduce spam
   }
 
-  Future<void> saveMessages(String matchId, List<Map<String, dynamic>> messages) async {
+  Future<void> saveMessages(
+    String matchId,
+    List<Map<String, dynamic>> messages,
+  ) async {
     final box = await _getMessagesBox();
-    
+
     // Get existing messages to preserve local translations and pending messages
     final existingMessages = await getMessages(matchId);
     final existingTranslations = <String, Map<String, dynamic>>{};
     final pendingMessages = <Map<String, dynamic>>[];
-    
+
     // Build a map of existing translations by message ID and collect pending messages
+    // Memory + local storage: preserve translations, reply previews (original
+    // + translated), encrypted-cache backups and reactors so a full
+    // saveMessages replace (e.g. syncMessages) never drops locally resolved
+    // data that Supabase rows don't carry. This keeps replies/translations
+    // visible immediately on restart with no connectivity.
     for (final existingMsg in existingMessages) {
       final msgId = existingMsg['id']?.toString();
-      
+
       if (existingMsg['isPending'] == true) {
         pendingMessages.add(existingMsg);
       }
@@ -1116,30 +2437,258 @@ class LocalDbService {
           'translated_lang': existingMsg['translated_lang'],
         };
       }
+
+      final replyTrans = existingMsg['reply_to_content_translated'];
+      if (msgId != null &&
+          replyTrans != null &&
+          replyTrans.toString().isNotEmpty) {
+        existingTranslations[msgId] = {
+          ...?existingTranslations[msgId],
+          'reply_to_content_translated': replyTrans,
+        };
+      }
+      // Persisted reply previews for incoming messages: the server only
+      // sends reply_to_message_id, so the resolved original/translation must
+      // be carried over or quotes go blank after every sync/restart.
+      final replyContent = existingMsg['reply_to_content'];
+      if (msgId != null &&
+          replyContent != null &&
+          replyContent.toString().isNotEmpty) {
+        existingTranslations[msgId] = {
+          ...?existingTranslations[msgId],
+          'reply_to_content': replyContent,
+          'reply_to_sender_id': existingMsg['reply_to_sender_id'],
+        };
+      }
+      // Encrypted-cache backups (DCK layer) for offline decrypt without keys.
+      final origCache = existingMsg['content_original_encrypted_cache'];
+      if (msgId != null && origCache != null && origCache.toString().isNotEmpty) {
+        existingTranslations[msgId] = {
+          ...?existingTranslations[msgId],
+          'content_original_encrypted_cache': origCache,
+        };
+      }
+      final transCache = existingMsg['content_translated_encrypted_cache'];
+      if (msgId != null &&
+          transCache != null &&
+          transCache.toString().isNotEmpty) {
+        existingTranslations[msgId] = {
+          ...?existingTranslations[msgId],
+          'content_translated_encrypted_cache': transCache,
+        };
+      }
+      // Inline reactors map (per-message reaction user lists).
+      final reactors = existingMsg['reactors'];
+      if (msgId != null && reactors is Map && reactors.isNotEmpty) {
+        existingTranslations[msgId] = {
+          ...?existingTranslations[msgId],
+          'reactors': reactors,
+        };
+      }
     }
-    
+
     // Create a mutable copy of the incoming messages
     final allMessages = List<Map<String, dynamic>>.from(messages);
 
     // Merge translations and reactions into the new messages from Supabase
     for (final message in allMessages) {
       final msgId = message['id']?.toString();
-      if (msgId != null && existingTranslations.containsKey(msgId)) {
-        message['translated_text'] = existingTranslations[msgId]!['translated_text'];
-        message['translated_lang'] = existingTranslations[msgId]!['translated_lang'];
+      final existingMsgForEditCheck = existingMessages.firstWhere(
+        (m) => m['id']?.toString() == msgId,
+        orElse: () => {},
+      );
+      // Detect an edit: original ciphertext or edited_at changed. When the
+      // content changed, cached translations of the OLD content are stale
+      // and must be dropped so the message is retranslated immediately.
+      bool isEdited = false;
+      if (msgId != null && existingMsgForEditCheck.isNotEmpty) {
+        final oldEnc = existingMsgForEditCheck['content_original_encrypted']
+            ?.toString();
+        final newEnc = message['content_original_encrypted']?.toString();
+        if (oldEnc != null &&
+            oldEnc.isNotEmpty &&
+            newEnc != null &&
+            newEnc.isNotEmpty &&
+            oldEnc != newEnc) {
+          isEdited = true;
+        }
+        final oldEdited = existingMsgForEditCheck['edited_at']?.toString();
+        final newEdited = message['edited_at']?.toString();
+        if (newEdited != null &&
+            newEdited.isNotEmpty &&
+            newEdited != oldEdited) {
+          isEdited = true;
+        }
+        // Server clears the encrypted translation payload on edit. If the
+        // incoming row drops a previously-present encrypted translation,
+        // the old plaintext translation is stale.
+        final oldTransEnc =
+            existingMsgForEditCheck['content_translated_encrypted']?.toString();
+        final newTransEnc = message['content_translated_encrypted']?.toString();
+        if (oldTransEnc != null &&
+            oldTransEnc.isNotEmpty &&
+            (newTransEnc == null || newTransEnc.isEmpty)) {
+          isEdited = true;
+        }
+      }
+      if (msgId != null &&
+          !isEdited &&
+          existingTranslations.containsKey(msgId)) {
+        message['translated_text'] =
+            existingTranslations[msgId]!['translated_text'];
+        message['translated_lang'] =
+            existingTranslations[msgId]!['translated_lang'];
+        final replyTrans =
+            existingTranslations[msgId]!['reply_to_content_translated'];
+        if (replyTrans != null && replyTrans.toString().isNotEmpty) {
+          message['reply_to_content_translated'] = replyTrans;
+        }
+        // Restore locally resolved reply previews + offline fallbacks when
+        // the server row doesn't carry them.
+        final preservedReplyContent =
+            existingTranslations[msgId]!['reply_to_content'];
+        if (preservedReplyContent != null &&
+            preservedReplyContent.toString().isNotEmpty &&
+            (message['reply_to_content'] == null ||
+                message['reply_to_content'].toString().isEmpty)) {
+          message['reply_to_content'] = preservedReplyContent;
+          final preservedReplySender =
+              existingTranslations[msgId]!['reply_to_sender_id'];
+          if (preservedReplySender != null) {
+            message['reply_to_sender_id'] = preservedReplySender;
+          }
+        }
+        final preservedOrigCache =
+            existingTranslations[msgId]!['content_original_encrypted_cache'];
+        if (preservedOrigCache != null &&
+            preservedOrigCache.toString().isNotEmpty &&
+            message['content_original_encrypted_cache'] == null) {
+          message['content_original_encrypted_cache'] = preservedOrigCache;
+        }
+        final preservedTransCache =
+            existingTranslations[msgId]!['content_translated_encrypted_cache'];
+        if (preservedTransCache != null &&
+            preservedTransCache.toString().isNotEmpty &&
+            message['content_translated_encrypted_cache'] == null) {
+          message['content_translated_encrypted_cache'] = preservedTransCache;
+        }
+        final preservedReactors = existingTranslations[msgId]!['reactors'];
+        if (preservedReactors != null && message['reactors'] == null) {
+          message['reactors'] = preservedReactors;
+        }
       }
 
-      // preserve reactions from existing messages if present
-      final existingMsg = existingMessages.firstWhere((m) => m['id']?.toString() == msgId, orElse: () => {});
+      // Preserve server-key translations from existing cache when incoming data
+      // does not have them (e.g. translation not yet generated on server, or
+      // decrypted locally).  This mirrors the content_original guard below.
+      final existingMsg = existingMessages.firstWhere(
+        (m) => m['id']?.toString() == msgId,
+        orElse: () => {},
+      );
       if (existingMsg.isNotEmpty) {
-        if (existingMsg.containsKey('reaction_summary')) {
+        if ((message['content_translated'] == null ||
+                (message['content_translated'] is String &&
+                    (message['content_translated'] as String).isEmpty)) &&
+            existingMsg['encryption_scheme']?.toString() ==
+                message['encryption_scheme']?.toString() &&
+            existingMsg['content_translated_encrypted']?.toString() ==
+                message['content_translated_encrypted']?.toString()) {
+          String? preserved = existingMsg['content_translated'] as String?;
+          // Mirror the content_original fallback: if the local plaintext
+          // column is empty (because getMessages no longer decrypts the
+          // cache inline), try the encrypted cache before giving up.
+          if (preserved == null || preserved.isEmpty) {
+            final cached =
+                existingMsg['content_translated_encrypted_cache'] as String?;
+            if (cached != null && cached.isNotEmpty) {
+              try {
+                preserved = await EncryptedCacheService.instance
+                    .decryptFromCache(cached);
+              } catch (_) {}
+            }
+          }
+          if (preserved != null && preserved.isNotEmpty) {
+            message['content_translated'] = preserved;
+          }
+        }
+        if (!isEdited &&
+            (message['translated_target_language'] == null ||
+                (message['translated_target_language'] is String &&
+                    (message['translated_target_language'] as String)
+                        .isEmpty)) &&
+            existingMsg['translated_target_language'] != null &&
+            (existingMsg['translated_target_language'] is String &&
+                (existingMsg['translated_target_language'] as String)
+                    .isNotEmpty)) {
+          // Only preserve the cached target language when the original
+          // content is unchanged. After an edit the old target is stale:
+          // keeping it would make the message look already-translated for
+          // the current UI language and skip immediate retranslation.
+          final oldOrigEnc = existingMsg['content_original_encrypted']
+              ?.toString();
+          final newOrigEnc = message['content_original_encrypted']?.toString();
+          final origUnchanged =
+              oldOrigEnc == null ||
+              oldOrigEnc.isEmpty ||
+              newOrigEnc == null ||
+              newOrigEnc.isEmpty ||
+              oldOrigEnc == newOrigEnc;
+          if (origUnchanged) {
+            message['translated_target_language'] =
+                existingMsg['translated_target_language'];
+          }
+        }
+        // Server reaction_summary is the source of truth; only fall back to
+        // local cache when the server value is empty (no reactions yet).
+        final serverSummary = message['reaction_summary'];
+        final serverEmpty =
+            serverSummary == null ||
+            (serverSummary is Map && serverSummary.isEmpty);
+        if (serverEmpty && existingMsg.containsKey('reaction_summary')) {
           message['reaction_summary'] = existingMsg['reaction_summary'];
         }
         if (existingMsg.containsKey('my_reaction')) {
           message['my_reaction'] = existingMsg['my_reaction'];
         }
+        // Preserve locally-decrypted content_original for encrypted messages.
+        // The server returns content_original=null for v1 encrypted rows, but the
+        // local decryption loop may have already resolved the decrypted content via
+        // mergeMessages.  Without this guard every syncMessages call would
+        // overwrite the decrypted content with null, causing a visible flicker
+        // and making the chat-list last-message preview disappear.
+        // IMPORTANT: Only preserve when the encrypted content is unchanged.
+        // When a message is edited (encrypted content differs), the old decrypted
+        // text must NOT be preserved — Phase 2 must re-decrypt the new ciphertext.
+        if (message['content_original_encrypted'] != null &&
+            (message['content_original'] == null ||
+                (message['content_original'] is String &&
+                    (message['content_original'] as String).isEmpty)) &&
+            existingMsg['encryption_scheme']?.toString() ==
+                message['encryption_scheme']?.toString() &&
+            existingMsg['content_original_encrypted']?.toString() ==
+                message['content_original_encrypted']?.toString()) {
+          String? preserved = existingMsg['content_original'] as String?;
+          // The plaintext column may be empty even though the encrypted cache
+          // (content_original_encrypted_cache) still holds the decrypted value,
+          // because getMessages no longer decrypts the cache inline.  Fall back
+          // to it so a syncMessages call right after the chat opens does not
+          // wipe the previously-decrypted text.
+          if (preserved == null || preserved.isEmpty) {
+            final cached =
+                existingMsg['content_original_encrypted_cache'] as String?;
+            if (cached != null && cached.isNotEmpty) {
+              try {
+                preserved = await EncryptedCacheService.instance
+                    .decryptFromCache(cached);
+              } catch (_) {}
+            }
+          }
+          if (preserved != null && preserved.isNotEmpty) {
+            message['content_original'] = preserved;
+          }
+        }
       }
-      
+
       // IMPORTANT: Do NOT mark received messages as delivered locally!
       // The delivered_at field should only be set by the server when confirmed.
       // The RPC call mark_message_delivered will update the server, and when
@@ -1147,7 +2696,11 @@ class LocalDbService {
     }
 
     // Append pending messages that are not in the new list
-    final newIds = allMessages.map((m) => m['id']?.toString()).toSet();
+    final newIds = <String>{};
+    for (final m in allMessages) {
+      final id = m['id']?.toString();
+      if (id != null) newIds.add(id);
+    }
     for (final pending in pendingMessages) {
       if (!newIds.contains(pending['id']?.toString())) {
         allMessages.add(pending);
@@ -1156,15 +2709,54 @@ class LocalDbService {
 
     // Sort by created_at
     allMessages.sort((a, b) {
-      final aDate = DateTime.tryParse(a['created_at'] ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final bDate = DateTime.tryParse(b['created_at'] ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final aDate =
+          DateTime.tryParse(a['created_at'] ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+      final bDate =
+          DateTime.tryParse(b['created_at'] ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0);
       return aDate.compareTo(bDate);
     });
-    
+
+    // Encrypt decrypted content for cache if EncryptedCacheService is initialized.
+    // The encrypted cache is stored alongside the decrypted content so that messages always
+    // remain visible even if re-decryption via the chat key fails (e.g. network
+    // contention during startup).  The decrypted fields are NOT cleared here;
+    // the chat-messages provider is responsible for preferring the cached layer.
+    try {
+      final cacheService = EncryptedCacheService.instance;
+      if (cacheService.currentDck != null) {
+        for (final msg in allMessages) {
+          final scheme = msg['encryption_scheme'] as String?;
+          if (scheme == 'v1' || scheme == null) {
+            final original = msg['content_original'] as String?;
+            if (original != null &&
+                original.isNotEmpty &&
+                msg['content_original_encrypted'] != null) {
+              final encrypted = await cacheService.encryptForCache(original);
+              msg['content_original_encrypted_cache'] = encrypted;
+            }
+            final translated = msg['content_translated'] as String?;
+            if (translated != null &&
+                translated.isNotEmpty &&
+                msg['content_translated_encrypted'] != null) {
+              final encrypted = await cacheService.encryptForCache(translated);
+              msg['content_translated_encrypted_cache'] = encrypted;
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
     await box.put(matchId, jsonEncode(allMessages));
   }
 
-  Future<void> saveTranslation(String matchId, String messageId, String translation, String targetLang) async {
+  Future<void> saveTranslation(
+    String matchId,
+    String messageId,
+    String translation,
+    String targetLang,
+  ) async {
     final box = await _getMessagesBox();
     final messages = await getMessages(matchId);
 
@@ -1173,57 +2765,71 @@ class LocalDbService {
     if (index != -1) {
       messages[index]['translated_text'] = translation;
       messages[index]['translated_lang'] = targetLang;
+      // Keep the current-schema plaintext cache in sync so offline
+      // cold-start (which reads content_translated + target language)
+      // renders the same translation without Supabase.
+      messages[index]['content_translated'] = translation;
+      messages[index]['translated_target_language'] = targetLang;
+      try {
+        final cacheService = EncryptedCacheService.instance;
+        if (cacheService.currentDck != null &&
+            translation.isNotEmpty &&
+            messages[index]['content_translated_encrypted'] != null) {
+          messages[index]['content_translated_encrypted_cache'] = await cacheService
+              .encryptForCache(translation);
+        }
+      } catch (_) {}
       await box.put(matchId, jsonEncode(messages));
     }
   }
 
+  /// Persist a translated reply-quote preview for offline display.
+  /// Stored on the quoting message's row so the quote renders translated
+  /// immediately on restart with no connectivity.
+  Future<void> saveReplyTranslation(
+    String matchId,
+    String quotingMessageId,
+    String translatedPreview,
+  ) async {
+    if (translatedPreview.isEmpty) return;
+    try {
+      final box = await _getMessagesBox();
+      final messages = await getMessages(matchId);
+      final index = messages.indexWhere(
+        (m) => m['id']?.toString() == quotingMessageId,
+      );
+      if (index == -1) return;
+      final current =
+          messages[index]['reply_to_content_translated']?.toString() ?? '';
+      if (current == translatedPreview) return;
+      messages[index]['reply_to_content_translated'] = translatedPreview;
+      await box.put(matchId, jsonEncode(messages));
+    } catch (_) {}
+  }
+
   Stream<List<Map<String, dynamic>>> watchMessages(String matchId) async* {
     try {
-      // Attempt to open the box but fail fast if it takes too long (e.g., IndexedDB stuck on web)
-      Box? box;
-      try {
-        box = await _getMessagesBox().timeout(const Duration(seconds: 2));
-      } on TimeoutException catch (e, st) {
-        debugPrint('watchMessages: _getMessagesBox timeout for $matchId: $e\n$st');
-        box = null;
-      } catch (e, st) {
-        debugPrint('watchMessages: _getMessagesBox threw for $matchId: $e\n$st');
-        box = null;
-      }
-
-      if (box == null) {
-        debugPrint('watchMessages: falling back to empty stream for $matchId due to missing box');
-        yield <Map<String, dynamic>>[];
-        await for (final _ in Stream<void>.periodic(const Duration(seconds: 5))) {
-          yield <Map<String, dynamic>>[];
-        }
-        return;
-      }
-
-      final initialMessages = await getMessages(matchId).timeout(const Duration(seconds: 2), onTimeout: () {
-        debugPrint('watchMessages: getMessages timeout for $matchId - returning empty');
-        return <Map<String, dynamic>>[];
-      });
-
+      final box = await _getMessagesBox();
+      final initialMessages = await getMessages(matchId);
       yield initialMessages;
+
       yield* box.watch(key: matchId).asyncMap((event) async {
         try {
           if (event.value != null && !event.deleted) {
-            final messages = (jsonDecode(event.value) as List).cast<Map<String, dynamic>>();
+            final messages = (jsonDecode(event.value) as List)
+                .cast<Map<String, dynamic>>();
             return messages;
           }
           return <Map<String, dynamic>>[];
-        } catch (e, st) {
-          debugPrint('watchMessages asyncMap decode error for $matchId: $e\n$st');
+        } catch (e) {
+          print('❌ [watchMessages] Error processing change event: $e');
           return <Map<String, dynamic>>[];
         }
       });
-    } catch (e, st) {
-      debugPrint('watchMessages failed to open box for $matchId: $e\n$st');
-      // Fail gracefully and return an empty stream so UI can show empty state instead of loading forever
+    } catch (e) {
+      print('❌ [watchMessages] Error setting up watch: $e');
       yield <Map<String, dynamic>>[];
       await for (final _ in Stream<void>.periodic(const Duration(seconds: 5))) {
-        // keep yielding empty list periodically in case box becomes available later
         yield <Map<String, dynamic>>[];
       }
     }
@@ -1249,8 +2855,74 @@ class LocalDbService {
     await box.delete(key);
   }
 
+  // --- Encrypted Chat Outbox Methods ---
+  Future<void> saveEncryptedOutboxDraft(
+    String userId,
+    String draftId,
+    Map<String, dynamic> draftPayload,
+  ) async {
+    final box = await _getChatOutboxBox();
+    final key = 'chat_outbox:$userId:$draftId';
+    await box.put(key, jsonEncode(draftPayload));
+  }
+
+  Future<Map<String, dynamic>?> getEncryptedOutboxDraft(
+    String userId,
+    String draftId,
+  ) async {
+    final box = await _getChatOutboxBox();
+    final key = 'chat_outbox:$userId:$draftId';
+    final value = box.get(key);
+    if (value == null) return null;
+    return jsonDecode(value) as Map<String, dynamic>;
+  }
+
+  Future<List<Map<String, dynamic>>> getEncryptedOutboxDrafts(
+    String userId,
+  ) async {
+    final box = await _getChatOutboxBox();
+    final prefix = 'chat_outbox:$userId:';
+    final drafts = <Map<String, dynamic>>[];
+    for (final key in box.keys) {
+      if (key.toString().startsWith(prefix)) {
+        final value = box.get(key);
+        if (value != null) {
+          drafts.add(jsonDecode(value) as Map<String, dynamic>);
+        }
+      }
+    }
+    drafts.sort((a, b) {
+      final aDate = DateTime.tryParse(a['created_at'] as String? ?? '');
+      final bDate = DateTime.tryParse(b['created_at'] as String? ?? '');
+      if (aDate == null && bDate == null) return 0;
+      if (aDate == null) return -1;
+      if (bDate == null) return 1;
+      return aDate.compareTo(bDate);
+    });
+    return drafts;
+  }
+
+  Future<void> removeEncryptedOutboxDraft(String userId, String draftId) async {
+    final box = await _getChatOutboxBox();
+    final key = 'chat_outbox:$userId:$draftId';
+    await box.delete(key);
+  }
+
+  Future<void> clearEncryptedOutboxDrafts(String userId) async {
+    final box = await _getChatOutboxBox();
+    final prefix = 'chat_outbox:$userId:';
+    for (final key in box.keys) {
+      if (key.toString().startsWith(prefix)) {
+        await box.delete(key);
+      }
+    }
+  }
+
   // --- Profile Outbox Methods ---
-  Future<void> saveProfileUpdateToOutbox(String userId, Map<String, dynamic> updatePayload) async {
+  Future<void> saveProfileUpdateToOutbox(
+    String userId,
+    Map<String, dynamic> updatePayload,
+  ) async {
     final box = await _getProfileOutboxBox();
     final key = '${userId}_${DateTime.now().toIso8601String()}';
     await box.put(key, jsonEncode(updatePayload));
@@ -1270,7 +2942,10 @@ class LocalDbService {
   }
 
   // --- Visibility Outbox Methods ---
-  Future<void> saveVisibilityUpdateToOutbox(String userId, bool isVisible) async {
+  Future<void> saveVisibilityUpdateToOutbox(
+    String userId,
+    bool isVisible,
+  ) async {
     final box = await _getVisibilityOutboxBox();
     final key = '${userId}_visibility_${DateTime.now().toIso8601String()}';
     final payload = {
@@ -1295,7 +2970,10 @@ class LocalDbService {
   }
 
   // --- Invisibility Rules Outbox Methods ---
-  Future<void> saveInvisibilityRulesUpdateToOutbox(String userId, String rulesJson) async {
+  Future<void> saveInvisibilityRulesUpdateToOutbox(
+    String userId,
+    String rulesJson,
+  ) async {
     final box = await _getInvisibilityRulesOutboxBox();
     final key = '${userId}_rules_${DateTime.now().toIso8601String()}';
     final payload = {
@@ -1320,6 +2998,11 @@ class LocalDbService {
   }
 
   // --- Clear Database ---
+  /// Full wipe (account deletion / explicit "erase all"). Clears EVERY box,
+  /// including chat outbox, offline trail, options, and mutation queue.
+  /// Callers must also clear sensitive SharedPreferences, SecureStorage temp
+  /// keys, and image disk cache (see SecureLogoutService pattern in
+  /// OfflineCacheManager.clearAllOfflineCache).
   Future<void> clearDatabase() async {
     final profileBox = await _getProfileBox();
     final matchesBox = await _getMatchesBox();
@@ -1344,12 +3027,243 @@ class LocalDbService {
     await eventsBox.clear();
     await settingsBox.clear();
     await translationsBox.clear();
+    try {
+      final trailBox = await _getOfflineTrailBox();
+      await trailBox.clear();
+    } catch (_) {}
+    // Previously missed boxes (privacy fix): chat outbox, options, emoji
+    // usage, and offline mutation queue must not survive a full wipe.
+    try {
+      final chatOutboxBox = await _getChatOutboxBox();
+      await chatOutboxBox.clear();
+    } catch (_) {}
+    try {
+      final optionsBox = await _getOptionsBox();
+      await optionsBox.clear();
+    } catch (_) {}
+    try {
+      if (Hive.isBoxOpen('emoji_usage')) {
+        await Hive.box('emoji_usage').clear();
+      }
+    } catch (_) {}
+    try {
+      if (Hive.isBoxOpen('offline_mutations')) {
+        await Hive.box('offline_mutations').clear();
+      } else {
+        final q = await HiveEncryptionService.instance.openEncryptedBox(
+          'offline_mutations',
+        );
+        await q.clear();
+      }
+    } catch (_) {}
+    try {
+      if (Hive.isBoxOpen('chatOutboxBox')) {
+        await Hive.box('chatOutboxBox').clear();
+      }
+    } catch (_) {}
+  }
+
+  /// Explicit-logout wipe for ONE user (strict privacy, non-breaking).
+  ///
+  /// Previously this PRESERVED `recent_chats_<userId>`, `recent_matches_<userId>`
+  /// and all message rows so re-login rendered instantly. That leaks one
+  /// account's chats to the next account on a shared device, so we now remove
+  /// the signed-out user's own chat/match/message cache too.
+  ///
+  /// Other users' per-user keys are left intact (device is still encrypted at
+  /// rest via Hive AES), but the signed-out user's data is gone and will
+  /// re-sync from Supabase on next login. Functionality is preserved (slower
+  /// first paint after re-login, no data loss server-side).
+  ///
+  /// Removed here: pending offline mutations (outboxes), the user's cached
+  /// profile/location, events, per-user settings, AND the user's own
+  /// chats/matches/messages.
+  Future<void> clearUserData(String userId) async {
+    final trimmedId = userId.trim();
+    try {
+      // 1) Pending offline mutations are session-scoped: they must never
+      //    leak into the next account's session on this device.
+      final outboxBox = await _getOutboxBox();
+      await outboxBox.clear();
+      final chatOutboxBox = await _getChatOutboxBox();
+      await chatOutboxBox.clear();
+      final profileOutboxBox = await _getProfileOutboxBox();
+      await profileOutboxBox.clear();
+      final visibilityOutboxBox = await _getVisibilityOutboxBox();
+      await visibilityOutboxBox.clear();
+      final invisibilityRulesOutboxBox = await _getInvisibilityRulesOutboxBox();
+      await invisibilityRulesOutboxBox.clear();
+
+      // 2) The legacy session-agnostic 'recent_chats' key is not attributed
+      //    to a user, so drop it to avoid surfacing another user's previews.
+      final chatsBox = await _getChatsBox();
+      await chatsBox.delete('recent_chats');
+
+      if (trimmedId.isEmpty) return;
+
+      // 3) Profile box: the user's own profile row and cached location.
+      final profileBox = await _getProfileBox();
+      await profileBox.delete(trimmedId);
+      await profileBox.delete('${trimmedId}_location');
+
+      // 3b) Offline trail is sensitive: never leak into the next session.
+      try {
+        await clearOfflineTrail(trimmedId);
+      } catch (_) {}
+
+      // 4) Events cache is keyed by user id.
+      final eventsBox = await _getEventsBox();
+      await eventsBox.delete(trimmedId);
+
+      // 5) Per-user settings keys (e.g. referral_code_<id>,
+      //    approved_primary_photos_<id>, show_past_events_<id>).
+      final settingsBox = await _getSettingsBox();
+      final settingsKeys = settingsBox.keys.toList();
+      for (final key in settingsKeys) {
+        final k = key.toString();
+        if (k.endsWith('_$trimmedId') || k.startsWith('${trimmedId}_')) {
+          await settingsBox.delete(key);
+        }
+      }
+
+      // 6) Privacy fix: remove the signed-out user's own chats/matches.
+      //    Other users' per-user keys are preserved. First collect the ids
+      //    scoped to this user's matches/chats — needed below BEFORE the
+      //    lists themselves are deleted.
+      final ownedMatchIds = <String>{};
+      final otherUserIds = <String>{};
+      try {
+        final matchesBox = await _getMatchesBox();
+        final rawMatches = matchesBox.get('recent_matches_$trimmedId');
+        if (rawMatches != null && rawMatches.toString().isNotEmpty) {
+          final list = (jsonDecode(rawMatches.toString()) as List)
+              .cast<Map<String, dynamic>>();
+          for (final m in list) {
+            final mid = m['match_id']?.toString();
+            if (mid != null && mid.isNotEmpty) ownedMatchIds.add(mid);
+            final u1 = m['user1_id']?.toString();
+            final u2 = m['user2_id']?.toString();
+            final oid = u1 == trimmedId ? u2 : u1;
+            if (oid != null && oid.isNotEmpty) otherUserIds.add(oid);
+          }
+        }
+      } catch (_) {}
+      try {
+        final chatsBox = await _getChatsBox();
+        final rawChats = chatsBox.get('recent_chats_$trimmedId');
+        if (rawChats != null && rawChats.toString().isNotEmpty) {
+          final list = (jsonDecode(rawChats.toString()) as List)
+              .cast<Map<String, dynamic>>();
+          for (final c in list) {
+            final mid = c['match_id']?.toString();
+            if (mid != null && mid.isNotEmpty) ownedMatchIds.add(mid);
+            final oid = c['other_user_id']?.toString();
+            if (oid != null && oid.isNotEmpty) otherUserIds.add(oid);
+          }
+        }
+      } catch (_) {}
+      try {
+        await chatsBox.delete('recent_chats_$trimmedId');
+      } catch (_) {}
+      try {
+        final matchesBox = await _getMatchesBox();
+        await matchesBox.delete('recent_matches_$trimmedId');
+      } catch (_) {}
+
+      // 6b) Minimap snapshots hold the matched user's location history for
+      //     this user's matches: sensitive, must not leak to the next
+      //     account on a shared device.
+      try {
+        final settingsBox = await _getSettingsBox();
+        final keysToDelete = settingsBox.keys
+            .map((k) => k.toString())
+            .where((k) => k.startsWith('match_minimap_'))
+            .where((k) => ownedMatchIds.contains(k.substring('match_minimap_'.length)))
+            .toList();
+        for (final key in keysToDelete) {
+          await settingsBox.delete(key);
+        }
+      } catch (_) {}
+
+      // 6c) Cached other-user profiles and their translated profile text,
+      //     scoped to this user's matches, plus this user's own profile
+      //     translation cache.
+      try {
+        final profileBox = await _getProfileBox();
+        for (final oid in otherUserIds) {
+          await profileBox.delete('other_user_$oid');
+          await profileBox.delete('profile_translation_$oid');
+        }
+        await profileBox.delete('profile_translation_$trimmedId');
+      } catch (_) {}
+      // 7) Message rows are keyed by matchId (not userId), so we cannot
+      //    attribute them cheaply here. The chats/matches deletion above
+      //    already detaches them from the UI; full message purge happens in
+      //    clearDatabase() (account deletion) and via per-match deleteChat().
+      //    To avoid unbounded growth after many logins, delete message rows
+      //    for matches that no longer have any cached chat/match reference.
+      try {
+        await _purgeOrphanedMessageRows();
+      } catch (_) {}
+    } catch (e) {
+      // print('LocalDb.clearUserData failed: $e');
+    }
+  }
+
+  /// Delete message-box rows whose matchId is not referenced by any cached
+  /// chat or match entry. Best-effort storage hygiene after logout.
+  Future<void> _purgeOrphanedMessageRows() async {
+    try {
+      final chatsBox = await _getChatsBox();
+      final matchesBox = await _getMatchesBox();
+      final messagesBox = await _getMessagesBox();
+      final referenced = <String>{};
+      for (final k in chatsBox.keys) {
+        final v = chatsBox.get(k);
+        if (v is! String) continue;
+        try {
+          final list = (jsonDecode(v) as List).cast<Map<String, dynamic>>();
+          for (final c in list) {
+            final id = c['match_id']?.toString();
+            if (id != null && id.isNotEmpty) referenced.add(id);
+          }
+        } catch (_) {}
+      }
+      for (final k in matchesBox.keys) {
+        final v = matchesBox.get(k);
+        if (v is! String) continue;
+        try {
+          final list = (jsonDecode(v) as List).cast<Map<String, dynamic>>();
+          for (final m in list) {
+            final id = (m['match_id'] ?? m['id'])?.toString();
+            if (id != null && id.isNotEmpty) referenced.add(id);
+          }
+        } catch (_) {}
+      }
+      final toDelete = <dynamic>[];
+      for (final k in messagesBox.keys) {
+        if (!referenced.contains(k.toString())) toDelete.add(k);
+      }
+      // Safety cap: never delete more than 500 rows in one logout.
+      for (final k in toDelete.take(500)) {
+        try {
+          await messagesBox.delete(k);
+        } catch (_) {}
+      }
+    } catch (_) {}
   }
 
   // --- NEW OPTION HIERARCHY CACHE HELPERS ---
 
-  /// Save dashboard statistics (online/nearby counts) to local cache
-  Future<void> saveDashboardStats(int onlineCount, int nearbyCount) async {
+  /// Save dashboard statistics (online/nearby counts) to this user's local
+  /// cache. These are a short-lived startup snapshot, never shared between
+  /// accounts, and are immediately refreshed once the UI is visible.
+  Future<void> saveDashboardStats(
+    String userId,
+    int onlineCount,
+    int nearbyCount,
+  ) async {
+    if (userId.trim().isEmpty) return;
     try {
       final box = await _getSettingsBox();
       final statsData = {
@@ -1357,41 +3271,52 @@ class LocalDbService {
         'nearby_count': nearbyCount,
         'last_updated': DateTime.now().toIso8601String(),
       };
-      await box.put('dashboard_stats', jsonEncode(statsData));
+      await box.put('dashboard_stats_$userId', jsonEncode(statsData));
 
       if (kIsWeb) {
-        debugPrint('🔍 [WEB] saveDashboardStats - Cached online: $onlineCount, nearby: $nearbyCount');
+        // print('🔍 [WEB] saveDashboardStats - Cached online: $onlineCount, nearby: $nearbyCount');
       }
     } catch (e) {
-      debugPrint('LocalDb.saveDashboardStats failed: $e');
+      // print('LocalDb.saveDashboardStats failed: $e');
       if (kIsWeb) {
-        debugPrint('🔍 [WEB] saveDashboardStats - FAILED: $e');
+        // print('🔍 [WEB] saveDashboardStats - FAILED: $e');
       }
     }
   }
 
-  /// Get cached dashboard statistics (returns null if expired or missing)
-  Future<Map<String, int>?> getDashboardStats() async {
+  /// Immediately invalidate dashboard stats cache so the next fetchStats call
+  /// goes to the server. Called after location sync to avoid serving stale
+  /// nearby=0 that was fetched before the user's location row was committed.
+  Future<void> clearDashboardStatsCache(String userId) async {
+    if (userId.trim().isEmpty) return;
     try {
       final box = await _getSettingsBox();
-      final jsonString = box.get('dashboard_stats');
+      await box.delete('dashboard_stats_$userId');
+    } catch (_) {}
+  }
+
+  /// Get cached dashboard statistics (returns null if expired or missing)
+  Future<Map<String, int>?> getDashboardStats(String userId) async {
+    if (userId.trim().isEmpty) return null;
+    try {
+      final box = await _getSettingsBox();
+      final jsonString = box.get('dashboard_stats_$userId');
       if (jsonString == null) {
         if (kIsWeb) {
-          debugPrint('🔍 [WEB] getDashboardStats - No cached stats found');
+          // print('🔍 [WEB] getDashboardStats - No cached stats found');
         }
         return null;
       }
 
       final data = jsonDecode(jsonString) as Map<String, dynamic>;
       final lastUpdated = DateTime.parse(data['last_updated']);
-      // Cache for 5 minutes
-      final cacheDuration = await appConfigService.getDuration(
-        'cache.profile_duration_seconds',
-        defaultValue: const Duration(minutes: 5)
-      );
+      // A brief relaunch should use the last complete screen immediately.
+      // Realtime/server refresh begins as soon as the provider is running, so
+      // this bounded snapshot is only a bridge to the current value.
+      final cacheDuration = const Duration(minutes: 5);
       if (DateTime.now().difference(lastUpdated) > cacheDuration) {
         if (kIsWeb) {
-          debugPrint('🔍 [WEB] getDashboardStats - Cache expired');
+          // print('🔍 [WEB] getDashboardStats - Cache expired');
         }
         return null; // Expired
       }
@@ -1402,18 +3327,57 @@ class LocalDbService {
       };
 
       if (kIsWeb) {
-        debugPrint('🔍 [WEB] getDashboardStats - Returning cached stats: $stats');
+        // print('🔍 [WEB] getDashboardStats - Returning cached stats: $stats');
       }
 
       return stats;
     } catch (e) {
-      debugPrint('LocalDb.getDashboardStats failed: $e');
+      // print('LocalDb.getDashboardStats failed: $e');
       return null;
     }
   }
 
+  /// Save localized country names for a language code (e.g. "en", "he")
+  Future<void> saveLocalizedCountryNames(
+    String langCode,
+    Map<String, String> names,
+  ) async {
+    final box = await _getSettingsBox();
+    await box.put('countryNames_$langCode', jsonEncode(names));
+  }
+
+  /// Load cached localized country names for a language code
+  Future<Map<String, String>?> getCachedLocalizedCountryNames(
+    String langCode,
+  ) async {
+    final box = await _getSettingsBox();
+    final json = box.get('countryNames_$langCode');
+    if (json == null) return null;
+    try {
+      final decoded = jsonDecode(json);
+      if (decoded is! Map) return null;
+      return decoded.map((k, v) => MapEntry(k.toString(), v.toString()));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Clear cached country names for all languages
+  Future<void> clearLocalizedCountryNames() async {
+    final box = await _getSettingsBox();
+    final keys = box.keys.where(
+      (k) => k.toString().startsWith('countryNames_'),
+    );
+    for (final key in keys) {
+      await box.delete(key);
+    }
+  }
+
   /// Save individual event details to local cache
-  Future<void> saveEventDetails(String eventId, Map<String, dynamic> eventData) async {
+  Future<void> saveEventDetails(
+    String eventId,
+    Map<String, dynamic> eventData,
+  ) async {
     try {
       final box = await _getEventsBox();
       final key = 'event_$eventId';
@@ -1424,12 +3388,12 @@ class LocalDbService {
       await box.put(key, jsonEncode(dataToCache));
 
       if (kIsWeb) {
-        debugPrint('🔍 [WEB] saveEventDetails - Cached event: $eventId');
+        // print('🔍 [WEB] saveEventDetails - Cached event: $eventId');
       }
     } catch (e) {
-      debugPrint('LocalDb.saveEventDetails failed: $e');
+      // print('LocalDb.saveEventDetails failed: $e');
       if (kIsWeb) {
-        debugPrint('🔍 [WEB] saveEventDetails - FAILED: $e');
+        // print('🔍 [WEB] saveEventDetails - FAILED: $e');
       }
     }
   }
@@ -1443,7 +3407,7 @@ class LocalDbService {
 
       if (jsonString == null) {
         if (kIsWeb) {
-          debugPrint('🔍 [WEB] getEventDetails - No cached data for event: $eventId');
+          // print('🔍 [WEB] getEventDetails - No cached data for event: $eventId');
         }
         return null;
       }
@@ -1454,11 +3418,11 @@ class LocalDbService {
       // Cache for 30 minutes (events don't change often)
       final cacheDuration = await appConfigService.getDuration(
         'cache.events_duration_seconds',
-        defaultValue: const Duration(minutes: 30)
+        defaultValue: const Duration(minutes: 30),
       );
       if (DateTime.now().difference(cachedAt) > cacheDuration) {
         if (kIsWeb) {
-          debugPrint('🔍 [WEB] getEventDetails - Cache expired for event: $eventId');
+          // print('🔍 [WEB] getEventDetails - Cache expired for event: $eventId');
         }
         return null; // Expired
       }
@@ -1467,18 +3431,21 @@ class LocalDbService {
       final cleanData = Map<String, dynamic>.from(data)..remove('cached_at');
 
       if (kIsWeb) {
-        debugPrint('🔍 [WEB] getEventDetails - Returning cached event: $eventId');
+        // print('🔍 [WEB] getEventDetails - Returning cached event: $eventId');
       }
 
       return cleanData;
     } catch (e) {
-      debugPrint('LocalDb.getEventDetails failed: $e');
+      // print('LocalDb.getEventDetails failed: $e');
       return null;
     }
   }
 
   /// Save other user profile to local cache
-  Future<void> saveOtherUserProfile(String userId, Map<String, dynamic> profileData) async {
+  Future<void> saveOtherUserProfile(
+    String userId,
+    Map<String, dynamic> profileData,
+  ) async {
     try {
       final box = await _getProfileBox();
       final key = 'other_user_$userId';
@@ -1489,13 +3456,85 @@ class LocalDbService {
       await box.put(key, dataToCache);
 
       if (kIsWeb) {
-        debugPrint('🔍 [WEB] saveOtherUserProfile - Cached profile for user: $userId');
+        // print('🔍 [WEB] saveOtherUserProfile - Cached profile for user: $userId');
       }
     } catch (e) {
-      debugPrint('LocalDb.saveOtherUserProfile failed: $e');
+      // print('LocalDb.saveOtherUserProfile failed: $e');
       if (kIsWeb) {
-        debugPrint('🔍 [WEB] saveOtherUserProfile - FAILED: $e');
+        // print('🔍 [WEB] saveOtherUserProfile - FAILED: $e');
       }
+    }
+  }
+
+  /// Returns a cached translation only when it matches the current source text,
+  /// target language AND gender context.
+  /// Entries written before the single-text dedupe fix (v1, no version marker)
+  /// are ignored so a poisoned occupation entry holding the bio translation
+  /// is re-translated instead of being served forever.
+  /// v6 evicts entries steered by the old LLM-style `context` sentences
+  /// ("The speaker is a woman..."), which DeepL documents as unreliable and
+  /// proved so in production (masculine output despite feminine instruction).
+  /// Current steering uses natural pronoun-clue sentences per DeepL's
+  /// documented effective pattern; affected entries retranslate once.
+  static const int _profileTranslationCacheVersion = 6;
+
+  Future<String?> getCachedProfileTranslation({
+    required String userId,
+    required String field,
+    required String sourceText,
+    required String targetLanguage,
+    String genderKey = '',
+  }) async {
+    try {
+      final box = await _getProfileBox();
+      final key = 'profile_translation_$userId';
+      final data = box.get(key);
+      if (data is! Map) return null;
+
+      final entry = data[field];
+      if (entry is! Map ||
+          entry['v'] != _profileTranslationCacheVersion ||
+          entry['source']?.toString() != sourceText ||
+          entry['target_language']?.toString() != targetLanguage ||
+          (entry['gender_key']?.toString() ?? '') != genderKey) {
+        return null;
+      }
+
+      final translated = entry['translated']?.toString();
+      return translated == null || translated.trim().isEmpty
+          ? null
+          : translated;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Stores a matched user's translated profile text locally by field.
+  Future<void> saveCachedProfileTranslation({
+    required String userId,
+    required String field,
+    required String sourceText,
+    required String targetLanguage,
+    required String translatedText,
+    String genderKey = '',
+  }) async {
+    try {
+      final box = await _getProfileBox();
+      final key = 'profile_translation_$userId';
+      final existing = box.get(key);
+      final data = existing is Map
+          ? Map<String, dynamic>.from(existing)
+          : <String, dynamic>{};
+      data[field] = {
+        'v': _profileTranslationCacheVersion,
+        'source': sourceText,
+        'target_language': targetLanguage,
+        'gender_key': genderKey,
+        'translated': translatedText,
+      };
+      await box.put(key, data);
+    } catch (_) {
+      // Translation caching must not affect profile rendering.
     }
   }
 
@@ -1508,21 +3547,20 @@ class LocalDbService {
 
       if (data == null) {
         if (kIsWeb) {
-          debugPrint('🔍 [WEB] getOtherUserProfile - No cached profile for user: $userId');
+          // print('🔍 [WEB] getOtherUserProfile - No cached profile for user: $userId');
         }
         return null;
       }
 
       final cachedAt = DateTime.parse(data['cached_at']);
 
-      // Cache for 1 hour (profiles don't change very often)
       final cacheDuration = await appConfigService.getDuration(
-        'cache.rules_duration_seconds',
-        defaultValue: const Duration(hours: 1)
+        'cache.profile_duration_seconds',
+        defaultValue: const Duration(minutes: 5),
       );
       if (DateTime.now().difference(cachedAt) > cacheDuration) {
         if (kIsWeb) {
-          debugPrint('🔍 [WEB] getOtherUserProfile - Cache expired for user: $userId');
+          // print('🔍 [WEB] getOtherUserProfile - Cache expired for user: $userId');
         }
         return null; // Expired
       }
@@ -1531,18 +3569,21 @@ class LocalDbService {
       final cleanData = Map<String, dynamic>.from(data)..remove('cached_at');
 
       if (kIsWeb) {
-        debugPrint('🔍 [WEB] getOtherUserProfile - Returning cached profile for user: $userId');
+        // print('🔍 [WEB] getOtherUserProfile - Returning cached profile for user: $userId');
       }
 
       return cleanData;
     } catch (e) {
-      debugPrint('LocalDb.getOtherUserProfile failed: $e');
+      // print('LocalDb.getOtherUserProfile failed: $e');
       return null;
     }
   }
 
   /// Save event attendees list to local cache
-  Future<void> saveEventAttendees(String eventId, List<Map<String, dynamic>> attendees) async {
+  Future<void> saveEventAttendees(
+    String eventId,
+    List<Map<String, dynamic>> attendees,
+  ) async {
     try {
       final box = await _getEventsBox();
       final key = 'attendees_$eventId';
@@ -1553,12 +3594,12 @@ class LocalDbService {
       await box.put(key, jsonEncode(dataToCache));
 
       if (kIsWeb) {
-        debugPrint('🔍 [WEB] saveEventAttendees - Cached ${attendees.length} attendees for event: $eventId');
+        // print('🔍 [WEB] saveEventAttendees - Cached ${attendees.length} attendees for event: $eventId');
       }
     } catch (e) {
-      debugPrint('LocalDb.saveEventAttendees failed: $e');
+      // print('LocalDb.saveEventAttendees failed: $e');
       if (kIsWeb) {
-        debugPrint('🔍 [WEB] saveEventAttendees - FAILED: $e');
+        // print('🔍 [WEB] saveEventAttendees - FAILED: $e');
       }
     }
   }
@@ -1572,7 +3613,7 @@ class LocalDbService {
 
       if (jsonString == null) {
         if (kIsWeb) {
-          debugPrint('🔍 [WEB] getEventAttendees - No cached attendees for event: $eventId');
+          // print('🔍 [WEB] getEventAttendees - No cached attendees for event: $eventId');
         }
         return null;
       }
@@ -1583,11 +3624,11 @@ class LocalDbService {
       // Cache for 15 minutes (attendee lists change more frequently)
       final cacheDuration = await appConfigService.getDuration(
         'cache.events_duration_seconds',
-        defaultValue: const Duration(minutes: 15)
+        defaultValue: const Duration(minutes: 15),
       );
       if (DateTime.now().difference(cachedAt) > cacheDuration) {
         if (kIsWeb) {
-          debugPrint('🔍 [WEB] getEventAttendees - Cache expired for event: $eventId');
+          // print('🔍 [WEB] getEventAttendees - Cache expired for event: $eventId');
         }
         return null; // Expired
       }
@@ -1597,12 +3638,12 @@ class LocalDbService {
           .toList();
 
       if (kIsWeb) {
-        debugPrint('🔍 [WEB] getEventAttendees - Returning ${attendees?.length ?? 0} cached attendees for event: $eventId');
+        // print('🔍 [WEB] getEventAttendees - Returning ${attendees?.length ?? 0} cached attendees for event: $eventId');
       }
 
       return attendees;
     } catch (e) {
-      debugPrint('LocalDb.getEventAttendees failed: $e');
+      // print('LocalDb.getEventAttendees failed: $e');
       return null;
     }
   }
@@ -1614,9 +3655,172 @@ class LocalDbService {
     await box.put('hierarchy', jsonEncode(hierarchy));
   }
 
+  Future<void> saveCachedAppIntents(List<Map<String, dynamic>> intents) async {
+    final box = await _getOptionsBox();
+    await box.put(
+      'cached_app_intents',
+      jsonEncode({
+        'items': intents,
+        'timestamp': DateTime.now().toIso8601String(),
+      }),
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getCachedAppIntents() async {
+    final box = await _getOptionsBox();
+    final stored = box.get('cached_app_intents');
+    if (stored == null) return <Map<String, dynamic>>[];
+    try {
+      final decoded = jsonDecode(stored) as Map<String, dynamic>;
+      final items = decoded['items'] as List<dynamic>? ?? const [];
+      return items
+          .map((item) => Map<String, dynamic>.from(item as Map))
+          .toList();
+    } catch (_) {
+      return <Map<String, dynamic>>[];
+    }
+  }
+
+  Future<void> saveCachedAppInterests(
+    List<Map<String, dynamic>> interests,
+  ) async {
+    final box = await _getOptionsBox();
+    await box.put(
+      'cached_app_interests',
+      jsonEncode({
+        'items': interests,
+        'timestamp': DateTime.now().toIso8601String(),
+      }),
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getCachedAppInterests() async {
+    final box = await _getOptionsBox();
+    final stored = box.get('cached_app_interests');
+    if (stored == null) return <Map<String, dynamic>>[];
+    try {
+      final decoded = jsonDecode(stored) as Map<String, dynamic>;
+      final items = decoded['items'] as List<dynamic>? ?? const [];
+      return items
+          .map((item) => Map<String, dynamic>.from(item as Map))
+          .toList();
+    } catch (_) {
+      return <Map<String, dynamic>>[];
+    }
+  }
+
+  Future<void> saveCachedGenderOptions(
+    List<Map<String, String>> genderOptions,
+  ) async {
+    final box = await _getOptionsBox();
+    await box.put(
+      'cached_gender_options',
+      jsonEncode({
+        'items': genderOptions,
+        'timestamp': DateTime.now().toIso8601String(),
+      }),
+    );
+  }
+
+  Future<List<Map<String, String>>> getCachedGenderOptions() async {
+    final box = await _getOptionsBox();
+    final stored = box.get('cached_gender_options');
+    if (stored == null) return <Map<String, String>>[];
+    try {
+      final decoded = jsonDecode(stored) as Map<String, dynamic>;
+      final items = decoded['items'] as List<dynamic>? ?? const [];
+      return items
+          .map(
+            (item) => Map<String, String>.from(
+              (item as Map).map(
+                (key, value) =>
+                    MapEntry(key.toString(), value?.toString() ?? ''),
+              ),
+            ),
+          )
+          .toList();
+    } catch (_) {
+      return <Map<String, String>>[];
+    }
+  }
+
   Future<Box> _getOptionsBox() async {
-    if (_optionsBox == null) await init();
+    if (_optionsBox == null) {
+      await init();
+      _optionsBox ??= await HiveEncryptionService.instance
+          .openEncryptedBoxDynamic(_kOptionsBox);
+    }
     return _optionsBox!;
+  }
+
+  /// Cache profile option rows (app_profile_options) for offline-first startup.
+  /// Memory layer lives in the Riverpod providers; this is the local-storage
+  /// layer. Stored with a timestamp so providers can stale-while-revalidate.
+  Future<void> saveCachedProfileOptions(
+    List<Map<String, dynamic>> options,
+  ) async {
+    try {
+      final box = await _getOptionsBox();
+      await box.put(
+        'cached_profile_options',
+        jsonEncode({
+          'items': options,
+          'timestamp': DateTime.now().toIso8601String(),
+        }),
+      );
+    } catch (_) {}
+  }
+
+  Future<List<Map<String, dynamic>>> getCachedProfileOptions() async {
+    try {
+      final box = await _getOptionsBox();
+      final stored = box.get('cached_profile_options');
+      if (stored == null) return <Map<String, dynamic>>[];
+      final decoded = jsonDecode(stored) as Map<String, dynamic>;
+      final items = decoded['items'] as List<dynamic>? ?? const [];
+      return items
+          .map((item) => Map<String, dynamic>.from(item as Map))
+          .toList();
+    } catch (_) {
+      return <Map<String, dynamic>>[];
+    }
+  }
+
+  /// Cache intent-specific profile snapshot (bio + sub-intents + interests)
+  /// per user+intent so MatchProfileScreen renders instantly from disk.
+  Future<void> saveCachedSpecificProfile(
+    String userId,
+    String intentType,
+    Map<String, dynamic> data,
+  ) async {
+    try {
+      final id = userId.trim();
+      final intent = intentType.trim();
+      if (id.isEmpty || intent.isEmpty) return;
+      final box = await _getOptionsBox();
+      await box.put(
+        'specific_profile_${id}_$intent',
+        jsonEncode({...data, 'cached_at': DateTime.now().toIso8601String()}),
+      );
+    } catch (_) {}
+  }
+
+  Future<Map<String, dynamic>?> getCachedSpecificProfile(
+    String userId,
+    String intentType,
+  ) async {
+    try {
+      final id = userId.trim();
+      final intent = intentType.trim();
+      if (id.isEmpty || intent.isEmpty) return null;
+      final box = await _getOptionsBox();
+      final stored = box.get('specific_profile_${id}_$intent');
+      if (stored == null) return null;
+      final decoded = jsonDecode(stored) as Map<String, dynamic>;
+      return Map<String, dynamic>.from(decoded)..remove('cached_at');
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Get the cached option hierarchy, or null if none.
@@ -1664,11 +3868,14 @@ class LocalDbService {
   Future<List<Map<String, dynamic>>> getIntentRoots(String intentKey) async {
     final cached = await getOptionHierarchy();
     if (cached == null) return [];
-    final intents = (cached['intents'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+    final intents =
+        (cached['intents'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ??
+        [];
     final matched = intents.where((i) {
       final key = (i['intent_key'] ?? '').toString();
       final display = (i['display_name_key'] ?? '').toString();
-      return key.toLowerCase() == intentKey.toLowerCase() || display.toLowerCase() == intentKey.toLowerCase();
+      return key.toLowerCase() == intentKey.toLowerCase() ||
+          display.toLowerCase() == intentKey.toLowerCase();
     }).toList();
 
     if (matched.isEmpty) return [];
@@ -1696,41 +3903,62 @@ class LocalDbService {
     const prefix = 'interest_category_';
     if (parentId.startsWith(prefix)) {
       final catKey = parentId.substring(prefix.length);
-      final categories = (cached['interests'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+      final categories =
+          (cached['interests'] as List<dynamic>?)
+              ?.cast<Map<String, dynamic>>() ??
+          [];
       final match = categories.firstWhere(
-        (c) => (c['categoryKey']?.toString() ?? '') == catKey || (c['categoryDisplayKey']?.toString() ?? '') == catKey,
+        (c) =>
+            (c['categoryKey']?.toString() ?? '') == catKey ||
+            (c['categoryDisplayKey']?.toString() ?? '') == catKey,
         orElse: () => <String, dynamic>{},
       );
       if (match.isEmpty) return [];
-      final items = (match['items'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+      final items =
+          (match['items'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ??
+          [];
       return items.map((it) {
         return <String, dynamic>{
           'id': '',
           'node_key': it['interest_key'] ?? it['interestKey'] ?? '',
           'node_type': 'interest',
-          'display_key': it['interest_display_key'] ?? it['interestDisplayKey'] ?? '',
-          'sort_order': it['interest_sort_order'] ?? it['interestSortOrder'] ?? 0,
+          'display_key':
+              it['interest_display_key'] ?? it['interestDisplayKey'] ?? '',
+          'sort_order':
+              it['interest_sort_order'] ?? it['interestSortOrder'] ?? 0,
         };
       }).toList();
     }
 
     // If parentId equals an intent key (node_key), return subIntentKeys when available in cache
-    final intents = (cached['intents'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+    final intents =
+        (cached['intents'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ??
+        [];
     final matchIntent = intents.firstWhere(
-      (i) => (i['intent_key']?.toString() ?? '') == parentId || (i['display_name_key']?.toString() ?? '') == parentId,
+      (i) =>
+          (i['intent_key']?.toString() ?? '') == parentId ||
+          (i['display_name_key']?.toString() ?? '') == parentId,
       orElse: () => <String, dynamic>{},
     );
     if (matchIntent.isNotEmpty) {
-      final subkeys = (matchIntent['sub_intent_keys'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [];
-      return subkeys.map((sk) {
-        return <String, dynamic>{
+      final subkeys = <String>[];
+      final raw = matchIntent['sub_intent_keys'] as List<dynamic>?;
+      if (raw != null) {
+        for (final e in raw) {
+          subkeys.add(e.toString());
+        }
+      }
+      final result = <Map<String, dynamic>>[];
+      for (final sk in subkeys) {
+        result.add(<String, dynamic>{
           'id': '',
           'node_key': sk,
           'node_type': 'subintent',
           'display_key': sk,
           'sort_order': 0,
-        };
-      }).toList();
+        });
+      }
+      return result;
     }
 
     // No matching cached children
@@ -1740,7 +3968,11 @@ class LocalDbService {
   /// Search cached options (intents + categories + interest items) for a query.
   /// Returns a list of maps with keys similar to the server RPC:
   /// { interest_key, interest_display, category_key, category_display }
-  Future<List<Map<String, dynamic>>> searchOptions(String query, {int limit = 50, String lang = 'en'}) async {
+  Future<List<Map<String, dynamic>>> searchOptions(
+    String query, {
+    int limit = 50,
+    String lang = 'en',
+  }) async {
     final q = query.trim().toLowerCase();
     if (q.isEmpty) return [];
 
@@ -1750,14 +3982,20 @@ class LocalDbService {
     final List<Map<String, dynamic>> results = [];
 
     // Search interest categories/items
-    final categories = (cached['interests'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+    final categories =
+        (cached['interests'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ??
+        [];
     for (var cat in categories) {
       final catKey = (cat['categoryKey'] ?? '').toString();
       final catDisplayKey = (cat['categoryDisplayKey'] ?? '').toString();
-      final items = (cat['items'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+      final items =
+          (cat['items'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
       for (var item in items) {
-        final interestKey = (item['interest_key'] ?? item['interestKey'] ?? '').toString();
-        final interestDisplayKey = (item['interest_display_key'] ?? item['interestDisplayKey'] ?? '').toString();
+        final interestKey = (item['interest_key'] ?? item['interestKey'] ?? '')
+            .toString();
+        final interestDisplayKey =
+            (item['interest_display_key'] ?? item['interestDisplayKey'] ?? '')
+                .toString();
 
         // Match on keys or display keys (these are translation keys; UI will resolve translations)
         final matchCandidates = [
@@ -1779,11 +4017,16 @@ class LocalDbService {
     }
 
     // Also search intents by key/display_key
-    final intents = (cached['intents'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ?? [];
+    final intents =
+        (cached['intents'] as List<dynamic>?)?.cast<Map<String, dynamic>>() ??
+        [];
     for (var intent in intents) {
       final intentKey = (intent['intent_key'] ?? '').toString();
       final intentDisplay = (intent['display_name_key'] ?? '').toString();
-      if ([intentKey.toLowerCase(), intentDisplay.toLowerCase()].any((c) => c.contains(q))) {
+      if ([
+        intentKey.toLowerCase(),
+        intentDisplay.toLowerCase(),
+      ].any((c) => c.contains(q))) {
         // Represent an intent match as a pseudo-result (no category)
         results.add({
           'interest_key': intentKey,
@@ -1801,7 +4044,14 @@ class LocalDbService {
   // --- Location Storage ---
 
   /// Save the current location for a user
-  Future<void> saveCurrentLocation(String userId, double latitude, double longitude, {double? speed, double? heading, DateTime? timestamp}) async {
+  Future<void> saveCurrentLocation(
+    String userId,
+    double latitude,
+    double longitude, {
+    double? speed,
+    double? heading,
+    DateTime? timestamp,
+  }) async {
     final box = await _getProfileBox();
     final locationData = {
       'latitude': latitude,
@@ -1825,10 +4075,158 @@ class LocalDbService {
     }
   }
 
+  // --- Offline trail (places recorded while offline, for retroactive matching) ---
+  // Stored per user, pruned by the user's own chosen retention. Wiped on upload
+  // ack, on feature disable, on "delete now", and on logout.
+
+  /// Append one offline place. Applies stationary dedup (skip if <10m within 60s
+  /// of last point) and caps the box at [_kOfflineTrailMaxPoints] (drops oldest).
+  Future<void> appendOfflineTrailPoint(
+    String userId,
+    double latitude,
+    double longitude, {
+    double? accuracy,
+    double? speed,
+    double? heading,
+    DateTime? recordedAt,
+  }) async {
+    final box = await _getOfflineTrailBox();
+    final now = (recordedAt ?? DateTime.now()).toUtc();
+    final prefix = '${userId}_';
+    try {
+      // Dedup against latest point for this user
+      String? latestKey;
+      for (final k in box.keys) {
+        if (k is String && k.startsWith(prefix)) {
+          if (latestKey == null || k.compareTo(latestKey) > 0) latestKey = k;
+        }
+      }
+      if (latestKey != null) {
+        try {
+          final prev = jsonDecode(box.get(latestKey)!) as Map<String, dynamic>;
+          final pLat = (prev['lat'] as num?)?.toDouble();
+          final pLng = (prev['lng'] as num?)?.toDouble();
+          final pTs = DateTime.tryParse(prev['recorded_at']?.toString() ?? '');
+          if (pLat != null && pLng != null && pTs != null) {
+            final dt = now.difference(pTs.toUtc()).abs();
+            if (dt < const Duration(seconds: 60)) {
+              // Rough equirectangular distance (no extra imports)
+              const mPerDegLat = 111320.0;
+              final dLat = (latitude - pLat) * mPerDegLat;
+              final dLng = (longitude - pLng) * 111320.0 * 0.8;
+              if ((dLat * dLat + dLng * dLng) < 100.0) return; // <10m
+            }
+          }
+        } catch (_) {}
+      }
+      final key = '$prefix${now.millisecondsSinceEpoch}';
+      await box.put(
+        key,
+        jsonEncode({
+          'lat': latitude,
+          'lng': longitude,
+          'recorded_at': now.toIso8601String(),
+          'accuracy': accuracy,
+          'speed': speed,
+          'heading': heading,
+        }),
+      );
+      // Cap: drop oldest beyond max
+      final userKeys =
+          box.keys
+              .whereType<String>()
+              .where((k) => k.startsWith(prefix))
+              .toList()
+            ..sort();
+      if (userKeys.length > _kOfflineTrailMaxPoints) {
+        final overflow = userKeys.length - _kOfflineTrailMaxPoints;
+        for (var i = 0; i < overflow; i++) {
+          await box.delete(userKeys[i]);
+        }
+      }
+    } catch (_) {}
+  }
+
+  /// All kept points for [userId], oldest first.
+  Future<List<Map<String, dynamic>>> getOfflineTrail(String userId) async {
+    try {
+      final box = await _getOfflineTrailBox();
+      final prefix = '${userId}_';
+      final keys =
+          box.keys
+              .whereType<String>()
+              .where((k) => k.startsWith(prefix))
+              .toList()
+            ..sort();
+      final out = <Map<String, dynamic>>[];
+      for (final k in keys) {
+        try {
+          out.add(jsonDecode(box.get(k)!) as Map<String, dynamic>);
+        } catch (_) {}
+      }
+      return out;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<int> getOfflineTrailCount(String userId) async {
+    try {
+      final box = await _getOfflineTrailBox();
+      final prefix = '${userId}_';
+      var n = 0;
+      for (final k in box.keys) {
+        if (k is String && k.startsWith(prefix)) n++;
+      }
+      return n;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  /// Drop points older than [retention] (used when the chosen time is lowered).
+  Future<void> pruneOfflineTrail(String userId, Duration retention) async {
+    try {
+      final box = await _getOfflineTrailBox();
+      final prefix = '${userId}_';
+      final cutoff = DateTime.now().toUtc().subtract(retention);
+      final keys = box.keys
+          .whereType<String>()
+          .where((k) => k.startsWith(prefix))
+          .toList();
+      for (final k in keys) {
+        try {
+          final m = jsonDecode(box.get(k)!) as Map<String, dynamic>;
+          final ts = DateTime.tryParse(m['recorded_at']?.toString() ?? '');
+          if (ts == null || ts.toUtc().isBefore(cutoff)) await box.delete(k);
+        } catch (_) {
+          await box.delete(k);
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> clearOfflineTrail(String userId) async {
+    try {
+      final box = await _getOfflineTrailBox();
+      final prefix = '${userId}_';
+      final keys = box.keys
+          .whereType<String>()
+          .where((k) => k.startsWith(prefix))
+          .toList();
+      for (final k in keys) {
+        await box.delete(k);
+      }
+    } catch (_) {}
+  }
+
   // --- Events Caching ---
 
   /// Save user events to local cache with timestamp
-  Future<void> saveUserEvents(String userId, List<Map<String, dynamic>> events) async {
+  Future<void> saveUserEvents(
+    String userId,
+    List<Map<String, dynamic>> events,
+  ) async {
     final box = await _getEventsBox();
     final cacheData = {
       'events': events,
@@ -1838,8 +4236,12 @@ class LocalDbService {
     await box.put(userId, jsonEncode(cacheData));
   }
 
-  /// Get cached user events if not stale (within 5 minutes)
-  Future<List<Map<String, dynamic>>?> getCachedUserEvents(String userId, {Duration maxAge = const Duration(minutes: 5)}) async {
+  /// Get cached user events.
+  /// When [maxAge] is null, returns the latest cached events regardless of age.
+  Future<List<Map<String, dynamic>>?> getCachedUserEvents(
+    String userId, {
+    Duration? maxAge,
+  }) async {
     final box = await _getEventsBox();
     final data = box.get(userId);
     if (data == null) return null;
@@ -1849,8 +4251,10 @@ class LocalDbService {
       final timestamp = DateTime.parse(cacheData['timestamp'] as String);
       final cachedUserId = cacheData['userId'] as String;
 
-      // Check if cache is for the right user and not stale
-      if (cachedUserId != userId || DateTime.now().difference(timestamp) > maxAge) {
+      final isExpired =
+          maxAge != null && DateTime.now().difference(timestamp) > maxAge;
+
+      if (cachedUserId != userId || isExpired) {
         return null;
       }
 
@@ -1867,7 +4271,8 @@ class LocalDbService {
     if (currentData != null) {
       try {
         final cacheData = jsonDecode(currentData) as Map<String, dynamic>;
-        final events = (cacheData['events'] as List).cast<Map<String, dynamic>>();
+        final events = (cacheData['events'] as List)
+            .cast<Map<String, dynamic>>();
         yield events;
       } catch (_) {
         yield null;
@@ -1892,7 +4297,10 @@ class LocalDbService {
   // --- Settings Caching ---
 
   /// Save user settings to local cache
-  Future<void> saveUserSettings(String userId, Map<String, dynamic> settings) async {
+  Future<void> saveUserSettings(
+    String userId,
+    Map<String, dynamic> settings,
+  ) async {
     final box = await _getSettingsBox();
     final cacheData = {
       'settings': settings,
@@ -1919,10 +4327,172 @@ class LocalDbService {
     }
   }
 
+  /// Save subscription queue history for offline subscription screens.
+  Future<void> saveSubscriptionQueueHistory(
+    String userId,
+    List<Map<String, dynamic>> entries,
+  ) async {
+    final box = await _getSettingsBox();
+    final cacheData = {
+      'userId': userId,
+      'timestamp': DateTime.now().toIso8601String(),
+      'entries': entries,
+    };
+    await box.put('subscription_queue_history_$userId', jsonEncode(cacheData));
+  }
+
+  /// Get cached subscription queue history for a user.
+  Future<List<Map<String, dynamic>>?> getSubscriptionQueueHistory(
+    String userId,
+  ) async {
+    final box = await _getSettingsBox();
+    final data = box.get('subscription_queue_history_$userId');
+    if (data == null) return null;
+
+    try {
+      final cacheData = jsonDecode(data) as Map<String, dynamic>;
+      final cachedUserId = cacheData['userId'] as String?;
+      if (cachedUserId != userId) return null;
+
+      final entries = cacheData['entries'];
+      if (entries is! List) return null;
+
+      return entries
+          .whereType<Map>()
+          .map((entry) => Map<String, dynamic>.from(entry))
+          .toList();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Save subscription tiers for offline paywall screen.
+  /// Tiers are global (not per-user) so we cache them under a fixed key.
+  Future<void> saveSubscriptionTiers(List<Map<String, dynamic>> tiers) async {
+    final box = await _getSettingsBox();
+    final cacheData = {
+      'timestamp': DateTime.now().toIso8601String(),
+      'tiers': tiers,
+    };
+    await box.put(_kSubscriptionTiersKey, jsonEncode(cacheData));
+  }
+
+  /// Get cached subscription tiers. Returns null if no cache exists.
+  Future<List<Map<String, dynamic>>?> getSubscriptionTiers() async {
+    final box = await _getSettingsBox();
+    final data = box.get(_kSubscriptionTiersKey);
+    if (data == null) return null;
+    try {
+      final cacheData = jsonDecode(data) as Map<String, dynamic>;
+      final tiers = cacheData['tiers'];
+      if (tiers is! List) return null;
+      return tiers
+          .whereType<Map>()
+          .map((tier) => Map<String, dynamic>.from(tier))
+          .toList();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Watch cached subscription tiers. Emits the current cached value
+  /// immediately (if any), then re-emits whenever the underlying box entry
+  /// is updated. Emits `null` if no cached value exists yet.
+  Stream<List<Map<String, dynamic>>?> watchSubscriptionTiers() async* {
+    final box = await _getSettingsBox();
+    final current = box.get(_kSubscriptionTiersKey);
+    if (current == null) {
+      yield null;
+    } else {
+      try {
+        final cacheData = jsonDecode(current) as Map<String, dynamic>;
+        final tiers = cacheData['tiers'];
+        if (tiers is List) {
+          yield tiers
+              .whereType<Map>()
+              .map((tier) => Map<String, dynamic>.from(tier))
+              .toList();
+        } else {
+          yield null;
+        }
+      } catch (_) {
+        yield null;
+      }
+    }
+    yield* box.watch(key: _kSubscriptionTiersKey).map((event) {
+      if (event.deleted || event.value == null) return null;
+      try {
+        final cacheData =
+            jsonDecode(event.value as String) as Map<String, dynamic>;
+        final tiers = cacheData['tiers'];
+        if (tiers is! List) return null;
+        return tiers
+            .whereType<Map>()
+            .map((tier) => Map<String, dynamic>.from(tier))
+            .toList();
+      } catch (_) {
+        return null;
+      }
+    });
+  }
+
+  /// Watch cached subscription queue history for a user. Emits the current
+  /// cached value immediately (if any), then re-emits whenever the underlying
+  /// box entry is updated. Emits `null` if no cached value exists yet.
+  Stream<List<Map<String, dynamic>>?> watchSubscriptionQueueHistory(
+    String userId,
+  ) async* {
+    final box = await _getSettingsBox();
+    final key = 'subscription_queue_history_$userId';
+    final current = box.get(key);
+    if (current == null) {
+      yield null;
+    } else {
+      try {
+        final cacheData = jsonDecode(current) as Map<String, dynamic>;
+        final cachedUserId = cacheData['userId'] as String?;
+        if (cachedUserId != userId) {
+          yield null;
+        } else {
+          final entries = cacheData['entries'];
+          if (entries is List) {
+            yield entries
+                .whereType<Map>()
+                .map((entry) => Map<String, dynamic>.from(entry))
+                .toList();
+          } else {
+            yield null;
+          }
+        }
+      } catch (_) {
+        yield null;
+      }
+    }
+    yield* box.watch(key: key).map((event) {
+      if (event.deleted || event.value == null) return null;
+      try {
+        final cacheData = jsonDecode(event.value) as Map<String, dynamic>;
+        final cachedUserId = cacheData['userId'] as String?;
+        if (cachedUserId != userId) return null;
+        final entries = cacheData['entries'];
+        if (entries is! List) return null;
+        return entries
+            .whereType<Map>()
+            .map((entry) => Map<String, dynamic>.from(entry))
+            .toList();
+      } catch (_) {
+        return null;
+      }
+    });
+  }
+
   // --- Translations Caching ---
 
   /// Save translations for a language to local cache
-  Future<void> saveTranslations(String languageCode, Map<String, String> translations) async {
+  Future<void> saveTranslations(
+    String languageCode,
+    Map<String, String> translations,
+  ) async {
     final box = await _getTranslationsBox();
     final cacheData = {
       'translations': translations,
@@ -1933,7 +4503,9 @@ class LocalDbService {
   }
 
   /// Get cached translations for a language
-  Future<Map<String, String>?> getCachedTranslations(String languageCode) async {
+  Future<Map<String, String>?> getCachedTranslations(
+    String languageCode,
+  ) async {
     final box = await _getTranslationsBox();
     final data = box.get(languageCode);
     if (data == null) return null;
@@ -1950,14 +4522,18 @@ class LocalDbService {
   }
 
   /// Clear translation settings for a specific chat (when chat is deleted)
-  Future<void> clearChatTranslationSettings(String userId, String matchId) async {
+  Future<void> clearChatTranslationSettings(
+    String userId,
+    String matchId,
+  ) async {
     final box = await _getChatsBox();
     final key = 'recent_chats_$userId';
     final current = box.get(key);
     if (current == null) return;
 
     try {
-      final List<Map<String, dynamic>> parsed = (jsonDecode(current) as List).cast<Map<String, dynamic>>();
+      final List<Map<String, dynamic>> parsed = (jsonDecode(current) as List)
+          .cast<Map<String, dynamic>>();
       final updated = parsed.where((c) {
         return (c['match_id']?.toString() ?? '') != matchId;
       }).toList();
@@ -1965,10 +4541,10 @@ class LocalDbService {
       if (updated.length != parsed.length) {
         // Chat was removed - save the updated list
         await box.put(key, jsonEncode(updated));
-        debugPrint('🗑️ Cleared chat translation settings for $matchId');
+        // print('🗑️ Cleared chat translation settings for $matchId');
       }
     } catch (e) {
-      debugPrint('🗑️ Error clearing chat translation settings: $e');
+      // print('🗑️ Error clearing chat translation settings: $e');
     }
   }
 
@@ -1977,27 +4553,32 @@ class LocalDbService {
     final box = await _getChatsBox();
     final key = 'recent_chats_$userId';
     await box.delete(key);
-    debugPrint('🗑️ Cleared all chats for user $userId');
+    // print('🗑️ Cleared all chats for user $userId');
   }
 
   /// Clear all messages for a specific chat
   Future<void> clearChatMessages(String matchId) async {
     final box = await _getMessagesBox();
-    final key = 'chat_messages_$matchId';
-    await box.delete(key);
-    debugPrint('🗑️ Cleared all messages for chat $matchId');
+    await box.delete(matchId);
+    // print('🗑️ Cleared all messages for chat $matchId');
   }
 
   /// Reset translation settings for a chat to defaults when syncing from server
   /// This ensures local cache matches database state
-  Future<void> syncChatTranslationSettings(String userId, String matchId, bool translationEnabled, String? translationLanguage) async {
+  Future<void> syncChatTranslationSettings(
+    String userId,
+    String matchId,
+    bool translationEnabled,
+    String? translationLanguage,
+  ) async {
     final box = await _getChatsBox();
     final key = 'recent_chats_$userId';
     final current = box.get(key);
     if (current == null) return;
 
     try {
-      final List<Map<String, dynamic>> parsed = (jsonDecode(current) as List).cast<Map<String, dynamic>>();
+      final List<Map<String, dynamic>> parsed = (jsonDecode(current) as List)
+          .cast<Map<String, dynamic>>();
       final updated = parsed.map((c) {
         if ((c['match_id']?.toString() ?? '') == matchId) {
           final copy = Map<String, dynamic>.from(c);
@@ -2010,37 +4591,65 @@ class LocalDbService {
 
       await box.put(key, jsonEncode(updated));
     } catch (e) {
-      debugPrint('🔄 Error syncing translation settings: $e');
+      // print('🔄 Error syncing translation settings: $e');
     }
   }
 
   /// Recompute the chat's last message preview from the current list of messages for the match.
   /// This updates the chat entry with the latest message's content, ID, and timestamp.
-  Future<void> recomputeChatLastMessagePreviewFromMessages(String userId, String matchId) async {
+  Future<void> recomputeChatLastMessagePreviewFromMessages(
+    String userId,
+    String matchId,
+  ) async {
     try {
       // Get all messages for this match
       final messages = await getMessages(matchId);
       if (messages.isEmpty) {
-        // No messages, nothing to update
+        // No messages left — delete the chat entry so it disappears from
+        // Recent Chats / Chats screen immediately (not just blank).
+        await deleteChat(matchId, userId: userId);
         return;
       }
 
       // Find the latest message by created_at
       messages.sort((a, b) {
-        final aDate = DateTime.tryParse(a['created_at'] ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
-        final bDate = DateTime.tryParse(b['created_at'] ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final aDate =
+            DateTime.tryParse(a['created_at'] ?? '') ??
+            DateTime.fromMillisecondsSinceEpoch(0);
+        final bDate =
+            DateTime.tryParse(b['created_at'] ?? '') ??
+            DateTime.fromMillisecondsSinceEpoch(0);
         return bDate.compareTo(aDate);
       });
 
       final latestMessage = messages.first;
       final latestId = latestMessage['id']?.toString();
       final latestContent = latestMessage['content_original']?.toString() ?? '';
+      final latestTranslated =
+          looksLikeEncryptedBlob(
+            latestMessage['content_translated']?.toString() ??
+                latestMessage['translated_text']?.toString(),
+          )
+          ? ''
+          : (latestMessage['content_translated']?.toString() ??
+                latestMessage['translated_text']?.toString() ??
+                '');
+      final latestSourceLang = latestMessage['detected_source_language']
+          ?.toString();
       final latestSenderId = latestMessage['sender_id']?.toString();
       final latestCreatedAt = latestMessage['created_at']?.toString();
+      // The content version this preview describes. Everything cached "for the
+      // last message" has to be re-checked against it, because an edit keeps
+      // `last_message_id` unchanged.
+      final latestEditedAt = normalizeEditMarker(latestMessage['edited_at']);
 
-      if (latestId == null || latestContent.isEmpty) {
+      // Return early only if we have no message ID and no content at all
+      if (latestId == null) {
         return;
       }
+
+      // We still proceed even if latestContent is empty because we might have translated content
+      // to update (e.g., after decryption of encrypted messages)
 
       // Update the chat entry with the latest message info
       final box = await _getChatsBox();
@@ -2049,20 +4658,70 @@ class LocalDbService {
       if (current == null) return;
 
       try {
-        final List<Map<String, dynamic>> chats = (jsonDecode(current) as List).cast<Map<String, dynamic>>();
+        final List<Map<String, dynamic>> chats = (jsonDecode(current) as List)
+            .cast<Map<String, dynamic>>();
         bool updated = false;
 
         for (int i = 0; i < chats.length; i++) {
           if ((chats[i]['match_id']?.toString() ?? '') == matchId) {
             final previousLastId = chats[i]['last_message_id']?.toString();
-            final previousLastMessage = chats[i]['last_message']?.toString();
+            final previousLastTranslated = chats[i]['last_message_translated']
+                ?.toString();
+            final previousTranslatedMarker =
+                chats[i]['last_message_translated_edited_at']?.toString();
             chats[i]['last_message_id'] = latestId;
             chats[i]['last_message'] = latestContent;
             if (latestSenderId != null && latestSenderId.isNotEmpty) {
               chats[i]['last_message_sender_id'] = latestSenderId;
             }
-            if ((previousLastId != latestId || previousLastMessage != latestContent) && chats[i].containsKey('last_message_translated')) {
+            // Set source language for translation decision logic
+            if (latestSourceLang != null && latestSourceLang.isNotEmpty) {
+              chats[i]['last_message_source_language'] = latestSourceLang;
+            }
+            if (latestEditedAt != null) {
+              chats[i]['last_message_edited_at'] = latestEditedAt;
+            }
+
+            // Sync translation settings
+            chats[i]['translation_enabled'] =
+                latestMessage['translation_enabled'] ??
+                chats[i]['translation_enabled'] ??
+                false;
+            chats[i]['translation_language'] =
+                latestMessage['translation_language'] ??
+                chats[i]['translation_language'];
+
+            // Set translated preview from the latest message if available
+            if (latestTranslated.isNotEmpty) {
+              chats[i]['last_message_translated'] = latestTranslated;
+              // Same content version the cached text describes.
+              if (latestEditedAt != null) {
+                chats[i]['last_message_translated_edited_at'] = latestEditedAt;
+              } else {
+                chats[i].remove('last_message_translated_edited_at');
+              }
+            } else if (previousLastTranslated != null &&
+                previousLastTranslated.isNotEmpty &&
+                previousLastId == latestId &&
+                translationEditMarkersMatch(
+                  previousTranslatedMarker,
+                  latestEditedAt,
+                )) {
+              // Preserve existing translation: same message and made for the
+              // content it currently has. An edit sets `edited_at`, which
+              // mismatches the marker and falls through to the removal below —
+              // without this check a pre-edit translation outlived every sync
+              // and kept rendering in the Recent Chats row.
+              chats[i]['last_message_translated'] = previousLastTranslated;
+              if (previousTranslatedMarker != null) {
+                chats[i]['last_message_translated_edited_at'] =
+                    previousTranslatedMarker;
+              }
+            } else {
+              // New message without translation - remove stale translation
               chats[i].remove('last_message_translated');
+              chats[i].remove('last_message_target_language');
+              chats[i].remove('last_message_translated_edited_at');
             }
             if (latestCreatedAt != null) {
               chats[i]['last_message_at'] = latestCreatedAt;
@@ -2074,32 +4733,37 @@ class LocalDbService {
 
         if (updated) {
           await box.put(key, jsonEncode(chats));
-          debugPrint('✅ Recomputed chat preview for $matchId: message_id=$latestId');
+          // print('✅ Recomputed chat preview for $matchId: message_id=$latestId');
         }
       } catch (e) {
-        debugPrint('❌ Error recomputing chat preview: $e');
+        // print('❌ Error recomputing chat preview: $e');
       }
     } catch (e) {
-      debugPrint('❌ recomputeChatLastMessagePreviewFromMessages failed: $e');
+      // print('❌ recomputeChatLastMessagePreviewFromMessages failed: $e');
     }
   }
 
   /// Recalculate unread count for a chat based on messages in local DB
   /// This counts messages from the other user where read_at IS NULL
-  Future<void> recomputeChatUnreadCountFromMessages(String userId, String matchId) async {
+  Future<void> recomputeChatUnreadCountFromMessages(
+    String userId,
+    String matchId,
+  ) async {
     try {
       // Get all messages for this match
       final messages = await getMessages(matchId);
-      
+
       // Count unread messages from the other user
       // (messages where read_at IS NULL and sender_id != userId)
       int unreadCount = 0;
       for (final msg in messages) {
         final senderId = msg['sender_id']?.toString();
         final readAt = msg['read_at'];
-        
+
         // Count messages from other user that are unread
-        if (senderId != null && senderId != userId && (readAt == null || readAt.isEmpty)) {
+        if (senderId != null &&
+            senderId != userId &&
+            (readAt == null || readAt.isEmpty)) {
           unreadCount++;
         }
       }
@@ -2111,14 +4775,15 @@ class LocalDbService {
       if (current == null) return;
 
       try {
-        final List<Map<String, dynamic>> chats = (jsonDecode(current) as List).cast<Map<String, dynamic>>();
+        final List<Map<String, dynamic>> chats = (jsonDecode(current) as List)
+            .cast<Map<String, dynamic>>();
         bool updated = false;
 
         for (int i = 0; i < chats.length; i++) {
           if ((chats[i]['match_id']?.toString() ?? '') == matchId) {
-            final oldUnreadCount = chats[i]['unread_count'] ?? 0;
+            final _ = chats[i]['unread_count'] ?? 0;
             chats[i]['unread_count'] = unreadCount;
-            debugPrint('🔄 Recomputed unread_count for $matchId: $oldUnreadCount → $unreadCount');
+            // print('🔄 Recomputed unread_count for $matchId: $_ → $unreadCount');
             updated = true;
             break;
           }
@@ -2128,16 +4793,17 @@ class LocalDbService {
           await box.put(key, jsonEncode(chats));
         }
       } catch (e) {
-        debugPrint('❌ Error recomputing unread count: $e');
+        // print('❌ Error recomputing unread count: $e');
       }
     } catch (e) {
-      debugPrint('❌ recomputeChatUnreadCountFromMessages failed: $e');
+      // print('❌ recomputeChatUnreadCountFromMessages failed: $e');
     }
   }
 
-
   /// Get other user profile with cache metadata (includes cached_at timestamp)
-  Future<Map<String, dynamic>?> getOtherUserProfileWithCacheMeta(String userId) async {
+  Future<Map<String, dynamic>?> getOtherUserProfileWithCacheMeta(
+    String userId,
+  ) async {
     try {
       final box = await _getProfileBox();
       final key = 'other_user_$userId';
@@ -2145,19 +4811,25 @@ class LocalDbService {
       if (data == null) return null;
       return Map<String, dynamic>.from(data);
     } catch (e) {
-      debugPrint('LocalDb.getOtherUserProfileWithCacheMeta failed: $e');
+      // print('LocalDb.getOtherUserProfileWithCacheMeta failed: $e');
       return null;
     }
   }
 
   /// Save profile wizard draft data
-  Future<void> saveProfileWizardDraft(String userId, Map<String, dynamic> draftData) async {
+  Future<void> saveProfileWizardDraft(
+    String userId,
+    Map<String, dynamic> draftData,
+  ) async {
     try {
       final box = await _getSettingsBox();
       final key = 'profile_wizard_draft_$userId';
       await box.put(key, jsonEncode(draftData));
+      // Force pending writes to disk so a force-killed app does not lose the
+      // wizard draft (e.g. the user shuts down the app mid-wizard).
+      await box.flush();
     } catch (e) {
-      debugPrint('LocalDb.saveProfileWizardDraft failed: $e');
+      // print('LocalDb.saveProfileWizardDraft failed: $e');
     }
   }
 
@@ -2170,7 +4842,7 @@ class LocalDbService {
       if (data == null) return null;
       return jsonDecode(data) as Map<String, dynamic>;
     } catch (e) {
-      debugPrint('LocalDb.loadProfileWizardDraft failed: $e');
+      // print('LocalDb.loadProfileWizardDraft failed: $e');
       return null;
     }
   }
@@ -2182,7 +4854,7 @@ class LocalDbService {
       final key = 'profile_wizard_draft_$userId';
       await box.delete(key);
     } catch (e) {
-      debugPrint('LocalDb.clearProfileWizardDraft failed: $e');
+      // print('LocalDb.clearProfileWizardDraft failed: $e');
     }
   }
 
@@ -2192,7 +4864,7 @@ class LocalDbService {
       final box = await _getSettingsBox();
       await box.put('pending_referral_code', code);
     } catch (e) {
-      debugPrint('LocalDb.savePendingReferralCode failed: $e');
+      // print('LocalDb.savePendingReferralCode failed: $e');
     }
   }
 
@@ -2203,7 +4875,7 @@ class LocalDbService {
       final code = box.get('pending_referral_code');
       return code is String ? code : null;
     } catch (e) {
-      debugPrint('LocalDb.getPendingReferralCode failed: $e');
+      // print('LocalDb.getPendingReferralCode failed: $e');
       return null;
     }
   }
@@ -2214,12 +4886,283 @@ class LocalDbService {
       final box = await _getSettingsBox();
       await box.delete('pending_referral_code');
     } catch (e) {
-      debugPrint('LocalDb.clearPendingReferralCode failed: $e');
+      // print('LocalDb.clearPendingReferralCode failed: $e');
+    }
+  }
+
+  Future<void> saveCachedReferralCode(String userId, String code) async {
+    try {
+      final trimmedUserId = userId.trim();
+      final trimmedCode = code.trim();
+      if (trimmedUserId.isEmpty || trimmedCode.isEmpty) return;
+      final box = await _getSettingsBox();
+      await box.put('referral_code_$trimmedUserId', trimmedCode);
+    } catch (e) {
+      // print('LocalDb.saveCachedReferralCode failed: $e');
+    }
+  }
+
+  Future<String?> getCachedReferralCode(String userId) async {
+    try {
+      final trimmedUserId = userId.trim();
+      if (trimmedUserId.isEmpty) return null;
+      final box = await _getSettingsBox();
+      final code = box.get('referral_code_$trimmedUserId');
+      if (code is! String) return null;
+      final trimmedCode = code.trim();
+      return trimmedCode.isEmpty ? null : trimmedCode;
+    } catch (e) {
+      // print('LocalDb.getCachedReferralCode failed: $e');
+      return null;
+    }
+  }
+
+  // --- Offline Cache Support Methods (for OfflineCacheManager) ---
+
+  /// Load user profile for offline display
+  Future<Map<String, dynamic>?> loadProfile(String userId) async {
+    return getLocalProfile(userId);
+  }
+
+  /// Save user profile for offline display
+  Future<void> saveProfile(
+    String userId,
+    Map<String, dynamic> profileData,
+  ) async {
+    return saveLocalProfile(userId, profileData);
+  }
+
+  /// Load cached chats for a user
+  Future<List<Map<String, dynamic>>?> loadChats(String userId) async {
+    try {
+      final box = await _getChatsBox();
+      final key = 'recent_chats_$userId';
+      final data = box.get(key);
+      if (data == null) return null;
+      return (jsonDecode(data) as List).cast<Map<String, dynamic>>();
+    } catch (e) {
+      // print('LocalDb.loadChats failed: $e');
+      return null;
+    }
+  }
+
+  /// Load cached messages for a match
+  Future<List<Map<String, dynamic>>?> loadMessages(String matchId) async {
+    try {
+      return await getMessages(matchId);
+    } catch (e) {
+      // print('LocalDb.loadMessages failed: $e');
+      return null;
+    }
+  }
+
+  /// Save cached user events for offline use
+  Future<void> saveCachedUserEvents(
+    String userId,
+    List<Map<String, dynamic>> events,
+  ) async {
+    try {
+      final box = await _getEventsBox();
+      final cacheData = {
+        'events': events,
+        'timestamp': DateTime.now().toIso8601String(),
+        'userId': userId,
+      };
+      await box.put(userId, jsonEncode(cacheData));
+      // print('📦 [CACHE] Saved ${events.length} events for user $userId');
+    } catch (e) {
+      // print('LocalDb.saveCachedUserEvents failed: $e');
+    }
+  }
+
+  /// Get the last known online count (for offline status display)
+  Future<int?> getLastKnownOnlineCount() async {
+    try {
+      final box = await _getSettingsBox();
+      final data = box.get('last_known_online_count');
+      if (data == null) return null;
+      return int.tryParse(data.toString());
+    } catch (e) {
+      // print('LocalDb.getLastKnownOnlineCount failed: $e');
+      return null;
+    }
+  }
+
+  /// Save the last known online count for offline use
+  Future<void> saveLastKnownOnlineCount(int count) async {
+    try {
+      final box = await _getSettingsBox();
+      await box.put('last_known_online_count', count.toString());
+      // print('📊 [CACHE] Saved online count: $count');
+    } catch (e) {
+      // print('LocalDb.saveLastKnownOnlineCount failed: $e');
+    }
+  }
+
+  // ── Rating cache helpers ──────────────────────────────────────────────
+
+  /// Save a user's rating summary for offline use.
+  Future<void> saveRatingSummary(
+    String userId,
+    Map<String, dynamic> summary,
+  ) async {
+    try {
+      final box = await _getSettingsBox();
+      final data = {...summary, 'cached_at': DateTime.now().toIso8601String()};
+      await box.put('rating_summary_$userId', jsonEncode(data));
+    } catch (_) {}
+  }
+
+  /// Read the cached rating summary for a user. Returns null when absent or expired.
+  Future<Map<String, dynamic>?> getCachedRatingSummary(String userId) async {
+    try {
+      final box = await _getSettingsBox();
+      final raw = box.get('rating_summary_$userId');
+      if (raw == null) return null;
+      final data = jsonDecode(raw) as Map<String, dynamic>;
+      final cachedAt = data['cached_at'] as String?;
+      if (cachedAt == null) return null;
+      final cacheDuration = await appConfigService.getDuration(
+        'cache.rating_duration_seconds',
+        defaultValue: const Duration(days: 1),
+      );
+      if (DateTime.now().difference(DateTime.parse(cachedAt)) > cacheDuration) {
+        return null;
+      }
+      return Map<String, dynamic>.from(data)..remove('cached_at');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Read the cached rating summary even when expired (stale-while-revalidate).
+  ///
+  /// Used for instant UI startup: the stale value is displayed immediately
+  /// from local storage while a background Supabase refresh updates it.
+  /// Returns null only when nothing was ever cached.
+  Future<Map<String, dynamic>?> getCachedRatingSummaryAllowExpired(
+    String userId,
+  ) async {
+    try {
+      final box = await _getSettingsBox();
+      final raw = box.get('rating_summary_$userId');
+      if (raw == null) return null;
+      final data = jsonDecode(raw) as Map<String, dynamic>;
+      if (!data.containsKey('rated_by_count') &&
+          !data.containsKey('overall_avg')) {
+        return null;
+      }
+      return Map<String, dynamic>.from(data)..remove('cached_at');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// When was the rating summary for [userId] cached? Null when never cached.
+  Future<DateTime?> getRatingSummaryCachedAt(String userId) async {
+    try {
+      final box = await _getSettingsBox();
+      final raw = box.get('rating_summary_$userId');
+      if (raw == null) return null;
+      final data = jsonDecode(raw) as Map<String, dynamic>;
+      final cachedAt = data['cached_at'] as String?;
+      if (cachedAt == null) return null;
+      return DateTime.tryParse(cachedAt);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Cache whether the current user has rated a specific match.
+  Future<void> saveHasRatedMatch(String matchId, bool rated) async {
+    try {
+      final box = await _getSettingsBox();
+      await box.put('has_rated_$matchId', rated ? '1' : '0');
+    } catch (_) {}
+  }
+
+  /// Read the cached hasRatedMatch value. Returns null when not cached.
+  Future<bool?> getCachedHasRatedMatch(String matchId) async {
+    try {
+      final box = await _getSettingsBox();
+      final raw = box.get('has_rated_$matchId');
+      if (raw == null) return null;
+      return raw == '1';
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Cache my overall rating for a match (persists across restarts).
+  Future<void> saveMyMatchRating(String matchId, double avg) async {
+    try {
+      final box = await _getSettingsBox();
+      await box.put('my_match_rating_$matchId', avg.toStringAsFixed(4));
+    } catch (_) {}
+  }
+
+  /// Read the cached my-overall-rating for a match. Returns null when not cached.
+  Future<double?> getCachedMyMatchRating(String matchId) async {
+    try {
+      final box = await _getSettingsBox();
+      final raw = box.get('my_match_rating_$matchId');
+      if (raw == null) return null;
+      return double.tryParse(raw);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Cache the rating questions config for offline use.
+  Future<void> saveRatingQuestions(List<Map<String, dynamic>> questions) async {
+    try {
+      final box = await _getSettingsBox();
+      final data = {
+        'questions': questions,
+        'cached_at': DateTime.now().toIso8601String(),
+      };
+      await box.put('rating_questions_config', jsonEncode(data));
+    } catch (_) {}
+  }
+
+  /// Read the cached rating questions. Returns null when absent.
+  Future<List<Map<String, dynamic>>?> getCachedRatingQuestions() async {
+    try {
+      final box = await _getSettingsBox();
+      final raw = box.get('rating_questions_config');
+      if (raw == null) return null;
+      final data = jsonDecode(raw) as Map<String, dynamic>;
+      final list = data['questions'] as List?;
+      if (list == null) return null;
+      return list.cast<Map<String, dynamic>>();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Cache whether a rating prompt is pending for a match (memory+Hive layer
+  /// for the per-match prompt flag). Displayed instantly, refreshed in bg.
+  Future<void> savePendingRatingPrompt(String matchId, bool pending) async {
+    try {
+      final box = await _getSettingsBox();
+      await box.put('pending_prompt_$matchId', pending ? '1' : '0');
+    } catch (_) {}
+  }
+
+  /// Read the cached pending-prompt flag. Null when never cached.
+  Future<bool?> getCachedPendingRatingPrompt(String matchId) async {
+    try {
+      final box = await _getSettingsBox();
+      final raw = box.get('pending_prompt_$matchId');
+      if (raw == null) return null;
+      return raw == '1';
+    } catch (_) {
+      return null;
     }
   }
 }
 
 // Global provider
 final localDbProvider = Provider<LocalDbService>((ref) {
-  return LocalDbService();
+  return LocalDbService.shared;
 });

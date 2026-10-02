@@ -1,0 +1,1171 @@
+Analyzing MatchMe4...                                           
+
+warning - The operand can't be 'null', so the condition is always 'true'. Remove the condition - lib\main.dart:1561:31 - unnecessary_null_comparison
+warning - Dead code. Try removing the code, or fixing the code before it so that it can be reached - lib\main.dart:1562:87 - dead_code
+warning - The operand can't be 'null', so the condition is always 'false'. Try removing the condition, an enclosing condition, or the whole conditional statement - lib\main.dart:1597:31 - unnecessary_null_comparison
+warning - Dead code. Try removing the code, or fixing the code before it so that it can be reached - lib\main.dart:1597:40 - dead_code
+   info - 'anonKey' is deprecated and shouldn't be used. Use publishableKey instead. anonKey will be removed in a future major version. Try replacing the use of the deprecated member with the replacement - lib\main.dart:1743:5 - deprecated_member_use
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\app_config_provider.dart:114:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\app_config_provider.dart:116:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\app_config_provider.dart:120:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\app_config_provider.dart:126:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\app_config_provider.dart:152:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\app_config_provider.dart:159:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\app_config_provider.dart:167:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\app_config_provider.dart:180:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\app_config_provider.dart:188:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\app_config_provider.dart:192:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\app_config_provider.dart:196:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\app_config_provider.dart:198:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\app_config_provider.dart:221:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\app_config_provider.dart:229:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\app_config_provider.dart:235:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\app_config_provider.dart:240:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\app_config_provider.dart:245:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\app_config_provider.dart:261:5 - avoid_print
+warning - The value of the local variable 'lower' isn't used. Try removing the variable or using it - lib\providers\auth_provider.dart:120:11 - unused_local_variable
+warning - The declaration 'isLikelyInvalidSessionError' isn't referenced. Try removing the declaration of 'isLikelyInvalidSessionError' - lib\providers\auth_provider.dart:137:8 - unused_element
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\auth_provider.dart:272:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\auth_provider.dart:291:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\auth_provider.dart:403:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\auth_provider.dart:406:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\auth_provider.dart:415:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\auth_provider.dart:420:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:73:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:84:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:89:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:95:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:115:19 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:119:19 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:127:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:159:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:183:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:206:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:233:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:257:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:268:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:272:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:324:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:326:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:335:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:337:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:364:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:366:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:374:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_key_provider.dart:376:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:337:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:343:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:388:25 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:391:23 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:394:21 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:438:25 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:439:25 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:450:23 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:498:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:504:21 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:506:21 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:511:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:571:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:960:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:965:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:1030:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:1033:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:1368:7 - avoid_print
+warning - The value of the local variable 'hasEncryptedTranslation' isn't used. Try removing the variable or using it - lib\providers\chat_provider.dart:1980:23 - unused_local_variable
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:2487:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:2549:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:2585:3 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:2595:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:2607:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:2624:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:2635:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:2642:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:2651:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:2660:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:2683:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:2694:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:2702:3 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:2899:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:2908:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:2911:15 - avoid_print
+   info - Empty catch block. Try adding statements to the block, adding a comment to the block, or removing the 'catch' clause - lib\providers\chat_provider.dart:2948:21 - empty_catches
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\chat_provider.dart:3055:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\connected_online_accounts_provider.dart:212:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\currency_provider.dart:122:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\current_location_provider.dart:59:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:292:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:300:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:310:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:325:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:341:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:352:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:364:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:369:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:377:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:391:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:398:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:400:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:401:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:406:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:408:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:409:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:412:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:415:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:418:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\event_provider.dart:420:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:336:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:375:3 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:493:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:678:35 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:689:19 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:703:19 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:717:19 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:790:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:791:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:792:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:793:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:794:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:795:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:796:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:797:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:813:19 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:829:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:837:19 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:848:19 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:867:19 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:905:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:913:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:934:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:949:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:983:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:995:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1004:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1023:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1033:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1053:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1060:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1081:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1096:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1118:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1130:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1140:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1191:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1258:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1278:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1306:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1327:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1342:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1364:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1376:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1385:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1419:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1435:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1465:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1490:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1496:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1611:19 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1618:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1703:21 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1750:19 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1754:19 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1757:19 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1760:19 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1762:21 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1766:21 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1770:19 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1776:21 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1787:21 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1791:21 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:1809:19 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2091:27 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2099:19 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2111:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2153:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2185:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2202:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2250:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2258:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2279:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2309:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2343:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2355:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2362:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2366:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2425:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2440:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2476:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2522:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2525:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2568:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2592:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2595:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2616:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2645:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2649:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2653:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2661:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2665:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2670:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2700:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2706:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2710:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2719:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2725:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2730:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2754:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2773:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2775:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:2832:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\home_providers.dart:3018:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\invisibility_rules_provider.dart:216:19 - avoid_print
+warning - The value of the field '_profileChannel' isn't used. Try removing the field, or using it - lib\providers\match_notification_provider.dart:67:20 - unused_field
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:184:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:351:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:357:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:375:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:384:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:395:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:396:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:397:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:398:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:399:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:400:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:401:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:402:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:403:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:404:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:408:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:411:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:414:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:421:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:478:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:490:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:502:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:506:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:522:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:537:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:547:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:551:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:557:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:588:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:589:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:626:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:627:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:634:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:643:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:647:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:648:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:655:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:665:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:677:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:679:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:682:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:689:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:691:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\match_notification_provider.dart:692:7 - avoid_print
+warning - Unused import: 'dart:async'. Try removing the import directive - lib\providers\new_options_provider.dart:6:8 - unused_import
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:272:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:276:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:287:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:291:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:432:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:444:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:452:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:471:10 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:491:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:495:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:515:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:631:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:634:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:637:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:647:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:649:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:655:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:657:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:666:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:669:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:673:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:675:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\payment_provider.dart:865:7 - avoid_print
+   info - Angle brackets will be interpreted as HTML. Try using backticks around the content with angle brackets, or try replacing `<` with `&lt;` and `>` with `&gt;` - lib\providers\profile_provider.dart:198:31 - unintended_html_in_doc_comment
+   info - Angle brackets will be interpreted as HTML. Try using backticks around the content with angle brackets, or try replacing `<` with `&lt;` and `>` with `&gt;` - lib\providers\profile_provider.dart:198:54 - unintended_html_in_doc_comment
+   info - Angle brackets will be interpreted as HTML. Try using backticks around the content with angle brackets, or try replacing `<` with `&lt;` and `>` with `&gt;` - lib\providers\profile_provider.dart:198:69 - unintended_html_in_doc_comment
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\profile_provider.dart:3324:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\theme_provider.dart:89:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\typing_provider.dart:107:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\unit_provider.dart:27:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\unit_provider.dart:34:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\unit_provider.dart:50:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\user_preferences_provider.dart:768:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\user_preferences_provider.dart:776:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\user_preferences_provider.dart:788:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\user_preferences_provider.dart:802:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\user_preferences_provider.dart:818:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\user_preferences_provider.dart:836:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\user_preferences_provider.dart:860:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\user_preferences_provider.dart:864:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\user_preferences_provider.dart:1055:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:95:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:146:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:148:10 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:167:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:177:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:179:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:188:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:205:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:294:12 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:301:12 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:399:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:642:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:646:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:663:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:685:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:692:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:701:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:709:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:714:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:733:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:764:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:780:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:784:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:799:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:807:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:993:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:1025:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:1038:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:1051:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:1053:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:1074:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:1093:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:1098:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:1103:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:1135:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:1156:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:1163:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:1199:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:1210:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:1220:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:1290:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:1296:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:1304:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\providers\visibility_provider.dart:1307:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\auth_screen.dart:754:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\auth_screen.dart:756:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\auth_screen.dart:816:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\auth_screen.dart:870:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\auth_screen.dart:872:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\auth_screen.dart:876:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\auth_screen.dart:888:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\auth_screen.dart:890:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\auth_screen.dart:896:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\auth_screen.dart:905:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\auth_screen.dart:913:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\auth_screen.dart:919:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\auth_screen.dart:927:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\auth_screen.dart:1006:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\auth_screen.dart:1010:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\auth_screen.dart:1015:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\auth_screen.dart:1024:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\auth_screen.dart:1032:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\profile_check_screen.dart:249:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\profile_check_screen.dart:252:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\profile_check_screen.dart:259:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\profile_check_screen.dart:292:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\profile_check_screen.dart:296:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\auth\profile_check_screen.dart:322:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\chats\message_options.dart:55:31 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\chats\message_options.dart:94:35 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\chats\message_options.dart:119:25 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\chats\message_options.dart:159:23 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\chats\reaction_picker.dart:87:27 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\chats\reaction_picker.dart:142:33 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\events\add_event_screen.dart:466:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\events\add_event_screen.dart:471:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\events\add_event_screen.dart:479:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\events\add_event_screen.dart:488:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\events\attendees_screen.dart:36:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\events\attendees_screen.dart:42:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\events\attendees_screen.dart:94:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\events\calendar_sync_screen.dart:84:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\events\calendar_sync_screen.dart:1682:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\events\events_screen.dart:625:35 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\events\events_screen.dart:659:35 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\events\events_screen.dart:682:35 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\events\events_screen.dart:705:35 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\events\online_providers_screen.dart:1486:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\events\online_providers_screen.dart:1519:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\events\online_providers_screen.dart:1525:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\events\online_providers_screen.dart:1545:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\main_navigation_screen.dart:607:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\main_navigation_screen.dart:749:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\main_navigation_screen.dart:759:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\main_navigation_screen.dart:764:13 - avoid_print
+  error - '_MatchesScreenState.build' ('Widget Function(BuildContext, WidgetRef)') isn't a valid override of 'State.build' ('Widget Function(BuildContext)') - lib\screens\matches\matches_screen.dart:47:10 - invalid_override
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:108:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:110:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:112:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:148:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:166:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:171:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:187:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:192:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:208:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:327:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:368:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:379:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:395:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:843:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:849:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:852:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:881:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:911:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:929:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:933:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:935:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:937:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:941:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:946:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:957:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:959:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:962:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:970:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:977:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:979:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:985:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:987:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:989:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:997:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:1028:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:1035:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:1037:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:1043:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:1047:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:1064:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:1072:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:1085:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:1093:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:1096:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:1100:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:1114:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\nearby\nearby_map_screen.dart:1271:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\profile_wizard_screen.dart:233:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\profile_wizard_screen.dart:255:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\profile_wizard_screen.dart:259:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\profile_wizard_screen.dart:285:7 - avoid_print
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\profile\profile_wizard_screen.dart:4020:52 - use_build_context_synchronously
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\profile\profile_wizard_screen.dart:4025:52 - use_build_context_synchronously
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\verification_screen.dart:219:6 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\verification_screen.dart:222:8 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\verification_screen.dart:225:6 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\verification_screen.dart:229:6 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\verification_screen.dart:257:10 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\verification_screen.dart:264:12 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\verification_screen.dart:268:6 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\verification_screen.dart:417:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\verification_screen.dart:418:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\verification_screen.dart:419:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\verification_screen.dart:420:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\verification_screen.dart:421:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\verification_screen.dart:627:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\verification_screen.dart:651:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\profile\verification_screen.dart:655:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\referral\invite_friends_screen.dart:52:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\referral\invite_friends_screen.dart:102:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\referral\invite_friends_screen.dart:105:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\referral\invite_friends_screen.dart:110:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\account_management_screen.dart:222:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\account_management_screen.dart:242:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\account_management_screen.dart:272:30 - avoid_print
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\settings\account_management_screen.dart:436:46 - use_build_context_synchronously
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\settings\account_management_screen.dart:437:54 - use_build_context_synchronously
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\settings\account_management_screen.dart:442:54 - use_build_context_synchronously
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\account_management_screen.dart:530:25 - avoid_print
+   info - Empty catch block. Try adding statements to the block, adding a comment to the block, or removing the 'catch' clause - lib\screens\settings\account_management_screen.dart:532:42 - empty_catches
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\settings\account_management_screen.dart:538:44 - use_build_context_synchronously
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\settings\account_management_screen.dart:541:36 - use_build_context_synchronously
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\settings\account_management_screen.dart:550:42 - use_build_context_synchronously
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\matching_settings_screen.dart:41:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\matching_settings_screen.dart:61:11 - avoid_print
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\settings\matching_settings_screen.dart:158:54 - use_build_context_synchronously
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\settings\matching_settings_screen.dart:208:54 - use_build_context_synchronously
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\settings\matching_settings_screen.dart:214:54 - use_build_context_synchronously
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\settings\matching_settings_screen.dart:290:52 - use_build_context_synchronously
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\settings\matching_settings_screen.dart:291:136 - use_build_context_synchronously
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\settings\matching_settings_screen.dart:296:52 - use_build_context_synchronously
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\settings\matching_settings_screen.dart:333:52 - use_build_context_synchronously
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\settings\matching_settings_screen.dart:339:52 - use_build_context_synchronously
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\settings\matching_settings_screen.dart:340:176 - use_build_context_synchronously
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\settings\matching_settings_screen.dart:368:52 - use_build_context_synchronously
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\settings\matching_settings_screen.dart:374:52 - use_build_context_synchronously
+   info - Don't use 'BuildContext's across async gaps, guarded by an unrelated 'mounted' check. Guard a 'State.context' use with a 'mounted' check on the State, and other BuildContext use with a 'mounted' check on the BuildContext - lib\screens\settings\matching_settings_screen.dart:375:179 - use_build_context_synchronously
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\security_center_screen.dart:33:3 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\security_center_screen.dart:251:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\security_center_screen.dart:290:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\security_center_screen.dart:292:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\security_center_screen.dart:295:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\security_center_screen.dart:307:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\security_center_screen.dart:346:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\security_center_screen.dart:368:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\security_center_screen.dart:381:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\security_center_screen.dart:393:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\security_center_screen.dart:705:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\security_center_screen.dart:729:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\settings_screen.dart:52:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\screens\settings\settings_screen.dart:88:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_consent_service.dart:17:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_consent_service.dart:30:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_consent_service.dart:42:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_consent_service.dart:49:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_consent_service.dart:60:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_consent_service.dart:71:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_consent_service.dart:82:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_consent_service.dart:96:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_consent_service.dart:110:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_consent_service.dart:124:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_consent_service.dart:151:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_mediation_service.dart:32:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_mediation_service.dart:38:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_mediation_service.dart:43:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_mediation_service.dart:60:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_mediation_service.dart:67:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_mediation_service.dart:84:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_mediation_service.dart:91:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_mediation_service.dart:115:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_revenue_service.dart:73:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_revenue_service.dart:103:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_revenue_service.dart:133:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_revenue_service.dart:163:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_revenue_service.dart:193:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_revenue_service.dart:213:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_revenue_service.dart:233:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_revenue_service.dart:259:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_revenue_service.dart:285:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\ad_revenue_service.dart:311:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admin_broadcast_service.dart:64:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admin_broadcast_service.dart:117:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admin_broadcast_service.dart:120:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admin_broadcast_service.dart:151:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admin_broadcast_service.dart:266:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admin_broadcast_service.dart:268:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admin_broadcast_service.dart:271:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admin_broadcast_service.dart:295:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admin_broadcast_service.dart:297:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admin_broadcast_service.dart:307:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admin_broadcast_service.dart:309:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admin_broadcast_service.dart:365:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:68:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:79:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:81:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:91:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:96:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:114:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:125:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:130:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:146:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:157:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:162:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:178:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:189:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:194:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:211:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:222:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:234:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:245:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:261:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:284:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\admob_service.dart:286:7 - avoid_print
+   info - Empty catch block. Try adding statements to the block, adding a comment to the block, or removing the 'catch' clause - lib\services\background_service.dart:282:21 - empty_catches
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\calendar_sync_service.dart:101:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\chat_key_service.dart:230:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\chat_key_service.dart:231:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\chat_key_service.dart:232:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\chat_key_service.dart:233:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\chat_key_service.dart:234:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\chat_key_service.dart:235:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\chat_key_service.dart:236:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\chat_key_service.dart:237:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\chat_key_service.dart:238:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\chat_key_service.dart:299:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\chat_key_service.dart:519:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\email_change_service.dart:74:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\email_change_service.dart:157:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\email_change_service.dart:315:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\event_data_service.dart:79:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\event_data_service.dart:152:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\external_ad_service.dart:304:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\external_ad_service.dart:314:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\external_ad_service.dart:318:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\external_ad_service.dart:321:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\external_ad_service.dart:324:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\external_ad_service.dart:335:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\external_ad_service.dart:363:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\external_ad_service.dart:391:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\external_ad_service.dart:418:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\external_ad_service.dart:449:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\external_ad_service.dart:478:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\external_ad_service.dart:499:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\external_ad_service.dart:521:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:97:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:109:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:121:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:123:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:129:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:137:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:231:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:240:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:245:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:268:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:274:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:280:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:286:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:291:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:301:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:303:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:317:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:321:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:323:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:327:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:336:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:407:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:410:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:421:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:442:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:455:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:487:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:497:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:501:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:670:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:675:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:677:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:684:19 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:691:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:737:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:743:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:749:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:774:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:892:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:899:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:909:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:965:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:971:25 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\global_sync_manager.dart:974:25 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\local_db_service.dart:1202:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\local_db_service.dart:1215:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\local_db_service.dart:1218:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\local_db_service.dart:1253:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\local_db_service.dart:1654:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\local_db_service.dart:1659:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:49:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:61:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:63:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:73:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:79:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:83:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:126:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:137:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:143:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:147:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:174:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:185:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:191:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:195:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:222:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:233:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:239:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:243:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:285:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:296:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:302:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:306:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:333:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:344:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:350:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:354:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:393:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:416:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:418:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:435:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_ad_service.dart:443:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_local_notification_service.dart:122:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_local_notification_service.dart:128:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_local_notification_service.dart:139:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_local_notification_service.dart:182:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_local_notification_service.dart:187:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_local_notification_service.dart:192:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_local_notification_service.dart:198:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_local_notification_service.dart:205:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_local_notification_service.dart:207:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_local_notification_service.dart:273:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_local_notification_service.dart:323:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:47:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:49:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:51:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:57:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:67:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:70:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:82:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:89:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:91:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:109:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:115:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:117:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:119:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:122:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:124:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:187:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:228:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:231:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:249:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mobile_location_service.dart:253:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mutation_wrapper.dart:43:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mutation_wrapper.dart:56:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mutation_wrapper.dart:63:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mutation_wrapper.dart:67:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\mutation_wrapper.dart:118:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\offline_mutation_queue.dart:95:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\offline_mutation_queue.dart:113:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\offline_mutation_queue.dart:146:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\offline_mutation_queue.dart:153:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\offline_mutation_queue.dart:160:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\offline_mutation_queue.dart:176:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\offline_mutation_queue.dart:189:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\offline_mutation_queue.dart:194:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\offline_mutation_queue.dart:248:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\offline_mutation_queue.dart:254:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\offline_mutation_queue.dart:267:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\offline_provider_fallback.dart:73:3 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\offline_provider_fallback.dart:78:3 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outbox_sync_service.dart:44:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outbox_sync_service.dart:199:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outbox_sync_service.dart:220:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outbox_sync_service.dart:227:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outbox_sync_service.dart:239:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outbox_sync_service.dart:255:17 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outbox_sync_service.dart:271:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outbox_sync_service.dart:297:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outbox_sync_service.dart:315:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outbox_sync_service.dart:318:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outbox_sync_service.dart:323:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:62:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:66:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:70:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:72:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:73:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:140:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:164:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:166:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:170:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:172:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:175:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:177:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:178:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:208:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:214:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:219:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:220:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:221:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:224:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:229:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:249:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:274:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:278:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:289:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:295:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:376:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:384:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:394:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:396:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:400:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:404:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:410:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:416:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:417:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:434:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\outlook_web_auth.dart:437:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\passkey_auth_service.dart:15:3 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\passkey_client_service_native.dart:12:3 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:32:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:36:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:49:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:61:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:63:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:68:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:79:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:85:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:87:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:97:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:103:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:105:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:115:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:123:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:134:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:143:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:154:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:165:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:171:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:179:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:186:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:189:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:200:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:220:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:226:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:239:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:245:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:248:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:260:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\payment_service.dart:267:7 - avoid_print
+   info - The import of 'dart:typed_data' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/foundation.dart'. Try removing the import directive - lib\services\profile_request_service.dart:9:8 - unnecessary_import
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\profile_request_service.dart:82:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\profile_request_service.dart:258:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:99:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:106:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:113:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:125:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:131:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:143:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:149:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:154:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:166:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:169:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:170:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:202:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:219:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:225:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:233:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:263:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:296:12 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:299:12 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:307:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:325:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:330:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\referral_service.dart:335:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\sensitive_action_reauth_service.dart:181:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\sensitive_action_reauth_service.dart:233:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\sensitive_action_reauth_service.dart:388:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\sensitive_action_reauth_service.dart:434:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\sensitive_action_reauth_service.dart:438:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\sensitive_action_reauth_service.dart:470:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\sensitive_action_reauth_service.dart:479:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\sensitive_action_reauth_service.dart:484:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:290:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:294:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:366:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:367:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:370:9 - avoid_print
+   info - Statements in an if should be enclosed in a block. Try wrapping the statement in a block - lib\services\session_service.dart:569:7 - curly_braces_in_flow_control_structures
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:760:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:772:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:777:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:795:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:799:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:817:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:862:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:866:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:872:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:914:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1081:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1088:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1106:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1115:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1126:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1138:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1148:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1155:11 - avoid_print
+   info - Statements in an if should be enclosed in a block. Try wrapping the statement in a block - lib\services\session_service.dart:1171:9 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block. Try wrapping the statement in a block - lib\services\session_service.dart:1173:9 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block. Try wrapping the statement in a block - lib\services\session_service.dart:1175:9 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block. Try wrapping the statement in a block - lib\services\session_service.dart:1178:9 - curly_braces_in_flow_control_structures
+   info - Statements in an if should be enclosed in a block. Try wrapping the statement in a block - lib\services\session_service.dart:1180:9 - curly_braces_in_flow_control_structures
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1197:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1219:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1226:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1231:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1242:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1246:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1310:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1320:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1332:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1381:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1385:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1390:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1396:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1398:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1404:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\session_service.dart:1412:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\subscription_service.dart:24:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\subscription_service.dart:42:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\subscription_service.dart:80:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\subscription_service.dart:86:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\subscription_service.dart:109:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\subscription_service.dart:134:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\subscription_service.dart:181:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\subscription_service.dart:208:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\subscription_service.dart:227:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\subscription_service.dart:274:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\subscription_service.dart:286:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\subscription_service.dart:316:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\subscription_service.dart:332:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\subscription_service.dart:353:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:127:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:149:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:153:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:154:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:155:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:156:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:157:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:158:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:162:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:164:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:166:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:179:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:184:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:188:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:205:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:223:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:241:16 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:244:16 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:252:16 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:255:16 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:260:16 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:267:16 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:277:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:283:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_mediapipe_io.dart:285:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:19:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:26:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:38:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:43:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:48:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:53:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:60:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:65:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:74:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:78:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:81:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:82:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:88:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:89:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:90:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:91:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:97:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:105:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:110:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:111:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:112:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:113:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:124:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:127:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:145:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:150:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:153:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:157:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:159:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:160:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:161:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:180:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:191:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:204:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:222:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:256:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:260:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\verification_service.dart:274:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:47:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:58:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:60:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:70:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:76:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:80:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:96:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:107:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:113:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:117:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:129:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:140:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:146:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:150:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:162:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:173:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:179:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:183:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:195:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:213:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:215:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:223:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:225:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_ad_service.dart:232:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_calendar_service.dart:86:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_calendar_service.dart:121:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_calendar_service.dart:125:5 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_calendar_service.dart:127:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_calendar_service.dart:192:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_calendar_service.dart:200:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_calendar_service.dart:201:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_calendar_service.dart:202:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_calendar_service.dart:205:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:334:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:339:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:362:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:371:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:373:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:388:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:397:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:402:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:414:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:416:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:422:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:424:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:438:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:445:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:447:15 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:453:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:463:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:604:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:606:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:611:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:627:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:632:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:676:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:679:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:684:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:692:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:699:13 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:718:11 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:723:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:826:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:1174:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:1185:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:1188:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:1201:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\services\web_location_service.dart:1203:7 - avoid_print
+warning - The value of the field '_ratingService' isn't used. Try removing the field, or using it - lib\widgets\match_box.dart:42:9 - unused_field
+warning - The declaration '_formatScore' isn't referenced. Try removing the declaration of '_formatScore' - lib\widgets\match_box.dart:294:10 - unused_element
+   info - Don't use 'BuildContext's across async gaps. Try rewriting the code to not use the 'BuildContext', or guard the use with a 'mounted' check - lib\widgets\photo_editor_widget.dart:83:28 - use_build_context_synchronously
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\rating_prompt_watcher.dart:49:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\rating_prompt_watcher.dart:113:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\rating_prompt_watcher.dart:120:9 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\rating_prompt_watcher.dart:137:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\web_article_ad_widget.dart:161:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\web_article_ad_widget.dart:163:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\web_article_ad_widget.dart:172:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\web_article_ad_widget.dart:174:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\web_banner_ad_widget.dart:147:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\web_banner_ad_widget.dart:150:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\web_banner_ad_widget.dart:161:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\web_banner_ad_widget.dart:163:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\web_display_ad_widget.dart:136:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\web_display_ad_widget.dart:138:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\web_display_ad_widget.dart:147:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\web_display_ad_widget.dart:149:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\web_in_feed_ad_widget.dart:149:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\web_in_feed_ad_widget.dart:151:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\web_in_feed_ad_widget.dart:160:7 - avoid_print
+   info - Don't invoke 'print' in production code. Try using a logging framework - lib\widgets\web_in_feed_ad_widget.dart:162:7 - avoid_print
+  error - Undefined class 'Widget'. Try changing the name to the name of an existing class, or creating a class with the name 'Widget' - temp_social_section.dart:1:3 - undefined_class
+warning - The declaration '_buildSocialLinksSection' isn't referenced. Try removing the declaration of '_buildSocialLinksSection' - temp_social_section.dart:1:10 - unused_element
+  error - Undefined class 'UserProfile'. Try changing the name to the name of an existing class, or creating a class with the name 'UserProfile' - temp_social_section.dart:1:35 - undefined_class
+  error - Undefined class 'LocalizationState'. Try changing the name to the name of an existing class, or creating a class with the name 'LocalizationState' - temp_social_section.dart:1:56 - undefined_class
+  error - The function '_normalizeKey' isn't defined. Try importing the library that defines '_normalizeKey', correcting the name to the name of an existing function, or defining a function named '_normalizeKey' - temp_social_section.dart:2:62 - undefined_function
+  error - The function 'Column' isn't defined. Try importing the library that defines 'Column', correcting the name to the name of an existing function, or defining a function named 'Column' - temp_social_section.dart:4:12 - undefined_function
+  error - Undefined name 'CrossAxisAlignment'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:5:27 - undefined_identifier
+  error - The name 'SizedBox' isn't a class. Try correcting the name to match an existing class - temp_social_section.dart:7:15 - creation_with_non_type
+  error - The function 'Card' isn't defined. Try importing the library that defines 'Card', correcting the name to the name of an existing function, or defining a function named 'Card' - temp_social_section.dart:10:9 - undefined_function
+  error - The function 'RoundedRectangleBorder' isn't defined. Try importing the library that defines 'RoundedRectangleBorder', correcting the name to the name of an existing function, or defining a function named 'RoundedRectangleBorder' - temp_social_section.dart:12:18 - undefined_function
+  error - Undefined name 'BorderRadius'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:12:55 - undefined_identifier
+  error - The function 'BorderSide' isn't defined. Try importing the library that defines 'BorderSide', correcting the name to the name of an existing function, or defining a function named 'BorderSide' - temp_social_section.dart:12:90 - undefined_function
+  error - Undefined name 'Colors'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:12:108 - undefined_identifier
+  error - Undefined name 'EdgeInsets'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:13:25 - undefined_identifier
+  error - The function 'Padding' isn't defined. Try importing the library that defines 'Padding', correcting the name to the name of an existing function, or defining a function named 'Padding' - temp_social_section.dart:14:18 - undefined_function
+  error - Undefined name 'EdgeInsets'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:15:28 - undefined_identifier
+  error - The function 'TextFormField' isn't defined. Try importing the library that defines 'TextFormField', correcting the name to the name of an existing function, or defining a function named 'TextFormField' - temp_social_section.dart:16:20 - undefined_function
+  error - Undefined name '_instagramController'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:17:27 - undefined_identifier
+  error - Undefined name 'Theme'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:18:22 - undefined_identifier
+  error - Undefined name 'context'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:18:31 - undefined_identifier
+  error - Undefined name 'TextInputType'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:19:29 - undefined_identifier
+  error - The function 'InputDecoration' isn't defined. Try importing the library that defines 'InputDecoration', correcting the name to the name of an existing function, or defining a function named 'InputDecoration' - temp_social_section.dart:20:27 - undefined_function
+  error - Undefined name '_instagramPrefix'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:23:29 - undefined_identifier
+  error - The function 'TextStyle' isn't defined. Try importing the library that defines 'TextStyle', correcting the name to the name of an existing function, or defining a function named 'TextStyle' - temp_social_section.dart:24:30 - undefined_function
+  error - Undefined name 'Colors'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:24:47 - undefined_identifier
+  error - Undefined name 'Theme'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:24:79 - undefined_identifier
+  error - Undefined name 'context'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:24:88 - undefined_identifier
+  error - The name 'Icon' isn't a class. Try correcting the name to match an existing class - temp_social_section.dart:25:35 - creation_with_non_type
+  error - Undefined name 'Icons'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:25:40 - undefined_identifier
+  error - Undefined name '_instagramController'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:26:29 - undefined_identifier
+  error - The function 'IconButton' isn't defined. Try importing the library that defines 'IconButton', correcting the name to the name of an existing function, or defining a function named 'IconButton' - temp_social_section.dart:27:23 - undefined_function
+  error - The name 'Icon' isn't a class. Try correcting the name to match an existing class - temp_social_section.dart:28:37 - creation_with_non_type
+  error - Undefined name 'Icons'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:28:42 - undefined_identifier
+  error - Undefined name '_instagramController'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:30:27 - undefined_identifier
+  error - Undefined name 'ref'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:31:27 - undefined_identifier
+  error - The function 'profileEditProvider' isn't defined. Try importing the library that defines 'profileEditProvider', correcting the name to the name of an existing function, or defining a function named 'profileEditProvider' - temp_social_section.dart:31:36 - undefined_function
+  error - Undefined name 'widget'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:31:56 - undefined_identifier
+  error - Undefined name 'InputBorder'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:35:25 - undefined_identifier
+  error - Undefined name 'ref'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:39:17 - undefined_identifier
+  error - The function 'profileEditProvider' isn't defined. Try importing the library that defines 'profileEditProvider', correcting the name to the name of an existing function, or defining a function named 'profileEditProvider' - temp_social_section.dart:39:26 - undefined_function
+  error - Undefined name 'widget'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:39:46 - undefined_identifier
+  error - The function 'Card' isn't defined. Try importing the library that defines 'Card', correcting the name to the name of an existing function, or defining a function named 'Card' - temp_social_section.dart:48:9 - undefined_function
+  error - The function 'RoundedRectangleBorder' isn't defined. Try importing the library that defines 'RoundedRectangleBorder', correcting the name to the name of an existing function, or defining a function named 'RoundedRectangleBorder' - temp_social_section.dart:50:18 - undefined_function
+  error - Undefined name 'BorderRadius'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:50:55 - undefined_identifier
+  error - The function 'BorderSide' isn't defined. Try importing the library that defines 'BorderSide', correcting the name to the name of an existing function, or defining a function named 'BorderSide' - temp_social_section.dart:50:90 - undefined_function
+  error - Undefined name 'Colors'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:50:108 - undefined_identifier
+  error - Undefined name 'EdgeInsets'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:51:25 - undefined_identifier
+  error - The function 'Padding' isn't defined. Try importing the library that defines 'Padding', correcting the name to the name of an existing function, or defining a function named 'Padding' - temp_social_section.dart:52:18 - undefined_function
+  error - Undefined name 'EdgeInsets'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:53:28 - undefined_identifier
+  error - The function 'TextFormField' isn't defined. Try importing the library that defines 'TextFormField', correcting the name to the name of an existing function, or defining a function named 'TextFormField' - temp_social_section.dart:54:20 - undefined_function
+  error - Undefined name '_facebookController'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:55:27 - undefined_identifier
+  error - Undefined name 'Theme'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:56:22 - undefined_identifier
+  error - Undefined name 'context'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:56:31 - undefined_identifier
+  error - Undefined name 'TextInputType'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:57:29 - undefined_identifier
+  error - The function 'InputDecoration' isn't defined. Try importing the library that defines 'InputDecoration', correcting the name to the name of an existing function, or defining a function named 'InputDecoration' - temp_social_section.dart:58:27 - undefined_function
+  error - Undefined name '_facebookPrefix'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:61:29 - undefined_identifier
+  error - The function 'TextStyle' isn't defined. Try importing the library that defines 'TextStyle', correcting the name to the name of an existing function, or defining a function named 'TextStyle' - temp_social_section.dart:62:30 - undefined_function
+  error - Undefined name 'Colors'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:62:47 - undefined_identifier
+  error - Undefined name 'Theme'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:62:79 - undefined_identifier
+  error - Undefined name 'context'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:62:88 - undefined_identifier
+  error - The name 'Icon' isn't a class. Try correcting the name to match an existing class - temp_social_section.dart:63:35 - creation_with_non_type
+  error - Undefined name 'Icons'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:63:40 - undefined_identifier
+  error - Undefined name '_facebookController'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:64:29 - undefined_identifier
+  error - The function 'IconButton' isn't defined. Try importing the library that defines 'IconButton', correcting the name to the name of an existing function, or defining a function named 'IconButton' - temp_social_section.dart:65:23 - undefined_function
+  error - The name 'Icon' isn't a class. Try correcting the name to match an existing class - temp_social_section.dart:66:37 - creation_with_non_type
+  error - Undefined name 'Icons'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:66:42 - undefined_identifier
+  error - Undefined name '_facebookController'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:68:27 - undefined_identifier
+  error - Undefined name 'ref'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:69:27 - undefined_identifier
+  error - The function 'profileEditProvider' isn't defined. Try importing the library that defines 'profileEditProvider', correcting the name to the name of an existing function, or defining a function named 'profileEditProvider' - temp_social_section.dart:69:36 - undefined_function
+  error - Undefined name 'widget'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:69:56 - undefined_identifier
+  error - Undefined name 'InputBorder'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:73:25 - undefined_identifier
+  error - Undefined name 'ref'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:77:17 - undefined_identifier
+  error - The function 'profileEditProvider' isn't defined. Try importing the library that defines 'profileEditProvider', correcting the name to the name of an existing function, or defining a function named 'profileEditProvider' - temp_social_section.dart:77:26 - undefined_function
+  error - Undefined name 'widget'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:77:46 - undefined_identifier
+  error - The function 'Card' isn't defined. Try importing the library that defines 'Card', correcting the name to the name of an existing function, or defining a function named 'Card' - temp_social_section.dart:87:11 - undefined_function
+  error - The function 'RoundedRectangleBorder' isn't defined. Try importing the library that defines 'RoundedRectangleBorder', correcting the name to the name of an existing function, or defining a function named 'RoundedRectangleBorder' - temp_social_section.dart:89:20 - undefined_function
+  error - Undefined name 'BorderRadius'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:89:57 - undefined_identifier
+  error - The function 'BorderSide' isn't defined. Try importing the library that defines 'BorderSide', correcting the name to the name of an existing function, or defining a function named 'BorderSide' - temp_social_section.dart:89:92 - undefined_function
+  error - Undefined name 'Colors'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:89:110 - undefined_identifier
+  error - Undefined name 'EdgeInsets'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:90:27 - undefined_identifier
+  error - The function 'Padding' isn't defined. Try importing the library that defines 'Padding', correcting the name to the name of an existing function, or defining a function named 'Padding' - temp_social_section.dart:91:20 - undefined_function
+  error - Undefined name 'EdgeInsets'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:92:30 - undefined_identifier
+  error - The function 'TextFormField' isn't defined. Try importing the library that defines 'TextFormField', correcting the name to the name of an existing function, or defining a function named 'TextFormField' - temp_social_section.dart:93:22 - undefined_function
+  error - Undefined name '_linkedinController'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:94:29 - undefined_identifier
+  error - Undefined name 'Theme'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:95:24 - undefined_identifier
+  error - Undefined name 'context'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:95:33 - undefined_identifier
+  error - Undefined name 'TextInputType'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:96:31 - undefined_identifier
+  error - The function 'InputDecoration' isn't defined. Try importing the library that defines 'InputDecoration', correcting the name to the name of an existing function, or defining a function named 'InputDecoration' - temp_social_section.dart:97:29 - undefined_function
+  error - Undefined name '_linkedinPrefix'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:100:31 - undefined_identifier
+  error - The function 'TextStyle' isn't defined. Try importing the library that defines 'TextStyle', correcting the name to the name of an existing function, or defining a function named 'TextStyle' - temp_social_section.dart:101:32 - undefined_function
+  error - Undefined name 'Colors'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:101:49 - undefined_identifier
+  error - Undefined name 'Theme'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:101:81 - undefined_identifier
+  error - Undefined name 'context'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:101:90 - undefined_identifier
+  error - The name 'Icon' isn't a class. Try correcting the name to match an existing class - temp_social_section.dart:102:37 - creation_with_non_type
+  error - Undefined name 'Icons'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:102:42 - undefined_identifier
+  error - Undefined name '_linkedinController'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:103:31 - undefined_identifier
+  error - The function 'IconButton' isn't defined. Try importing the library that defines 'IconButton', correcting the name to the name of an existing function, or defining a function named 'IconButton' - temp_social_section.dart:104:25 - undefined_function
+  error - The name 'Icon' isn't a class. Try correcting the name to match an existing class - temp_social_section.dart:105:39 - creation_with_non_type
+  error - Undefined name 'Icons'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:105:44 - undefined_identifier
+  error - Undefined name '_linkedinController'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:107:29 - undefined_identifier
+  error - Undefined name 'ref'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:108:29 - undefined_identifier
+  error - The function 'profileEditProvider' isn't defined. Try importing the library that defines 'profileEditProvider', correcting the name to the name of an existing function, or defining a function named 'profileEditProvider' - temp_social_section.dart:108:38 - undefined_function
+  error - Undefined name 'widget'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:108:58 - undefined_identifier
+  error - Undefined name 'InputBorder'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:112:27 - undefined_identifier
+  error - Undefined name 'ref'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:116:19 - undefined_identifier
+  error - The function 'profileEditProvider' isn't defined. Try importing the library that defines 'profileEditProvider', correcting the name to the name of an existing function, or defining a function named 'profileEditProvider' - temp_social_section.dart:116:28 - undefined_function
+  error - Undefined name 'widget'. Try correcting the name to one that is defined, or defining the name - temp_social_section.dart:116:48 - undefined_identifier
+
+1167 issues found. (ran in 4.9s)

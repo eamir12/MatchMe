@@ -1,4 +1,5 @@
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:flutter/foundation.dart';
+
 import '../text_formatter.dart';
 import '../translation_service.dart';
 
@@ -6,7 +7,8 @@ import '../translation_service.dart';
 TranslationService getMobileTranslationService() => DeepLTranslationService();
 
 // Also provide the unified interface for conditional import
-TranslationService getPlatformTranslationService() => getMobileTranslationService();
+TranslationService getPlatformTranslationService() =>
+    getMobileTranslationService();
 
 class DeepLTranslationService implements TranslationService {
   @override
@@ -43,7 +45,13 @@ class DeepLTranslationService implements TranslationService {
   }
 
   @override
-  Future<String> translateText(String text, String sourceLang, String targetLang, {String? recipientGender}) async {
+  Future<String> translateText(
+    String text,
+    String sourceLang,
+    String targetLang, {
+    String? recipientGender,
+    String? speakerGender,
+  }) async {
     final deepLTargetLang = _mapToDeepLLanguage(targetLang);
 
     if (text.trim().isEmpty) {
@@ -54,27 +62,44 @@ class DeepLTranslationService implements TranslationService {
       text,
       sourceLang,
       deepLTargetLang,
+      speakerGender: speakerGender,
+      recipientGender: recipientGender,
     );
     return TextFormatter.formatForLanguage(translated, targetLang);
   }
 
-  Future<String> _translateViaEdgeFunction(String text, String sourceLang, String targetLang) async {
+  Future<String> _translateViaEdgeFunction(
+    String text,
+    String sourceLang,
+    String targetLang, {
+    String? speakerGender,
+    String? recipientGender,
+  }) async {
     try {
-      final supabase = Supabase.instance.client;
-
-      final response = await supabase.functions.invoke(
-        'translate-proxy',
+      // Gender steering is built server-side (single source of truth): send
+      // raw genders and let the edge render DeepL `context` in the
+      // documented natural-clue style. Never render instructions client-side.
+      final response = await TranslationProxy.invoke(
         body: {
           'text': text,
           'target_lang': targetLang, // Already mapped to DeepL format
           'source_lang': sourceLang != 'und' ? sourceLang : 'auto',
+          'speaker_gender': ?speakerGender,
+          'addressee_gender': ?recipientGender,
         },
       );
 
       if (response.data != null && response.data['translatedText'] != null) {
         return response.data['translatedText'] as String;
       }
+      debugPrint(
+        '[DeepL] translate response missing translatedText '
+        '(target=$targetLang, length=${text.length})',
+      );
     } catch (e) {
+      // Graceful degradation for callers: return the original text, but log
+      // so silent-English symptoms (e.g. photo rejections) are diagnosable.
+      debugPrint('[DeepL] translate failed (target=$targetLang): $e');
       return text;
     }
     return text;
@@ -84,5 +109,4 @@ class DeepLTranslationService implements TranslationService {
   void dispose() {
     // No resources to dispose for DeepL service
   }
-
 }

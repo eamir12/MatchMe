@@ -1,0 +1,7 @@
+targets:
+  $default:
+    builders:
+      riverpod_generator:
+        options:
+          # Enable caching for faster incremental builds
+          cache_dir: .dart_tool/build_runner_cache

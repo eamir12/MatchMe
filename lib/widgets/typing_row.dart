@@ -15,16 +15,25 @@ class TypingRow extends ConsumerWidget {
     final profileAsync = ref.watch(userProfileProvider(otherUserId));
     final profile = profileAsync.asData?.value;
     final gender = profile?.gender;
-    final displayName = name.isNotEmpty ? name : l10n.getString('generalUnknown');
+    final displayName = name.isNotEmpty
+        ? name
+        : l10n.getString('generalUnknown');
     // Try gender-aware translation first (with parameter substitution)
-    final typed = l10n.getString('chatIsTyping', gender: gender, params: {'name': displayName});
+    final typed = l10n.getString(
+      'chatIsTyping',
+      gender: gender,
+      params: {'name': displayName},
+    );
 
     String text;
     if (typed.contains(displayName)) {
       text = typed;
     } else {
       // Fallback to base translation with name parameter
-      final baseWithName = l10n.getString('chatIsTyping', params: {'name': displayName});
+      final baseWithName = l10n.getString(
+        'chatIsTyping',
+        params: {'name': displayName},
+      );
       if (baseWithName.contains(displayName)) {
         text = baseWithName;
       } else {
@@ -38,7 +47,9 @@ class TypingRow extends ConsumerWidget {
         Expanded(
           child: Text(
             text,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey),
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: Colors.grey),
           ),
         ),
       ],

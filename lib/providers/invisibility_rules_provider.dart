@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -9,15 +10,19 @@ import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/current_location_provider.dart';
 import 'package:matchme/services/local_db_service.dart';
+import 'package:matchme/services/secure_storage_service.dart';
 import 'package:matchme/providers/visibility_provider.dart';
 import 'package:matchme/providers/auth_provider.dart';
+import 'package:matchme/web_imports.dart' as html;
+import 'package:matchme/utils/offline_utils.dart';
+import 'package:matchme/services/supabase_realtime_manager.dart';
 
 class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
   final supabase = Supabase.instance.client;
   late Future<void> _initializationFuture;
   RealtimeChannel? _rulesSubscription;
   String? _rulesSubscriptionUserId;
-  Timer? _rulesResubscribeTimer;
+  dynamic _webVisibilityListener;
 
   @override
   InvisibilityRules build() {
@@ -30,16 +35,18 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
         _clearRealtimeSubscription();
         return;
       }
-      if (event == AuthChangeEvent.initialSession || event == AuthChangeEvent.signedIn || event == AuthChangeEvent.tokenRefreshed) {
+      if (event == AuthChangeEvent.initialSession ||
+          event == AuthChangeEvent.signedIn ||
+          event == AuthChangeEvent.tokenRefreshed) {
         _ensureRealtimeSubscription();
         unawaited(syncFromSupabase());
       }
     });
     _ensureRealtimeSubscription();
+    _attachWebVisibilityListener();
     ref.onDispose(() {
-      _rulesResubscribeTimer?.cancel();
-      _rulesResubscribeTimer = null;
       _clearRealtimeSubscription();
+      _detachWebVisibilityListener();
     });
     return InvisibilityRules(isLoaded: false);
   }
@@ -68,12 +75,24 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
     if (decoded is! Map) return null;
     final raw = Map<String, dynamic>.from(decoded);
     final normalized = <String, dynamic>{
-      'locationRules': _normalizeRuleList(raw['locationRules'] ?? raw['location_rules']),
-      'dateRangeRules': _normalizeRuleList(raw['dateRangeRules'] ?? raw['date_range_rules']),
-      'timeRangeRules': _normalizeRuleList(raw['timeRangeRules'] ?? raw['time_range_rules']),
-      'dayOfWeekRules': _normalizeRuleList(raw['dayOfWeekRules'] ?? raw['day_of_week_rules']),
-      'dateTimeRangeRules': _normalizeRuleList(raw['dateTimeRangeRules'] ?? raw['date_time_range_rules']),
-      'dayTimeRangeRules': _normalizeRuleList(raw['dayTimeRangeRules'] ?? raw['day_time_range_rules']),
+      'locationRules': _normalizeRuleList(
+        raw['locationRules'] ?? raw['location_rules'],
+      ),
+      'dateRangeRules': _normalizeRuleList(
+        raw['dateRangeRules'] ?? raw['date_range_rules'],
+      ),
+      'timeRangeRules': _normalizeRuleList(
+        raw['timeRangeRules'] ?? raw['time_range_rules'],
+      ),
+      'dayOfWeekRules': _normalizeRuleList(
+        raw['dayOfWeekRules'] ?? raw['day_of_week_rules'],
+      ),
+      'dateTimeRangeRules': _normalizeRuleList(
+        raw['dateTimeRangeRules'] ?? raw['date_time_range_rules'],
+      ),
+      'dayTimeRangeRules': _normalizeRuleList(
+        raw['dayTimeRangeRules'] ?? raw['day_time_range_rules'],
+      ),
       'isLoaded': true,
     };
     try {
@@ -92,7 +111,10 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
       final normalized = <String, dynamic>{};
       map.forEach((key, rawValue) {
         final normalizedKey = _normalizeRuleKey(key.toString());
-        normalized[normalizedKey] = _normalizeRuleValue(normalizedKey, rawValue);
+        normalized[normalizedKey] = _normalizeRuleValue(
+          normalizedKey,
+          rawValue,
+        );
       });
       result.add(normalized);
     }
@@ -141,31 +163,59 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
       final text = value.toString().toLowerCase().trim();
       return text == 'true' || text == '1';
     }
-    if (key == 'id' || key == 'name' || key == 'startTime' || key == 'endTime' || key == 'startDate' || key == 'endDate' || key == 'startDateTime' || key == 'endDateTime') {
+    if (key == 'id' ||
+        key == 'name' ||
+        key == 'startTime' ||
+        key == 'endTime' ||
+        key == 'startDate' ||
+        key == 'endDate' ||
+        key == 'startDateTime' ||
+        key == 'endDateTime') {
       return value.toString();
     }
     return value;
   }
 
   void _clearRealtimeSubscription() {
-    final channel = _rulesSubscription;
-    if (channel != null) {
-      try {
-        supabase.removeChannel(channel);
-      } catch (_) {}
-    }
+    final userId = _rulesSubscriptionUserId;
     _rulesSubscription = null;
     _rulesSubscriptionUserId = null;
+    if (userId != null) {
+      SupabaseRealtimeManager.instance.unregister(
+        'user_invisibility_rules_$userId',
+      );
+    }
   }
 
-  void _scheduleRealtimeResubscribe() {
-    if (_rulesResubscribeTimer?.isActive ?? false) return;
-    _rulesResubscribeTimer = Timer(const Duration(seconds: 1), () {
-      if (!ref.mounted) return;
-      _clearRealtimeSubscription();
-      _ensureRealtimeSubscription();
-      unawaited(syncFromSupabase());
-    });
+  void _attachWebVisibilityListener() {
+    if (!kIsWeb) return;
+    try {
+      _webVisibilityListener = (_) {
+        try {
+          if (html.document.visibilityState == 'visible' &&
+              html.document.hidden != true) {
+            // Tab became visible - re-establish subscription and sync
+            _ensureRealtimeSubscription();
+            unawaited(syncFromSupabase(ensureRealtimeSubscription: false));
+          }
+        } catch (_) {}
+      };
+      html.document.addEventListener(
+        'visibilitychange',
+        _webVisibilityListener,
+      );
+    } catch (_) {}
+  }
+
+  void _detachWebVisibilityListener() {
+    if (!kIsWeb || _webVisibilityListener == null) return;
+    try {
+      html.document.removeEventListener(
+        'visibilitychange',
+        _webVisibilityListener,
+      );
+      _webVisibilityListener = null;
+    } catch (_) {}
   }
 
   void _ensureRealtimeSubscription() {
@@ -174,44 +224,118 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
       _clearRealtimeSubscription();
       return;
     }
-    if (_rulesSubscription != null && _rulesSubscriptionUserId == userId) return;
+    if (_rulesSubscription != null && _rulesSubscriptionUserId == userId) {
+      return;
+    }
 
     _clearRealtimeSubscription();
-    _rulesSubscription = supabase
-        .channel('user_invisibility_rules_$userId')
-        .onPostgresChanges(
-          event: PostgresChangeEvent.all,
-          schema: 'public',
-          table: 'user_invisibility_rules',
-          filter: PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'user_id', value: userId),
-          callback: (payload) {
-            unawaited(() async {
-              try {
-                await syncFromSupabase();
-              } catch (e) {
-                debugPrint('Failed to apply realtime invisibility rules update: $e');
+    final channelName = 'user_invisibility_rules_$userId';
+    SupabaseRealtimeManager.instance.register(channelName, () {
+      late final RealtimeChannel channel;
+      channel = supabase
+          .channel(channelName)
+          .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'user_invisibility_rules',
+            filter: PostgresChangeFilter(
+              type: PostgresChangeFilterType.eq,
+              column: 'user_id',
+              value: userId,
+            ),
+            callback: (payload) {
+              final syncFuture = syncFromSupabase(
+                ensureRealtimeSubscription: false,
+              );
+              unawaited(
+                syncFuture.catchError((Object error, StackTrace stackTrace) {
+                  print(
+                    'Failed to apply realtime invisibility rules update: $error',
+                  );
+                }),
+              );
+            },
+          )
+          .subscribe((status, err) {
+            if (!identical(_rulesSubscription, channel)) return;
+            if (status == RealtimeSubscribeStatus.subscribed) {
+              unawaited(syncFromSupabase(ensureRealtimeSubscription: false));
+              return;
+            }
+            if (status == RealtimeSubscribeStatus.channelError ||
+                status == RealtimeSubscribeStatus.timedOut ||
+                status == RealtimeSubscribeStatus.closed) {
+              if (err != null && isExpectedOfflineFailure(err)) {
+                // Proactively pause to suppress errors from other
+                // channels and avoid the race with the connectivity
+                // provider's own pauseAll() call.
+                SupabaseRealtimeManager.instance.pauseAll();
+                return;
               }
-            }());
-          },
-        )
-        .subscribe((status, err) {
-          if (status == RealtimeSubscribeStatus.subscribed) {
-            unawaited(syncFromSupabase());
-            return;
-          }
-          if (status == RealtimeSubscribeStatus.channelError || status == RealtimeSubscribeStatus.timedOut || status == RealtimeSubscribeStatus.closed) {
-            _scheduleRealtimeResubscribe();
-            unawaited(syncFromSupabase());
-          }
-        });
-    _rulesSubscriptionUserId = userId;
+              if (SupabaseRealtimeManager.instance.isPaused) return;
+              _rulesSubscription = null;
+              _rulesSubscriptionUserId = null;
+              // Reconnection handled by SupabaseRealtimeManager
+              unawaited(syncFromSupabase(ensureRealtimeSubscription: false));
+            }
+          });
+      _rulesSubscription = channel;
+      _rulesSubscriptionUserId = userId;
+      return channel;
+    });
   }
 
   Future<void> waitForInitialization() => _initializationFuture;
 
+  Future<String?> _readRulesJson() async {
+    try {
+      final stored = await SecureStorageService.instance.read(
+        'invisibility_rules',
+      );
+      if (stored != null && stored.isNotEmpty) return stored;
+    } catch (_) {}
+    // Legacy plain SharedPreferences fallback.
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getString('invisibility_rules');
+    } catch (_) {}
+    return null;
+  }
+
+  Future<void> _writeRulesJson(String rulesJson) async {
+    try {
+      await SecureStorageService.instance.write(
+        'invisibility_rules',
+        rulesJson,
+      );
+    } catch (_) {}
+    // Remove legacy plain copy.
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.containsKey('invisibility_rules')) {
+        await prefs.remove('invisibility_rules');
+      }
+    } catch (_) {}
+  }
+
   Future<void> _loadRules() async {
     try {
       _ensureRealtimeSubscription();
+      // Cache-first: apply local snapshot IMMEDIATELY (memory + secure
+      // storage) so UI renders instantly on startup, then refresh below.
+      try {
+        final localJson = await _readRulesJson();
+        if (localJson != null) {
+          final local = InvisibilityRules.fromJson(jsonDecode(localJson));
+          final normalizedLocal = _pruneExpiredRules(
+            local,
+          ).copyWith(isLoaded: true);
+          state = normalizedLocal;
+          unawaited(
+            ref.read(isVisibleProvider.notifier).updateEffectiveVisibility(),
+          );
+        }
+      } catch (_) {}
       final user = supabase.auth.currentUser;
       if (user != null) {
         // Try to load from Supabase first
@@ -226,42 +350,47 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
           if (rules == null) {
             return;
           }
-          final normalizedRules = _pruneExpiredRules(rules).copyWith(isLoaded: true);
+          final normalizedRules = _pruneExpiredRules(
+            rules,
+          ).copyWith(isLoaded: true);
           final normalizedRulesJson = jsonEncode(normalizedRules.toJson());
           state = normalizedRules;
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('invisibility_rules', normalizedRulesJson);
-          await ref.read(isVisibleProvider.notifier).updateEffectiveVisibility();
+          await _writeRulesJson(normalizedRulesJson);
+          await ref
+              .read(isVisibleProvider.notifier)
+              .updateEffectiveVisibility();
           return;
         }
       }
 
-      // Fallback to SharedPreferences if no Supabase data or not logged in
-      final prefs = await SharedPreferences.getInstance();
-      final rulesJson = prefs.getString('invisibility_rules');
+      // Fallback to secure storage / legacy prefs if no Supabase data.
+      final rulesJson = await _readRulesJson();
       if (rulesJson != null) {
         final rules = InvisibilityRules.fromJson(jsonDecode(rulesJson));
-        final normalizedRules = _pruneExpiredRules(rules).copyWith(isLoaded: true);
+        final normalizedRules = _pruneExpiredRules(
+          rules,
+        ).copyWith(isLoaded: true);
         final normalizedRulesJson = jsonEncode(normalizedRules.toJson());
         state = normalizedRules;
         if (normalizedRulesJson != rulesJson) {
-          await prefs.setString('invisibility_rules', normalizedRulesJson);
+          await _writeRulesJson(normalizedRulesJson);
           await _syncRulesToSupabase(normalizedRulesJson);
         }
         await ref.read(isVisibleProvider.notifier).updateEffectiveVisibility();
       }
     } catch (e) {
-      // Fallback to SharedPreferences
+      // Fallback to secure storage / legacy prefs
       try {
-        final prefs = await SharedPreferences.getInstance();
-        final rulesJson = prefs.getString('invisibility_rules');
+        final rulesJson = await _readRulesJson();
         if (rulesJson != null) {
           final rules = InvisibilityRules.fromJson(jsonDecode(rulesJson));
-          final normalizedRules = _pruneExpiredRules(rules).copyWith(isLoaded: true);
+          final normalizedRules = _pruneExpiredRules(
+            rules,
+          ).copyWith(isLoaded: true);
           final normalizedRulesJson = jsonEncode(normalizedRules.toJson());
           state = normalizedRules;
           if (normalizedRulesJson != rulesJson) {
-            await prefs.setString('invisibility_rules', normalizedRulesJson);
+            await _writeRulesJson(normalizedRulesJson);
             await _syncRulesToSupabase(normalizedRulesJson);
           }
         }
@@ -284,10 +413,9 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
     // Update state immediately
     state = normalizedRules;
 
-    // Save to SharedPreferences
+    // Save to secure storage (rules JSON may contain location/PII).
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('invisibility_rules', rulesJson);
+      await _writeRulesJson(rulesJson);
     } catch (e) {
       // Ignore
     }
@@ -303,7 +431,11 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
     final prunedDateRangeRules = rules.dateRangeRules.where((rule) {
-      final endDate = DateTime(rule.endDate.year, rule.endDate.month, rule.endDate.day);
+      final endDate = DateTime(
+        rule.endDate.year,
+        rule.endDate.month,
+        rule.endDate.day,
+      );
       return !today.isAfter(endDate);
     }).toList();
     final prunedDateTimeRangeRules = rules.dateTimeRangeRules.where((rule) {
@@ -319,16 +451,22 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
     final user = supabase.auth.currentUser;
     if (user == null) return;
 
+    if (shouldSkipSupabaseCalls()) {
+      await ref
+          .read(localDbProvider)
+          .saveInvisibilityRulesUpdateToOutbox(user.id, rulesJson);
+      return;
+    }
+
     try {
-      await supabase.from('user_invisibility_rules').upsert(
-        {
-          'user_id': user.id,
-          'rules_data': rulesJson,
-        },
-        onConflict: 'user_id',
-      );
+      await supabase.from('user_invisibility_rules').upsert({
+        'user_id': user.id,
+        'rules_data': rulesJson,
+      }, onConflict: 'user_id');
     } catch (e) {
-      await ref.read(localDbProvider).saveInvisibilityRulesUpdateToOutbox(user.id, rulesJson);
+      await ref
+          .read(localDbProvider)
+          .saveInvisibilityRulesUpdateToOutbox(user.id, rulesJson);
     }
   }
 
@@ -359,8 +497,12 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
   }
 
   Future<void> updateLocationRule(LocationRule updatedRule) async {
+    final updatedLocationRules = <LocationRule>[];
+    for (final r in state.locationRules) {
+      updatedLocationRules.add(r.id == updatedRule.id ? updatedRule : r);
+    }
     final updatedRules = InvisibilityRules(
-      locationRules: state.locationRules.map((r) => r.id == updatedRule.id ? updatedRule : r).toList(),
+      locationRules: updatedLocationRules,
       dateRangeRules: state.dateRangeRules,
       timeRangeRules: state.timeRangeRules,
       dayOfWeekRules: state.dayOfWeekRules,
@@ -387,7 +529,9 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
   Future<void> removeDateRangeRule(String ruleId) async {
     final updatedRules = InvisibilityRules(
       locationRules: state.locationRules,
-      dateRangeRules: state.dateRangeRules.where((r) => r.id != ruleId).toList(),
+      dateRangeRules: state.dateRangeRules
+          .where((r) => r.id != ruleId)
+          .toList(),
       timeRangeRules: state.timeRangeRules,
       dayOfWeekRules: state.dayOfWeekRules,
       dateTimeRangeRules: state.dateTimeRangeRules,
@@ -398,9 +542,13 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
   }
 
   Future<void> updateDateRangeRule(DateRangeRule updatedRule) async {
+    final updatedDateRangeRules = <DateRangeRule>[];
+    for (final r in state.dateRangeRules) {
+      updatedDateRangeRules.add(r.id == updatedRule.id ? updatedRule : r);
+    }
     final updatedRules = InvisibilityRules(
       locationRules: state.locationRules,
-      dateRangeRules: state.dateRangeRules.map((r) => r.id == updatedRule.id ? updatedRule : r).toList(),
+      dateRangeRules: updatedDateRangeRules,
       timeRangeRules: state.timeRangeRules,
       dayOfWeekRules: state.dayOfWeekRules,
       dateTimeRangeRules: state.dateTimeRangeRules,
@@ -427,7 +575,9 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
     final updatedRules = InvisibilityRules(
       locationRules: state.locationRules,
       dateRangeRules: state.dateRangeRules,
-      timeRangeRules: state.timeRangeRules.where((r) => r.id != ruleId).toList(),
+      timeRangeRules: state.timeRangeRules
+          .where((r) => r.id != ruleId)
+          .toList(),
       dayOfWeekRules: state.dayOfWeekRules,
       dateTimeRangeRules: state.dateTimeRangeRules,
       dayTimeRangeRules: state.dayTimeRangeRules,
@@ -437,10 +587,14 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
   }
 
   Future<void> updateTimeRangeRule(TimeRangeRule updatedRule) async {
+    final updatedTimeRangeRules = <TimeRangeRule>[];
+    for (final r in state.timeRangeRules) {
+      updatedTimeRangeRules.add(r.id == updatedRule.id ? updatedRule : r);
+    }
     final updatedRules = InvisibilityRules(
       locationRules: state.locationRules,
       dateRangeRules: state.dateRangeRules,
-      timeRangeRules: state.timeRangeRules.map((r) => r.id == updatedRule.id ? updatedRule : r).toList(),
+      timeRangeRules: updatedTimeRangeRules,
       dayOfWeekRules: state.dayOfWeekRules,
       dateTimeRangeRules: state.dateTimeRangeRules,
       dayTimeRangeRules: state.dayTimeRangeRules,
@@ -467,14 +621,15 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
       locationRules: state.locationRules,
       dateRangeRules: state.dateRangeRules,
       timeRangeRules: state.timeRangeRules,
-      dayOfWeekRules: state.dayOfWeekRules.where((r) => r.id != ruleId).toList(),
+      dayOfWeekRules: state.dayOfWeekRules
+          .where((r) => r.id != ruleId)
+          .toList(),
       dateTimeRangeRules: state.dateTimeRangeRules,
       dayTimeRangeRules: state.dayTimeRangeRules,
       isLoaded: state.isLoaded,
     );
     await _saveRules(updatedRules);
   }
-
 
   Future<void> addDateTimeRangeRule(DateTimeRangeRule rule) async {
     final updatedRules = InvisibilityRules(
@@ -495,7 +650,9 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
       dateRangeRules: state.dateRangeRules,
       timeRangeRules: state.timeRangeRules,
       dayOfWeekRules: state.dayOfWeekRules,
-      dateTimeRangeRules: state.dateTimeRangeRules.where((r) => r.id != ruleId).toList(),
+      dateTimeRangeRules: state.dateTimeRangeRules
+          .where((r) => r.id != ruleId)
+          .toList(),
       dayTimeRangeRules: state.dayTimeRangeRules,
       isLoaded: state.isLoaded,
     );
@@ -503,12 +660,16 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
   }
 
   Future<void> updateDateTimeRangeRule(DateTimeRangeRule updatedRule) async {
+    final updatedDateTimeRangeRules = <DateTimeRangeRule>[];
+    for (final r in state.dateTimeRangeRules) {
+      updatedDateTimeRangeRules.add(r.id == updatedRule.id ? updatedRule : r);
+    }
     final updatedRules = InvisibilityRules(
       locationRules: state.locationRules,
       dateRangeRules: state.dateRangeRules,
       timeRangeRules: state.timeRangeRules,
       dayOfWeekRules: state.dayOfWeekRules,
-      dateTimeRangeRules: state.dateTimeRangeRules.map((r) => r.id == updatedRule.id ? updatedRule : r).toList(),
+      dateTimeRangeRules: updatedDateTimeRangeRules,
       dayTimeRangeRules: state.dayTimeRangeRules,
       isLoaded: state.isLoaded,
     );
@@ -535,18 +696,24 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
       timeRangeRules: state.timeRangeRules,
       dayOfWeekRules: state.dayOfWeekRules,
       dateTimeRangeRules: state.dateTimeRangeRules,
-      dayTimeRangeRules: state.dayTimeRangeRules.where((r) => r.id != ruleId).toList(),
+      dayTimeRangeRules: state.dayTimeRangeRules
+          .where((r) => r.id != ruleId)
+          .toList(),
       isLoaded: state.isLoaded,
     );
     await _saveRules(updatedRules);
   }
 
   Future<void> updateDayOfWeekRule(DayOfWeekRule updatedRule) async {
+    final updatedDayOfWeekRules = <DayOfWeekRule>[];
+    for (final r in state.dayOfWeekRules) {
+      updatedDayOfWeekRules.add(r.id == updatedRule.id ? updatedRule : r);
+    }
     final updatedRules = InvisibilityRules(
       locationRules: state.locationRules,
       dateRangeRules: state.dateRangeRules,
       timeRangeRules: state.timeRangeRules,
-      dayOfWeekRules: state.dayOfWeekRules.map((r) => r.id == updatedRule.id ? updatedRule : r).toList(),
+      dayOfWeekRules: updatedDayOfWeekRules,
       dateTimeRangeRules: state.dateTimeRangeRules,
       dayTimeRangeRules: state.dayTimeRangeRules,
       isLoaded: state.isLoaded,
@@ -561,7 +728,9 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
       timeRangeRules: state.timeRangeRules,
       dayOfWeekRules: state.dayOfWeekRules,
       dateTimeRangeRules: state.dateTimeRangeRules,
-      dayTimeRangeRules: state.dayTimeRangeRules.map((r) => r.id == updatedRule.id ? updatedRule : r).toList(),
+      dayTimeRangeRules: state.dayTimeRangeRules
+          .map((r) => r.id == updatedRule.id ? updatedRule : r)
+          .toList(),
       isLoaded: state.isLoaded,
     );
     await _saveRules(updatedRules);
@@ -569,7 +738,9 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
 
   Future<void> toggleLocationRuleEnabled(String ruleId) async {
     final updatedRules = InvisibilityRules(
-      locationRules: state.locationRules.map((r) => r.id == ruleId ? r.copyWith(enabled: !r.enabled) : r).toList(),
+      locationRules: state.locationRules
+          .map((r) => r.id == ruleId ? r.copyWith(enabled: !r.enabled) : r)
+          .toList(),
       dateRangeRules: state.dateRangeRules,
       timeRangeRules: state.timeRangeRules,
       dayOfWeekRules: state.dayOfWeekRules,
@@ -583,7 +754,9 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
   Future<void> toggleDateRangeRuleEnabled(String ruleId) async {
     final updatedRules = InvisibilityRules(
       locationRules: state.locationRules,
-      dateRangeRules: state.dateRangeRules.map((r) => r.id == ruleId ? r.copyWith(enabled: !r.enabled) : r).toList(),
+      dateRangeRules: state.dateRangeRules
+          .map((r) => r.id == ruleId ? r.copyWith(enabled: !r.enabled) : r)
+          .toList(),
       timeRangeRules: state.timeRangeRules,
       dayOfWeekRules: state.dayOfWeekRules,
       dateTimeRangeRules: state.dateTimeRangeRules,
@@ -597,7 +770,9 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
     final updatedRules = InvisibilityRules(
       locationRules: state.locationRules,
       dateRangeRules: state.dateRangeRules,
-      timeRangeRules: state.timeRangeRules.map((r) => r.id == ruleId ? r.copyWith(enabled: !r.enabled) : r).toList(),
+      timeRangeRules: state.timeRangeRules
+          .map((r) => r.id == ruleId ? r.copyWith(enabled: !r.enabled) : r)
+          .toList(),
       dayOfWeekRules: state.dayOfWeekRules,
       dateTimeRangeRules: state.dateTimeRangeRules,
       dayTimeRangeRules: state.dayTimeRangeRules,
@@ -611,7 +786,9 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
       locationRules: state.locationRules,
       dateRangeRules: state.dateRangeRules,
       timeRangeRules: state.timeRangeRules,
-      dayOfWeekRules: state.dayOfWeekRules.map((r) => r.id == ruleId ? r.copyWith(enabled: !r.enabled) : r).toList(),
+      dayOfWeekRules: state.dayOfWeekRules
+          .map((r) => r.id == ruleId ? r.copyWith(enabled: !r.enabled) : r)
+          .toList(),
       dateTimeRangeRules: state.dateTimeRangeRules,
       dayTimeRangeRules: state.dayTimeRangeRules,
       isLoaded: state.isLoaded,
@@ -625,7 +802,9 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
       dateRangeRules: state.dateRangeRules,
       timeRangeRules: state.timeRangeRules,
       dayOfWeekRules: state.dayOfWeekRules,
-      dateTimeRangeRules: state.dateTimeRangeRules.map((r) => r.id == ruleId ? r.copyWith(enabled: !r.enabled) : r).toList(),
+      dateTimeRangeRules: state.dateTimeRangeRules
+          .map((r) => r.id == ruleId ? r.copyWith(enabled: !r.enabled) : r)
+          .toList(),
       dayTimeRangeRules: state.dayTimeRangeRules,
       isLoaded: state.isLoaded,
     );
@@ -639,15 +818,21 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
       timeRangeRules: state.timeRangeRules,
       dayOfWeekRules: state.dayOfWeekRules,
       dateTimeRangeRules: state.dateTimeRangeRules,
-      dayTimeRangeRules: state.dayTimeRangeRules.map((r) => r.id == ruleId ? r.copyWith(enabled: !r.enabled) : r).toList(),
+      dayTimeRangeRules: state.dayTimeRangeRules
+          .map((r) => r.id == ruleId ? r.copyWith(enabled: !r.enabled) : r)
+          .toList(),
       isLoaded: state.isLoaded,
     );
     await _saveRules(updatedRules);
   }
 
-  Future<void> syncFromSupabase() async {
+  Future<void> syncFromSupabase({
+    bool ensureRealtimeSubscription = true,
+  }) async {
     try {
-      _ensureRealtimeSubscription();
+      if (ensureRealtimeSubscription) {
+        _ensureRealtimeSubscription();
+      }
       final user = supabase.auth.currentUser;
       if (user != null) {
         final response = await supabase
@@ -659,9 +844,10 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
         if (response == null || response['rules_data'] == null) {
           final emptyRules = InvisibilityRules(isLoaded: true);
           state = emptyRules;
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('invisibility_rules', jsonEncode(emptyRules.toJson()));
-          await ref.read(isVisibleProvider.notifier).updateEffectiveVisibility();
+          await _writeRulesJson(jsonEncode(emptyRules.toJson()));
+          await ref
+              .read(isVisibleProvider.notifier)
+              .updateEffectiveVisibility();
           return;
         }
 
@@ -669,11 +855,12 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
         if (rules == null) {
           return;
         }
-        final normalizedRules = _pruneExpiredRules(rules).copyWith(isLoaded: true);
+        final normalizedRules = _pruneExpiredRules(
+          rules,
+        ).copyWith(isLoaded: true);
         final normalizedRulesJson = jsonEncode(normalizedRules.toJson());
         state = normalizedRules;
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('invisibility_rules', normalizedRulesJson);
+        await _writeRulesJson(normalizedRulesJson);
         await ref.read(isVisibleProvider.notifier).updateEffectiveVisibility();
         return;
       }
@@ -685,12 +872,24 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
   Future<void> toggleAllRulesEnabled() async {
     final allEnabled = _areAllRulesEnabled();
     final updatedRules = InvisibilityRules(
-      locationRules: state.locationRules.map((r) => r.copyWith(enabled: !allEnabled)).toList(),
-      dateRangeRules: state.dateRangeRules.map((r) => r.copyWith(enabled: !allEnabled)).toList(),
-      timeRangeRules: state.timeRangeRules.map((r) => r.copyWith(enabled: !allEnabled)).toList(),
-      dayOfWeekRules: state.dayOfWeekRules.map((r) => r.copyWith(enabled: !allEnabled)).toList(),
-      dateTimeRangeRules: state.dateTimeRangeRules.map((r) => r.copyWith(enabled: !allEnabled)).toList(),
-      dayTimeRangeRules: state.dayTimeRangeRules.map((r) => r.copyWith(enabled: !allEnabled)).toList(),
+      locationRules: state.locationRules
+          .map((r) => r.copyWith(enabled: !allEnabled))
+          .toList(),
+      dateRangeRules: state.dateRangeRules
+          .map((r) => r.copyWith(enabled: !allEnabled))
+          .toList(),
+      timeRangeRules: state.timeRangeRules
+          .map((r) => r.copyWith(enabled: !allEnabled))
+          .toList(),
+      dayOfWeekRules: state.dayOfWeekRules
+          .map((r) => r.copyWith(enabled: !allEnabled))
+          .toList(),
+      dateTimeRangeRules: state.dateTimeRangeRules
+          .map((r) => r.copyWith(enabled: !allEnabled))
+          .toList(),
+      dayTimeRangeRules: state.dayTimeRangeRules
+          .map((r) => r.copyWith(enabled: !allEnabled))
+          .toList(),
       isLoaded: state.isLoaded,
     );
     await _saveRules(updatedRules);
@@ -698,17 +897,18 @@ class InvisibilityRulesNotifier extends Notifier<InvisibilityRules> {
 
   bool _areAllRulesEnabled() {
     return state.locationRules.every((r) => r.enabled) &&
-           state.dateRangeRules.every((r) => r.enabled) &&
-           state.timeRangeRules.every((r) => r.enabled) &&
-           state.dayOfWeekRules.every((r) => r.enabled) &&
-           state.dateTimeRangeRules.every((r) => r.enabled) &&
-           state.dayTimeRangeRules.every((r) => r.enabled);
+        state.dateRangeRules.every((r) => r.enabled) &&
+        state.timeRangeRules.every((r) => r.enabled) &&
+        state.dayOfWeekRules.every((r) => r.enabled) &&
+        state.dateTimeRangeRules.every((r) => r.enabled) &&
+        state.dayTimeRangeRules.every((r) => r.enabled);
   }
 }
 
-final invisibilityRulesProvider = NotifierProvider<InvisibilityRulesNotifier, InvisibilityRules>(() {
-  return InvisibilityRulesNotifier();
-});
+final invisibilityRulesProvider =
+    NotifierProvider<InvisibilityRulesNotifier, InvisibilityRules>(() {
+      return InvisibilityRulesNotifier();
+    });
 
 // Provider to determine current invisibility reasons
 final currentInvisibilityReasonsProvider = Provider<List<String>>((ref) {
@@ -717,7 +917,7 @@ final currentInvisibilityReasonsProvider = Provider<List<String>>((ref) {
   if (!rules.isLoaded) {
     return [];
   }
-  
+
   final currentLocation = ref.watch(currentLocationProvider);
   final now = DateTime.now();
   final reasons = <String>[];
@@ -732,7 +932,9 @@ final currentInvisibilityReasonsProvider = Provider<List<String>>((ref) {
         rule.latitude,
         rule.longitude,
       );
-      final effectiveRadius = rule.radiusMeters < 5.0 ? 5.0 : rule.radiusMeters; // Minimum 5m radius to account for minor location changes
+      final effectiveRadius = rule.radiusMeters < 5.0
+          ? 5.0
+          : rule.radiusMeters; // Minimum 5m radius to account for minor location changes
       if (distance <= effectiveRadius) {
         reasons.add('location');
         break; // Only add once per type
@@ -744,8 +946,16 @@ final currentInvisibilityReasonsProvider = Provider<List<String>>((ref) {
   for (final rule in rules.dateRangeRules) {
     if (!rule.enabled) continue;
     final currentDate = DateTime(now.year, now.month, now.day);
-    final startDate = DateTime(rule.startDate.year, rule.startDate.month, rule.startDate.day);
-    final endDate = DateTime(rule.endDate.year, rule.endDate.month, rule.endDate.day);
+    final startDate = DateTime(
+      rule.startDate.year,
+      rule.startDate.month,
+      rule.startDate.day,
+    );
+    final endDate = DateTime(
+      rule.endDate.year,
+      rule.endDate.month,
+      rule.endDate.day,
+    );
 
     if (currentDate.isAfter(startDate.subtract(const Duration(days: 1))) &&
         currentDate.isBefore(endDate.add(const Duration(days: 1)))) {
@@ -804,7 +1014,7 @@ final activeRuleIdsProvider = Provider<Map<String, String>>((ref) {
   if (!rules.isLoaded) {
     return {};
   }
-  
+
   final currentLocation = ref.watch(currentLocationProvider);
   final now = DateTime.now();
   final activeRules = <String, String>{}; // Maps ruleId to type
@@ -819,7 +1029,9 @@ final activeRuleIdsProvider = Provider<Map<String, String>>((ref) {
         rule.latitude,
         rule.longitude,
       );
-      final effectiveRadius = rule.radiusMeters < 5.0 ? 5.0 : rule.radiusMeters; // Minimum 5m radius to account for minor location changes
+      final effectiveRadius = rule.radiusMeters < 5.0
+          ? 5.0
+          : rule.radiusMeters; // Minimum 5m radius to account for minor location changes
       if (distance <= effectiveRadius) {
         activeRules[rule.id] = 'location';
       }
@@ -830,8 +1042,16 @@ final activeRuleIdsProvider = Provider<Map<String, String>>((ref) {
   for (final rule in rules.dateRangeRules) {
     if (!rule.enabled) continue;
     final currentDate = DateTime(now.year, now.month, now.day);
-    final startDate = DateTime(rule.startDate.year, rule.startDate.month, rule.startDate.day);
-    final endDate = DateTime(rule.endDate.year, rule.endDate.month, rule.endDate.day);
+    final startDate = DateTime(
+      rule.startDate.year,
+      rule.startDate.month,
+      rule.startDate.day,
+    );
+    final endDate = DateTime(
+      rule.endDate.year,
+      rule.endDate.month,
+      rule.endDate.day,
+    );
 
     if (currentDate.isAfter(startDate.subtract(const Duration(days: 1))) &&
         currentDate.isBefore(endDate.add(const Duration(days: 1)))) {
@@ -918,8 +1138,16 @@ final currentInvisibilityReasonProvider = Provider<String?>((ref) {
   for (final rule in rules.dateRangeRules) {
     if (!rule.enabled) continue;
     final currentDate = DateTime(now.year, now.month, now.day);
-    final startDate = DateTime(rule.startDate.year, rule.startDate.month, rule.startDate.day);
-    final endDate = DateTime(rule.endDate.year, rule.endDate.month, rule.endDate.day);
+    final startDate = DateTime(
+      rule.startDate.year,
+      rule.startDate.month,
+      rule.startDate.day,
+    );
+    final endDate = DateTime(
+      rule.endDate.year,
+      rule.endDate.month,
+      rule.endDate.day,
+    );
 
     if (currentDate.isAfter(startDate.subtract(const Duration(days: 1))) &&
         currentDate.isBefore(endDate.add(const Duration(days: 1)))) {
@@ -972,19 +1200,28 @@ final currentInvisibilityReasonProvider = Provider<String?>((ref) {
 
   final reasonTexts = reasons.map((reason) {
     switch (reason) {
-      case 'location': return l10n.getString('settingsLocationRules');
-      case 'date': return l10n.getString('settingsDateRangeRules');
-      case 'time': return l10n.getString('settingsTimeRangeRules');
-      case 'day': return l10n.getString('settingsDayOfWeekRules');
-      case 'datetime': return l10n.getString('settingsDateTimeRange');
-      case 'daytime': return l10n.getString('settingsDayTimeRange');
-      default: return reason;
+      case 'location':
+        return l10n.getString('settingsLocationRules');
+      case 'date':
+        return l10n.getString('settingsDateRangeRules');
+      case 'time':
+        return l10n.getString('settingsTimeRangeRules');
+      case 'day':
+        return l10n.getString('settingsDayOfWeekRules');
+      case 'datetime':
+        return l10n.getString('settingsDateTimeRange');
+      case 'daytime':
+        return l10n.getString('settingsDayTimeRange');
+      default:
+        return reason;
     }
   }).toList();
 
   // Determine user's gender (if available) to choose the correct localized phrasing
   final currentUserId = Supabase.instance.client.auth.currentUser?.id;
-  final currentUserGender = currentUserId != null ? ref.watch(userProfileProvider(currentUserId)).asData?.value?.gender : null;
+  final currentUserGender = currentUserId != null
+      ? ref.watch(userProfileProvider(currentUserId)).asData?.value?.gender
+      : null;
 
   if (reasonTexts.length == 1) {
     return '${l10n.getString('invisibleDueTo', gender: currentUserGender)} ${reasonTexts[0].toLowerCase()}';
@@ -993,7 +1230,8 @@ final currentInvisibilityReasonProvider = Provider<String?>((ref) {
   } else {
     final last = reasonTexts.removeLast();
     final joined = reasonTexts.join(', ').toLowerCase();
-    return '${l10n.getString('invisibleDueTo', gender: currentUserGender)} $joined ${l10n.getString('and').toLowerCase()} $last'.toLowerCase();
+    return '${l10n.getString('invisibleDueTo', gender: currentUserGender)} $joined ${l10n.getString('and').toLowerCase()} $last'
+        .toLowerCase();
   }
 });
 

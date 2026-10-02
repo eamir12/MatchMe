@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Backup exclusion (privacy fix).
+  Auth tokens, Hive boxes (profiles/chats/messages), and image cache must
+  never leave the device via Auto Backup / cloud restore. Functionality is
+  unaffected: data re-syncs from Supabase on next login.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="FlutterSharedPreferences.xml"/>
+    <exclude domain="sharedpref" path="matchme_secure_prefs.xml"/>
+    <exclude domain="sharedpref" path="FlutterSecureStorage.xml"/>
+    <exclude domain="sharedpref" path="matchme_prefs.xml"/>
+    <exclude domain="database" path="."/>
+    <exclude domain="file" path="hive_boxes/"/>
+    <exclude domain="external" path="."/>
+</full-backup-content>

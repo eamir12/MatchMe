@@ -75,7 +75,7 @@ final isEnabled = await appConfigService.getBool(
 
 // Get array
 final radiusOptions = await appConfigService.getIntList(
-  'profile.match_radius_options_km',
+  'profile.match_radius_options_meters',
   defaultValue: [5, 10, 20, 100]
 );
 ```
@@ -139,8 +139,8 @@ final gpsConfigs = await appConfigService.getCategory('gps');
 - `cache.events_duration_seconds` - Events cache TTL (default: 300s)
 
 ### User Configurable
-- `profile.match_radius_options_km` - Allowed radius options [5,10,20,100]
-- `profile.match_radius_default_km` - Default match radius (default: 20km)
+- `profile.match_radius_options_meters` - Allowed radius options [5,10,20,100] (in meters)
+- `profile.match_radius_default_meters` - Default match radius (default: 50000m = 50km)
 - `gps.interval_options_seconds` - Allowed GPS intervals [5,10,20,30,60]
 - `notification.match_auto_dismiss_seconds` - Match notification duration (default: 5s)
 

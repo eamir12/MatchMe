@@ -46,6 +46,14 @@ class WebNotificationService {
     // No-op on non-web platforms
   }
 
+  static Future<void> showLocationShareNotification({
+    required String title,
+    required String body,
+    bool silent = false,
+  }) async {
+    // No-op on non-web platforms
+  }
+
   /// Set which chat the user is currently viewing
   static void setViewingChat(String chatId) {
     _currentViewingChatId = chatId;
@@ -90,11 +98,9 @@ class WebNotificationService {
     return false;
   }
 
-  static void setServiceWorkerUserId(String userId) {
-  }
+  static void setServiceWorkerUserId(String userId) {}
 
-  static void clearServiceWorkerUserId() {
-  }
+  static void clearServiceWorkerUserId() {}
 
   /// Diagnostic function (stub implementation)
   static Map<String, dynamic> getDiagnostics() {

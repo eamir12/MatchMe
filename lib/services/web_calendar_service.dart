@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -6,6 +7,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
 import 'package:googleapis/calendar/v3.dart' as google_calendar;
 import 'package:http/http.dart' as http;
+import 'package:matchme/services/app_config_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ExternalCalendar {
@@ -63,6 +65,8 @@ class WebCalendarService {
       'google_calendar_access_token_expiry';
   static const String _googleUserEmailKey = 'google_calendar_user_email';
   static Future<void>? _sharedGoogleSignInInitFuture;
+  static String? _lastInitializedClientId;
+  static String? _lastInitializedServerClientId;
 
   final GoogleSignIn _googleSignIn = GoogleSignIn.instance;
   final StreamController<GoogleSignInAccount?> _userController =
@@ -78,11 +82,55 @@ class WebCalendarService {
 
   WebCalendarService();
 
+  void _trace(String message) {
+    print(message);
+    developer.log(message, name: 'WebCalendarService');
+  }
+
+  static String _envValue(String key) {
+    final defineValue = switch (key) {
+      'GOOGLE_CLIENT_ID' => const String.fromEnvironment(
+        'GOOGLE_CLIENT_ID',
+        defaultValue: '',
+      ).trim(),
+      'GOOGLE_SERVER_CLIENT_ID' => const String.fromEnvironment(
+        'GOOGLE_SERVER_CLIENT_ID',
+        defaultValue: '',
+      ).trim(),
+      'GOOGLE_ANDROID_CLIENT_ID' => const String.fromEnvironment(
+        'GOOGLE_ANDROID_CLIENT_ID',
+        defaultValue: '',
+      ).trim(),
+      _ => '',
+    };
+    if (defineValue.isNotEmpty) {
+      return defineValue;
+    }
+    return (dotenv.env[key] ?? '').trim();
+  }
+
   static Future<void> ensureGoogleSignInInitialized({
     required String clientId,
+    String? serverClientId,
   }) async {
     final normalizedClientId = clientId.trim();
+    final normalizedServerClientId = serverClientId?.trim() ?? '';
+
+    if (_lastInitializedClientId == normalizedClientId &&
+        _lastInitializedServerClientId == normalizedServerClientId) {
+      print(
+        'WebCalendarService.ensureGoogleSignInInitialized: already initialized with same client IDs',
+      );
+      return;
+    }
+
+    print(
+      'WebCalendarService.ensureGoogleSignInInitialized: clientId=$normalizedClientId, serverClientId=$normalizedServerClientId, kIsWeb=$kIsWeb',
+    );
     if (kIsWeb && normalizedClientId.isEmpty) {
+      print(
+        'WebCalendarService.ensureGoogleSignInInitialized: ABORTING - clientId is empty on Web',
+      );
       return;
     }
     final pendingInit = _sharedGoogleSignInInitFuture;
@@ -91,8 +139,22 @@ class WebCalendarService {
       return;
     }
     final initFuture = () async {
-      if (kIsWeb || normalizedClientId.isNotEmpty) {
+      if (kIsWeb) {
         await GoogleSignIn.instance.initialize(clientId: normalizedClientId);
+        return;
+      }
+      if (normalizedServerClientId.isNotEmpty) {
+        await GoogleSignIn.instance.initialize(
+          clientId: normalizedClientId,
+          serverClientId: normalizedServerClientId,
+        );
+        return;
+      }
+      if (normalizedClientId.isNotEmpty) {
+        await GoogleSignIn.instance.initialize(
+          clientId: normalizedClientId,
+          serverClientId: normalizedClientId,
+        );
       } else {
         await GoogleSignIn.instance.initialize();
       }
@@ -100,6 +162,8 @@ class WebCalendarService {
     _sharedGoogleSignInInitFuture = initFuture;
     try {
       await initFuture;
+      _lastInitializedClientId = normalizedClientId;
+      _lastInitializedServerClientId = normalizedServerClientId;
     } catch (_) {
       _sharedGoogleSignInInitFuture = null;
       rethrow;
@@ -129,18 +193,36 @@ class WebCalendarService {
     if (_isInitialized || _isInitializing) return;
     _isInitializing = true;
     try {
-      final envClientId = const String.fromEnvironment(
-        'GOOGLE_CLIENT_ID',
-        defaultValue: '',
-      ).trim();
-      final dotEnvClientId = (dotenv.env['GOOGLE_CLIENT_ID'] ?? '').trim();
-      final clientId = envClientId.isNotEmpty ? envClientId : dotEnvClientId;
+      print(
+        'WebCalendarService._init: starting initialization. dotenv.isInitialized=${dotenv.isInitialized}',
+      );
+      final clientId = _envValue('GOOGLE_CLIENT_ID');
+      final serverClientId = _envValue('GOOGLE_SERVER_CLIENT_ID').isNotEmpty
+          ? _envValue('GOOGLE_SERVER_CLIENT_ID')
+          : clientId;
+      final androidClientId = _envValue('GOOGLE_ANDROID_CLIENT_ID');
+
+      print('WebCalendarService._init: GOOGLE_CLIENT_ID=$clientId');
+      print(
+        'WebCalendarService._init: GOOGLE_SERVER_CLIENT_ID=$serverClientId',
+      );
+      print(
+        'WebCalendarService._init: GOOGLE_ANDROID_CLIENT_ID=$androidClientId',
+      );
 
       if (kIsWeb && clientId.isEmpty) {
+        print(
+          'WebCalendarService._init: GOOGLE_CLIENT_ID is empty on Web, aborting',
+        );
         return;
       }
 
-      await ensureGoogleSignInInitialized(clientId: clientId);
+      await ensureGoogleSignInInitialized(
+        clientId: !kIsWeb && androidClientId.isNotEmpty
+            ? androidClientId
+            : clientId,
+        serverClientId: serverClientId,
+      );
       _googleSignIn.authenticationEvents
           .listen((event) {
             if (event is GoogleSignInAuthenticationEventSignIn) {
@@ -257,6 +339,169 @@ class WebCalendarService {
     }
   }
 
+  Map<String, dynamic>? _authorizationPayload({
+    required dynamic authorization,
+    required String? userEmail,
+  }) {
+    String? token;
+    DateTime? expiry;
+    try {
+      token = (authorization as dynamic).accessToken as String?;
+    } catch (_) {}
+    try {
+      final raw = (authorization as dynamic).expiresAt;
+      if (raw is DateTime) {
+        expiry = raw;
+      } else if (raw is String) {
+        expiry = DateTime.tryParse(raw);
+      } else if (raw is int) {
+        expiry = DateTime.fromMillisecondsSinceEpoch(raw);
+      }
+    } catch (_) {}
+    final normalizedToken = token?.trim();
+    if (normalizedToken == null || normalizedToken.isEmpty) {
+      return null;
+    }
+    return {
+      'token': normalizedToken,
+      'expiry': expiry ?? DateTime.now().add(const Duration(minutes: 55)),
+      'userEmail': userEmail?.trim().isNotEmpty == true
+          ? userEmail!.trim()
+          : null,
+    };
+  }
+
+  Future<GoogleSignInAccount?> _recoverAuthenticatedUserAfterFailure() async {
+    for (var attempt = 0; attempt < 8; attempt++) {
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      final currentUser = _currentUser;
+      if (currentUser != null) {
+        _trace(
+          'authenticateGoogleCalendarAccess: recovered current user from auth event stream on attempt ${attempt + 1}: ${currentUser.email}',
+        );
+        return currentUser;
+      }
+    }
+    try {
+      final lightweightUser = await _googleSignIn
+          .attemptLightweightAuthentication();
+      if (lightweightUser != null) {
+        _trace(
+          'authenticateGoogleCalendarAccess: recovered lightweight user ${lightweightUser.email}',
+        );
+        _currentUser = lightweightUser;
+        _cachedUserEmail = lightweightUser.email;
+        await _saveGoogleUserEmailToCache(lightweightUser.email);
+      } else {
+        _trace(
+          'authenticateGoogleCalendarAccess: lightweight recovery returned no user',
+        );
+      }
+      return lightweightUser;
+    } catch (e) {
+      _trace(
+        'authenticateGoogleCalendarAccess: lightweight recovery failed: $e',
+      );
+      return _currentUser;
+    }
+  }
+
+  Future<dynamic> _getGoogleAuthorization(
+    GoogleSignInAccount googleUser,
+  ) async {
+    dynamic authorization;
+    try {
+      authorization = await googleUser.authorizationClient
+          .authorizationForScopes(_scopes);
+    } catch (_) {}
+    authorization ??= await googleUser.authorizationClient.authorizeScopes(
+      _scopes,
+    );
+    return authorization;
+  }
+
+  Future<Map<String, dynamic>?> authenticateGoogleCalendarAccess({
+    bool forceAccountSelection = false,
+  }) async {
+    await _init();
+    if (!_isInitialized || kIsWeb) {
+      return null;
+    }
+    _trace(
+      'authenticateGoogleCalendarAccess: start forceAccountSelection=$forceAccountSelection currentUser=${_currentUser?.email ?? 'none'} cachedUser=${_cachedUserEmail ?? 'none'}',
+    );
+    if (forceAccountSelection) {
+      try {
+        await _googleSignIn.signOut();
+      } catch (_) {
+        try {
+          await _googleSignIn.disconnect();
+        } catch (_) {}
+      }
+      _currentUser = null;
+      _activeClient?.close();
+      _activeClient = null;
+      _cachedAccessToken = null;
+      _cachedAccessTokenExpiry = null;
+      _cachedUserEmail = null;
+      await _clearGoogleTokenCache();
+      _trace(
+        'authenticateGoogleCalendarAccess: cleared existing Google session before account selection',
+      );
+    }
+    final GoogleSignInAccount googleUser;
+    try {
+      final authenticatedUser = await _googleSignIn.authenticate(
+        scopeHint: _scopes,
+      );
+      googleUser = authenticatedUser;
+      _trace(
+        'authenticateGoogleCalendarAccess: authenticate returned user ${googleUser.email}',
+      );
+    } on GoogleSignInException catch (e) {
+      _trace(
+        'authenticateGoogleCalendarAccess: authenticate threw ${e.code}: $e',
+      );
+      _trace(
+        'authenticateGoogleCalendarAccess: GoogleSignInException details - code: ${e.code}, toString: ${e.toString()}, runtimeType: ${e.runtimeType}',
+      );
+      if (e.code == GoogleSignInExceptionCode.canceled) {
+        final recoveredUser = await _recoverAuthenticatedUserAfterFailure();
+        if (recoveredUser == null) {
+          _trace(
+            'authenticateGoogleCalendarAccess: no user recovered after canceled exception',
+          );
+          return null;
+        }
+        _currentUser = recoveredUser;
+        _cachedUserEmail = recoveredUser.email;
+        await _saveGoogleUserEmailToCache(recoveredUser.email);
+        final authorization = await _getGoogleAuthorization(recoveredUser);
+        _trace(
+          'authenticateGoogleCalendarAccess: recovered user authorization completed for ${recoveredUser.email}',
+        );
+        await _tryCacheAuthorization(authorization);
+        return _authorizationPayload(
+          authorization: authorization,
+          userEmail: recoveredUser.email,
+        );
+      }
+      rethrow;
+    }
+    _currentUser = googleUser;
+    _cachedUserEmail = googleUser.email;
+    await _saveGoogleUserEmailToCache(googleUser.email);
+    final authorization = await _getGoogleAuthorization(googleUser);
+    _trace(
+      'authenticateGoogleCalendarAccess: authorization completed for ${googleUser.email}',
+    );
+    await _tryCacheAuthorization(authorization);
+    return _authorizationPayload(
+      authorization: authorization,
+      userEmail: googleUser.email,
+    );
+  }
+
   bool _looksLikeAuthError(Object e) {
     final text = e.toString().toLowerCase();
     return text.contains('401') ||
@@ -288,6 +533,10 @@ class WebCalendarService {
     _cachedAccessTokenExpiry = null;
     _cachedUserEmail = null;
     await _clearGoogleTokenCache();
+  }
+
+  Future<void> clearGoogleAuthCache() async {
+    await _invalidateGoogleAuth();
   }
 
   Future<http.Client?> _createAuthenticatedClient({
@@ -331,6 +580,38 @@ class WebCalendarService {
   Stream<GoogleSignInAccount?> get onCurrentUserChanged =>
       _userController.stream;
   GoogleSignInAccount? get currentUser => _currentUser;
+
+  Future<List<String>> listAvailableGoogleAccountEmails() async {
+    await _init();
+    final emails = <String>{};
+
+    final currentEmail = _currentUser?.email.trim();
+    if (currentEmail != null && currentEmail.isNotEmpty) {
+      emails.add(currentEmail);
+    }
+
+    await _loadGoogleTokenFromCache();
+    final cachedEmail = _cachedUserEmail?.trim();
+    if (cachedEmail != null && cachedEmail.isNotEmpty) {
+      emails.add(cachedEmail);
+    }
+
+    if (!kIsWeb && _currentUser == null) {
+      try {
+        final lightweightUser = await _googleSignIn
+            .attemptLightweightAuthentication();
+        final lightweightEmail = lightweightUser?.email.trim();
+        if (lightweightEmail != null && lightweightEmail.isNotEmpty) {
+          _currentUser = lightweightUser;
+          _cachedUserEmail = lightweightEmail;
+          emails.add(lightweightEmail);
+          await _saveGoogleUserEmailToCache(lightweightEmail);
+        }
+      } catch (_) {}
+    }
+
+    return emails.toList()..sort();
+  }
 
   Future<List<ExternalCalendar>> retrieveGoogleCalendars({
     bool allowInteractive = true,
@@ -505,7 +786,16 @@ class WebCalendarService {
             orderBy: 'startTime',
             showDeleted: false,
             eventTypes: ['default'],
-            maxResults: 2500,
+            maxResults: await (() async {
+              try {
+                return await appConfigService.getInt(
+                  'calendar.google_max_results',
+                  defaultValue: 250,
+                );
+              } catch (e) {
+                return 250;
+              }
+            })(),
             pageToken: pageToken,
           );
 
@@ -585,7 +875,16 @@ class WebCalendarService {
           orderBy: 'startTime',
           showDeleted: false,
           eventTypes: ['default'],
-          maxResults: 2500,
+          maxResults: await (() async {
+            try {
+              return await appConfigService.getInt(
+                'calendar.google_max_results',
+                defaultValue: 250,
+              );
+            } catch (e) {
+              return 250;
+            }
+          })(),
           pageToken: pageToken,
         );
 
@@ -656,7 +955,16 @@ class WebCalendarService {
                 orderBy: 'startTime',
                 showDeleted: false,
                 eventTypes: ['default'],
-                maxResults: 2500,
+                maxResults: await (() async {
+                  try {
+                    return await appConfigService.getInt(
+                      'calendar.google_max_results',
+                      defaultValue: 250,
+                    );
+                  } catch (e) {
+                    return 250;
+                  }
+                })(),
                 pageToken: pageToken,
               );
 

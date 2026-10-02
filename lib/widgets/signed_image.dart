@@ -11,12 +11,15 @@
 // - While waiting, show placeholder; on failure show errorWidget (or a fallback broken image).
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:matchme/services/storage_helper.dart';
+import 'package:matchme/services/offline_cache_manager.dart';
 import 'package:extended_image/extended_image.dart';
 import 'dart:developer' as developer;
 
 class SignedImage extends StatefulWidget {
-  final String source; // either "https://..." or "userId/123.jpg" or a public supabase URL
+  final String
+  source; // either "https://..." or "userId/123.jpg" or a public supabase URL
   final String? bucket; // optional bucket name, defaults to 'profile-photos'
   final BoxFit fit;
   final double? width;
@@ -55,7 +58,10 @@ class _SignedImageState extends State<SignedImage> {
   void initState() {
     super.initState();
     _lastCacheKey = StorageHelper.cacheKeyForSource(widget.source);
-    developer.log('🖼️ SignedImage init: source=${widget.source}, cacheKey=$_lastCacheKey, bucket=${widget.bucket}', name: 'MatchMeTrace');
+    developer.log(
+      '🖼️ SignedImage init: source=${widget.source}, cacheKey=$_lastCacheKey, bucket=${widget.bucket}',
+      name: 'MatchMeTrace',
+    );
     _initResolve();
   }
 
@@ -64,7 +70,10 @@ class _SignedImageState extends State<SignedImage> {
     super.didUpdateWidget(oldWidget);
     final newCacheKey = StorageHelper.cacheKeyForSource(widget.source);
     if (oldWidget.source != widget.source || _lastCacheKey != newCacheKey) {
-      developer.log('🖼️ SignedImage update: sourceChanged=${oldWidget.source != widget.source}, cacheKeyChanged=${_lastCacheKey != newCacheKey}, source=${widget.source}, cacheKey=$newCacheKey', name: 'MatchMeTrace');
+      developer.log(
+        '🖼️ SignedImage update: sourceChanged=${oldWidget.source != widget.source}, cacheKeyChanged=${_lastCacheKey != newCacheKey}, source=${widget.source}, cacheKey=$newCacheKey',
+        name: 'MatchMeTrace',
+      );
       _resolvedUrl = null;
       _resolvedHeaders = null;
       _failed = false;
@@ -76,20 +85,114 @@ class _SignedImageState extends State<SignedImage> {
     _lastCacheKey = newCacheKey;
   }
 
-  // Local check for already-signed URLs (don't call private members of StorageHelper).
-  bool _looksLikeSignedUrl(String urlOrPath) {
-    try {
-      final uri = Uri.parse(urlOrPath);
-      if (uri.queryParameters.containsKey('token')) return true;
-      if (uri.query.isNotEmpty && (uri.query.contains('X-Amz-') || uri.query.contains('X-Amz-Signature'))) return true;
-    } catch (_) {}
-    return false;
+  String? _cacheFallbackUrl() {
+    if (widget.source.isEmpty) return null;
+    // Don't try fallback URL for known-missing objects
+    if (StorageHelper.isKnownMissing(widget.source, bucket: widget.bucket)) {
+      return null;
+    }
+    if (widget.source.startsWith('http://') ||
+        widget.source.startsWith('https://')) {
+      return widget.source;
+    }
+    return StorageHelper.buildPublicObjectUrl(
+      widget.source,
+      bucket: widget.bucket,
+    );
+  }
+
+  Widget _buildCachedNetworkImage(
+    String imageUrl,
+    String cacheKey, {
+    Map<String, String>? headers,
+  }) {
+    if (kIsWeb) {
+      return Image.network(
+        imageUrl,
+        fit: widget.fit,
+        width: widget.width,
+        height: widget.height,
+        alignment: widget.alignment,
+        headers: null,
+        filterQuality: widget.filterQualityLow
+            ? FilterQuality.low
+            : FilterQuality.high,
+        webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
+        loadingBuilder: (context, child, loadingProgress) {
+          if (loadingProgress == null) return child;
+          return SizedBox(
+            width: widget.width,
+            height: widget.height,
+            child:
+                widget.placeholder ??
+                const Center(
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+          );
+        },
+        errorBuilder: (context, error, stackTrace) {
+          return widget.errorWidget ?? const Icon(Icons.broken_image);
+        },
+      );
+    }
+
+    return ExtendedImage.network(
+      imageUrl,
+      fit: widget.fit,
+      width: widget.width,
+      height: widget.height,
+      alignment: widget.alignment,
+      headers: headers,
+      cache: true,
+      cacheKey: cacheKey.isNotEmpty ? cacheKey : null,
+      filterQuality: widget.filterQualityLow
+          ? FilterQuality.low
+          : FilterQuality.high,
+      loadStateChanged: (state) {
+        switch (state.extendedImageLoadState) {
+          case LoadState.loading:
+            return SizedBox(
+              width: widget.width,
+              height: widget.height,
+              child:
+                  widget.placeholder ??
+                  const Center(
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+            );
+          case LoadState.completed:
+            return ExtendedRawImage(
+              image: state.extendedImageInfo?.image,
+              fit: widget.fit,
+              width: widget.width,
+              height: widget.height,
+              alignment: widget.alignment,
+              filterQuality: widget.filterQualityLow
+                  ? FilterQuality.low
+                  : FilterQuality.high,
+            );
+          case LoadState.failed:
+            return widget.errorWidget ?? const Icon(Icons.broken_image);
+        }
+      },
+    );
   }
 
   Future<void> _initResolve() async {
     final generation = ++_resolveGeneration;
     final src = widget.source;
-    developer.log('🖼️ SignedImage resolve start: source=$src, gen=$generation, bucket=${widget.bucket}', name: 'MatchMeTrace');
+    developer.log(
+      '🖼️ SignedImage resolve start: source=$src, gen=$generation, bucket=${widget.bucket}',
+      name: 'MatchMeTrace',
+    );
     if (src.isEmpty) {
       setState(() {
         _failed = true;
@@ -97,25 +200,28 @@ class _SignedImageState extends State<SignedImage> {
       return;
     }
 
-    // If it already looks like a signed url, use it immediately.
-    if (_looksLikeSignedUrl(src)) {
-      developer.log('🖼️ SignedImage resolve: using existing signed url', name: 'MatchMeTrace');
+    if (offlineCacheManager.shouldUseCachedData()) {
+      final headers = StorageHelper.buildAuthHeaders();
+      final directUrl = headers != null
+          ? StorageHelper.buildAuthenticatedObjectUrl(
+              src,
+              bucket: widget.bucket,
+            )
+          : null;
+      final fallbackUrl = directUrl ?? _cacheFallbackUrl();
+      if (fallbackUrl != null && fallbackUrl.isNotEmpty) {
+        setState(() {
+          _resolvedUrl = fallbackUrl;
+          _resolvedHeaders =
+              directUrl == fallbackUrl && headers != null && headers.isNotEmpty
+              ? headers
+              : null;
+          _failed = false;
+        });
+        return;
+      }
       setState(() {
-        _resolvedUrl = src;
-        _resolvedHeaders = null;
-        _failed = false;
-      });
-      return;
-    }
-
-    // If a cached signed URL exists, use it.
-    final cached = StorageHelper.getCachedUrl(src, bucket: widget.bucket);
-    if (cached != null && cached.isNotEmpty) {
-      developer.log('🖼️ SignedImage resolve: using cached signed url', name: 'MatchMeTrace');
-      setState(() {
-        _resolvedUrl = cached;
-        _resolvedHeaders = null;
-        _failed = false;
+        _failed = true;
       });
       return;
     }
@@ -126,25 +232,17 @@ class _SignedImageState extends State<SignedImage> {
     });
 
     try {
-      final signed = widget.bucket != null
-          ? await StorageHelper.getSignedUrlFromBucket(src, widget.bucket!)
-          : await StorageHelper.getSignedUrl(src);
+      final request = await StorageHelper.resolveImageRequest(
+        src,
+        bucket: widget.bucket,
+      );
       if (!mounted) return;
       if (generation != _resolveGeneration) return;
-      if (signed == null || signed.isEmpty) {
-        developer.log('🖼️ SignedImage resolve: signed url missing', name: 'MatchMeTrace');
-        final headers = StorageHelper.buildAuthHeaders();
-        final direct = headers != null
-            ? StorageHelper.buildAuthenticatedObjectUrl(src, bucket: widget.bucket)
-            : null;
-        if (direct != null && direct.isNotEmpty && headers != null && headers.isNotEmpty) {
-          setState(() {
-            _resolvedUrl = direct;
-            _resolvedHeaders = headers;
-            _failed = false;
-          });
-          return;
-        }
+      if (request == null || request.url.isEmpty) {
+        developer.log(
+          '🖼️ SignedImage resolve: signed url missing',
+          name: 'MatchMeTrace',
+        );
         if (!StorageHelper.canCreateSignedUrls && _retryCount < 12) {
           _retryCount++;
           Future.delayed(const Duration(milliseconds: 400), () {
@@ -160,16 +258,22 @@ class _SignedImageState extends State<SignedImage> {
         return;
       }
       _retryCount = 0;
-      developer.log('🖼️ SignedImage resolve: signed url resolved', name: 'MatchMeTrace');
+      developer.log(
+        '🖼️ SignedImage resolve: signed url resolved',
+        name: 'MatchMeTrace',
+      );
       setState(() {
-        _resolvedUrl = signed;
-        _resolvedHeaders = null;
+        _resolvedUrl = request.url;
+        _resolvedHeaders = request.headers;
         _failed = false;
       });
     } catch (_) {
       if (!mounted) return;
       if (generation != _resolveGeneration) return;
-      developer.log('🖼️ SignedImage resolve: error creating signed url', name: 'MatchMeTrace');
+      developer.log(
+        '🖼️ SignedImage resolve: error creating signed url',
+        name: 'MatchMeTrace',
+      );
       if (!StorageHelper.canCreateSignedUrls && _retryCount < 12) {
         _retryCount++;
         Future.delayed(const Duration(milliseconds: 400), () {
@@ -190,93 +294,22 @@ class _SignedImageState extends State<SignedImage> {
     final cacheKey = StorageHelper.cacheKeyForSource(widget.source);
     // Priority: resolved url -> errorWidget -> placeholder (if loading) -> small broken icon
     if (_resolvedUrl != null && _resolvedUrl!.isNotEmpty) {
-      final headers = _resolvedHeaders;
-      if (headers != null && headers.isNotEmpty) {
-        return Image.network(
-          _resolvedUrl!,
-          fit: widget.fit,
-          width: widget.width,
-          height: widget.height,
-          alignment: widget.alignment,
-          headers: headers,
-          filterQuality: widget.filterQualityLow ? FilterQuality.low : FilterQuality.high,
-          loadingBuilder: (context, child, progress) {
-            if (progress == null) return child;
-            return SizedBox(
-              width: widget.width,
-              height: widget.height,
-              child: widget.placeholder ??
-                  const Center(
-                    child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
-                  ),
-            );
-          },
-          errorBuilder: (context, error, stackTrace) {
-            return widget.errorWidget ?? const Icon(Icons.broken_image);
-          },
-        );
-      }
-      return ExtendedImage.network(
+      return _buildCachedNetworkImage(
         _resolvedUrl!,
-        fit: widget.fit,
-        width: widget.width,
-        height: widget.height,
-        alignment: widget.alignment,
-        cache: true,
-        cacheKey: cacheKey.isNotEmpty ? cacheKey : null,
-        filterQuality: widget.filterQualityLow ? FilterQuality.low : FilterQuality.high,
-        loadStateChanged: (state) {
-          switch (state.extendedImageLoadState) {
-            case LoadState.loading:
-              return SizedBox(
-                width: widget.width,
-                height: widget.height,
-                child: widget.placeholder ??
-                    const Center(
-                      child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
-                    ),
-              );
-            case LoadState.completed:
-              return ExtendedRawImage(image: state.extendedImageInfo?.image, fit: widget.fit, width: widget.width, height: widget.height, alignment: widget.alignment, filterQuality: widget.filterQualityLow ? FilterQuality.low : FilterQuality.high);
-            case LoadState.failed:
-              return widget.errorWidget ?? const Icon(Icons.broken_image);
-          }
-        },
+        cacheKey,
+        headers: _resolvedHeaders,
       );
     }
 
     if (_failed) {
-      // Try using original source as last-resort if it is an http URL (some objects may be public)
-      if (widget.source.startsWith('http://') || widget.source.startsWith('https://')) {
-        return ExtendedImage.network(
-          widget.source,
-          fit: widget.fit,
-          width: widget.width,
-          height: widget.height,
-          alignment: widget.alignment,
-          cache: true,
-          cacheKey: cacheKey.isNotEmpty ? cacheKey : null,
-          filterQuality: widget.filterQualityLow ? FilterQuality.low : FilterQuality.high,
-          loadStateChanged: (state) {
-            switch (state.extendedImageLoadState) {
-              case LoadState.loading:
-                return SizedBox(
-                  width: widget.width,
-                  height: widget.height,
-                  child: widget.placeholder ??
-                      const Center(
-                        child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
-                      ),
-                );
-              case LoadState.completed:
-                return ExtendedRawImage(image: state.extendedImageInfo?.image, fit: widget.fit, width: widget.width, height: widget.height, alignment: widget.alignment, filterQuality: widget.filterQualityLow ? FilterQuality.low : FilterQuality.high);
-              case LoadState.failed:
-                return widget.errorWidget ?? const Icon(Icons.broken_image);
-            }
-          },
-        );
+      final fallbackUrl = _cacheFallbackUrl();
+      if (fallbackUrl != null && fallbackUrl.isNotEmpty) {
+        return _buildCachedNetworkImage(fallbackUrl, cacheKey);
       }
 
+      if (StorageHelper.isKnownMissing(widget.source, bucket: widget.bucket)) {
+        return SizedBox(width: widget.width, height: widget.height);
+      }
       return SizedBox(
         width: widget.width,
         height: widget.height,
@@ -288,9 +321,14 @@ class _SignedImageState extends State<SignedImage> {
     return SizedBox(
       width: widget.width,
       height: widget.height,
-      child: widget.placeholder ??
+      child:
+          widget.placeholder ??
           const Center(
-            child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+            child: SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
           ),
     );
   }

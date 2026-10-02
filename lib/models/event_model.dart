@@ -7,7 +7,13 @@ class EventModel {
   final DateTime endTime;
   final String? eventLink;
   final String? notes; // Personal notes for the current user
-  final int attendeeCount; // Number of users attending this event
+  final int? attendeeCount;
+  final String?
+  externalCalendarId; // ID of the external calendar this event came from
+  final String? externalEventId; // ID of the event in the external calendar
+  final String? externalProvider; // Provider name (google, outlook, apple)
+  final bool isAllDay; // Whether this is an all-day event
+  final String? description; // Event description
 
   EventModel({
     required this.id,
@@ -17,10 +23,19 @@ class EventModel {
     required this.endTime,
     this.eventLink,
     this.notes,
-    this.attendeeCount = 1,
+    this.attendeeCount,
+    this.externalCalendarId,
+    this.externalEventId,
+    this.externalProvider,
+    this.isAllDay = false,
+    this.description,
   });
 
   factory EventModel.fromJson(Map<String, dynamic> json) {
+    final rawAttendeeCount = json['attendee_count'];
+    final attendeeCount = rawAttendeeCount is num
+        ? rawAttendeeCount.toInt()
+        : int.tryParse('${rawAttendeeCount ?? ''}');
     return EventModel(
       id: json['id'],
       eventName: json['event_name'],
@@ -29,7 +44,12 @@ class EventModel {
       endTime: DateTime.parse(json['end_time']),
       eventLink: json['event_link'],
       notes: json['notes'], // From event_attendees join
-      attendeeCount: json['attendee_count'] ?? 1,
+      attendeeCount: attendeeCount,
+      externalCalendarId: json['external_calendar_id'],
+      externalEventId: json['external_event_id'],
+      externalProvider: json['external_provider'],
+      isAllDay: json['is_all_day'] ?? false,
+      description: json['description'],
     );
   }
 
@@ -40,6 +60,11 @@ class EventModel {
       'start_time': startTime.toIso8601String(),
       'end_time': endTime.toIso8601String(),
       'event_link': eventLink,
+      'external_calendar_id': externalCalendarId,
+      'external_event_id': externalEventId,
+      'external_provider': externalProvider,
+      'is_all_day': isAllDay,
+      'description': description,
     };
   }
 }

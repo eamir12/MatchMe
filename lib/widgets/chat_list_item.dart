@@ -9,6 +9,8 @@ import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/new_options_provider.dart';
 import 'package:matchme/providers/typing_provider.dart';
 import 'package:matchme/services/translation_service.dart';
+import 'package:matchme/utils/encrypted_text_guard.dart';
+import 'package:matchme/utils/emoji_presentation_utils.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/widgets/signed_image.dart';
@@ -18,14 +20,25 @@ import 'package:matchme/screens/chats/chat_screen.dart';
 final supabase = Supabase.instance.client;
 
 /// Unified chat list item used by Home recent chats and the Chats screen.
+///
+/// When [searchQuery] and [searchSnippet] are both non-empty, the row shows
+/// the matching snippet instead of the last-message preview, and tapping the
+/// row opens the chat with in-chat search pre-loaded on the query so it
+/// auto-scrolls to the found text.
 class ChatListItem extends ConsumerWidget {
   final ChatModel chat;
   final bool showUnreadBorder;
+  final String? searchQuery;
+  final String? searchSnippet;
+  final String? searchMessageId;
 
   const ChatListItem({
     super.key,
     required this.chat,
     this.showUnreadBorder = false,
+    this.searchQuery,
+    this.searchSnippet,
+    this.searchMessageId,
   });
 
   @override
@@ -34,12 +47,16 @@ class ChatListItem extends ConsumerWidget {
     final textDir = ref.watch(localizationProvider).textDirection;
     final otherProfileAsync = ref.watch(userProfileProvider(chat.otherUserId));
 
+    final fallbackName = chat.otherUserName.trim().isNotEmpty
+        ? chat.otherUserName
+        : l10n.getString('generalUnknown');
     final String formattedName = otherProfileAsync.when(
-      data: (profile) =>
-          profile?.name.formatAsFirstNameLastInitial() ??
-          l10n.getString('generalUnknown'),
-      loading: () => l10n.getString('generalLoading'),
-      error: (e, s) => l10n.getString('generalError'),
+      data: (profile) {
+        final profileName = profile?.name.formatAsFirstNameLastInitial() ?? '';
+        return profileName.trim().isNotEmpty ? profileName : fallbackName;
+      },
+      loading: () => fallbackName,
+      error: (e, s) => fallbackName,
     );
 
     final String ageGender = otherProfileAsync.when(
@@ -92,25 +109,39 @@ class ChatListItem extends ConsumerWidget {
       );
       // For incoming messages with translation enabled:
       // - If source language is different from UI and no translation exists, show nothing
-      // - If translation exists, show translation (not original)
-      if (chat.lastMessageTranslated != null &&
-          chat.lastMessageTranslated!.isNotEmpty &&
-          chat.lastMessageTranslated != 'null') {
-        displayMessage = chat.lastMessageTranslated!;
-      } else if (chat.lastMessageSourceLanguage != null) {
-        // Check if source language is different from UI language
+      // - If source language matches UI, always show original message (even if translation exists)
+      // - If source language is different from UI and translation exists, show translation
+
+      // First check if source language matches UI - if so, show original
+      if (chat.lastMessageSourceLanguage != null) {
         final sourceLang = normalizeLanguageCode(
           chat.lastMessageSourceLanguage!,
         );
-        if (sourceLang != uiLang) {
-          // Source is different from UI - show nothing until translation exists
-          displayMessage = '';
-        } else {
-          // Source is same as UI - show original message
+        if (sourceLang == uiLang) {
+          // Source matches UI - show original message
           displayMessage = chat.lastMessage;
+        } else {
+          // Source differs from UI - show translation if available,
+          // otherwise nothing until it lands (never the untranslated
+          // original, never a "Loading…" placeholder).
+          if (chat.lastMessageTranslated != null &&
+              chat.lastMessageTranslated!.isNotEmpty &&
+              chat.lastMessageTranslated != 'null') {
+            displayMessage = chat.lastMessageTranslated!;
+          } else {
+            displayMessage = '';
+          }
         }
       } else {
-        displayMessage = '';
+        // No source language info - try to show translation if available,
+        // otherwise nothing until the language is resolved/translated.
+        if (chat.lastMessageTranslated != null &&
+            chat.lastMessageTranslated!.isNotEmpty &&
+            chat.lastMessageTranslated != 'null') {
+          displayMessage = chat.lastMessageTranslated!;
+        } else {
+          displayMessage = '';
+        }
       }
     } else {
       // For outgoing messages or when translation is disabled, show original message
@@ -136,123 +167,227 @@ class ChatListItem extends ConsumerWidget {
               ? typingWithName
               : '$typingDisplayName ${typed.trim()}');
 
-    final String previewMessage = displayMessage;
+    // Encrypted last messages without decrypted content simply show an
+    // empty preview — the key provider self-heals and populates it.
+    // Last line of defence: the local cache field mirrors the RPC's
+    // last_message_translated column, which carries base64 ciphertext for v1
+    // messages. If any layer above failed to decrypt it, drop it here rather
+    // than painting an unreadable blob in the user's chat list.
+    // Qualify stored text for display so pre-fix rows (bare ⛱ U+26F1)
+    // render in color. Display-only; DB rows are left untouched.
+    final previewMessage = ensureEmojiPresentation(
+      displaySafeText(displayMessage),
+    );
+    // Chats-list search: when a message body matched, the row previews the
+    // matching text (newest match) instead of the last message.
+    final activeSearchQuery = (searchQuery ?? '').trim();
+    final activeSearchSnippet = ensureEmojiPresentation(
+      displaySafeText((searchSnippet ?? '').trim()),
+    );
+    final showingSearchSnippet =
+        activeSearchQuery.isNotEmpty && activeSearchSnippet.isNotEmpty;
+    final listPreviewText = showingSearchSnippet
+        ? activeSearchSnippet
+        : previewMessage;
     final ui.TextDirection messageDir =
-        RegExp(r'[a-zA-Z]').hasMatch(previewMessage)
+        RegExp(r'[a-zA-Z]').hasMatch(listPreviewText)
         ? ui.TextDirection.ltr
-        : (previewMessage.isRtl() ? ui.TextDirection.rtl : ui.TextDirection.ltr);
+        : (listPreviewText.isRtl()
+              ? ui.TextDirection.rtl
+              : ui.TextDirection.ltr);
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Theme.of(context).shadowColor.withValues(alpha: 0.05),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
-        border: Border.all(
-          color: showUnreadBorder && chat.unreadCount > 0
-              ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.2)
-              : Colors.transparent,
-          width: 1,
-        ),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: () async {
-          final otherProfile = otherProfileAsync.value;
-          if (otherProfile == null) return;
-
-          final resolvedName = otherProfile.name.formatAsFirstNameLastInitial();
-
-          await Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => ChatScreen(
-                matchId: chat.matchId,
-                otherUserName: resolvedName,
-                otherUserId: chat.otherUserId,
-              ),
+      child: Ink(
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surface,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Theme.of(context).shadowColor.withValues(alpha: 0.05),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
             ),
-          );
+          ],
+          border: Border.all(
+            color: showUnreadBorder && chat.unreadCount > 0
+                ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.2)
+                : Colors.transparent,
+            width: 1,
+          ),
+        ),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () async {
+            final otherProfile = otherProfileAsync.value;
+            final profileName =
+                otherProfile?.name.formatAsFirstNameLastInitial() ?? '';
+            final resolvedName = profileName.trim().isNotEmpty
+                ? profileName
+                : fallbackName;
 
-          final userId = supabase.auth.currentUser?.id;
-          if (userId != null) {
-            ref.invalidate(recentChatsProvider(userId));
-          }
-        },
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildAvatar(context, otherProfileAsync),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        Expanded(
-                          child: Text(
-                            formattedName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontWeight: chat.unreadCount > 0
-                                  ? FontWeight.w700
-                                  : FontWeight.w600,
-                              fontSize: 16,
-                              color: Theme.of(context).colorScheme.onSurface,
-                            ),
-                            textAlign: textDir == ui.TextDirection.rtl
-                                ? TextAlign.right
-                                : TextAlign.left,
-                            textDirection: textDir,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Text(
-                              formatDateAndTimeOfDateTimeWithPrefs(
-                                context,
-                                ref,
-                                l10n,
-                                chat.lastMessageAt.toLocal(),
-                              ),
+            // When opened from a chats-list search, hand the query (and the
+            // newest matching message id) to the chat so it auto-scrolls to
+            // the found text instead of landing at the bottom.
+            final pendingQuery = (searchQuery ?? '').trim();
+            final pendingMessageId = (searchMessageId ?? '').trim();
+            // The list search field holds focus (and the keyboard) while the
+            // user types. Drop it before opening the chat: the opened chat
+            // already shows the searched text via its pre-seeded in-chat
+            // search, so no further typing is needed and the keyboard would
+            // only hide the results.
+            FocusManager.instance.primaryFocus?.unfocus();
+            await Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => ChatScreen(
+                  matchId: chat.matchId,
+                  otherUserName: resolvedName,
+                  otherUserId: chat.otherUserId,
+                  initialSearchQuery: pendingQuery.isNotEmpty
+                      ? pendingQuery
+                      : null,
+                  initialHighlightMessageId: pendingMessageId.isNotEmpty
+                      ? pendingMessageId
+                      : null,
+                ),
+              ),
+            );
+
+            final userId = supabase.auth.currentUser?.id;
+            if (userId != null) {
+              ref.invalidate(recentChatsProvider(userId));
+            }
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildAvatar(context, otherProfileAsync),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              formattedName,
+                              maxLines: 2,
+                              overflow: TextOverflow.visible,
                               style: TextStyle(
-                                fontSize: 12,
-                                color: Theme.of(context).disabledColor,
-                                fontWeight: FontWeight.w500,
+                                fontWeight: chat.unreadCount > 0
+                                    ? FontWeight.w700
+                                    : FontWeight.w600,
+                                fontSize: 16,
+                                color: Theme.of(context).colorScheme.onSurface,
                               ),
+                              textAlign: textDir == ui.TextDirection.rtl
+                                  ? TextAlign.right
+                                  : TextAlign.left,
+                              textDirection: textDir,
                             ),
-                            if (chat.unreadCount > 0) ...[
-                              const SizedBox(height: 6),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 2,
+                          ),
+                          const SizedBox(width: 8),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text(
+                                formatDateAndTimeOfDateTimeWithPrefs(
+                                  context,
+                                  ref,
+                                  l10n,
+                                  chat.lastMessageAt.toLocal(),
                                 ),
-                                decoration: BoxDecoration(
-                                  color: Theme.of(context).colorScheme.primary,
-                                  borderRadius: BorderRadius.circular(10),
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Theme.of(context).disabledColor,
+                                  fontWeight: FontWeight.w500,
                                 ),
+                              ),
+                              if (chat.unreadCount > 0) ...[
+                                const SizedBox(height: 6),
+                                Semantics(
+                                  container: true,
+                                  label: l10n.getString(
+                                    'chatsUnreadMessages',
+                                    params: {
+                                      'count': chat.unreadCount.toString(),
+                                    },
+                                  ),
+                                  excludeSemantics: true,
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 2,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.primary,
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: Text(
+                                      chat.unreadCount.toString(),
+                                      style: TextStyle(
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.onPrimary,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ],
+                      ),
+                      if (ageGender.isNotEmpty || isOtherTyping) ...[
+                        const SizedBox(height: 2),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            if (ageGender.isNotEmpty)
+                              Expanded(
                                 child: Text(
-                                  chat.unreadCount.toString(),
+                                  ageGender,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.visible,
+                                  textAlign: textDir == ui.TextDirection.rtl
+                                      ? TextAlign.right
+                                      : TextAlign.left,
+                                  style: Theme.of(context).textTheme.bodySmall
+                                      ?.copyWith(
+                                        fontSize: 10,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurface
+                                            .withValues(alpha: 0.7),
+                                      ),
+                                ),
+                              )
+                            else
+                              const Spacer(),
+                            if (isOtherTyping) ...[
+                              const SizedBox(width: 8),
+                              Flexible(
+                                child: Text(
+                                  typingMessage,
+                                  textAlign: TextAlign.end,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.visible,
                                   style: TextStyle(
+                                    fontSize: 13,
                                     color: Theme.of(
                                       context,
-                                    ).colorScheme.onPrimary,
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w600,
+                                    ).colorScheme.primary,
+                                    fontWeight: FontWeight.w500,
+                                    fontStyle: FontStyle.italic,
                                   ),
                                 ),
                               ),
@@ -260,60 +395,70 @@ class ChatListItem extends ConsumerWidget {
                           ],
                         ),
                       ],
-                    ),
-                    if (ageGender.isNotEmpty) ...[
-                      const SizedBox(height: 2),
-                      Text(
-                        ageGender,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          fontSize: 10,
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.onSurface.withValues(alpha: 0.7),
+                      const SizedBox(height: 4),
+                      if (listPreviewText.isNotEmpty)
+                        Builder(
+                          builder: (context) {
+                            // Unread preview stays w500 for text, but emoji
+                            // runs force normal weight (bold CBDT goes
+                            // transparent on Android).
+                            final base = withEmojiFallback(
+                              TextStyle(
+                                fontSize: 14,
+                                color: chat.unreadCount > 0
+                                    ? Theme.of(context).colorScheme.onSurface
+                                    : Theme.of(context).colorScheme.onSurface
+                                          .withValues(alpha: 0.7),
+                                fontWeight: FontWeight.normal,
+                              ),
+                            );
+                            final List<InlineSpan> previewSpans;
+                            if (showingSearchSnippet &&
+                                listPreviewText.toLowerCase().contains(
+                                  activeSearchQuery.toLowerCase(),
+                                )) {
+                              final highlightBg = Colors.yellow.withValues(
+                                alpha: 0.65,
+                              );
+                              previewSpans = [
+                                for (final (segment, isMatch)
+                                    in chatSearchSplitMatches(
+                                      listPreviewText,
+                                      activeSearchQuery,
+                                    ))
+                                  if (!isMatch)
+                                    ...emojiAwareSpans(segment, base)
+                                  else
+                                    ...emojiAwareSpans(
+                                      segment,
+                                      base.copyWith(
+                                        backgroundColor: highlightBg,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                              ];
+                            } else {
+                              previewSpans = emojiAwareSpans(
+                                listPreviewText,
+                                base,
+                              );
+                            }
+                            return Text.rich(
+                              TextSpan(children: previewSpans),
+                              textDirection: messageDir,
+                              textAlign: textDir == ui.TextDirection.rtl
+                                  ? TextAlign.right
+                                  : TextAlign.left,
+                              maxLines: 2,
+                              overflow: TextOverflow.visible,
+                            );
+                          },
                         ),
-                      ),
                     ],
-                    const SizedBox(height: 4),
-                    if (isOtherTyping)
-                      Text(
-                        typingMessage,
-                        textAlign: textDir == ui.TextDirection.rtl
-                            ? TextAlign.right
-                            : TextAlign.left,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: Theme.of(context).colorScheme.primary,
-                          fontWeight: FontWeight.w500,
-                          fontStyle: FontStyle.italic,
-                        ),
-                      ),
-                    if (previewMessage.isNotEmpty)
-                      Text(
-                        previewMessage,
-                        textDirection: messageDir,
-                        textAlign: textDir == ui.TextDirection.rtl
-                            ? TextAlign.right
-                            : TextAlign.left,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: chat.unreadCount > 0
-                              ? Theme.of(context).colorScheme.onSurface
-                              : Theme.of(
-                                  context,
-                                ).colorScheme.onSurface.withValues(alpha: 0.7),
-                          fontWeight: chat.unreadCount > 0
-                              ? FontWeight.w500
-                              : FontWeight.normal,
-                        ),
-                      ),
-                  ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

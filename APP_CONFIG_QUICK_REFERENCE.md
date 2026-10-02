@@ -68,10 +68,10 @@ final systemDismiss = await appConfigService.getDuration('notification.system_au
 ### Profile & User
 ```dart
 // Match radius options (default: [5, 10, 20, 100])
-final radiusOptions = await appConfigService.getIntList('profile.match_radius_options_km', defaultValue: [5, 10, 20, 100]);
+final radiusOptions = await appConfigService.getIntList('profile.match_radius_options_meters', defaultValue: [5, 10, 20, 100]);
 
-// Default match radius (default: 20km)
-final defaultRadius = await appConfigService.getInt('profile.match_radius_default_km', defaultValue: 20);
+// Default match radius (default: 50000m = 50km)
+final defaultRadius = await appConfigService.getInt('profile.match_radius_default_meters', defaultValue: 50000);
 
 // Minimum age (default: 18)
 final minAge = await appConfigService.getInt('profile.age_range_min', defaultValue: 18);
@@ -236,7 +236,7 @@ Timer.periodic(syncInterval, (timer) {
 ### Example 3: Array Options
 ```dart
 final radiusOptions = await appConfigService.getIntList(
-  'profile.match_radius_options_km',
+  'profile.match_radius_options_meters',
   defaultValue: [5, 10, 20, 100]
 );
 

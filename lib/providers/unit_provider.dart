@@ -1,11 +1,11 @@
 // lib/providers/unit_provider.dart
 
 import 'dart:ui' as ui;
+import 'package:flutter/foundation.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:matchme/utils/unit_utils.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/current_location_provider.dart';
-import 'package:flutter/foundation.dart';
 import 'package:matchme/providers/user_preferences_provider.dart';
 
 part 'unit_provider.g.dart';
@@ -25,7 +25,7 @@ class UnitSystem extends _$UnitSystem {
     final deviceCountry = deviceLocale.countryCode ?? '';
     if (deviceCountry.isNotEmpty) {
       final deviceImperial = usesImperialUnitsByCountry(deviceCountry);
-      debugPrint('UnitSystem: Using device locale. Locale: ${deviceLocale.languageCode}_$deviceCountry, Imperial: $deviceImperial');
+      debugPrint('UnitSystem: Using device locale. Imperial: $deviceImperial');
       return deviceImperial;
     }
 
@@ -48,7 +48,7 @@ class UnitSystem extends _$UnitSystem {
     final appLocale = ref.watch(localizationProvider).currentLocale;
     final appCountry = appLocale.countryCode ?? '';
     final appImperial = usesImperialUnitsByCountry(appCountry);
-    debugPrint('UnitSystem: Using app locale fallback. Locale: ${appLocale.languageCode}_$appCountry, Imperial: $appImperial');
+    debugPrint('UnitSystem: Using app locale fallback. Imperial: $appImperial');
     return appImperial;
   }
 }

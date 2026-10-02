@@ -36,7 +36,7 @@ final class UnitSystemProvider
   UnitSystem create() => UnitSystem();
 }
 
-String _$unitSystemHash() => r'cabe5564b2e32b82ba0e66f3fd6a71db6251da7a';
+String _$unitSystemHash() => r'11f47be7149156c682c148d2ab260fbc96bd2985';
 
 /// Provider for determining if imperial units should be used based on location
 
@@ -44,7 +44,7 @@ abstract class _$UnitSystem extends $AsyncNotifier<bool> {
   FutureOr<bool> build();
   @$mustCallSuper
   @override
-  void runBuild() {
+  WhenComplete runBuild() {
     final ref = this.ref as $Ref<AsyncValue<bool>, bool>;
     final element =
         ref.element
@@ -54,6 +54,6 @@ abstract class _$UnitSystem extends $AsyncNotifier<bool> {
               Object?,
               Object?
             >;
-    element.handleCreate(ref, build);
+    return element.handleCreate(ref, build);
   }
 }

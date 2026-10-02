@@ -1,0 +1,44 @@
+-- Migration: Document push-message trigger flow
+-- Purpose: Push notifications for new chat messages are triggered by the
+--          translate-proxy edge function after the message has been processed,
+--          not by a separate chat_messages webhook. This eliminates the race
+--          condition where push-message would fire before the translation was
+--          ready, and ensures the notification body is always the real message
+--          text (translated or original), never "New message".
+--
+-- Flow on every chat_messages INSERT:
+--   1. The translate-proxy webhook fires (table: chat_messages, event: INSERT).
+--   2. translate-proxy decrypts the message and, if the recipient has
+--      translation enabled, translates it via DeepL and stores the encrypted
+--      translation.
+--   3. translate-proxy then calls push-message directly via the internal secret
+--      (kind: "translated_message"), passing the body text it just resolved.
+--   4. push-message sends an FCM notification with that body text.
+--
+-- The recipient always sees the real message text in the notification:
+--   - Translation enabled  → translated text in the body.
+--   - Translation disabled → original plaintext in the body.
+--   - Already translated   → translate-proxy decrypts the stored translation
+--     and uses that text (no duplicate DeepL call).
+--   - Translation failed   → translate-proxy falls back to the original
+--     plaintext so the body is never empty.
+--
+-- Required Supabase configuration (one-time, manual):
+--   1. Database → Webhooks: ensure the existing translate-proxy webhook is
+--      configured for table "chat_messages" / event "INSERT" with header
+--      "x-matchme-webhook-secret: <MATCHME_INTERNAL_SECRET>".
+--      (See migration 20260107000300_switch_to_translate_message_immediate.sql.)
+--   2. Edge Function secrets (Supabase Dashboard → Edge Functions → Secrets):
+--      - MATCHME_INTERNAL_SECRET  — shared secret used by translate-proxy to
+--        authenticate the server-to-server call to push-message.
+--      - SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_ANON_KEY,
+--        FCM_SERVICE_ACCOUNT_JSON  — already required by both functions.
+--   3. NO chat_messages webhook for push-message is needed; the trigger is the
+--      translate-proxy function call.
+--
+-- Payload translate-proxy sends to push-message:
+-- {
+--   "kind": "translated_message",
+--   "message_id": "<uuid>",
+--   "body": "<translated or original plaintext>"
+-- }

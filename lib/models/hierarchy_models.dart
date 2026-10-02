@@ -19,7 +19,8 @@ class IntentOptionModel {
     return IntentOptionModel(
       intentKey: (m['intent_key'] ?? '').toString(),
       displayNameKey: (m['display_name_key'] ?? '').toString(),
-      subIntentKeys: (m['sub_intent_keys'] as List<dynamic>?)
+      subIntentKeys:
+          (m['sub_intent_keys'] as List<dynamic>?)
               ?.map((e) => e.toString())
               .toList() ??
           [],
@@ -91,7 +92,8 @@ class InterestCategory {
       categorySortOrder: (m['category_sort_order'] is int)
           ? m['category_sort_order'] as int
           : int.tryParse((m['category_sort_order'] ?? '').toString()) ?? 0,
-      items: (m['items'] as List<dynamic>?)
+      items:
+          (m['items'] as List<dynamic>?)
               ?.map((i) => InterestItem.fromMap(i as Map<String, dynamic>))
               .toList() ??
           [],

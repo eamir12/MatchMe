@@ -4,7 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
-import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
+import 'package:flutter/foundation.dart' show kIsWeb;
+
 // We no longer need ML Kit here
 // import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
@@ -15,10 +16,15 @@ const uuid = Uuid();
 class ExtractedEventData {
   final String name;
   final String? venue;
-  final DateTime? date; 
+  final DateTime? date;
   final String? dateString;
 
-  ExtractedEventData({required this.name, this.venue, this.date, this.dateString});
+  ExtractedEventData({
+    required this.name,
+    this.venue,
+    this.date,
+    this.dateString,
+  });
 
   factory ExtractedEventData.empty() => ExtractedEventData(name: '');
 }
@@ -34,9 +40,9 @@ class EventDataService {
     if (userId == null) throw Exception("User not logged in");
 
     try {
-      final FilePickerResult? result = await FilePicker.platform.pickFiles(
+      final FilePickerResult? result = await FilePicker.pickFiles(
         type: FileType.custom,
-        allowedExtensions: ['jpg', 'jpeg', 'png', 'pdf'], 
+        allowedExtensions: ['jpg', 'jpeg', 'png', 'pdf'],
         allowMultiple: false,
         withData: kIsWeb,
       );
@@ -56,27 +62,33 @@ class EventDataService {
       // 1. UPLOAD the file (with improved error handling/logging)
       try {
         if (kIsWeb) {
-          if (file.bytes == null) throw Exception("File bytes are null on web.");
+          if (file.bytes == null) {
+            throw Exception("File bytes are null on web.");
+          }
           await supabase.storage
-            .from(_bucketId)
-            .uploadBinary(
-              filePath,
-              file.bytes!,
-              fileOptions: FileOptions(contentType: mimeType),
-            );
+              .from(_bucketId)
+              .uploadBinary(
+                filePath,
+                file.bytes!,
+                fileOptions: FileOptions(contentType: mimeType),
+              );
         } else {
-          if (file.path == null) throw Exception("File path is null on mobile.");
+          if (file.path == null) {
+            throw Exception("File path is null on mobile.");
+          }
           await supabase.storage
-            .from(_bucketId)
-            .upload(
-              filePath,
-              File(file.path!),
-              fileOptions: FileOptions(contentType: mimeType),
-            );
+              .from(_bucketId)
+              .upload(
+                filePath,
+                File(file.path!),
+                fileOptions: FileOptions(contentType: mimeType),
+              );
         }
       } catch (e) {
         // Surface helpful diagnostic info for storage policy / auth failures
-        debugPrint('[EVENT_UPLOAD] Upload failed for $filePath (bucket=$_bucketId): $e');
+        print(
+          '[EVENT_UPLOAD] Upload failed for $filePath (bucket=$_bucketId): $e',
+        );
         // If it's a StorageException from Supabase, rethrow with clearer message
         if (e is StorageException) {
           final msg = 'Storage upload failed: ${e.message}';
@@ -84,13 +96,13 @@ class EventDataService {
         }
         rethrow;
       }
-      
+
       // 2. CALL the function and wait for the JSON response
       final response = await supabase.functions.invoke(
         'process-event-file',
         body: {'filePath': filePath, 'bucketId': _bucketId},
       );
-      
+
       if (response.data != null) {
         final body = response.data;
         DateTime? parsedDate;
@@ -106,12 +118,14 @@ class EventDataService {
       } else {
         throw Exception("Function returned no data.");
       }
-
     } catch (e) {
       // If the file picker threw an exception that indicates a user cancel action,
       // treat it as a cancellation and return null instead of surfacing an error.
       final msg = e.toString().toLowerCase();
-      if (msg.contains('cancel') || msg.contains('abort') || msg.contains('user canceled') || msg.contains('user cancelled')) {
+      if (msg.contains('cancel') ||
+          msg.contains('abort') ||
+          msg.contains('user canceled') ||
+          msg.contains('user cancelled')) {
         return null;
       }
       rethrow;
@@ -143,13 +157,17 @@ class EventDataService {
     final mimeType = _getMimeType(fileExt);
 
     try {
-      await supabase.storage.from(_bucketId).upload(
+      await supabase.storage
+          .from(_bucketId)
+          .upload(
             filePath,
             fileOnDisk,
             fileOptions: FileOptions(contentType: mimeType),
           );
     } catch (e) {
-      debugPrint('[EVENT_UPLOAD] Upload failed for $filePath (bucket=$_bucketId): $e');
+      print(
+        '[EVENT_UPLOAD] Upload failed for $filePath (bucket=$_bucketId): $e',
+      );
       if (e is StorageException) {
         final msg = 'Storage upload failed: ${e.message}';
         throw Exception(msg);
@@ -182,11 +200,15 @@ class EventDataService {
   // Helper to get MIME type from extension
   String _getMimeType(String extension) {
     switch (extension.toLowerCase()) {
-      case 'pdf': return 'application/pdf';
-      case 'png': return 'image/png';
+      case 'pdf':
+        return 'application/pdf';
+      case 'png':
+        return 'image/png';
       case 'jpg':
-      case 'jpeg': return 'image/jpeg';
-      default: return 'application/octet-stream'; 
+      case 'jpeg':
+        return 'image/jpeg';
+      default:
+        return 'application/octet-stream';
     }
   }
 
@@ -208,7 +230,7 @@ class EventDataService {
         if (data['date'] != null) {
           parsedDate = DateTime.tryParse(data['date']);
         }
-        
+
         if (data['title'] != null && (data['title'] as String).isNotEmpty) {
           return ExtractedEventData(
             name: data['title'],
@@ -221,11 +243,11 @@ class EventDataService {
     } catch (e) {
       // Don't rethrow - return empty so manual input still works
     }
-    
+
     // Return empty if extraction failed
     return ExtractedEventData.empty();
   }
-  
+
   // We no longer need the client-side OCR method
   // Future<ExtractedEventData> extractFromImage() async { ... }
 }

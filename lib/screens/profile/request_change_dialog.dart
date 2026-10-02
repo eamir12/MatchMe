@@ -24,7 +24,8 @@ class RequestChangeDialog extends ConsumerStatefulWidget {
   });
 
   @override
-  ConsumerState<RequestChangeDialog> createState() => _RequestChangeDialogState();
+  ConsumerState<RequestChangeDialog> createState() =>
+      _RequestChangeDialogState();
 }
 
 class _RequestChangeDialogState extends ConsumerState<RequestChangeDialog> {
@@ -36,7 +37,7 @@ class _RequestChangeDialogState extends ConsumerState<RequestChangeDialog> {
   bool get _canSubmit => _reason.trim().isNotEmpty && !_submitting;
 
   Future<void> _pickFiles() async {
-    final result = await FilePicker.platform.pickFiles(
+    final result = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: const [
         'jpg',
@@ -56,11 +57,21 @@ class _RequestChangeDialogState extends ConsumerState<RequestChangeDialog> {
     );
     if (result == null) return;
     final filesWithBytes = result.files.where((f) => f.bytes != null).toList();
-    final filesWithoutBytes = result.files.where((f) => f.bytes == null).toList();
+    final filesWithoutBytes = result.files
+        .where((f) => f.bytes == null)
+        .toList();
 
     if (filesWithoutBytes.isNotEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(ref.read(localizationProvider).getString('profileEditFileBytesMissing'))));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              ref
+                  .read(localizationProvider)
+                  .getString('profileEditFileBytesMissing'),
+            ),
+          ),
+        );
       }
     }
 
@@ -112,13 +123,24 @@ class _RequestChangeDialogState extends ConsumerState<RequestChangeDialog> {
         });
       }
 
-      final ok = await svc.submitRequestWithAttachments(widget.userId, [widget.fieldKey], _reason.trim(), attachments);
+      final ok = await svc.submitRequestWithAttachments(
+        widget.userId,
+        [widget.fieldKey],
+        _reason.trim(),
+        attachments,
+      );
       if (ok) {
         if (mounted) Navigator.of(context).pop(true);
       } else {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(ref.read(localizationProvider).getString('profileEditRequestAlreadyPendingBody'))),
+            SnackBar(
+              content: Text(
+                ref
+                    .read(localizationProvider)
+                    .getString('profileEditRequestAlreadyPendingBody'),
+              ),
+            ),
           );
         }
       }
@@ -127,13 +149,12 @@ class _RequestChangeDialogState extends ConsumerState<RequestChangeDialog> {
         final l10n = ref.read(localizationProvider);
         if (e is ProfileEditAttachmentException) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(l10n.getString(e.key, params: e.params)),
-            ),
+            SnackBar(content: Text(l10n.getString(e.key, params: e.params))),
           );
         } else {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text(l10n.getString('generalError'))));
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(l10n.getString('generalError'))),
+          );
         }
       }
     } finally {
@@ -154,8 +175,26 @@ class _RequestChangeDialogState extends ConsumerState<RequestChangeDialog> {
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<AsyncValue<Map<String, BasicFieldAdminReview>>>(
+      basicFieldAdminReviewsProvider(widget.userId),
+      (previous, next) {
+        if (!mounted) return;
+        final prevReview = previous?.value?[widget.fieldKey];
+        final nextReview = next.value?[widget.fieldKey];
+        final wasPending = prevReview?.status == 'pending';
+        final isResolved =
+            nextReview?.status == 'approved' ||
+            nextReview?.status == 'rejected';
+        if (wasPending && isResolved) {
+          Navigator.of(context).pop(nextReview?.status == 'approved');
+        }
+      },
+    );
+
     final l10n = ref.watch(localizationProvider);
-    final adminReviewsAsync = ref.watch(basicFieldAdminReviewsProvider(widget.userId));
+    final adminReviewsAsync = ref.watch(
+      basicFieldAdminReviewsProvider(widget.userId),
+    );
     final cur = l10n.currentLocale;
     final langCode = _extractLangCode(cur);
     final isRtl = ['ar', 'he'].contains(langCode.toLowerCase());
@@ -176,16 +215,22 @@ class _RequestChangeDialogState extends ConsumerState<RequestChangeDialog> {
         title: Align(
           alignment: isRtl ? Alignment.centerRight : Alignment.centerLeft,
           child: Text(
-            isPending ? l10n.getString('profileEditRequestAlreadyPendingTitle') : title,
+            isPending
+                ? l10n.getString('profileEditRequestAlreadyPendingTitle')
+                : title,
             textAlign: isRtl ? TextAlign.right : TextAlign.left,
           ),
         ),
         content: Column(
-          crossAxisAlignment: isRtl ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+          crossAxisAlignment: isRtl
+              ? CrossAxisAlignment.end
+              : CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              isPending ? l10n.getString('profileEditRequestAlreadyPendingBody') : intro,
+              isPending
+                  ? l10n.getString('profileEditRequestAlreadyPendingBody')
+                  : intro,
               textAlign: isRtl ? TextAlign.right : TextAlign.left,
             ),
             const SizedBox(height: 12),
@@ -193,28 +238,35 @@ class _RequestChangeDialogState extends ConsumerState<RequestChangeDialog> {
             if (!isPending) ...[
               Align(
                 alignment: isRtl ? Alignment.centerRight : Alignment.centerLeft,
-                child: Builder(builder: (ctx) {
-                  final trimmed = changeLabel.trim();
-                  final lastRune = trimmed.isNotEmpty ? trimmed.runes.last : 0;
-                  final punctuationRunes = <int>{46, 58, 8230};
-                  final endWithPunct = lastRune != 0 && punctuationRunes.contains(lastRune);
+                child: Builder(
+                  builder: (ctx) {
+                    final trimmed = changeLabel.trim();
+                    final lastRune = trimmed.isNotEmpty
+                        ? trimmed.runes.last
+                        : 0;
+                    final punctuationRunes = <int>{46, 58, 8230};
+                    final endWithPunct =
+                        lastRune != 0 && punctuationRunes.contains(lastRune);
 
-                  final displayLabel = endWithPunct
-                      ? '$changeLabel ${widget.fieldLabel}'
-                      : '$changeLabel: ${widget.fieldLabel}';
+                    final displayLabel = endWithPunct
+                        ? '$changeLabel ${widget.fieldLabel}'
+                        : '$changeLabel: ${widget.fieldLabel}';
 
-                  return Text(
-                    displayLabel,
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                    textAlign: isRtl ? TextAlign.right : TextAlign.left,
-                  );
-                }),
+                    return Text(
+                      displayLabel,
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                      textAlign: isRtl ? TextAlign.right : TextAlign.left,
+                    );
+                  },
+                ),
               ),
               const SizedBox(height: 8),
 
               TextField(
                 textAlign: isRtl ? TextAlign.right : TextAlign.left,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontFeatures: const []),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyMedium?.copyWith(fontFeatures: const []),
                 maxLines: 4,
                 minLines: 2,
                 onChanged: (v) => setState(() => _reason = v),
@@ -248,7 +300,9 @@ class _RequestChangeDialogState extends ConsumerState<RequestChangeDialog> {
                         : '${_pickedFiles.length} ${l10n.getString('profileEditFilesSelected')}',
                     textAlign: isRtl ? TextAlign.right : TextAlign.left,
                     style: TextStyle(
-                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.onSurface.withValues(alpha: 0.7),
                     ),
                   ),
                 ],
@@ -256,10 +310,14 @@ class _RequestChangeDialogState extends ConsumerState<RequestChangeDialog> {
             ],
           ],
         ),
-        actionsAlignment: isRtl ? MainAxisAlignment.start : MainAxisAlignment.end,
+        actionsAlignment: isRtl
+            ? MainAxisAlignment.start
+            : MainAxisAlignment.end,
         actions: [
           TextButton(
-            onPressed: _submitting ? null : () => Navigator.of(context).pop(false),
+            onPressed: _submitting
+                ? null
+                : () => Navigator.of(context).pop(false),
             child: Text(l10n.getString('generalCancel')),
           ),
           if (!isPending)

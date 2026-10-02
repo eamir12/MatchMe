@@ -7,33 +7,36 @@ import 'package:flutter/foundation.dart';
 
 class KeyboardService {
   static final KeyboardService _instance = KeyboardService._internal();
-  
+
   factory KeyboardService() => _instance;
-  
+
   KeyboardService._internal();
 
   bool _isInitialized = false;
 
   void initialize() {
     if (_isInitialized || !kIsWeb) return;
-    
+
     _isInitialized = true;
-    
+
     // Add keyboard event listener for arrow key scrolling
     web.window.document.addEventListener('keydown', _handleKeyDown.toJS);
-    
+
     // Prevent default behavior for arrow keys when not in input fields
-    web.window.document.addEventListener('keydown', _preventDefaultInInputs.toJS);
+    web.window.document.addEventListener(
+      'keydown',
+      _preventDefaultInInputs.toJS,
+    );
   }
 
   void _handleKeyDown(web.Event event) {
     final keyboardEvent = event as web.KeyboardEvent;
-    
+
     // Only handle scrolling when not in input fields
     final target = keyboardEvent.target as web.Element?;
     if (target != null) {
-      if (target.tagName.toLowerCase() == 'input' || 
-          target.tagName.toLowerCase() == 'textarea' || 
+      if (target.tagName.toLowerCase() == 'input' ||
+          target.tagName.toLowerCase() == 'textarea' ||
           target.tagName.toLowerCase() == 'select') {
         return;
       }
@@ -82,12 +85,12 @@ class KeyboardService {
   void _preventDefaultInInputs(web.Event event) {
     final keyboardEvent = event as web.KeyboardEvent;
     final target = keyboardEvent.target as web.Element?;
-    
+
     // Prevent arrow key scrolling when focused on form elements
     if (target != null) {
       final tagName = target.tagName.toLowerCase();
       if (tagName == 'input' || tagName == 'textarea' || tagName == 'select') {
-         if ((keyboardEvent.key.startsWith('Arrow')) ||
+        if ((keyboardEvent.key.startsWith('Arrow')) ||
             keyboardEvent.key == 'PageUp' ||
             keyboardEvent.key == 'PageDown' ||
             keyboardEvent.key == 'Home' ||
@@ -102,6 +105,9 @@ class KeyboardService {
   void dispose() {
     if (!kIsWeb) return;
     web.window.document.removeEventListener('keydown', _handleKeyDown.toJS);
-    web.window.document.removeEventListener('keydown', _preventDefaultInInputs.toJS);
+    web.window.document.removeEventListener(
+      'keydown',
+      _preventDefaultInInputs.toJS,
+    );
   }
 }

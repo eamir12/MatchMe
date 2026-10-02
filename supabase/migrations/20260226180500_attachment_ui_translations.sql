@@ -6,9 +6,9 @@ VALUES
   ('es', 'profileEditFileBytesMissing', $$No se pudo leer el archivo seleccionado. Elige otro archivo.$$),
   ('he', 'profileEditFileBytesMissing', $$לא ניתן לקרוא את הקובץ שנבחר. נסו לבחור קובץ אחר.$$),
 
-  ('en', 'profileEditAttachmentTooLarge', $$File is too large. Max size is {maxMb} MB.$$),
-  ('es', 'profileEditAttachmentTooLarge', $$El archivo es demasiado grande. El tamaño máximo es {maxMb} MB.$$),
-  ('he', 'profileEditAttachmentTooLarge', $$הקובץ גדול מדי. הגודל המקסימלי הוא {maxMb} MB.$$),
+  ('en', 'profileEditAttachmentTooLarge', $$File is too large. Maximum size is {maxMb} megabytes.$$),
+  ('es', 'profileEditAttachmentTooLarge', $$El archivo es demasiado grande. El tamaño máximo es {maxMb} megabytes.$$),
+  ('he', 'profileEditAttachmentTooLarge', $$הקובץ גדול מדי. הגודל המקסימלי הוא {maxMb} מגה-בייט.$$),
 
   ('en', 'profileEditAttachmentInvalidType', $$Unsupported file type. Allowed: {types}.$$),
   ('es', 'profileEditAttachmentInvalidType', $$Tipo de archivo no compatible. Permitidos: {types}.$$),

@@ -77,6 +77,7 @@ verificationGesturePointToCheekTitle: "Point to your cheek"
 verificationGesturePointToCheekDescription: "Point to one of your cheeks with your right hand so both your hand and cheek are visible."
 verificationGestureCoverMouthTitle: "Cover your mouth with your hand"
 verificationGestureCoverMouthDescription: "Cover your mouth with your right hand while keeping the rest of your face visible."
+verificationCaptureRetry: "Retry"
 
 # Privacy copy for verification. Prefer to provide this copy from Supabase using the `translations` table:
 #   key = 'verificationPrivacyNotice', locale = '<locale>' (e.g., 'en' or 'es'). The app will prefer

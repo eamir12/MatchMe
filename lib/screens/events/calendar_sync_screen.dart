@@ -40,18 +40,24 @@ class CalendarSyncScreen extends ConsumerStatefulWidget {
 }
 
 class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
+  static const double _accountSectionSpacing = 8;
   int _currentStep = 0;
   List<ExternalCalendar> _calendars = [];
   final Set<String> _selectedCalendarIds = {};
   List<ExternalEvent> _events = [];
   final Set<String> _selectedEventIds = {};
+  String? _selectedDeviceAccountFilter;
+  bool _showOnlyPotentiallyImportable = false;
   bool _isLoading = false;
   String? _errorMessage;
   bool _hasFetched = false;
   late CalendarProvider _selectedProvider;
-  Map<String, EventModel> _existingEventsMap = {};
+  final Map<String, List<EventModel>> _existingEventsByStartKey =
+      <String, List<EventModel>>{};
+  final Map<String, List<EventModel>> _existingEventsByDayKey =
+      <String, List<EventModel>>{};
+  final Set<String> _existingImportedSourceKeys = <String>{};
   final Set<String> _duplicateEventIds = {};
-  bool _isDuplicateCheckEnabled = true;
   List<ExternalCalendar> _allCalendars = [];
   bool _isOutlookInstalled = false;
   bool _hasCheckedOutlookInstallation = false;
@@ -69,9 +75,13 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
   static final Uri _applePublicCalendarHelpUriEs = Uri.parse(
     'https://support.apple.com/es-es/guide/icloud/share-a-calendar-mm6b1a9479/icloud',
   );
+  late final EventManager _eventManager;
+  AsyncValue<List<EventModel>> _latestExistingEvents =
+      const AsyncValue.loading();
+  ProviderSubscription<AsyncValue<List<EventModel>>>? _eventManagerSub;
 
   void _trace(String message) {
-    debugPrint(message);
+    print(message);
     developer.log(message, name: 'CalendarSyncScreen');
   }
 
@@ -113,6 +123,73 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
       return true;
     }
     return false;
+  }
+
+  bool _hasPhysicalImportLocation(String? rawLocation) {
+    final location = rawLocation?.trim();
+    return location != null &&
+        location.isNotEmpty &&
+        !_isVirtualMeetingLocation(location);
+  }
+
+  String _currentImportProviderKey() {
+    return _selectedSource == CalendarSource.api
+        ? _selectedProvider.name
+        : 'device';
+  }
+
+  String _usableImportLink(String? link, {String? provider}) {
+    final trimmed = link?.trim();
+    if (trimmed == null || trimmed.isEmpty) {
+      return '';
+    }
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null) {
+      return trimmed;
+    }
+    final host = uri.host.toLowerCase();
+    final path = uri.path.toLowerCase();
+    final normalizedProvider = provider?.trim().toLowerCase() ?? '';
+    final isGoogleCalendarLink =
+        host.contains('calendar.google.') ||
+        (host.contains('google.') && path.contains('calendar'));
+    final isOutlookCalendarLink =
+        host.contains('outlook.') ||
+        host.contains('office.') ||
+        host.contains('live.') ||
+        (host.contains('microsoft.') && path.contains('calendar'));
+    final isAppleCalendarLink =
+        host.contains('icloud.') || path.endsWith('.ics');
+    final isProviderCalendarLink =
+        isGoogleCalendarLink ||
+        isOutlookCalendarLink ||
+        isAppleCalendarLink ||
+        (normalizedProvider == 'google' && isGoogleCalendarLink) ||
+        (normalizedProvider == 'outlook' && isOutlookCalendarLink) ||
+        (normalizedProvider == 'apple' && isAppleCalendarLink);
+    if (isProviderCalendarLink) {
+      return '';
+    }
+    return trimmed;
+  }
+
+  bool _isImportableEvent(ExternalEvent event) {
+    final hasLink = _usableImportLink(
+      event.url?.toString(),
+      provider: _currentImportProviderKey(),
+    ).isNotEmpty;
+    return hasLink || _hasPhysicalImportLocation(event.location);
+  }
+
+  void _showImportRequirementsMessage(LocalizationState l10n) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          l10n.getString('calendarSyncImportRequiresLocationOrLink'),
+        ),
+      ),
+    );
   }
 
   String _formatDateOnly(DateTime dateTime, LocalizationState l10n) {
@@ -183,17 +260,25 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
     final start = event.start;
     final title = event.title.trim().isNotEmpty
         ? event.title.trim()
-        : 'No Title';
+        : l10n.getString('eventNoTitle');
     final location = event.location?.trim();
     final hasLocation = location != null && location.isNotEmpty;
     final showMap = hasLocation && !_isVirtualMeetingLocation(location);
-    final hasUrl = event.url != null;
+    final isImportable = _isImportableEvent(event);
 
     Widget content = Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
         borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isSelected
+              ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.55)
+              : Theme.of(
+                  context,
+                ).colorScheme.outlineVariant.withValues(alpha: 0.9),
+          width: isSelected ? 1.6 : 1.2,
+        ),
         boxShadow: [
           BoxShadow(
             color: Theme.of(context).shadowColor.withValues(alpha: 0.05),
@@ -204,17 +289,21 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
-        onTap: enabled
-            ? () {
-                setState(() {
-                  if (isSelected) {
-                    _selectedEventIds.remove(event.id);
-                  } else {
-                    _selectedEventIds.add(event.id);
-                  }
-                });
-              }
-            : null,
+        onTap: () {
+          if (!enabled) {
+            if (!isImportable) {
+              _showImportRequirementsMessage(l10n);
+            }
+            return;
+          }
+          setState(() {
+            if (isSelected) {
+              _selectedEventIds.remove(event.id);
+            } else {
+              _selectedEventIds.add(event.id);
+            }
+          });
+        },
         child: Padding(
           padding: const EdgeInsets.all(20),
           child: Row(
@@ -262,6 +351,23 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                               ),
                             ),
                           ),
+                        if (!isDuplicate && !isImportable)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.surfaceContainerHighest,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              l10n.getString('calendarSyncCannotImportBadge'),
+                              style: Theme.of(context).textTheme.labelSmall,
+                            ),
+                          ),
                       ],
                     ),
                     const SizedBox(height: 8),
@@ -272,6 +378,16 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                           ? location
                           : l10n.getString('eventVenueNotSpecified'),
                     ),
+                    if (!isImportable) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        l10n.getString('calendarSyncMissingLocationOrLinkHint'),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant
+                              .withValues(alpha: 0.85),
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 4),
                     _buildDetailRow(
                       context,
@@ -296,50 +412,13 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                     const SizedBox(height: 8),
                     Row(
                       children: [
-                        if (hasUrl) ...[
-                          Expanded(
-                            child: InkWell(
-                              onTap: enabled
-                                  ? () async {
-                                      final url = event.url;
-                                      if (url == null) return;
-                                      if (await canLaunchUrl(url)) {
-                                        await launchUrl(
-                                          url,
-                                          mode: LaunchMode.externalApplication,
-                                        );
-                                      }
-                                    }
-                                  : null,
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    Icons.link,
-                                    size: 14,
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.primary,
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Flexible(
-                                    child: Text(
-                                      l10n.getString('eventViewDetails'),
-                                      style: TextStyle(
-                                        fontSize: 13,
-                                        color: Theme.of(
-                                          context,
-                                        ).colorScheme.primary,
-                                        decoration: TextDecoration.underline,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ] else ...[
-                          const Spacer(),
-                        ],
+                        TextButton.icon(
+                          onPressed: () async {
+                            await _openImportEventDetails(l10n, event);
+                          },
+                          icon: const Icon(Icons.open_in_new, size: 18),
+                          label: Text(l10n.getString('eventViewDetails')),
+                        ),
                         if (showMap) ...[
                           InkWell(
                             onTap: enabled
@@ -388,6 +467,7 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                             ),
                           ),
                         ],
+                        const Spacer(),
                         IconButton(
                           icon: Icon(
                             isSelected
@@ -398,17 +478,21 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                                 : Theme.of(context).colorScheme.onSurface
                                       .withValues(alpha: 0.4),
                           ),
-                          onPressed: enabled
-                              ? () {
-                                  setState(() {
-                                    if (isSelected) {
-                                      _selectedEventIds.remove(event.id);
-                                    } else {
-                                      _selectedEventIds.add(event.id);
-                                    }
-                                  });
-                                }
-                              : null,
+                          onPressed: () {
+                            if (!enabled) {
+                              if (!isImportable) {
+                                _showImportRequirementsMessage(l10n);
+                              }
+                              return;
+                            }
+                            setState(() {
+                              if (isSelected) {
+                                _selectedEventIds.remove(event.id);
+                              } else {
+                                _selectedEventIds.add(event.id);
+                              }
+                            });
+                          },
                           style: IconButton.styleFrom(
                             backgroundColor: Theme.of(
                               context,
@@ -467,17 +551,58 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
   @override
   void initState() {
     super.initState();
+    _eventManager = ref.read(eventManagerProvider.notifier);
+    _eventManagerSub = ref.listenManual<AsyncValue<List<EventModel>>>(
+      eventManagerProvider,
+      (previous, next) {
+        _latestExistingEvents = next;
+        next.whenData((events) {
+          _updateExistingEventLookups(events);
+          if (!mounted) {
+            return;
+          }
+          setState(_checkForDuplicates);
+        });
+      },
+      fireImmediately: true,
+    );
     _selectedProvider = widget.initialProvider ?? CalendarProvider.google;
+    // Default to the online source wherever the device calendar has no
+    // implementation. `device_calendar_plus` ships Android and iOS only, so on
+    // web and desktop defaulting to CalendarSource.device landed the user on a
+    // source that throws
+    // `Bad state: DeviceCalendarPlusPlatform.instance has not been initialized`.
     _selectedSource =
         widget.initialSource ??
-        (kIsWeb || _selectedProvider == CalendarProvider.apple
+        (kIsWeb ||
+                _selectedProvider == CalendarProvider.apple ||
+                !CalendarSyncService.isDeviceCalendarSupported
             ? CalendarSource.api
             : CalendarSource.device);
+    // An explicit device source on a platform without a device-calendar
+    // implementation would reach `service.requestPermissions()` and throw a raw
+    // `Bad state:` Dart error. Fall back to the online source instead.
+    if (_selectedSource == CalendarSource.device &&
+        !CalendarSyncService.isDeviceCalendarSupported) {
+      _trace(
+        'CalendarSyncScreen initState: device source unsupported here, using online source',
+      );
+      _selectedSource = CalendarSource.api;
+    }
     _trace(
       'CalendarSyncScreen initState initialProvider=${widget.initialProvider} selectedProvider=$_selectedProvider selectedSource=$_selectedSource',
     );
     _loadSavedApplePublicCalendarUrl();
-    _loadExistingEvents();
+    Future.microtask(() async {
+      await _eventManager.fetchUserEvents(forceRemote: true);
+      if (!mounted) {
+        return;
+      }
+      await _loadExistingEvents();
+      if (mounted) {
+        setState(_checkForDuplicates);
+      }
+    });
     _checkOutlookInstallation();
 
     final initialCalendars = widget.initialCalendars;
@@ -490,7 +615,9 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
       if (widget.initialProvider != null && preparedCalendars.isNotEmpty) {
         WidgetsBinding.instance.addPostFrameCallback((_) async {
           if (!mounted) return;
-          if (_isLoading || _currentStep != 0 || _selectedCalendarIds.isNotEmpty) {
+          if (_isLoading ||
+              _currentStep != 0 ||
+              _selectedCalendarIds.isNotEmpty) {
             return;
           }
           final ids = preparedCalendars
@@ -528,30 +655,17 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
 
   Future<void> _loadExistingEvents() async {
     try {
-      final eventsAsyncValue = ref.read(eventManagerProvider);
-
-      // Handle AsyncValue to get the actual list
-      final events = eventsAsyncValue.maybeWhen(
+      final events = _latestExistingEvents.maybeWhen(
         data: (eventList) => eventList,
         orElse: () => <EventModel>[],
       );
-
-      // Create a map for quick duplicate checking
-      _existingEventsMap = {
-        for (var event in events)
-          _createEventKey(
-            event.eventName,
-            event.startTime,
-            endTime: event.endTime,
-          ): event,
-      };
+      _updateExistingEventLookups(events);
     } catch (e, st) {
       FlutterError.reportError(FlutterErrorDetails(exception: e, stack: st));
     }
   }
 
-  String _createEventKey(
-    String name,
+  String _startMatchKey(
     DateTime startTime, {
     DateTime? endTime,
     bool isAllDay = false,
@@ -565,14 +679,229 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
         allDay = true;
       }
     }
-
     if (allDay) {
       final localDate = startTime.isUtc ? startTime.toLocal() : startTime;
-      return '${name.toLowerCase().trim()}_${localDate.year}_${localDate.month}_${localDate.day}_allDay';
+      return 'd:${localDate.year}-${localDate.month}-${localDate.day}';
+    }
+    return 't:${startTime.toUtc().millisecondsSinceEpoch}';
+  }
+
+  String _dayMatchKey(DateTime startTime) {
+    final localDate = startTime.isUtc ? startTime.toLocal() : startTime;
+    return 'd:${localDate.year}-${localDate.month}-${localDate.day}';
+  }
+
+  String? _sourceEventKey({
+    String? provider,
+    String? calendarId,
+    String? eventId,
+  }) {
+    final normalizedProvider = provider?.trim().toLowerCase();
+    final normalizedEventId = eventId?.trim();
+    if (normalizedProvider == null ||
+        normalizedProvider.isEmpty ||
+        normalizedEventId == null ||
+        normalizedEventId.isEmpty) {
+      return null;
+    }
+    return '$normalizedProvider::${calendarId?.trim() ?? ''}::$normalizedEventId';
+  }
+
+  void _updateExistingEventLookups(List<EventModel> events) {
+    _existingEventsByStartKey.clear();
+    _existingEventsByDayKey.clear();
+    _existingImportedSourceKeys.clear();
+    for (final event in events) {
+      final startKey = _startMatchKey(
+        event.startTime,
+        endTime: event.endTime,
+        isAllDay: event.isAllDay,
+      );
+      _existingEventsByStartKey
+          .putIfAbsent(startKey, () => <EventModel>[])
+          .add(event);
+      _existingEventsByDayKey
+          .putIfAbsent(_dayMatchKey(event.startTime), () => <EventModel>[])
+          .add(event);
+      final sourceKey = _sourceEventKey(
+        provider: event.externalProvider,
+        calendarId: event.externalCalendarId,
+        eventId: event.externalEventId,
+      );
+      if (sourceKey != null) {
+        _existingImportedSourceKeys.add(sourceKey);
+      }
+    }
+  }
+
+  String _normalizeVenue(String? venue) {
+    if (venue == null || venue.trim().isEmpty) {
+      return '';
+    }
+    var normalized = venue.toLowerCase().trim();
+    final commaIndex = normalized.indexOf(',');
+    if (commaIndex > 0) {
+      normalized = normalized.substring(0, commaIndex);
+    }
+    normalized = normalized
+        .replaceAll('theatre', 'theater')
+        .replaceAll('centre', 'center')
+        .replaceAll('theater', 'thtr')
+        .replaceAll('center', 'ctr')
+        .replaceAll('hall', 'hl')
+        .replaceAll('stadium', 'stdm')
+        .replaceAll('arena', 'arn')
+        .replaceAll('pavilion', 'pav');
+    const wordsToRemove = <String>[
+      'the',
+      'at',
+      'in',
+      'on',
+      'live',
+      'music',
+      'venue',
+      'club',
+    ];
+    for (final word in wordsToRemove) {
+      normalized = normalized.replaceAll(RegExp(r'\b' + word + r'\b'), '');
+    }
+    return normalized
+        .replaceAll(RegExp(r'[^\w\s]'), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
+  String _normalizeEventLink(String? link) {
+    if (link == null || link.trim().isEmpty) {
+      return '';
+    }
+    try {
+      final uri = Uri.parse(link.trim());
+      var normalized = uri
+          .replace(queryParameters: {}, fragment: '')
+          .toString();
+      normalized = normalized.replaceAll(RegExp(r'/+$'), '');
+      return normalized.toLowerCase();
+    } catch (_) {
+      return link.split('?').first.toLowerCase().trim();
+    }
+  }
+
+  String _normalizeEventName(String name) {
+    var normalized = name.toLowerCase().trim();
+    final suffixPatterns = <RegExp>[
+      RegExp(r'\s+w/\s+.+$', caseSensitive: false),
+      RegExp(r'\s+with\s+.+$', caseSensitive: false),
+      RegExp(r'\s+feat\.?\s+.+$', caseSensitive: false),
+      RegExp(r'\s+featuring\s+.+$', caseSensitive: false),
+      RegExp(r'\s+plus\s+.+$', caseSensitive: false),
+      RegExp(r'\s+\+\s+.+$', caseSensitive: false),
+      RegExp(r'\s+and\s+.+$', caseSensitive: false),
+      RegExp(r'\s+&\s+.+$', caseSensitive: false),
+      RegExp(
+        r'\s*[-–—]\s*(vip|general admission|ga|early entry|presale|presales?).*$',
+        caseSensitive: false,
+      ),
+      RegExp(
+        r'\s*\((vip|general admission|ga|early entry|presale|presales?).*\).*$',
+        caseSensitive: false,
+      ),
+      RegExp(
+        r'\s+(vip|general admission|ga|early entry|presale|presales?)\s+(tickets|passes|entry).*$',
+        caseSensitive: false,
+      ),
+      RegExp(
+        r'\s+(tickets|passes)\s*:?\s*(vip|general admission|ga|early entry).*$',
+        caseSensitive: false,
+      ),
+      RegExp(
+        r'\s*[-–—]\s*(floor|balcony|mezzanine|orchestra|section|row|seat).*$',
+        caseSensitive: false,
+      ),
+      RegExp(
+        r'\s*\((floor|balcony|mezzanine|orchestra|section)\s*.*\).*$',
+        caseSensitive: false,
+      ),
+      RegExp(r'\s*[-–—]?\s*\d+\+.*$', caseSensitive: false),
+      RegExp(r'\s*\(\d+\+\).*$', caseSensitive: false),
+      RegExp(
+        r'\s*[-–—]?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}.*$',
+        caseSensitive: false,
+      ),
+      RegExp(
+        r'\s*[-–—]\s*(admission|tickets?|pass|entry|show|doors?).*$',
+        caseSensitive: false,
+      ),
+    ];
+    for (final pattern in suffixPatterns) {
+      normalized = normalized.replaceFirst(pattern, '');
+    }
+    return normalized
+        .replaceAll(RegExp(r'[^\w\s]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
+  bool _areEventNamesMatching(String left, String right) {
+    if (left == right) {
+      return true;
+    }
+    if (left.length > right.length) {
+      return left.contains(right) || right.contains(left);
+    }
+    return right.contains(left) || left.contains(right);
+  }
+
+  bool _timesPossiblyMatch(
+    DateTime left,
+    DateTime right, {
+    bool leftIsAllDay = false,
+    bool rightIsAllDay = false,
+  }) {
+    if (left.toUtc().difference(right.toUtc()).abs() <=
+        const Duration(hours: 6)) {
+      return true;
+    }
+    final leftLocal = left.isUtc ? left.toLocal() : left;
+    final rightLocal = right.isUtc ? right.toLocal() : right;
+    final sameLocalDay =
+        leftLocal.year == rightLocal.year &&
+        leftLocal.month == rightLocal.month &&
+        leftLocal.day == rightLocal.day;
+    return sameLocalDay && (leftIsAllDay || rightIsAllDay);
+  }
+
+  List<EventModel> _candidateExistingEvents(
+    DateTime startTime, {
+    DateTime? endTime,
+    bool isAllDay = false,
+  }) {
+    final combined = <EventModel>[];
+    final seen = <String>{};
+
+    void addEvents(Iterable<EventModel> events) {
+      for (final existing in events) {
+        final key =
+            '${existing.id}|${existing.startTime.toUtc().millisecondsSinceEpoch}|${existing.eventName}';
+        if (seen.add(key)) {
+          combined.add(existing);
+        }
+      }
     }
 
-    final utcTime = startTime.toUtc();
-    return '${name.toLowerCase().trim()}_${utcTime.year}_${utcTime.month}_${utcTime.day}_${utcTime.hour}_${utcTime.minute}';
+    addEvents(
+      _existingEventsByStartKey[_startMatchKey(
+            startTime,
+            endTime: endTime,
+            isAllDay: isAllDay,
+          )] ??
+          const <EventModel>[],
+    );
+    addEvents(
+      _existingEventsByDayKey[_dayMatchKey(startTime)] ?? const <EventModel>[],
+    );
+
+    return combined;
   }
 
   Future<void> _checkOutlookInstallation() async {
@@ -593,16 +922,81 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
   }
 
   bool _isDuplicate(ExternalEvent deviceEvent) {
-    if (!_isDuplicateCheckEnabled || deviceEvent.start == null) {
+    if (deviceEvent.start == null) {
       return false;
     }
-    final key = _createEventKey(
-      deviceEvent.title,
+
+    final sourceKey = _sourceEventKey(
+      provider: _currentImportProviderKey(),
+      calendarId: deviceEvent.calendarId,
+      eventId: deviceEvent.id,
+    );
+    if (sourceKey != null && _existingImportedSourceKeys.contains(sourceKey)) {
+      return true;
+    }
+
+    final candidates = _candidateExistingEvents(
       deviceEvent.start!,
       endTime: deviceEvent.end,
       isAllDay: deviceEvent.isAllDay,
     );
-    return _existingEventsMap.containsKey(key);
+    if (candidates.isEmpty) {
+      return false;
+    }
+
+    final normalizedName = _normalizeEventName(deviceEvent.title);
+    final normalizedVenue = _normalizeVenue(deviceEvent.location);
+    final normalizedLink = _normalizeEventLink(
+      _usableImportLink(
+        deviceEvent.url?.toString(),
+        provider: _currentImportProviderKey(),
+      ),
+    );
+
+    for (final existing in candidates) {
+      final existingNormalizedName = _normalizeEventName(existing.eventName);
+      final existingNormalizedVenue = _normalizeVenue(existing.eventVenue);
+      final existingNormalizedLink = _normalizeEventLink(
+        _usableImportLink(
+          existing.eventLink,
+          provider: existing.externalProvider,
+        ),
+      );
+      final timesMatch = _timesPossiblyMatch(
+        deviceEvent.start!,
+        existing.startTime,
+        leftIsAllDay: deviceEvent.isAllDay,
+        rightIsAllDay: existing.isAllDay,
+      );
+      final namesMatch = _areEventNamesMatching(
+        normalizedName,
+        existingNormalizedName,
+      );
+      final venuesMatch =
+          normalizedVenue == existingNormalizedVenue ||
+          (normalizedVenue.isNotEmpty &&
+              existingNormalizedVenue.isNotEmpty &&
+              (normalizedVenue.contains(existingNormalizedVenue) ||
+                  existingNormalizedVenue.contains(normalizedVenue)));
+      if (namesMatch && venuesMatch && timesMatch) {
+        return true;
+      }
+      if (normalizedLink.isNotEmpty &&
+          existingNormalizedLink == normalizedLink &&
+          timesMatch) {
+        return true;
+      }
+      if (namesMatch &&
+          normalizedVenue.isEmpty &&
+          existingNormalizedVenue.isEmpty &&
+          normalizedLink.isEmpty &&
+          existingNormalizedLink.isEmpty &&
+          timesMatch) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   void _checkForDuplicates() {
@@ -616,6 +1010,7 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
 
   @override
   void dispose() {
+    _eventManagerSub?.close();
     _applePublicCalendarUrlController.dispose();
     super.dispose();
   }
@@ -999,6 +1394,11 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
       _trace(
         'CalendarSync filtered calendars count=${calendars.length} provider=$_selectedProvider source=$_selectedSource',
       );
+      final l10n = ref.read(localizationProvider);
+      final availableDeviceAccountLabels = _deviceAccountLabelsForCalendars(
+        calendars,
+        l10n,
+      );
 
       setState(() {
         _calendars = calendars;
@@ -1006,6 +1406,12 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
         _hasFetched = true;
         _useOutlookOAuthFallback = false;
         _isUsingPermissionFallbackOnline = usedPermissionFallbackOnline;
+        if (_selectedDeviceAccountFilter != null &&
+            !availableDeviceAccountLabels.contains(
+              _selectedDeviceAccountFilter,
+            )) {
+          _selectedDeviceAccountFilter = null;
+        }
       });
 
       if (!kIsWeb && calendars.isEmpty && _emptyCalendarsAutoRetryCount < 2) {
@@ -1041,7 +1447,9 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
         'CalendarSyncScreen fetchCalendars CalendarSyncException=${e.message}',
       );
       final errorKey = e.toString();
-      final keepAppleOnlineFormState = _shouldKeepAppleOnlineFormState(errorKey);
+      final keepAppleOnlineFormState = _shouldKeepAppleOnlineFormState(
+        errorKey,
+      );
       setState(() {
         _errorMessage = errorKey;
         _isLoading = false;
@@ -1106,8 +1514,16 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                 endDate: endDate,
                 allowNonWeb: !kIsWeb || _useOutlookOAuthFallback,
               )
-            : useOnlineApi && _selectedProvider == CalendarProvider.google
+            : !kIsWeb &&
+                  useOnlineApi &&
+                  _selectedProvider == CalendarProvider.google
             ? await service.retrieveGoogleEventsNonWebOAuth(
+                calendarId,
+                startDate: startDate,
+                endDate: endDate,
+              )
+            : useOnlineApi && _selectedProvider == CalendarProvider.google
+            ? await service.retrieveEvents(
                 calendarId,
                 startDate: startDate,
                 endDate: endDate,
@@ -1203,10 +1619,7 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
       final l10n = ref.read(localizationProvider);
       final eventsToSync = _events
           .where((e) => _selectedEventIds.contains(e.id))
-          .where(
-            (e) =>
-                !_duplicateEventIds.contains(e.id) || !_isDuplicateCheckEnabled,
-          )
+          .where((e) => !_duplicateEventIds.contains(e.id))
           .toList();
 
       if (eventsToSync.isEmpty) {
@@ -1224,7 +1637,7 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
       final eventManager = ref.read(eventManagerProvider.notifier);
       int successCount = 0;
       int skippedCount = 0;
-      final Map<String, List<String>> failedByReasonKey =
+      final Map<String, List<String>> failedByReasonToken =
           <String, List<String>>{};
 
       String joinTitles(List<String> titles) {
@@ -1249,7 +1662,7 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
       for (final deviceEvent in eventsToSync) {
         if (deviceEvent.start == null || deviceEvent.end == null) {
           skippedCount++;
-          failedByReasonKey
+          failedByReasonToken
               .putIfAbsent(
                 'calendarSyncSkipReasonMissingDate',
                 () => <String>[],
@@ -1260,12 +1673,25 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
 
         final newEvent = EventModel(
           id: '', // ID will be generated by backend/provider
-          eventName: deviceEvent.title,
+          eventName: deviceEvent.title.trim().isNotEmpty
+              ? deviceEvent.title.trim()
+              : l10n.getString('eventNoTitle'),
           eventVenue: deviceEvent.location,
           startTime: deviceEvent.start!,
           endTime: deviceEvent.end!,
-          notes: null,
-          eventLink: deviceEvent.url?.toString(),
+          eventLink: _usableImportLink(
+            deviceEvent.url?.toString(),
+            provider: _currentImportProviderKey(),
+          ),
+          description: deviceEvent.description,
+          externalCalendarId: deviceEvent.calendarId.trim().isNotEmpty
+              ? deviceEvent.calendarId.trim()
+              : null,
+          externalEventId: deviceEvent.id.trim().isNotEmpty
+              ? deviceEvent.id.trim()
+              : null,
+          externalProvider: _currentImportProviderKey(),
+          isAllDay: deviceEvent.isAllDay,
         );
 
         final result = await eventManager.addEventWithResult(newEvent);
@@ -1274,17 +1700,25 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
         } else {
           skippedCount++;
           final reasonKey = result.errorKey ?? 'eventAddFailedUnknown';
-          failedByReasonKey
-              .putIfAbsent(reasonKey, () => <String>[])
+          final diagnosticCode = result.diagnosticCode ?? '';
+          print(
+            '[EVENT_IMPORT_UI] Device import failed for "${deviceEvent.title}" reasonKey=$reasonKey diagnosticCode=${diagnosticCode.isEmpty ? 'none' : diagnosticCode}',
+          );
+          final reasonToken = diagnosticCode.isEmpty
+              ? reasonKey
+              : '$reasonKey||$diagnosticCode';
+          failedByReasonToken
+              .putIfAbsent(reasonToken, () => <String>[])
               .add(deviceEvent.title);
         }
       }
 
       if (mounted) {
-        if (failedByReasonKey.isNotEmpty) {
-          final failureLines = failedByReasonKey.entries.map((entry) {
+        if (failedByReasonToken.isNotEmpty) {
+          final failureLines = failedByReasonToken.entries.map((entry) {
             final titles = joinTitles(entry.value);
-            final reason = l10n.getString(entry.key);
+            final tokenParts = entry.key.split('||');
+            final reason = l10n.getString(tokenParts.first);
             return l10n.getString(
               'calendarSyncEventImportFailed',
               params: {'title': titles, 'reason': reason},
@@ -1328,12 +1762,15 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
         _currentStep == 0 &&
         _selectedProvider == CalendarProvider.apple &&
         (_selectedSource == CalendarSource.api || kIsWeb);
+    final isDeviceImportTitle = _selectedProvider == CalendarProvider.device;
 
     return Scaffold(
       appBar: AppBar(
         title: Text(
           isAppleOnlineImportTitle
               ? l10n.getString('calendarSyncAppleOnlineImportTitle')
+              : isDeviceImportTitle
+              ? l10n.getString('eventsImportDeviceCalendar')
               : l10n.getString('calendarSyncTitle'),
         ),
         leading: _currentStep == 1
@@ -1345,6 +1782,31 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
               )
             : null,
       ),
+      bottomNavigationBar: _isLoading
+          ? null
+          : SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                child: FilledButton(
+                  onPressed: _currentStep == 0
+                      ? (_selectedCalendarIds.isNotEmpty ? _fetchEvents : null)
+                      : (_selectedEventIds.isNotEmpty
+                            ? _syncSelectedEvents
+                            : null),
+                  child: Text(
+                    l10n.getString(
+                      'onlineProvidersImportSelected',
+                      params: {
+                        'count': _currentStep == 0
+                            ? '${_selectedCalendarIds.length}'
+                            : '${_selectedEventIds.length}',
+                      },
+                    ),
+                  ),
+                ),
+              ),
+            ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : Column(
@@ -1362,28 +1824,48 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                       ? _buildCalendarList(l10n)
                       : _buildEventList(l10n),
                 ),
-                Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: SizedBox(
-                    width: double.infinity,
-                    child: FilledButton(
-                      onPressed: _currentStep == 0
-                          ? (_selectedCalendarIds.isNotEmpty
-                                ? _fetchEvents
-                                : null)
-                          : (_selectedEventIds.isNotEmpty
-                                ? _syncSelectedEvents
-                                : null),
-                      child: Text(
-                        _currentStep == 0
-                            ? l10n.getString('calendarSyncNext')
-                            : l10n.getString('calendarSyncSyncSelected'),
-                      ),
-                    ),
-                  ),
-                ),
               ],
             ),
+    );
+  }
+
+  Widget _buildDeviceSummaryCard(LocalizationState l10n) {
+    final accountLabels = _currentStep == 0
+        ? _deviceAccountLabelsForCalendars(_calendars, l10n)
+        : (_events.isNotEmpty
+              ? _deviceAccountLabelsForEvents(_events, l10n)
+              : _deviceAccountLabelsForCalendars(_calendars, l10n));
+    final selectedCount = _currentStep == 0
+        ? _selectedCalendarIds.length
+        : _selectedEventIds.length;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        gradient: LinearGradient(
+          colors: [
+            Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
+            Theme.of(context).colorScheme.secondary.withValues(alpha: 0.08),
+          ],
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            l10n.getString(
+              'calendarSyncDeviceSummaryBody',
+              params: {
+                'accounts': '${accountLabels.length}',
+                'events': '${_events.length}',
+                'selected': '$selectedCount',
+              },
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -1655,6 +2137,39 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
       );
     }
 
+    if (_selectedProvider == CalendarProvider.device) {
+      final deviceAccountLabels = _deviceAccountLabelsForCalendars(
+        _calendars,
+        l10n,
+      );
+      final visibleCalendars = _visibleDeviceCalendars(l10n);
+      final groupedCalendars = _groupDeviceCalendarsByAccount(
+        l10n,
+        calendars: visibleCalendars,
+      );
+
+      return ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+        children: [
+          _buildDeviceSummaryCard(l10n),
+          if (deviceAccountLabels.length > 1) ...[
+            const SizedBox(height: 12),
+            _buildDeviceAccountFilters(l10n, deviceAccountLabels),
+          ],
+          const SizedBox(height: 12),
+          for (final entry in groupedCalendars.entries)
+            Padding(
+              padding: const EdgeInsets.only(bottom: _accountSectionSpacing),
+              child: _buildDeviceCalendarAccountSection(
+                l10n,
+                entry.key,
+                entry.value,
+              ),
+            ),
+        ],
+      );
+    }
+
     return Column(
       children: [
         if (_selectedProvider == CalendarProvider.apple &&
@@ -1700,178 +2215,229 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
       return Center(child: Text(l10n.getString('eventsNoUpcomingFound')));
     }
 
-    final duplicateCount = _duplicateEventIds.length;
-    final selectedDuplicates = _selectedEventIds
-        .intersection(_duplicateEventIds)
-        .length;
-    final groupedDeviceEvents = _groupDeviceEventsByAccount(l10n);
+    final deviceAccountLabels = _deviceAccountLabelsForEvents(_events, l10n);
+    final visibleEvents = _visibleDeviceEvents(l10n);
+    final groupedDeviceEvents = _groupDeviceEventsByAccount(
+      l10n,
+      events: visibleEvents,
+    );
     final showDeviceAccountGrouping =
         _selectedProvider == CalendarProvider.device &&
-        groupedDeviceEvents.length > 1;
+        deviceAccountLabels.length > 1;
+    final visibleSelectableCount = visibleEvents
+        .where((event) => event.id.isNotEmpty && _isImportableEvent(event))
+        .length;
+    final visibleSelectedCount = visibleEvents
+        .where((event) => _selectedEventIds.contains(event.id))
+        .length;
+    final allVisibleSelected =
+        visibleSelectableCount > 0 &&
+        visibleSelectableCount == visibleSelectedCount;
 
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(8.0),
-          child: Row(
+    if (_selectedProvider == CalendarProvider.device) {
+      return ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+        children: [
+          _buildDeviceSummaryCard(l10n),
+          if (showDeviceAccountGrouping) ...[
+            const SizedBox(height: 12),
+            _buildDeviceAccountFilters(l10n, deviceAccountLabels),
+          ],
+          const SizedBox(height: 12),
+          _buildDeviceVisibilityFilters(l10n),
+          const SizedBox(height: 12),
+          Row(
             children: [
-              const Spacer(),
-              TextButton(
-                onPressed: () {
-                  setState(() {
-                    if (_selectedEventIds.length == _events.length) {
-                      _selectedEventIds.clear();
-                    } else {
-                      _selectedEventIds.addAll(
-                        _events.map((e) => e.id).where((id) => id.isNotEmpty),
-                      );
-                    }
-                  });
-                },
+              Expanded(
                 child: Text(
-                  _selectedEventIds.length == _events.length
+                  l10n.getString(
+                    'onlineProvidersSelectionSummary',
+                    params: {
+                      'selected': '$visibleSelectedCount',
+                      'available': '$visibleSelectableCount',
+                    },
+                  ),
+                ),
+              ),
+              TextButton(
+                onPressed: visibleSelectableCount == 0
+                    ? null
+                    : () => _toggleSelectVisibleDeviceEvents(visibleEvents),
+                child: Text(
+                  allVisibleSelected
                       ? l10n.getString('calendarSyncDeselectAll')
                       : l10n.getString('calendarSyncSelectAll'),
                 ),
               ),
             ],
           ),
-        ),
-        if (duplicateCount > 0)
-          Container(
-            margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.orange.shade50,
-              border: Border.all(color: Colors.orange.shade200),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              children: [
-                Icon(Icons.warning_amber, color: Colors.orange.shade700),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        l10n.getString(
-                          'calendarSyncDuplicateEventsFound',
-                          params: {'count': '$duplicateCount'},
-                        ),
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: Colors.orange.shade900,
-                        ),
-                      ),
-                      if (selectedDuplicates > 0)
-                        Text(
-                          l10n.getString(
-                            'calendarSyncDuplicateSelectedWillSkip',
-                            params: {'count': '$selectedDuplicates'},
-                          ),
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.orange.shade700,
-                          ),
-                        ),
-                    ],
-                  ),
+          const SizedBox(height: 12),
+          if (visibleEvents.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 32),
+              child: Center(
+                child: Text(l10n.getString('calendarSyncNoEventsMatchFilters')),
+              ),
+            )
+          else if (showDeviceAccountGrouping)
+            for (final entry in groupedDeviceEvents.entries)
+              Padding(
+                padding: const EdgeInsets.only(bottom: _accountSectionSpacing),
+                child: _buildDeviceEventAccountSection(
+                  l10n,
+                  entry.key,
+                  entry.value,
                 ),
-                Switch(
-                  value: _isDuplicateCheckEnabled,
-                  onChanged: (value) {
-                    setState(() {
-                      _isDuplicateCheckEnabled = value;
-                      if (!value) {
-                        _duplicateEventIds.clear();
-                      } else {
-                        _checkForDuplicates();
-                      }
-                    });
-                  },
-                ),
-              ],
-            ),
-          ),
-        Expanded(
-          child: showDeviceAccountGrouping
-              ? ListView(
-                  children: [
-                    for (final entry in groupedDeviceEvents.entries) ...[
-                      Container(
-                        width: double.infinity,
-                        margin: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 8,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Theme.of(context)
-                              .colorScheme
-                              .secondaryContainer
-                              .withValues(alpha: 0.45),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Text(
-                          entry.key,
-                          style: TextStyle(
-                            fontWeight: FontWeight.w600,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onSecondaryContainer,
-                          ),
-                        ),
-                      ),
-                      for (final event in entry.value)
-                        _buildImportEventListItem(
-                          context,
-                          ref,
-                          l10n,
-                          event,
-                          isSelected: _selectedEventIds.contains(event.id),
-                          enabled:
-                              !_duplicateEventIds.contains(event.id) ||
-                              !_isDuplicateCheckEnabled,
-                          isDuplicate: _duplicateEventIds.contains(event.id),
-                        ),
-                    ],
-                  ],
-                )
-              : ListView.builder(
-                  itemCount: _events.length,
-                  itemBuilder: (context, index) {
-                    final event = _events[index];
-                    final isSelected = _selectedEventIds.contains(event.id);
-                    final isDuplicate = _duplicateEventIds.contains(event.id);
-                    final enabled = !isDuplicate || !_isDuplicateCheckEnabled;
+              )
+          else
+            for (final event in visibleEvents)
+              _buildImportEventListItem(
+                context,
+                ref,
+                l10n,
+                event,
+                isSelected: _selectedEventIds.contains(event.id),
+                enabled:
+                    !_duplicateEventIds.contains(event.id) &&
+                    _isImportableEvent(event),
+                isDuplicate: _duplicateEventIds.contains(event.id),
+              ),
+        ],
+      );
+    }
 
-                    return _buildImportEventListItem(
-                      context,
-                      ref,
-                      l10n,
-                      event,
-                      isSelected: isSelected,
-                      enabled: enabled,
-                      isDuplicate: isDuplicate,
-                    );
-                  },
-                ),
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      l10n.getString(
+                        'onlineProvidersSelectionSummary',
+                        params: {
+                          'selected': '$visibleSelectedCount',
+                          'available': '$visibleSelectableCount',
+                        },
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: visibleSelectableCount == 0
+                        ? null
+                        : () => _toggleSelectVisibleDeviceEvents(visibleEvents),
+                    child: Text(
+                      allVisibleSelected
+                          ? l10n.getString('calendarSyncDeselectAll')
+                          : l10n.getString('calendarSyncSelectAll'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: _buildDeviceVisibilityFilters(l10n),
+              ),
+            ],
+          ),
         ),
+        if (visibleEvents.isEmpty)
+          Expanded(
+            child: Center(
+              child: Text(l10n.getString('calendarSyncNoEventsMatchFilters')),
+            ),
+          )
+        else
+          Expanded(
+            child: showDeviceAccountGrouping
+                ? ListView(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                    children: [
+                      for (final entry in groupedDeviceEvents.entries)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 16),
+                          child: _buildDeviceEventAccountSection(
+                            l10n,
+                            entry.key,
+                            entry.value,
+                          ),
+                        ),
+                    ],
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.fromLTRB(0, 12, 0, 16),
+                    itemCount: visibleEvents.length,
+                    itemBuilder: (context, index) {
+                      final event = visibleEvents[index];
+                      final isSelected = _selectedEventIds.contains(event.id);
+                      final isDuplicate = _duplicateEventIds.contains(event.id);
+                      final enabled = !isDuplicate && _isImportableEvent(event);
+
+                      return _buildImportEventListItem(
+                        context,
+                        ref,
+                        l10n,
+                        event,
+                        isSelected: isSelected,
+                        enabled: enabled,
+                        isDuplicate: isDuplicate,
+                      );
+                    },
+                  ),
+          ),
       ],
     );
   }
 
-  Map<String, List<ExternalEvent>> _groupDeviceEventsByAccount(dynamic l10n) {
+  Map<String, List<ExternalCalendar>> _groupDeviceCalendarsByAccount(
+    dynamic l10n, {
+    List<ExternalCalendar>? calendars,
+  }) {
+    if (_selectedProvider != CalendarProvider.device) {
+      return <String, List<ExternalCalendar>>{};
+    }
+    final grouped = <String, List<ExternalCalendar>>{};
+    for (final calendar in calendars ?? _calendars) {
+      final accountLabel = _resolveAccountLabelForCalendar(calendar, l10n);
+      grouped
+          .putIfAbsent(accountLabel, () => <ExternalCalendar>[])
+          .add(calendar);
+    }
+    return grouped;
+  }
+
+  Map<String, List<ExternalEvent>> _groupDeviceEventsByAccount(
+    dynamic l10n, {
+    Iterable<ExternalEvent>? events,
+  }) {
     if (_selectedProvider != CalendarProvider.device) {
       return <String, List<ExternalEvent>>{};
     }
     final grouped = <String, List<ExternalEvent>>{};
-    for (final event in _events) {
+    for (final event in events ?? _events) {
       final accountLabel = _resolveAccountLabelForEvent(event, l10n);
       grouped.putIfAbsent(accountLabel, () => <ExternalEvent>[]).add(event);
     }
     return grouped;
+  }
+
+  String _resolveAccountLabelForCalendar(
+    ExternalCalendar calendar,
+    dynamic l10n,
+  ) {
+    final accountName = calendar.accountName?.trim();
+    if (accountName != null && accountName.isNotEmpty) {
+      return accountName;
+    }
+    final calendarName = calendar.name.trim();
+    if (calendarName.isNotEmpty) {
+      return calendarName;
+    }
+    return l10n.getString('calendarSyncDeviceUnknownAccount');
   }
 
   String _resolveAccountLabelForEvent(ExternalEvent event, dynamic l10n) {
@@ -1890,6 +2456,446 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
       }
     }
     return l10n.getString('calendarSyncDeviceUnknownAccount');
+  }
+
+  List<String> _deviceAccountLabelsForCalendars(
+    List<ExternalCalendar> calendars,
+    dynamic l10n,
+  ) {
+    final labels =
+        calendars
+            .map((calendar) => _resolveAccountLabelForCalendar(calendar, l10n))
+            .toSet()
+            .toList()
+          ..sort();
+    return labels;
+  }
+
+  List<String> _deviceAccountLabelsForEvents(
+    List<ExternalEvent> events,
+    dynamic l10n,
+  ) {
+    final labels =
+        events
+            .map((event) => _resolveAccountLabelForEvent(event, l10n))
+            .toSet()
+            .toList()
+          ..sort();
+    return labels;
+  }
+
+  List<ExternalCalendar> _visibleDeviceCalendars(dynamic l10n) {
+    if (_selectedProvider != CalendarProvider.device ||
+        _selectedDeviceAccountFilter == null) {
+      return _calendars;
+    }
+    return _calendars.where((calendar) {
+      return _resolveAccountLabelForCalendar(calendar, l10n) ==
+          _selectedDeviceAccountFilter;
+    }).toList();
+  }
+
+  List<ExternalEvent> _visibleDeviceEvents(dynamic l10n) {
+    return _events.where((event) {
+      if (_duplicateEventIds.contains(event.id)) {
+        return false;
+      }
+      if (_selectedProvider == CalendarProvider.device &&
+          _selectedDeviceAccountFilter != null &&
+          _resolveAccountLabelForEvent(event, l10n) !=
+              _selectedDeviceAccountFilter) {
+        return false;
+      }
+      if (_showOnlyPotentiallyImportable && !_isImportableEvent(event)) {
+        return false;
+      }
+      return true;
+    }).toList();
+  }
+
+  void _toggleSelectVisibleDeviceEvents(List<ExternalEvent> events) {
+    final selectableIds = events
+        .where((event) => event.id.isNotEmpty && _isImportableEvent(event))
+        .map((event) => event.id)
+        .toSet();
+    setState(() {
+      final allSelected =
+          selectableIds.isNotEmpty &&
+          selectableIds.every(_selectedEventIds.contains);
+      if (allSelected) {
+        _selectedEventIds.removeAll(selectableIds);
+      } else {
+        _selectedEventIds.addAll(selectableIds);
+      }
+    });
+  }
+
+  Widget _buildDeviceAccountFilters(dynamic l10n, List<String> accountLabels) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Wrap(
+      spacing: 8,
+      runSpacing: 0,
+      children: [
+        ChoiceChip(
+          label: Text(l10n.getString('onlineProvidersAllAccounts')),
+          selected: _selectedDeviceAccountFilter == null,
+          avatar: Icon(
+            Icons.apps_rounded,
+            size: 18,
+            color: _selectedDeviceAccountFilter == null
+                ? colorScheme.onSecondaryContainer
+                : colorScheme.onSurfaceVariant,
+          ),
+          selectedColor: colorScheme.secondaryContainer,
+          onSelected: (_) {
+            setState(() {
+              _selectedDeviceAccountFilter = null;
+            });
+          },
+        ),
+        ...accountLabels.map(
+          (accountLabel) => ChoiceChip(
+            label: Text(accountLabel, overflow: TextOverflow.visible),
+            avatar: CircleAvatar(
+              radius: 10,
+              backgroundColor: _accountAccentColorForLabel(accountLabel),
+              child: Icon(
+                Icons.calendar_month_outlined,
+                size: 12,
+                color: _onAccountAccentColorForLabel(accountLabel),
+              ),
+            ),
+            selected: _selectedDeviceAccountFilter == accountLabel,
+            selectedColor: _accountBackgroundColorForLabel(
+              accountLabel,
+              selected: true,
+            ),
+            side: BorderSide(
+              color: _accountBorderColorForLabel(
+                accountLabel,
+                selected: _selectedDeviceAccountFilter == accountLabel,
+              ),
+            ),
+            onSelected: (_) {
+              setState(() {
+                _selectedDeviceAccountFilter = accountLabel;
+              });
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDeviceVisibilityFilters(LocalizationState l10n) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        FilterChip(
+          label: Text(l10n.getString('calendarSyncFilterImportableOnly')),
+          selected: _showOnlyPotentiallyImportable,
+          onSelected: (value) {
+            setState(() {
+              _showOnlyPotentiallyImportable = value;
+            });
+          },
+        ),
+      ],
+    );
+  }
+
+  Future<void> _openImportEventDetails(
+    LocalizationState l10n,
+    ExternalEvent event,
+  ) async {
+    if (_selectedProvider == CalendarProvider.device) {
+      final opened = await ref
+          .read(calendarSyncServiceProvider)
+          .openDeviceCalendarEvent(event.id);
+      if (!opened && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(l10n.getString('calendarSyncOpenEventFailed')),
+          ),
+        );
+      }
+      return;
+    }
+
+    final url = event.url;
+    if (url != null && await canLaunchUrl(url)) {
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+      return;
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.getString('calendarSyncOpenEventFailed'))),
+      );
+    }
+  }
+
+  Widget _buildDeviceCalendarAccountSection(
+    dynamic l10n,
+    String accountLabel,
+    List<ExternalCalendar> calendars,
+  ) {
+    final accentColor = _accountAccentColorForLabel(accountLabel);
+    return Container(
+      decoration: BoxDecoration(
+        color: _accountBackgroundColorForLabel(accountLabel),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: _accountBorderColorForLabel(accountLabel)),
+        boxShadow: [
+          BoxShadow(
+            color: Theme.of(context).shadowColor.withValues(alpha: 0.05),
+            blurRadius: 12,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
+            child: Row(
+              children: [
+                CircleAvatar(
+                  backgroundColor: accentColor,
+                  child: Icon(
+                    Icons.calendar_month_outlined,
+                    color: _onAccountAccentColorForLabel(accountLabel),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    accountLabel,
+                    maxLines: 2,
+                    overflow: TextOverflow.visible,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          ...calendars.map((calendar) => _buildDeviceCalendarTile(calendar)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDeviceCalendarTile(ExternalCalendar calendar) {
+    final isSelected = _selectedCalendarIds.contains(calendar.id);
+    final accentColor = _accountAccentColorForLabel(
+      calendar.accountName?.trim().isNotEmpty == true
+          ? calendar.accountName!.trim()
+          : calendar.name,
+    );
+    return InkWell(
+      onTap: () {
+        setState(() {
+          if (isSelected) {
+            _selectedCalendarIds.remove(calendar.id);
+          } else {
+            _selectedCalendarIds.add(calendar.id);
+          }
+        });
+      },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Row(
+          children: [
+            Icon(Icons.event_note_outlined, color: accentColor),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    calendar.name,
+                    maxLines: 2,
+                    overflow: TextOverflow.visible,
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  if (calendar.accountName != null &&
+                      calendar.accountName != calendar.name) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      calendar.accountName!,
+                      maxLines: 2,
+                      overflow: TextOverflow.visible,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            Checkbox(
+              value: isSelected,
+              onChanged: (_) {
+                setState(() {
+                  if (isSelected) {
+                    _selectedCalendarIds.remove(calendar.id);
+                  } else {
+                    _selectedCalendarIds.add(calendar.id);
+                  }
+                });
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDeviceEventAccountSection(
+    LocalizationState l10n,
+    String accountLabel,
+    List<ExternalEvent> events,
+  ) {
+    final accentColor = _accountAccentColorForLabel(accountLabel);
+    final eventCountText = _buildEventCountText(l10n, events.length);
+    return Column(
+      children: [
+        Container(
+          decoration: BoxDecoration(
+            color: _accountBackgroundColorForLabel(accountLabel),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: _accountBorderColorForLabel(accountLabel),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Theme.of(context).shadowColor.withValues(alpha: 0.05),
+                blurRadius: 12,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+            child: Row(
+              children: [
+                CircleAvatar(
+                  backgroundColor: accentColor,
+                  child: Icon(
+                    Icons.calendar_month_outlined,
+                    color: _onAccountAccentColorForLabel(accountLabel),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        accountLabel,
+                        maxLines: 2,
+                        overflow: TextOverflow.visible,
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        eventCountText,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 2),
+        ...events.map(
+          (event) => _buildImportEventListItem(
+            context,
+            ref,
+            l10n,
+            event,
+            isSelected: _selectedEventIds.contains(event.id),
+            enabled:
+                !_duplicateEventIds.contains(event.id) &&
+                _isImportableEvent(event),
+            isDuplicate: _duplicateEventIds.contains(event.id),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _buildEventCountText(LocalizationState l10n, int count) {
+    final countText = l10n.formatCount(count);
+    final eventWord = count == 1
+        ? l10n.getString('onlineProvidersEventSingular')
+        : l10n.getString('onlineProvidersEvents');
+    if (l10n.currentLocale.languageCode == 'he' && count == 1) {
+      return '$eventWord $countText';
+    }
+    return '$countText $eventWord';
+  }
+
+  int _stableColorHash(String value) {
+    var hash = 0;
+    for (final codeUnit in value.codeUnits) {
+      hash = ((hash * 31) + codeUnit) & 0x7fffffff;
+    }
+    return hash;
+  }
+
+  Color _accountAccentColorForLabel(String accountLabel) {
+    final hash = _stableColorHash(accountLabel);
+    final hue = (hash % 360).toDouble();
+    final saturation = 0.62 + (((hash >> 4) % 18) / 100);
+    final lightness = Theme.of(context).brightness == Brightness.dark
+        ? 0.60 + (((hash >> 8) % 8) / 100)
+        : 0.44 + (((hash >> 8) % 10) / 100);
+    return HSLColor.fromAHSL(
+      1,
+      hue,
+      saturation.clamp(0.0, 1.0),
+      lightness,
+    ).toColor();
+  }
+
+  Color _onAccountAccentColorForLabel(String accountLabel) {
+    final brightness = ThemeData.estimateBrightnessForColor(
+      _accountAccentColorForLabel(accountLabel),
+    );
+    return brightness == Brightness.dark ? Colors.white : Colors.black87;
+  }
+
+  Color _accountBackgroundColorForLabel(
+    String accountLabel, {
+    bool selected = false,
+  }) {
+    final accentColor = _accountAccentColorForLabel(accountLabel);
+    final baseOpacity = selected ? 0.22 : 0.10;
+    final darkModeBoost = Theme.of(context).brightness == Brightness.dark
+        ? 0.08
+        : 0.0;
+    return accentColor.withValues(alpha: baseOpacity + darkModeBoost);
+  }
+
+  Color _accountBorderColorForLabel(
+    String accountLabel, {
+    bool selected = false,
+  }) {
+    final accentColor = _accountAccentColorForLabel(accountLabel);
+    return accentColor.withValues(alpha: selected ? 0.55 : 0.26);
   }
 
   Uri _applePublicCalendarHelpUriForLocale(LocalizationState l10n) {

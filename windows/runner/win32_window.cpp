@@ -150,7 +150,8 @@ bool Win32Window::Create(const std::wstring& title,
 }
 
 bool Win32Window::Show() {
-  return ShowWindow(window_handle_, SW_SHOWNORMAL);
+  return ShowWindow(window_handle_, start_maximized_ ? SW_MAXIMIZE
+                                                     : SW_SHOWNORMAL);
 }
 
 // static
@@ -200,7 +201,9 @@ Win32Window::MessageHandler(HWND hwnd,
     case WM_SIZE: {
       RECT rect = GetClientArea();
       if (child_content_ != nullptr) {
-        // Size and position the child window.
+        // Size and position the child window. The child is sized to the full
+        // client area in physical pixels: the Flutter surface maps 1:1 onto
+        // this HWND, so any scaling here leaves part of the window unpainted.
         MoveWindow(child_content_, rect.left, rect.top, rect.right - rect.left,
                    rect.bottom - rect.top, TRUE);
       }
@@ -243,6 +246,8 @@ void Win32Window::SetChildContent(HWND content) {
   SetParent(content, window_handle_);
   RECT frame = GetClientArea();
 
+  // Full client area, in physical pixels: the Flutter surface maps 1:1 onto
+  // this HWND, so scaling it here would leave part of the window unpainted.
   MoveWindow(content, frame.left, frame.top, frame.right - frame.left,
              frame.bottom - frame.top, true);
 

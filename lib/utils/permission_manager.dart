@@ -19,9 +19,10 @@ class PermissionManager {
 
   // Track which permissions have been requested this run
   static final Set<String> _requestedThisRun = <String>{};
-  
+
   // Track if first install permission flow has completed
-  static const String _firstInstallCompleteKey = 'permissions_first_install_complete';
+  static const String _firstInstallCompleteKey =
+      'permissions_first_install_complete';
 
   /// Check if this is the first install (permissions not yet requested)
   static Future<bool> isFirstInstall() async {
@@ -57,7 +58,7 @@ class PermissionManager {
   /// Request notification permission (works on Android 13+)
   static Future<bool> requestNotificationPermission() async {
     if (kIsWeb) return true; // Web doesn't need notification permission
-    
+
     const key = 'notification';
     if (hasBeenRequestedThisRun(key)) {
       // Already requested this run, just check status
@@ -66,7 +67,7 @@ class PermissionManager {
     }
 
     markRequested(key);
-    
+
     if (Platform.isAndroid) {
       final status = await Permission.notification.status;
       if (status.isGranted) return true;
@@ -76,7 +77,7 @@ class PermissionManager {
       }
       return false;
     }
-    
+
     // iOS notification permission is handled differently
     return true;
   }
@@ -87,13 +88,12 @@ class PermissionManager {
     bool forceRequest = false,
   }) async {
     const key = 'location';
-    
+
     // Check if user is visible (unless force request)
     if (!forceRequest) {
       try {
         final isVisible = ref.read(isVisibleProvider);
         if (!isVisible) {
-          debugPrint('📍 PermissionManager: User is invisible, skipping location permission request');
           return false;
         }
       } catch (_) {
@@ -104,8 +104,8 @@ class PermissionManager {
     if (hasBeenRequestedThisRun(key)) {
       // Already requested this run, just check status
       final permission = await Geolocator.checkPermission();
-      return permission == LocationPermission.whileInUse || 
-             permission == LocationPermission.always;
+      return permission == LocationPermission.whileInUse ||
+          permission == LocationPermission.always;
     }
 
     markRequested(key);
@@ -114,33 +114,29 @@ class PermissionManager {
       // Check if location services are enabled
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        debugPrint('📍 PermissionManager: Location services are disabled');
         return false;
       }
 
       // Check current permission status
       LocationPermission permission = await Geolocator.checkPermission();
-      
+
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
         if (permission == LocationPermission.denied) {
-          debugPrint('📍 PermissionManager: Location permission denied');
           return false;
         }
       }
 
       if (permission == LocationPermission.deniedForever) {
-        debugPrint('📍 PermissionManager: Location permission denied forever');
         return false;
       }
 
       // For Android, background location is handled by PermissionCoordinator
       // when needed for background service
 
-      return permission == LocationPermission.whileInUse || 
-             permission == LocationPermission.always;
+      return permission == LocationPermission.whileInUse ||
+          permission == LocationPermission.always;
     } catch (e) {
-      debugPrint('📍 PermissionManager: Error requesting location permission: $e');
       return false;
     }
   }
@@ -148,7 +144,7 @@ class PermissionManager {
   /// Request camera permission
   static Future<bool> requestCameraPermission() async {
     if (kIsWeb) return true; // Web handles camera permission via browser
-    
+
     const key = 'camera';
     try {
       final status = await Permission.camera.status;
@@ -163,7 +159,6 @@ class PermissionManager {
       }
       return false;
     } catch (e) {
-      debugPrint('📷 PermissionManager: Error requesting camera permission: $e');
       return false;
     }
   }
@@ -171,13 +166,14 @@ class PermissionManager {
   /// Request photos/storage permission
   static Future<bool> requestPhotosPermission() async {
     if (kIsWeb) return true; // Web handles photos via browser
-    
+
     const key = 'photos';
     if (hasBeenRequestedThisRun(key)) {
       // Check appropriate permission based on platform
       if (Platform.isAndroid) {
         // Android 13+ uses photos permission, older uses storage
-        final androidVersion = int.tryParse(Platform.version.split('.').first) ?? 0;
+        final androidVersion =
+            int.tryParse(Platform.version.split('.').first) ?? 0;
         if (Platform.version.contains('33') || androidVersion >= 33) {
           final status = await Permission.photos.status;
           return status.isGranted;
@@ -197,7 +193,8 @@ class PermissionManager {
     try {
       if (Platform.isAndroid) {
         // Android 13+ uses photos permission, older uses storage
-        final androidVersion = int.tryParse(Platform.version.split('.').first) ?? 0;
+        final androidVersion =
+            int.tryParse(Platform.version.split('.').first) ?? 0;
         if (Platform.version.contains('33') || androidVersion >= 33) {
           final status = await Permission.photos.status;
           if (status.isGranted) return true;
@@ -223,7 +220,6 @@ class PermissionManager {
       }
       return true;
     } catch (e) {
-      debugPrint('🖼️ PermissionManager: Error requesting photos permission: $e');
       return true; // Default to true for web/unknown platforms
     }
   }
@@ -238,21 +234,20 @@ class PermissionManager {
     final results = <String, bool>{};
 
     // 1. Notifications
-    debugPrint('🔔 Requesting notification permission...');
     results['notification'] = await requestNotificationPermission();
 
     // 2. Camera
-    debugPrint('📷 Requesting camera permission...');
     results['camera'] = await requestCameraPermission();
 
     // 3. Photos/Storage
-    debugPrint('🖼️ Requesting photos permission...');
     results['photos'] = await requestPhotosPermission();
 
     // 4. Location (only if user is visible or explicitly requested)
     if (requestLocation) {
-      debugPrint('📍 Requesting location permission...');
-      results['location'] = await requestLocationPermission(ref: ref, forceRequest: true);
+      results['location'] = await requestLocationPermission(
+        ref: ref,
+        forceRequest: true,
+      );
     } else {
       results['location'] = false;
     }
@@ -270,19 +265,17 @@ class PermissionManager {
   }) async {
     final results = <String, bool>{};
 
-    debugPrint('🔔 Requesting notification permission...');
     results['notification'] = await requestNotificationPermission();
 
-    debugPrint('📷 Requesting camera permission...');
     results['camera'] = await requestCameraPermission();
 
-    debugPrint('🖼️ Requesting photos permission...');
     results['photos'] = await requestPhotosPermission();
 
     if (requestLocation) {
-      debugPrint('📍 Requesting location permission...');
-      results['location'] =
-          await requestLocationPermission(ref: ref, forceRequest: true);
+      results['location'] = await requestLocationPermission(
+        ref: ref,
+        forceRequest: true,
+      );
     } else {
       results['location'] = false;
     }

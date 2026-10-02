@@ -41,13 +41,13 @@ final class EventManagerProvider
   }
 }
 
-String _$eventManagerHash() => r'c24b5686bb9e7f5bb9b1c386e6fa616da7de705b';
+String _$eventManagerHash() => r'60b4d94d5884ed5fd96dbde8e3f80b8b30fdf643';
 
 abstract class _$EventManager extends $Notifier<AsyncValue<List<EventModel>>> {
   AsyncValue<List<EventModel>> build();
   @$mustCallSuper
   @override
-  void runBuild() {
+  WhenComplete runBuild() {
     final ref =
         this.ref
             as $Ref<AsyncValue<List<EventModel>>, AsyncValue<List<EventModel>>>;
@@ -62,6 +62,6 @@ abstract class _$EventManager extends $Notifier<AsyncValue<List<EventModel>>> {
               Object?,
               Object?
             >;
-    element.handleCreate(ref, build);
+    return element.handleCreate(ref, build);
   }
 }

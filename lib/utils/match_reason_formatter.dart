@@ -27,31 +27,34 @@ class MatchReasonFormatter {
     if (matchedIntent is List<String>) {
       reasons = matchedIntent;
     } else if (matchedIntent is List) {
-      reasons = (matchedIntent).map((e) => e.toString()).toList();
+      final result = <String>[];
+      for (final e in matchedIntent) {
+        result.add(e.toString());
+      }
+      reasons = result;
     } else {
       final str = matchedIntent.toString();
-      reasons =
-          str.contains(',')
-              ? str.split(',').map((e) => e.trim()).toList()
-              : [str];
+      reasons = str.contains(',')
+          ? str.split(',').map((e) => e.trim()).toList()
+          : [str];
     }
 
     // Format intent reasons: replace underscores, capitalize, filter nulls
-    final formattedIntents =
-        reasons
-            .where((r) => r.trim().isNotEmpty)
-            .map((r) => _formatIntentReason(l10n, r))
-            .toList();
+    final formattedIntents = <String>[];
+    for (final r in reasons) {
+      if (r.trim().isNotEmpty) {
+        final formatted = _formatIntentReason(l10n, r);
+        if (formatted.isNotEmpty) {
+          formattedIntents.add(formatted);
+        }
+      }
+    }
 
     final List<String> lines = [];
 
     // Add event line if this is an event match
     if (matchType == 'event' && eventName != null && eventName.isNotEmpty) {
-      final eventLabel = _getTranslationWithFallback(
-        l10n,
-        'eventLabel',
-        hardcodedFallback: 'Event',
-      );
+      final eventLabel = _getTranslationWithFallback(l10n, 'eventLabel');
       lines.add('$eventLabel: $eventName');
     }
 
@@ -59,11 +62,7 @@ class MatchReasonFormatter {
     if (formattedIntents.isNotEmpty) {
       final intentText = formattedIntents.join(', ');
       if (intentText.trim().isNotEmpty) {
-        final intentLabel = _getTranslationWithFallback(
-          l10n,
-          'intentLabel',
-          hardcodedFallback: 'Intent',
-        );
+        final intentLabel = _getTranslationWithFallback(l10n, 'intentLabel');
         lines.add('$intentLabel: $intentText');
       }
     }
@@ -92,35 +91,38 @@ class MatchReasonFormatter {
     if (matchedIntent is List<String>) {
       reasons = matchedIntent;
     } else if (matchedIntent is List) {
-      reasons = (matchedIntent).map((e) => e.toString()).toList();
+      final result = <String>[];
+      for (final e in matchedIntent) {
+        result.add(e.toString());
+      }
+      reasons = result;
     } else {
       final str = matchedIntent.toString();
-      reasons =
-          str.contains(',')
-              ? str.split(',').map((e) => e.trim()).toList()
-              : [str];
+      reasons = str.contains(',')
+          ? str.split(',').map((e) => e.trim()).toList()
+          : [str];
     }
 
     // Format intent reasons: replace underscores, capitalize, filter nulls
-    final formattedIntents =
-        reasons
-            .where((r) => r.trim().isNotEmpty)
-            .map((r) => _formatIntentReason(l10n, r))
-            .toList();
+    final formattedIntents = <String>[];
+    for (final r in reasons) {
+      if (r.trim().isNotEmpty) {
+        final formatted = _formatIntentReason(l10n, r);
+        if (formatted.isNotEmpty) {
+          formattedIntents.add(formatted);
+        }
+      }
+    }
 
     // Build the sentence based on match type
     if (matchType == 'event') {
-      final sharedEventText = _getTranslationWithFallback(
-        l10n,
-        'sharedEvent',
-        hardcodedFallback: 'a shared event',
-      );
-      final intentsText =
-          formattedIntents.isNotEmpty ? formattedIntents.join(', ') : '';
+      final sharedEventText = _getTranslationWithFallback(l10n, 'sharedEvent');
+      final intentsText = formattedIntents.isNotEmpty
+          ? formattedIntents.join(', ')
+          : '';
       final youMatchedBecause = _getTranslationWithFallback(
         l10n,
         'youMatchedBecause',
-        hardcodedFallback: 'You matched because of',
       );
 
       if (intentsText.isNotEmpty) {
@@ -129,23 +131,15 @@ class MatchReasonFormatter {
         return '$youMatchedBecause $sharedEventText.';
       }
     } else if (matchType == 'proximity' || matchType == 'manual_test') {
-      final proximityText = _getTranslationWithFallback(
-        l10n,
-        'proximity',
-        hardcodedFallback: 'proximity',
-      );
-      final intentsText =
-          formattedIntents.isNotEmpty ? formattedIntents.join(', ') : '';
+      final proximityText = _getTranslationWithFallback(l10n, 'proximity');
+      final intentsText = formattedIntents.isNotEmpty
+          ? formattedIntents.join(', ')
+          : '';
       final youMatchedBecause = _getTranslationWithFallback(
         l10n,
         'youMatchedBecause',
-        hardcodedFallback: 'You matched because of',
       );
-      final andShared = _getTranslationWithFallback(
-        l10n,
-        'andShared',
-        hardcodedFallback: 'and shared',
-      );
+      final andShared = _getTranslationWithFallback(l10n, 'andShared');
 
       if (intentsText.isNotEmpty) {
         return '$youMatchedBecause $proximityText, $andShared $intentsText.';
@@ -189,33 +183,22 @@ class MatchReasonFormatter {
     // Try to get translation from Supabase
     String translated = _getTranslationWithFallback(l10n, cleanedReason);
 
-    // If translation is the same as the key or empty, use humanized version
-    if (translated == cleanedReason || translated.isEmpty) {
+    // If translation is missing or empty, use humanized version
+    if (translated == cleanedReason ||
+        translated.isEmpty ||
+        translated.endsWith('...')) {
       translated = _humanizeReason(cleanedReason);
     }
 
     return translated;
   }
 
-  /// Get translation from Supabase with fallback to humanized version or hardcoded fallback
+  /// Get translation from Supabase
   static String _getTranslationWithFallback(
     LocalizationState l10n,
-    String key, {
-    String? hardcodedFallback,
-  }) {
-    try {
-      final translation = l10n.getString(key);
-      // Check if translation is missing (returns key with '...' format)
-      if (translation == key ||
-          translation.trim().isEmpty ||
-          translation.endsWith('...')) {
-        return hardcodedFallback ?? _humanizeReason(key);
-      }
-      return translation;
-    } catch (e) {
-      // If any error occurs, fall back to hardcoded or humanized version
-      return hardcodedFallback ?? _humanizeReason(key);
-    }
+    String key,
+  ) {
+    return l10n.getString(key);
   }
 
   /// Humanize a reason string by capitalizing words
@@ -225,10 +208,9 @@ class MatchReasonFormatter {
     return reason
         .split(' ')
         .map(
-          (word) =>
-              word.isNotEmpty
-                  ? word[0].toUpperCase() + word.substring(1).toLowerCase()
-                  : '',
+          (word) => word.isNotEmpty
+              ? word[0].toUpperCase() + word.substring(1).toLowerCase()
+              : '',
         )
         .join(' ');
   }

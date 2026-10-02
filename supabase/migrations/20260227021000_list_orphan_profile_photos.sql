@@ -33,12 +33,6 @@ BEGIN
     WHERE u.photos IS NOT NULL
       AND value IS NOT NULL
       AND btrim(value) <> ''
-    UNION
-    SELECT DISTINCT value AS name
-    FROM public.users u
-    CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(u.approved_primary_photos, '[]'::jsonb)) AS value
-    WHERE value IS NOT NULL
-      AND btrim(value) <> ''
   )
   SELECT o.name
   FROM storage.objects o

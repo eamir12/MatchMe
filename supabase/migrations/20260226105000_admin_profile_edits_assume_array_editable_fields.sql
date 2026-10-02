@@ -13,6 +13,7 @@ RETURNS TABLE (
   attachments jsonb,
   status text,
   change_complete boolean,
+  change_log jsonb,
   created_at timestamptz,
   updated_at timestamptz,
   reviewed_at timestamptz,
@@ -62,6 +63,7 @@ BEGIN
           AND rf.field_key = ANY(COALESCE(u.editable_profile_fields, '{}'::text[]))
       )
     END AS change_complete,
+    COALESCE(r.change_log, '[]'::jsonb) AS change_log,
     r.created_at,
     r.updated_at,
     r.reviewed_at,

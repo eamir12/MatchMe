@@ -15,14 +15,25 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:developer' as developer;
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
+import 'package:flutter/painting.dart';
+import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/services/runtime_supabase_config.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:matchme/utils/offline_utils.dart';
 import 'package:extended_image/extended_image.dart';
 
 class _CacheEntry {
   final String url;
   final DateTime expiresAt;
   _CacheEntry(this.url, this.expiresAt);
+}
+
+class ResolvedImageRequest {
+  final String url;
+  final Map<String, String>? headers;
+
+  const ResolvedImageRequest({required this.url, this.headers});
 }
 
 class StorageHelper {
@@ -32,6 +43,136 @@ class StorageHelper {
   static final Map<String, int> _cacheBustVersions = {};
   static const String _bucket = 'profile-photos';
   static const Duration _missingTtl = Duration(minutes: 10);
+
+  /// Persistent (local-storage) layer for signed URLs.
+  /// Memory [_cache] is fast but emptied on restart; SharedPreferences
+  /// survives restarts so photos resolve instantly on UI startup without
+  /// waiting for `createSignedUrl` network calls. Entries store expiry and
+  /// are only reused while still valid (>15s left).
+  static const String _persistPrefix = 'signed_url_v1:';
+  static bool _persistWarmupStarted = false;
+  static Future<void>? _persistWarmupFuture;
+
+  static String _persistKey(String cacheKey) => '$_persistPrefix$cacheKey';
+
+  static void _persistUrlInBackground(
+    String cacheKey,
+    String url,
+    DateTime expiresAt,
+  ) {
+    if (cacheKey.isEmpty || url.isEmpty) return;
+    unawaited(() async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final payload = jsonEncode({
+          'url': url,
+          'exp': expiresAt.millisecondsSinceEpoch,
+        });
+        await prefs.setString(_persistKey(cacheKey), payload);
+      } catch (_) {}
+    }());
+  }
+
+  static Future<String?> _loadPersistedUrl(String cacheKey) async {
+    if (cacheKey.isEmpty) return null;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_persistKey(cacheKey));
+      if (raw == null || raw.isEmpty) return null;
+      final data = jsonDecode(raw) as Map<String, dynamic>;
+      final url = (data['url'] ?? '').toString();
+      final expMillis = int.tryParse((data['exp'] ?? '').toString()) ?? 0;
+      if (url.isEmpty || expMillis <= 0) return null;
+      final expiresAt = DateTime.fromMillisecondsSinceEpoch(
+        expMillis,
+        isUtc: false,
+      );
+      // Require substantial validity left so the image load finishes.
+      if (!expiresAt.isAfter(DateTime.now().add(const Duration(seconds: 15)))) {
+        return null;
+      }
+      // Promote to memory so sync getCachedUrl hits next time.
+      _cache[cacheKey] = _CacheEntry(url, expiresAt);
+      return url;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Warm memory from local storage at startup (fire-and-forget).
+  /// Call once during bootstrap so the first photo resolves without network.
+  static Future<void> warmUpPersistedUrlCache() {
+    if (_persistWarmupFuture != null) return _persistWarmupFuture!;
+    _persistWarmupFuture = () async {
+      if (_persistWarmupStarted) return;
+      _persistWarmupStarted = true;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final keys = prefs
+            .getKeys()
+            .where((k) => k.startsWith(_persistPrefix))
+            .toList();
+        final now = DateTime.now();
+        var loaded = 0;
+        for (final fullKey in keys) {
+          if (loaded >= 200) break;
+          try {
+            final raw = prefs.getString(fullKey);
+            if (raw == null || raw.isEmpty) continue;
+            final data = jsonDecode(raw) as Map<String, dynamic>;
+            final url = (data['url'] ?? '').toString();
+            final expMillis = int.tryParse((data['exp'] ?? '').toString()) ?? 0;
+            if (url.isEmpty || expMillis <= 0) continue;
+            final expiresAt = DateTime.fromMillisecondsSinceEpoch(expMillis);
+            if (!expiresAt.isAfter(now.add(const Duration(seconds: 15)))) {
+              // Evict expired persisted entries lazily.
+              try {
+                await prefs.remove(fullKey);
+              } catch (_) {}
+              continue;
+            }
+            final cacheKey = fullKey.substring(_persistPrefix.length);
+            if (cacheKey.isEmpty) continue;
+            // Don't overwrite a fresher memory entry.
+            final existing = _cache[cacheKey];
+            if (existing != null && existing.expiresAt.isAfter(expiresAt)) {
+              continue;
+            }
+            _cache[cacheKey] = _CacheEntry(url, expiresAt);
+            loaded++;
+          } catch (_) {}
+        }
+        if (kDebugMode && loaded > 0) {
+          debugPrint('🖼️ StorageHelper: warmed $loaded persisted signed URLs');
+        }
+      } catch (_) {}
+    }();
+    return _persistWarmupFuture!;
+  }
+
+  static Future<void> _evictPersisted(String cacheKey) async {
+    if (cacheKey.isEmpty) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_persistKey(cacheKey));
+    } catch (_) {}
+  }
+
+  /// Cache keys used for the persistent signed-URL lookup, mirroring
+  /// [getCachedUrl] candidate order (memory key first).
+  static String? _persistLookupKey(String urlOrObjectPath, {String? bucket}) {
+    final normalized = _normalizeToObjectPath(urlOrObjectPath);
+    if (normalized != null && normalized.isNotEmpty) {
+      // Default-bucket memory key is the bare object path; bucket-specific
+      // callers also populate '<bucket>:<path>'.
+      if (bucket != null && bucket.trim().isNotEmpty) {
+        return '${bucket.trim()}:$normalized';
+      }
+      return normalized;
+    }
+    if (urlOrObjectPath.isNotEmpty) return urlOrObjectPath;
+    return null;
+  }
 
   static bool get canCreateSignedUrls {
     final token = _client.auth.currentSession?.accessToken;
@@ -44,7 +185,11 @@ class StorageHelper {
       final uri = Uri.parse(urlOrPath);
       if (uri.queryParameters.containsKey('token')) return true;
       // Common presigned URL markers (aws style)
-      if (uri.query.isNotEmpty && (uri.query.contains('X-Amz-') || uri.query.contains('X-Amz-Signature'))) return true;
+      if (uri.query.isNotEmpty &&
+          (uri.query.contains('X-Amz-') ||
+              uri.query.contains('X-Amz-Signature'))) {
+        return true;
+      }
     } catch (_) {}
     return false;
   }
@@ -66,6 +211,65 @@ class StorageHelper {
   static void _markMissing(String objectPath, {String? bucket}) {
     final key = _missingKey(objectPath, bucket: bucket);
     _missingUntil[key] = DateTime.now().add(_missingTtl);
+    // Auto-heal: if this is a profile photo belonging to the current user,
+    // remove the stale reference from the user's photos array in the DB.
+    _tryAutoHealProfilePhoto(objectPath, bucket: bucket);
+  }
+
+  /// Auto-heal: when a profile photo is confirmed missing in storage,
+  /// remove its path from the owner's `photos` column so the stale reference
+  /// doesn't keep triggering errors. Only fires for the current user's own
+  /// photos (cannot heal other users' data).
+  static void _tryAutoHealProfilePhoto(String objectPath, {String? bucket}) {
+    if (bucket != null && bucket != _bucket) return;
+    final slashIdx = objectPath.indexOf('/');
+    if (slashIdx <= 0) return;
+    final photoUserId = objectPath.substring(0, slashIdx);
+    final currentUserId = _client.auth.currentUser?.id;
+    if (currentUserId == null || photoUserId != currentUserId) return;
+    unawaited(_removeMissingPhotoFromDb(objectPath, currentUserId));
+  }
+
+  /// Perform the DB cleanup: fetch the user's current photos array, remove
+  /// the missing path, and write back to Supabase.
+  static Future<void> _removeMissingPhotoFromDb(
+    String objectPath,
+    String userId,
+  ) async {
+    try {
+      final response = await _client
+          .from('users')
+          .select('photos')
+          .eq('id', userId)
+          .single();
+      final raw = response['photos'];
+      if (raw == null) return;
+      final List<String> photos;
+      if (raw is List) {
+        photos = raw.map((e) => e.toString()).toList();
+      } else {
+        return;
+      }
+      if (!photos.contains(objectPath)) return;
+      final cleaned = List<String>.from(photos)..remove(objectPath);
+      if (cleaned.length == photos.length) return;
+      await _client.from('users').update({'photos': cleaned}).eq('id', userId);
+      // Evict local caches so SignedImage doesn't re-request the same object
+      _cache.remove(objectPath);
+      _missingUntil.remove(_missingKey(objectPath, bucket: _bucket));
+      debugPrint('Auto-heal: removed missing photo');
+    } catch (e) {
+      debugPrint('Auto-heal: could not remove missing photo $objectPath: $e');
+    }
+  }
+
+  /// Public check: is the given source (object path, URL, or bucket-prefixed path)
+  /// known to be missing in storage?
+  static bool isKnownMissing(String urlOrObjectPath, {String? bucket}) {
+    if (urlOrObjectPath.isEmpty) return false;
+    final normalized = _normalizeToObjectPath(urlOrObjectPath);
+    if (normalized == null || normalized.isEmpty) return false;
+    return _isKnownMissing(normalized, bucket: bucket);
   }
 
   static bool _looksLikeMissingError(Object error) {
@@ -99,7 +303,10 @@ class StorageHelper {
       // Fallback: some environments may include '/object/public/<bucket>/...' or '/object/<bucket>/...'
       // Search for 'public' segment followed by bucket
       final pubIdx = segments.indexOf('public');
-      if (pubIdx >= 0 && pubIdx + 1 < segments.length && segments[pubIdx + 1] == _bucket && pubIdx + 2 < segments.length) {
+      if (pubIdx >= 0 &&
+          pubIdx + 1 < segments.length &&
+          segments[pubIdx + 1] == _bucket &&
+          pubIdx + 2 < segments.length) {
         return segments.sublist(pubIdx + 2).join('/');
       }
 
@@ -178,14 +385,80 @@ class StorageHelper {
       return;
     }
     final oldVersion = _cacheBustVersions[raw] ?? 0;
-    developer.log('🧹 Evict image cache: raw=$raw, oldVersion=$oldVersion', name: 'MatchMeTrace');
-    final oldKey = _sanitizeCacheKey(raw) + (oldVersion > 0 ? '_v$oldVersion' : '');
+    developer.log(
+      '🧹 Evict image cache: raw=$raw, oldVersion=$oldVersion',
+      name: 'MatchMeTrace',
+    );
+    final oldKey =
+        _sanitizeCacheKey(raw) + (oldVersion > 0 ? '_v$oldVersion' : '');
     if (!kIsWeb) {
       unawaited(clearDiskCachedImage(oldKey));
     }
     evict(urlOrPath);
     _cacheBustVersions[raw] = oldVersion + 1;
-    developer.log('🧹 Evict image cache: newVersion=${_cacheBustVersions[raw]}', name: 'MatchMeTrace');
+    developer.log(
+      '🧹 Evict image cache: newVersion=${_cacheBustVersions[raw]}',
+      name: 'MatchMeTrace',
+    );
+  }
+
+  static Future<void> prefetchImageSource(
+    String urlOrObjectPath, {
+    String? bucket,
+  }) async {
+    if (urlOrObjectPath.trim().isEmpty) return;
+    try {
+      final request = await resolveImageRequest(
+        urlOrObjectPath,
+        bucket: bucket,
+      );
+      if (request == null || request.url.isEmpty) return;
+
+      final cacheKey = cacheKeyForSource(urlOrObjectPath);
+      final provider = ExtendedNetworkImageProvider(
+        request.url,
+        headers: request.headers,
+        cache: true,
+        cacheKey: cacheKey.isNotEmpty ? cacheKey : request.url,
+      );
+
+      final stream = provider.resolve(const ImageConfiguration());
+      final completer = Completer<void>();
+      late final ImageStreamListener listener;
+      listener = ImageStreamListener(
+        (image, synchronousCall) {
+          stream.removeListener(listener);
+          if (!completer.isCompleted) {
+            completer.complete();
+          }
+        },
+        onError: (exception, stackTrace) {
+          stream.removeListener(listener);
+          if (!completer.isCompleted) {
+            completer.complete();
+          }
+        },
+      );
+      stream.addListener(listener);
+      await completer.future.timeout(
+        const Duration(seconds: 20),
+        onTimeout: () {
+          stream.removeListener(listener);
+        },
+      );
+    } catch (_) {}
+  }
+
+  static Future<void> prefetchImageSources(
+    Iterable<String> sources, {
+    String? bucket,
+  }) async {
+    final uniqueSources = <String>{};
+    for (final source in sources) {
+      final trimmed = source.trim();
+      if (trimmed.isEmpty || !uniqueSources.add(trimmed)) continue;
+      await prefetchImageSource(trimmed, bucket: bucket);
+    }
   }
 
   /// Make a string safe for use as a disk cache key / filename.
@@ -213,16 +486,47 @@ class StorageHelper {
   static String? constructPublicUrl(String objectPath) {
     final normalized = _normalizeToObjectPath(objectPath);
     if (normalized == null || normalized.isEmpty) return null;
-    final projectUrl = 'https://vazkmvrbshxwyodentng.supabase.co';
+    // Use the actual Supabase client URL from the auth client
+    // The storage client doesn't expose the base URL directly, so we get it from the main client
+    final client = Supabase.instance.client;
+    final projectUrl = client.storage
+        .from(_bucket)
+        .getPublicUrl('')
+        .split('/storage/v1/object/public')[0];
     return '$projectUrl/storage/v1/object/public/$_bucket/$normalized';
+  }
+
+  static String? buildPublicObjectUrl(
+    String urlOrObjectPath, {
+    String? bucket,
+  }) {
+    if (urlOrObjectPath.isEmpty) return null;
+    final normalized = _normalizeToObjectPath(urlOrObjectPath);
+    if (normalized == null || normalized.isEmpty) {
+      if (urlOrObjectPath.startsWith('http://') ||
+          urlOrObjectPath.startsWith('https://')) {
+        return urlOrObjectPath;
+      }
+      return null;
+    }
+
+    final bucketName = (bucket ?? _bucket).trim();
+    if (bucketName.isEmpty) return null;
+
+    try {
+      return _client.storage.from(bucketName).getPublicUrl(normalized);
+    } catch (_) {
+      if (bucketName == _bucket) {
+        return constructPublicUrl(normalized);
+      }
+      return null;
+    }
   }
 
   static Map<String, String>? buildAuthHeaders() {
     final token = _client.auth.currentSession?.accessToken;
     if (token == null || token.trim().isEmpty) return null;
-    final headers = <String, String>{
-      'Authorization': 'Bearer $token',
-    };
+    final headers = <String, String>{'Authorization': 'Bearer $token'};
     final apiKey = _client.headers['apikey'];
     if (apiKey != null && apiKey.trim().isNotEmpty) {
       headers['apikey'] = apiKey;
@@ -230,105 +534,113 @@ class StorageHelper {
     return headers;
   }
 
-  static String? buildAuthenticatedObjectUrl(String urlOrObjectPath, {String? bucket}) {
+  static String? buildAuthenticatedObjectUrl(
+    String urlOrObjectPath, {
+    String? bucket,
+  }) {
     final normalized = _normalizeToObjectPath(urlOrObjectPath);
     if (normalized == null || normalized.trim().isEmpty) return null;
     final b = (bucket ?? _bucket).trim();
     if (b.isEmpty) return null;
-    try {
-      final dynamic c = _client;
-      final supabaseUrl = (c.supabaseUrl as String?)?.trim();
-      if (supabaseUrl == null || supabaseUrl.isEmpty) return null;
-      return '$supabaseUrl/storage/v1/object/$b/$normalized';
-    } catch (_) {
-      return null;
-    }
+    final supabaseUrl = runtimeSupabaseUrl;
+    if (supabaseUrl == null || supabaseUrl.isEmpty) return null;
+    return '$supabaseUrl/storage/v1/object/$b/$normalized';
   }
 
-  static Uri? _buildStorageSignUri(String bucketName, String objectPath) {
-    try {
-      final dynamic c = _client;
-      final supabaseUrl = (c.supabaseUrl as String?)?.trim();
-      if (supabaseUrl == null || supabaseUrl.isEmpty) return null;
-      final base = Uri.parse(supabaseUrl);
-      final segments = <String>[
-        ...base.pathSegments.where((s) => s.isNotEmpty),
-        'storage',
-        'v1',
-        'object',
-        'sign',
-        bucketName,
-        ...objectPath.split('/').where((s) => s.isNotEmpty),
-      ];
-      return base.replace(pathSegments: segments, query: '');
-    } catch (_) {
-      return null;
-    }
-  }
+  static Future<ResolvedImageRequest?> resolveImageRequest(
+    String urlOrObjectPath, {
+    String? bucket,
+    int? ttlSeconds,
+  }) async {
+    ttlSeconds ??= await (() async {
+      try {
+        return await AppConfigService().getInt(
+          'profile.signed_url_ttl_seconds',
+          defaultValue: 3600,
+        );
+      } catch (e) {
+        return 3600;
+      }
+    })();
+    final source = urlOrObjectPath.trim();
+    if (source.isEmpty) return null;
 
-  static String? _extractSignedUrlFromStorageResponseBody(String body) {
+    if (_looksLikeSignedUrl(source)) {
+      return ResolvedImageRequest(url: source);
+    }
+
+    final cachedUrl = getCachedUrl(source, bucket: bucket);
+    if (cachedUrl != null && cachedUrl.isNotEmpty) {
+      return ResolvedImageRequest(url: cachedUrl);
+    }
+
+    // Local-storage layer (survives restarts): reuse a still-valid persisted
+    // signed URL instantly so photos display on UI startup without network.
     try {
-      final decoded = jsonDecode(body);
-      if (decoded is String) return decoded;
-      if (decoded is Map) {
-        final direct =
-            (decoded['signedUrl'] ?? decoded['signed_url'] ?? decoded['signedURL'] ?? decoded['signed_url'])?.toString();
-        if (direct != null && direct.trim().isNotEmpty) return direct.trim();
-        final data = decoded['data'];
-        if (data is Map) {
-          final nested =
-              (data['signedUrl'] ?? data['signed_url'] ?? data['signedURL'] ?? data['signed_url'])?.toString();
-          if (nested != null && nested.trim().isNotEmpty) return nested.trim();
+      final persistedKey = _persistLookupKey(source, bucket: bucket);
+      if (persistedKey != null && persistedKey.isNotEmpty) {
+        final persisted = await _loadPersistedUrl(persistedKey);
+        if (persisted != null && persisted.isNotEmpty) {
+          return ResolvedImageRequest(url: persisted);
         }
       }
     } catch (_) {}
+
+    final signedUrl = bucket != null
+        ? await getSignedUrlFromBucket(source, bucket, ttlSeconds: ttlSeconds)
+        : await getSignedUrl(source, ttlSeconds: ttlSeconds);
+    if (signedUrl != null && signedUrl.isNotEmpty) {
+      return ResolvedImageRequest(url: signedUrl);
+    }
+
+    if (!kIsWeb) {
+      final headers = buildAuthHeaders();
+      final authenticatedUrl = headers != null
+          ? buildAuthenticatedObjectUrl(source, bucket: bucket)
+          : null;
+      if (authenticatedUrl != null &&
+          authenticatedUrl.isNotEmpty &&
+          headers != null &&
+          headers.isNotEmpty) {
+        return ResolvedImageRequest(url: authenticatedUrl, headers: headers);
+      }
+    }
+
+    // Don't fall back to public URL if this object is known missing
+    if (!isKnownMissing(source, bucket: bucket)) {
+      final publicUrl = buildPublicObjectUrl(source, bucket: bucket);
+      if (publicUrl != null && publicUrl.isNotEmpty) {
+        return ResolvedImageRequest(url: publicUrl);
+      }
+    }
+
+    if (source.startsWith('http://') || source.startsWith('https://')) {
+      return ResolvedImageRequest(url: source);
+    }
+
     return null;
   }
 
-  static Future<String?> _createSignedUrlViaHttp(
-    String bucketName,
-    String objectPath, {
-    required int ttlSeconds,
-  }) async {
-    final uri = _buildStorageSignUri(bucketName, objectPath);
-    if (uri == null) return null;
-    final headers = buildAuthHeaders();
-    if (headers == null || headers.isEmpty) return null;
-    headers['Content-Type'] = 'application/json';
-    try {
-      final resp = await http.post(
-        uri,
-        headers: headers,
-        body: jsonEncode({'expiresIn': ttlSeconds}),
-      );
-      if (resp.statusCode < 200 || resp.statusCode >= 300) {
-        return null;
-      }
-      final signed = _extractSignedUrlFromStorageResponseBody(resp.body);
-      if (signed == null || signed.isEmpty) return null;
-      if (signed.startsWith('http://') || signed.startsWith('https://')) return signed;
-      if (signed.startsWith('/')) {
-        try {
-          final dynamic c = _client;
-          final supabaseUrl = (c.supabaseUrl as String?)?.trim();
-          if (supabaseUrl == null || supabaseUrl.isEmpty) return signed;
-          return Uri.parse(supabaseUrl).resolve(signed).toString();
-        } catch (_) {
-          return signed;
-        }
-      }
-      return signed;
-    } catch (_) {
-      return null;
-    }
-  }
   /// First tries to construct a public URL if the bucket is public.
   /// Falls back to signed URL if public access fails.
   /// ttlSeconds defaults to 3600 (1 hour).
   /// Accepts either a plain objectPath or a Supabase public object URL; if a full signed URL
   /// is passed in it will be returned unchanged.
   /// Returns null on failure (object missing, network error).
-  static Future<String?> getSignedUrl(String urlOrObjectPath, {int ttlSeconds = 3600}) async {
+  static Future<String?> getSignedUrl(
+    String urlOrObjectPath, {
+    int? ttlSeconds,
+  }) async {
+    ttlSeconds ??= await (() async {
+      try {
+        return await AppConfigService().getInt(
+          'profile.signed_url_ttl_seconds',
+          defaultValue: 3600,
+        );
+      } catch (e) {
+        return 3600;
+      }
+    })();
     if (urlOrObjectPath.isEmpty) return null;
 
     // If it's already a signed URL, return as-is.
@@ -355,33 +667,33 @@ class StorageHelper {
       return null;
     }
     final cached = _cache[objectPath];
-    if (cached != null && cached.expiresAt.isAfter(now.add(const Duration(seconds: 15)))) {
+    if (cached != null &&
+        cached.expiresAt.isAfter(now.add(const Duration(seconds: 15)))) {
       return cached.url;
     }
+    // Local storage (persisted across restarts) — instant display on startup.
+    try {
+      final persisted = await _loadPersistedUrl(objectPath);
+      if (persisted != null && persisted.isNotEmpty) {
+        return persisted;
+      }
+    } catch (_) {}
 
     if (!canCreateSignedUrls) {
       return null;
     }
 
-    if (kIsWeb) {
-      final viaHttp = await _createSignedUrlViaHttp(
-        _bucket,
-        objectPath,
-        ttlSeconds: ttlSeconds,
-      );
-      if (viaHttp != null && viaHttp.isNotEmpty && _looksLikeSignedUrl(viaHttp)) {
-        _cache[objectPath] = _CacheEntry(
-          viaHttp,
-          now.add(Duration(seconds: ttlSeconds)),
-        );
-        return viaHttp;
-      }
+    // Skip Supabase calls when paused (offline)
+    if (shouldSkipSupabaseCalls()) {
+      return null;
     }
 
     // Use signed URLs for authenticated access only
     // This ensures profile photos are only accessible to logged-in users
     try {
-      final dynamic resp = await _client.storage.from(_bucket).createSignedUrl(objectPath, ttlSeconds);
+      final dynamic resp = await _client.storage
+          .from(_bucket)
+          .createSignedUrl(objectPath, ttlSeconds);
 
       String? url;
 
@@ -390,7 +702,8 @@ class StorageHelper {
       } else if (resp is String) {
         url = resp;
       } else if (resp is Map) {
-        url = (resp['signedUrl'] ?? resp['signed_url'] ?? resp['signedurl'])?.toString();
+        url = (resp['signedUrl'] ?? resp['signed_url'] ?? resp['signedurl'])
+            ?.toString();
         if (url == null && resp.containsKey('data')) {
           final d = resp['data'];
           if (d is Map) url = (d['signedUrl'] ?? d['signed_url'])?.toString();
@@ -398,7 +711,8 @@ class StorageHelper {
       } else {
         // some SDKs return object with .signedUrl
         try {
-          final maybe = (resp as dynamic).signedUrl ?? (resp as dynamic).data?.signedUrl;
+          final maybe =
+              (resp as dynamic).signedUrl ?? (resp as dynamic).data?.signedUrl;
           if (maybe is String) url = maybe;
         } catch (_) {}
       }
@@ -410,21 +724,31 @@ class StorageHelper {
 
       final expiresAt = now.add(Duration(seconds: ttlSeconds));
       _cache[objectPath] = _CacheEntry(url, expiresAt);
+      // Persist to local storage (memory + disk) for instant startup.
+      _persistUrlInBackground(objectPath, url, expiresAt);
 
       return url;
     } on StorageException catch (e) {
       // Explicitly handle StorageException (from supabase client) to log 404 / not_found and auth errors
       final msg = e.message.toLowerCase();
-      debugPrint('StorageException creating signed URL for $objectPath: ${e.message}');
+      final cleanMsg = e.message.replaceAll(RegExp(r'<[^>]*>'), '').trim();
+      debugPrint(
+        'StorageException creating signed URL for $objectPath: $cleanMsg',
+      );
       if (msg.contains('401') || msg.contains('403')) {
-        debugPrint('⚠️ Storage signing failed: Authentication/Authorization error - check JWT validity');
+        debugPrint(
+          '⚠️ Storage signing failed: Authentication/Authorization error - check JWT validity',
+        );
       }
       if (_looksLikeMissingError(e)) {
         _markMissing(objectPath, bucket: _bucket);
       }
       return null;
     } catch (e) {
-      debugPrint('Error creating signed URL for $objectPath: $e');
+      // Suppress error logging for expected offline failures
+      if (!isExpectedOfflineFailure(e)) {
+        debugPrint('Error creating signed URL for $objectPath: $e');
+      }
       if (_looksLikeMissingError(e)) {
         _markMissing(objectPath, bucket: _bucket);
       }
@@ -474,7 +798,11 @@ class StorageHelper {
   }
 
   /// Return a signed URL for the given object path from a specific bucket, or null if not found.
-  static Future<String?> getSignedUrlFromBucket(String urlOrObjectPath, String bucketName, {int ttlSeconds = 3600}) async {
+  static Future<String?> getSignedUrlFromBucket(
+    String urlOrObjectPath,
+    String bucketName, {
+    int ttlSeconds = 3600,
+  }) async {
     if (urlOrObjectPath.isEmpty) return null;
 
     // If it's already a signed URL, return as-is.
@@ -502,32 +830,32 @@ class StorageHelper {
       return null;
     }
     final cached = _cache[cacheKey];
-    if (cached != null && cached.expiresAt.isAfter(now.add(const Duration(seconds: 15)))) {
+    if (cached != null &&
+        cached.expiresAt.isAfter(now.add(const Duration(seconds: 15)))) {
       return cached.url;
     }
+    // Local storage (persisted across restarts) — instant display on startup.
+    try {
+      final persisted = await _loadPersistedUrl(cacheKey);
+      if (persisted != null && persisted.isNotEmpty) {
+        return persisted;
+      }
+    } catch (_) {}
 
     if (!canCreateSignedUrls) {
       return null;
     }
 
-    if (kIsWeb) {
-      final viaHttp = await _createSignedUrlViaHttp(
-        bucketName,
-        objectPath,
-        ttlSeconds: ttlSeconds,
-      );
-      if (viaHttp != null && viaHttp.isNotEmpty && _looksLikeSignedUrl(viaHttp)) {
-        _cache[cacheKey] = _CacheEntry(
-          viaHttp,
-          now.add(Duration(seconds: ttlSeconds - 60)),
-        );
-        return viaHttp;
-      }
+    // Skip Supabase calls when paused (offline)
+    if (shouldSkipSupabaseCalls()) {
+      return null;
     }
 
     // Use signed URLs for authenticated access only
     try {
-      final dynamic resp = await _client.storage.from(bucketName).createSignedUrl(objectPath, ttlSeconds);
+      final dynamic resp = await _client.storage
+          .from(bucketName)
+          .createSignedUrl(objectPath, ttlSeconds);
 
       String? url;
 
@@ -536,7 +864,8 @@ class StorageHelper {
       } else if (resp is String) {
         url = resp;
       } else if (resp is Map) {
-        url = (resp['signedUrl'] ?? resp['signed_url'] ?? resp['signedurl'])?.toString();
+        url = (resp['signedUrl'] ?? resp['signed_url'] ?? resp['signedurl'])
+            ?.toString();
         if (url == null && resp.containsKey('data')) {
           final d = resp['data'];
           if (d is Map) url = (d['signedUrl'] ?? d['signed_url'])?.toString();
@@ -544,44 +873,63 @@ class StorageHelper {
       } else {
         // some SDKs return object with .signedUrl
         try {
-          final maybe = (resp as dynamic).signedUrl ?? (resp as dynamic).data?.signedUrl;
+          final maybe =
+              (resp as dynamic).signedUrl ?? (resp as dynamic).data?.signedUrl;
           if (maybe is String) url = maybe;
         } catch (_) {}
       }
 
       if (url == null) {
-        debugPrint('createSignedUrl returned null for $objectPath in bucket $bucketName');
+        debugPrint(
+          'createSignedUrl returned null for $objectPath in bucket $bucketName',
+        );
         return null;
       }
 
-      // Cache the signed URL
-      _cache[cacheKey] = _CacheEntry(url, now.add(Duration(seconds: ttlSeconds - 60))); // Expire 1 minute early
+      // Cache the signed URL (memory + local storage for instant startup).
+      final bucketExpiresAt = now.add(
+        Duration(seconds: ttlSeconds - 60),
+      ); // Expire 1 minute early
+      _cache[cacheKey] = _CacheEntry(url, bucketExpiresAt);
+      _persistUrlInBackground(cacheKey, url, bucketExpiresAt);
       return url;
-
     } on StorageException catch (e) {
       final msg = e.message.toLowerCase();
-      debugPrint('StorageException creating signed URL for $objectPath in bucket $bucketName: ${e.message}');
+      final cleanMsg = e.message.replaceAll(RegExp(r'<[^>]*>'), '').trim();
+      debugPrint(
+        'StorageException creating signed URL for $objectPath in bucket $bucketName: $cleanMsg',
+      );
       if (msg.contains('401') || msg.contains('403')) {
-        debugPrint('⚠️ Storage signing failed: Authentication/Authorization error - check JWT validity');
+        debugPrint(
+          '⚠️ Storage signing failed: Authentication/Authorization error - check JWT validity',
+        );
       }
       if (_looksLikeMissingError(e)) {
         _markMissing(objectPath, bucket: bucketName);
+        return null;
       }
       // Try public URL as fallback for public buckets
       try {
-        final publicUrl = _client.storage.from(bucketName).getPublicUrl(objectPath);
+        final publicUrl = _client.storage
+            .from(bucketName)
+            .getPublicUrl(objectPath);
         return publicUrl;
       } catch (_) {
         return null;
       }
     } catch (e) {
-      debugPrint('createSignedUrl failed for $objectPath in bucket $bucketName: $e');
+      debugPrint(
+        'createSignedUrl failed for $objectPath in bucket $bucketName: $e',
+      );
       if (_looksLikeMissingError(e)) {
         _markMissing(objectPath, bucket: bucketName);
+        return null;
       }
       // Try public URL as fallback for public buckets
       try {
-        final publicUrl = _client.storage.from(bucketName).getPublicUrl(objectPath);
+        final publicUrl = _client.storage
+            .from(bucketName)
+            .getPublicUrl(objectPath);
         return publicUrl;
       } catch (_) {
         return null;
@@ -598,10 +946,14 @@ class StorageHelper {
       _cache.remove(normalized);
       _cache.remove('$_bucket:$normalized');
       _missingUntil.remove(_missingKey(normalized, bucket: _bucket));
+      // Also evict persisted local-storage entries (memory + disk).
+      unawaited(_evictPersisted(normalized));
+      unawaited(_evictPersisted('$_bucket:$normalized'));
       return;
     }
     // Otherwise remove the raw key if present
     _cache.remove(objectPathOrUrl);
+    unawaited(_evictPersisted(objectPathOrUrl));
   }
 
   /// Delete an object from the configured storage bucket.
@@ -618,8 +970,10 @@ class StorageHelper {
       } catch (_) {
         return false;
       }
-      // Evict any cached signed url for the deleted object
+      // Evict any cached signed url for the deleted object (memory + disk).
       _cache.remove(normalized);
+      unawaited(_evictPersisted(normalized));
+      unawaited(_evictPersisted('$_bucket:$normalized'));
       return true;
     } catch (_) {
       return false;
@@ -628,11 +982,25 @@ class StorageHelper {
 
   /// Optional helper: get immediate cached url or null (no network)
   static String? getCachedUrl(String objectPath, {String? bucket}) {
-    final cacheKey = bucket != null ? '$bucket:$objectPath' : objectPath;
-    final cached = _cache[cacheKey];
-    if (cached == null) return null;
-    if (cached.expiresAt.isAfter(DateTime.now())) return cached.url;
-    _cache.remove(cacheKey);
+    final candidates = <String>{};
+    final normalized = _normalizeToObjectPath(objectPath);
+    if (normalized != null && normalized.isNotEmpty) {
+      candidates.add(normalized);
+      candidates.add('${bucket ?? _bucket}:$normalized');
+    }
+    if (objectPath.isNotEmpty) {
+      candidates.add(objectPath);
+      if (bucket != null) {
+        candidates.add('$bucket:$objectPath');
+      }
+    }
+
+    for (final key in candidates) {
+      final cached = _cache[key];
+      if (cached == null) continue;
+      if (cached.expiresAt.isAfter(DateTime.now())) return cached.url;
+      _cache.remove(key);
+    }
     return null;
   }
 }

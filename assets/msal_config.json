@@ -1,0 +1,15 @@
+{
+  "account_mode": "SINGLE",
+  "broker_redirect_uri_registered": true,
+  "authorization_user_agent": "DEFAULT",
+  "authorities": [
+    {
+      "type": "AAD",
+      "audience": {
+        "type": "AzureADandPersonalMicrosoftAccount"
+      },
+      "default": true
+    }
+  ],
+  "com.microsoft.identity.client.msal_active_directory_broker_alias": "com.microsoft.office.outlook"
+}

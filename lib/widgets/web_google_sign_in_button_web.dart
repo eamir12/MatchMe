@@ -1,5 +1,5 @@
-
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/locale_provider.dart';
@@ -11,7 +11,8 @@ class WebGoogleSignInButton extends ConsumerStatefulWidget {
   const WebGoogleSignInButton({super.key, this.onSignIn});
 
   @override
-  ConsumerState<WebGoogleSignInButton> createState() => _WebGoogleSignInButtonState();
+  ConsumerState<WebGoogleSignInButton> createState() =>
+      _WebGoogleSignInButtonState();
 }
 
 class _WebGoogleSignInButtonState extends ConsumerState<WebGoogleSignInButton> {
@@ -21,10 +22,27 @@ class _WebGoogleSignInButtonState extends ConsumerState<WebGoogleSignInButton> {
   @override
   void initState() {
     super.initState();
-    final envClientId =
-        const String.fromEnvironment('GOOGLE_CLIENT_ID', defaultValue: '').trim();
+    final envClientId = const String.fromEnvironment(
+      'GOOGLE_CLIENT_ID',
+      defaultValue: '',
+    ).trim();
+    final androidEnvClientId = const String.fromEnvironment(
+      'GOOGLE_ANDROID_CLIENT_ID',
+      defaultValue: '',
+    ).trim();
     final dotEnvClientId = (dotenv.env['GOOGLE_CLIENT_ID'] ?? '').trim();
-    _clientId = envClientId.isNotEmpty ? envClientId : dotEnvClientId;
+    final androidDotEnvClientId = (dotenv.env['GOOGLE_ANDROID_CLIENT_ID'] ?? '')
+        .trim();
+
+    final clientId = envClientId.isNotEmpty ? envClientId : dotEnvClientId;
+    final androidClientId = androidEnvClientId.isNotEmpty
+        ? androidEnvClientId
+        : androidDotEnvClientId;
+
+    _clientId = kIsWeb
+        ? clientId
+        : (androidClientId.isNotEmpty ? androidClientId : clientId);
+
     _initFuture = _clientId.isEmpty
         ? Future.value()
         : WebCalendarService.ensureGoogleSignInInitialized(clientId: _clientId);

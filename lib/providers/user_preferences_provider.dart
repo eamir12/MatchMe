@@ -1,17 +1,32 @@
 // lib/providers/user_preferences_provider.dart
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/background_service.dart';
+import 'package:matchme/utils/permission_coordinator.dart';
+import 'package:matchme/utils/resume_diagnostics.dart';
+import 'package:matchme/utils/offline_utils.dart';
+import 'package:matchme/services/supabase_realtime_manager.dart';
 
 enum UnitSystemPreference { system, metric, imperial }
+
 enum TimeFormatPreference { system, h24, h12 }
 
-enum NotificationType { chatMessages, newMatch, expiringMatch, adminAnnouncements }
+enum NotificationType {
+  chatMessages,
+  newMatch,
+  expiringMatch,
+  matchExtended,
+  adminAnnouncements,
+  locationSharing,
+}
+
 enum NotificationMethod { push, inApp, sound, vibrate }
 
 String _notificationTypeKey(NotificationType t) {
@@ -19,7 +34,9 @@ String _notificationTypeKey(NotificationType t) {
     NotificationType.chatMessages => 'chat_messages',
     NotificationType.newMatch => 'new_match',
     NotificationType.expiringMatch => 'expiring_match',
+    NotificationType.matchExtended => 'match_extended',
     NotificationType.adminAnnouncements => 'admin_announcements',
+    NotificationType.locationSharing => 'location_sharing',
   };
 }
 
@@ -30,7 +47,9 @@ NotificationType? _notificationTypeFromKey(String? key) {
     'chat_messages' => NotificationType.chatMessages,
     'new_match' => NotificationType.newMatch,
     'expiring_match' => NotificationType.expiringMatch,
+    'match_extended' => NotificationType.matchExtended,
     'admin_announcements' => NotificationType.adminAnnouncements,
+    'location_sharing' => NotificationType.locationSharing,
     _ => null,
   };
 }
@@ -79,7 +98,8 @@ class NotificationPreferencesState {
     NotificationMethod.vibrate: true,
   };
 
-  static const Map<NotificationType, Map<NotificationMethod, bool>> _defaultMatrix = {
+  static const Map<NotificationType, Map<NotificationMethod, bool>>
+  _defaultMatrix = {
     NotificationType.chatMessages: {
       NotificationMethod.push: true,
       NotificationMethod.inApp: true,
@@ -98,7 +118,19 @@ class NotificationPreferencesState {
       NotificationMethod.sound: true,
       NotificationMethod.vibrate: true,
     },
+    NotificationType.matchExtended: {
+      NotificationMethod.push: true,
+      NotificationMethod.inApp: true,
+      NotificationMethod.sound: true,
+      NotificationMethod.vibrate: true,
+    },
     NotificationType.adminAnnouncements: {
+      NotificationMethod.push: true,
+      NotificationMethod.inApp: true,
+      NotificationMethod.sound: true,
+      NotificationMethod.vibrate: true,
+    },
+    NotificationType.locationSharing: {
       NotificationMethod.push: true,
       NotificationMethod.inApp: true,
       NotificationMethod.sound: true,
@@ -106,7 +138,8 @@ class NotificationPreferencesState {
     },
   };
 
-  factory NotificationPreferencesState.defaults() => const NotificationPreferencesState();
+  factory NotificationPreferencesState.defaults() =>
+      const NotificationPreferencesState();
 
   bool get isPausedNow {
     if (pausedIndefinitely) return true;
@@ -137,10 +170,16 @@ class NotificationPreferencesState {
     return NotificationMethod.values.any((m) => isMethodEnabled(type, m));
   }
 
-  bool get enableChatNotifications => isMethodEnabled(NotificationType.chatMessages, NotificationMethod.push);
-  bool get enableNewMatchNotifications => isMethodEnabled(NotificationType.newMatch, NotificationMethod.push);
-  bool get enableMatchExpiryNotifications => isMethodEnabled(NotificationType.expiringMatch, NotificationMethod.push);
-  bool get enableAdminNotifications => isMethodEnabled(NotificationType.adminAnnouncements, NotificationMethod.push);
+  bool get enableChatNotifications =>
+      isMethodEnabled(NotificationType.chatMessages, NotificationMethod.push);
+  bool get enableNewMatchNotifications =>
+      isMethodEnabled(NotificationType.newMatch, NotificationMethod.push);
+  bool get enableMatchExpiryNotifications =>
+      isMethodEnabled(NotificationType.expiringMatch, NotificationMethod.push);
+  bool get enableAdminNotifications => isMethodEnabled(
+    NotificationType.adminAnnouncements,
+    NotificationMethod.push,
+  );
 
   bool get enableSound {
     return isGlobalMethodEnabled(NotificationMethod.sound);
@@ -182,45 +221,67 @@ class NotificationPreferencesState {
 class UserPreferencesState {
   final UnitSystemPreference unitSystem;
   final TimeFormatPreference timeFormat;
-  final bool highAccuracyMode;
+  final bool backgroundMatchingMode;
   final NotificationPreferencesState notifications;
+  final String? preferredCurrency;
+  final List<String> recentCurrencies;
 
   const UserPreferencesState({
     required this.unitSystem,
     required this.timeFormat,
-    this.highAccuracyMode = false,
+    this.backgroundMatchingMode = true,
     required this.notifications,
+    this.preferredCurrency,
+    this.recentCurrencies = const [],
   });
 
   factory UserPreferencesState.defaults() => UserPreferencesState(
-        unitSystem: UnitSystemPreference.system,
-        timeFormat: TimeFormatPreference.system,
-        highAccuracyMode: false,
-        notifications: NotificationPreferencesState.defaults(),
-      );
+    unitSystem: UnitSystemPreference.system,
+    timeFormat: TimeFormatPreference.system,
+    backgroundMatchingMode: true,
+    notifications: NotificationPreferencesState.defaults(),
+    preferredCurrency: null,
+    recentCurrencies: const [],
+  );
 
   UserPreferencesState copyWith({
     UnitSystemPreference? unitSystem,
     TimeFormatPreference? timeFormat,
-    bool? highAccuracyMode,
+    bool? backgroundMatchingMode,
     NotificationPreferencesState? notifications,
+    Object? preferredCurrency = NotificationPreferencesState._unset,
+    List<String>? recentCurrencies,
   }) {
     return UserPreferencesState(
       unitSystem: unitSystem ?? this.unitSystem,
       timeFormat: timeFormat ?? this.timeFormat,
-      highAccuracyMode: highAccuracyMode ?? this.highAccuracyMode,
+      backgroundMatchingMode:
+          backgroundMatchingMode ?? this.backgroundMatchingMode,
       notifications: notifications ?? this.notifications,
+      preferredCurrency:
+          identical(preferredCurrency, NotificationPreferencesState._unset)
+          ? this.preferredCurrency
+          : preferredCurrency as String?,
+      recentCurrencies: recentCurrencies ?? this.recentCurrencies,
     );
   }
 }
 
-class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
+class UserPreferencesNotifier extends Notifier<UserPreferencesState>
+    with WidgetsBindingObserver {
   static const _prefsUnitSystemKey = 'unit_system_override';
   static const _prefsTimeFormatKey = 'time_format_override';
-  static const _prefsHighAccuracyKey = 'flutter.high_accuracy_mode';
+  static const _prefsBackgroundMatchingKey = 'flutter.background_matching_mode';
+  static const _prefsLegacyHighAccuracyKey = 'flutter.high_accuracy_mode';
+  static const _prefsPendingBackgroundMatchingEnableKey =
+      'flutter.background_matching_mode_pending_enable';
+  static const _prefsLegacyPendingHighAccuracyEnableKey =
+      'flutter.high_accuracy_mode_pending_enable';
   static const _prefsChatNotificationsKey = 'notifications_chat';
   static const _prefsNewMatchNotificationsKey = 'notifications_new_match';
   static const _prefsMatchExpiryNotificationsKey = 'notifications_match_expiry';
+  static const _prefsMatchExtendedNotificationsKey =
+      'notifications_match_extended';
   static const _prefsAdminNotificationsKey = 'notifications_admin';
   static const _prefsSoundKey = 'notifications_sound';
   static const _prefsVibrationKey = 'notifications_vibration';
@@ -231,14 +292,23 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
   static const _prefsGlobalSoundKey = 'notifications_global_sound_v1';
   static const _prefsGlobalVibrationKey = 'notifications_global_vibration_v1';
   static const _prefsPausedUntilKey = 'notifications_paused_until_ms_utc';
-  static const _prefsPausedDurationSecondsKey = 'notifications_paused_duration_seconds';
-  static const _prefsPausedIndefinitelyKey = 'notifications_paused_indefinitely';
+  static const _prefsPausedDurationSecondsKey =
+      'notifications_paused_duration_seconds';
+  static const _prefsPausedIndefinitelyKey =
+      'notifications_paused_indefinitely';
+  static const _prefsPreferredCurrencyKey = 'preferred_currency_override';
+  static const _prefsRecentCurrenciesKey = 'recent_currencies_v1';
 
   final supabase = Supabase.instance.client;
   Timer? _notificationUnpauseTimer;
   RealtimeChannel? _settingsSubscription;
   String? _settingsSubscriptionUserId;
   StreamSubscription<AuthState>? _authStateSubscription;
+  bool _lifecycleObserverAttached = false;
+  DateTime? _lastPausedAt;
+  DateTime? _lastFullSyncAt;
+  Future<void>? _loadSyncInFlight;
+  static const Duration _resumeFullSyncThreshold = Duration(minutes: 2);
 
   @override
   UserPreferencesState build() {
@@ -248,30 +318,51 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
       _clearRealtimeSubscription();
       _authStateSubscription?.cancel();
       _authStateSubscription = null;
+      _detachLifecycleObserver();
     });
     _listenAuthStateChanges();
-    _loadFromLocalAndSync();
+    unawaited(_loadFromLocalAndSync());
     _ensureRealtimeSubscription();
+    _attachLifecycleObserver();
     return UserPreferencesState.defaults();
   }
 
+  Future<void> refresh() async {
+    await _loadFromLocalAndSync();
+  }
+
   void _clearRealtimeSubscription() {
-    _settingsSubscription?.unsubscribe();
+    final userId = _settingsSubscriptionUserId;
     _settingsSubscription = null;
     _settingsSubscriptionUserId = null;
+    if (userId != null) {
+      SupabaseRealtimeManager.instance.unregister('user_settings_$userId');
+    }
   }
 
   void _listenAuthStateChanges() {
     _authStateSubscription?.cancel();
-    _authStateSubscription = supabase.auth.onAuthStateChange.listen((event) {
-      final authEvent = event.event;
-      if (authEvent == AuthChangeEvent.signedOut) {
-        _clearRealtimeSubscription();
-        return;
-      }
-      _ensureRealtimeSubscription();
-      unawaited(_loadFromLocalAndSync());
-    });
+    _authStateSubscription = supabase.auth.onAuthStateChange.listen(
+      (event) {
+        final authEvent = event.event;
+        switch (authEvent) {
+          case AuthChangeEvent.signedOut:
+            _clearRealtimeSubscription();
+            return;
+          case AuthChangeEvent.initialSession:
+          case AuthChangeEvent.signedIn:
+          case AuthChangeEvent.userUpdated:
+            _ensureRealtimeSubscription();
+            unawaited(_loadFromLocalAndSync());
+            return;
+          default:
+            return;
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        debugPrint('[PREFS] Auth stream error: $error');
+      },
+    );
   }
 
   void _syncNotificationMuteTimer() {
@@ -319,17 +410,43 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
   }
 
   Future<void> _loadFromLocalAndSync() async {
+    final inFlight = _loadSyncInFlight;
+    if (inFlight != null) {
+      await inFlight;
+      return;
+    }
+    final completer = Completer<void>();
+    _loadSyncInFlight = completer.future;
     _ensureRealtimeSubscription();
+    ResumeDiagnostics.logThrottled(
+      'User preferences: starting local+remote sync',
+      category: 'prefs-sync-start',
+      minIntervalMs: 500,
+    );
     try {
       final prefs = await SharedPreferences.getInstance();
       final unitStr = prefs.getString(_prefsUnitSystemKey);
       final timeStr = prefs.getString(_prefsTimeFormatKey);
-      final highAccuracy = prefs.getBool(_prefsHighAccuracyKey) ?? false;
+      // Migrate legacy SharedPreferences key if present.
+      // Default true for new users (matches DB default + native service).
+      final highAccuracy =
+          prefs.getBool(_prefsBackgroundMatchingKey) ??
+          (prefs.containsKey(_prefsLegacyHighAccuracyKey)
+              ? prefs.getBool(_prefsLegacyHighAccuracyKey)!
+              : true);
+      if (prefs.containsKey(_prefsLegacyHighAccuracyKey)) {
+        await prefs.setBool(_prefsBackgroundMatchingKey, highAccuracy);
+        await prefs.remove(_prefsLegacyHighAccuracyKey);
+      } else if (!prefs.containsKey(_prefsBackgroundMatchingKey)) {
+        await prefs.setBool(_prefsBackgroundMatchingKey, highAccuracy);
+      }
 
       // Load notification preferences
       final chatNotifs = prefs.getBool(_prefsChatNotificationsKey) ?? true;
-      final newMatchNotifs = prefs.getBool(_prefsNewMatchNotificationsKey) ?? true;
-      final matchExpiryNotifs = prefs.getBool(_prefsMatchExpiryNotificationsKey) ?? true;
+      final newMatchNotifs =
+          prefs.getBool(_prefsNewMatchNotificationsKey) ?? true;
+      final matchExpiryNotifs =
+          prefs.getBool(_prefsMatchExpiryNotificationsKey) ?? true;
       final adminNotifs = prefs.getBool(_prefsAdminNotificationsKey) ?? true;
       final sound = prefs.getBool(_prefsSoundKey) ?? true;
       final vibration = prefs.getBool(_prefsVibrationKey) ?? true;
@@ -339,18 +456,30 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
       final storedGlobalSound = prefs.getBool(_prefsGlobalSoundKey);
       final storedGlobalVibration = prefs.getBool(_prefsGlobalVibrationKey);
       final pausedUntilMsUtc = prefs.getInt(_prefsPausedUntilKey);
-      final pausedDurationSeconds = prefs.getInt(_prefsPausedDurationSecondsKey);
-      final pausedIndefinitely = prefs.getBool(_prefsPausedIndefinitelyKey) ?? false;
-
-      Map<NotificationType, Map<NotificationMethod, bool>> localMatrix = _buildMatrixFromLegacy(
-        chatNotifs: chatNotifs,
-        newMatchNotifs: newMatchNotifs,
-        matchExpiryNotifs: matchExpiryNotifs,
-        adminNotifs: adminNotifs,
-        sound: sound,
-        vibration: vibration,
-        inApp: inApp,
+      final pausedDurationSeconds = prefs.getInt(
+        _prefsPausedDurationSecondsKey,
       );
+      final pausedIndefinitely =
+          prefs.getBool(_prefsPausedIndefinitelyKey) ?? false;
+      final localPreferredCurrency = _normalizeCurrencyCode(
+        prefs.getString(_prefsPreferredCurrencyKey),
+      );
+      final localRecentCurrencies = _sanitizeCurrencyCodeList(
+        prefs.getStringList(_prefsRecentCurrenciesKey),
+      );
+
+      Map<NotificationType, Map<NotificationMethod, bool>> localMatrix =
+          _buildMatrixFromLegacy(
+            chatNotifs: chatNotifs,
+            newMatchNotifs: newMatchNotifs,
+            matchExpiryNotifs: matchExpiryNotifs,
+            matchExtendedNotifs:
+                prefs.getBool(_prefsMatchExtendedNotificationsKey) ?? true,
+            adminNotifs: adminNotifs,
+            sound: sound,
+            vibration: vibration,
+            inApp: inApp,
+          );
 
       final matrixJson = prefs.getString(_prefsMatrixKey);
       if (matrixJson != null && matrixJson.trim().isNotEmpty) {
@@ -366,11 +495,39 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
       }
 
       final localGlobalMethods = <NotificationMethod, bool>{
-        NotificationMethod.push: storedGlobalPush ?? inferGlobalFromMatrix(NotificationMethod.push),
-        NotificationMethod.inApp: storedGlobalInApp ?? inferGlobalFromMatrix(NotificationMethod.inApp),
-        NotificationMethod.sound: storedGlobalSound ?? inferGlobalFromMatrix(NotificationMethod.sound),
-        NotificationMethod.vibrate: storedGlobalVibration ?? inferGlobalFromMatrix(NotificationMethod.vibrate),
+        NotificationMethod.push:
+            storedGlobalPush ?? inferGlobalFromMatrix(NotificationMethod.push),
+        NotificationMethod.inApp:
+            storedGlobalInApp ??
+            inferGlobalFromMatrix(NotificationMethod.inApp),
+        NotificationMethod.sound:
+            storedGlobalSound ??
+            inferGlobalFromMatrix(NotificationMethod.sound),
+        NotificationMethod.vibrate:
+            storedGlobalVibration ??
+            inferGlobalFromMatrix(NotificationMethod.vibrate),
       };
+
+      // Cache-first: apply the local snapshot IMMEDIATELY (memory + disk)
+      // so UI renders instantly on startup, then refresh from Supabase in
+      // background below.
+      try {
+        state = state.copyWith(
+          unitSystem: _parseUnitSystem(unitStr) ?? state.unitSystem,
+          timeFormat: _parseTimeFormat(timeStr) ?? state.timeFormat,
+          backgroundMatchingMode: highAccuracy,
+          notifications: NotificationPreferencesState(
+            matrix: localMatrix,
+            globalMethods: localGlobalMethods,
+            pausedUntilEpochMsUtc: pausedUntilMsUtc,
+            pausedDurationSeconds: pausedDurationSeconds,
+            pausedIndefinitely: pausedIndefinitely,
+          ),
+          preferredCurrency: localPreferredCurrency,
+          recentCurrencies: localRecentCurrencies,
+        );
+        _syncNotificationMuteTimer();
+      } catch (_) {}
 
       // Also try to load from Supabase if user is logged in
       final userId = supabase.auth.currentUser?.id;
@@ -378,7 +535,9 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
         try {
           final userData = await supabase
               .from('users')
-              .select('unit_system, time_format, theme_mode, high_accuracy_mode, notification_preferences')
+              .select(
+                'unit_system, time_format, theme_mode, background_matching_mode, notification_preferences, preferred_currency, recent_currencies',
+              )
               .eq('id', userId)
               .maybeSingle();
 
@@ -386,8 +545,16 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
             final remoteUnitStr = userData['unit_system'] as String?;
             final remoteTimeStr = userData['time_format'] as String?;
             final remoteThemeStr = userData['theme_mode'] as String?;
-            final remoteHighAccuracy = userData['high_accuracy_mode'] as bool?;
-            final remoteNotifPrefs = userData['notification_preferences'] as Map<String, dynamic>?;
+            final remoteHighAccuracy =
+                userData['background_matching_mode'] as bool?;
+            final remoteNotifPrefs =
+                userData['notification_preferences'] as Map<String, dynamic>?;
+            final remotePreferredCurrency = _normalizeCurrencyCode(
+              userData['preferred_currency'] as String?,
+            );
+            final remoteRecentCurrencies = _sanitizeCurrencyCodeList(
+              userData['recent_currencies'],
+            );
 
             // Parse remote notification preferences if available
             bool remoChatNotifs = chatNotifs;
@@ -397,25 +564,45 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
             bool remoteSound = sound;
             bool remoteVibration = vibration;
             bool remoteInApp = inApp;
-            Map<NotificationMethod, bool> remoteGlobalMethods = localGlobalMethods;
+            Map<NotificationMethod, bool> remoteGlobalMethods =
+                localGlobalMethods;
             int? remotePausedUntilMsUtc = pausedUntilMsUtc;
             int? remotePausedDurationSeconds = pausedDurationSeconds;
             bool remotePausedIndefinitely = pausedIndefinitely;
-            Map<NotificationType, Map<NotificationMethod, bool>> remoteMatrix = localMatrix;
+            Map<NotificationType, Map<NotificationMethod, bool>> remoteMatrix =
+                localMatrix;
 
             if (remoteNotifPrefs != null) {
-              remoChatNotifs = remoteNotifPrefs['enable_chat_notifications'] as bool? ?? chatNotifs;
-              remoteNewMatchNotifs = remoteNotifPrefs['enable_new_match_notifications'] as bool? ?? newMatchNotifs;
-              remoteMatchExpiryNotifs = remoteNotifPrefs['enable_match_expiry_notifications'] as bool? ?? matchExpiryNotifs;
-              remoteAdminNotifs = remoteNotifPrefs['enable_admin_notifications'] as bool? ?? adminNotifs;
+              remoChatNotifs =
+                  remoteNotifPrefs['enable_chat_notifications'] as bool? ??
+                  chatNotifs;
+              remoteNewMatchNotifs =
+                  remoteNotifPrefs['enable_new_match_notifications'] as bool? ??
+                  newMatchNotifs;
+              remoteMatchExpiryNotifs =
+                  remoteNotifPrefs['enable_match_expiry_notifications']
+                      as bool? ??
+                  matchExpiryNotifs;
+              remoteAdminNotifs =
+                  remoteNotifPrefs['enable_admin_notifications'] as bool? ??
+                  adminNotifs;
               remoteSound = remoteNotifPrefs['enable_sound'] as bool? ?? sound;
-              remoteVibration = remoteNotifPrefs['enable_vibration'] as bool? ?? vibration;
-              remoteInApp = remoteNotifPrefs['enable_in_app_notifications'] as bool? ?? inApp;
+              remoteVibration =
+                  remoteNotifPrefs['enable_vibration'] as bool? ?? vibration;
+              remoteInApp =
+                  remoteNotifPrefs['enable_in_app_notifications'] as bool? ??
+                  inApp;
 
-              remotePausedUntilMsUtc = (remoteNotifPrefs['paused_until_ms_utc'] as num?)?.toInt() ?? remotePausedUntilMsUtc;
+              remotePausedUntilMsUtc =
+                  (remoteNotifPrefs['paused_until_ms_utc'] as num?)?.toInt() ??
+                  remotePausedUntilMsUtc;
               remotePausedDurationSeconds =
-                  (remoteNotifPrefs['paused_duration_seconds'] as num?)?.toInt() ?? remotePausedDurationSeconds;
-              remotePausedIndefinitely = remoteNotifPrefs['paused_indefinitely'] as bool? ?? remotePausedIndefinitely;
+                  (remoteNotifPrefs['paused_duration_seconds'] as num?)
+                      ?.toInt() ??
+                  remotePausedDurationSeconds;
+              remotePausedIndefinitely =
+                  remoteNotifPrefs['paused_indefinitely'] as bool? ??
+                  remotePausedIndefinitely;
 
               final parsedMatrix = _parseMatrix(remoteNotifPrefs['matrix']);
               if (parsedMatrix != null) {
@@ -425,6 +612,10 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
                   chatNotifs: remoChatNotifs,
                   newMatchNotifs: remoteNewMatchNotifs,
                   matchExpiryNotifs: remoteMatchExpiryNotifs,
+                  matchExtendedNotifs:
+                      remoteNotifPrefs[
+                          'enable_match_extended_notifications'] as bool? ??
+                      true,
                   adminNotifs: remoteAdminNotifs,
                   sound: remoteSound,
                   vibration: remoteVibration,
@@ -433,7 +624,9 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
               }
 
               bool inferRemoteGlobalFromMatrix(NotificationMethod method) {
-                return remoteMatrix.values.any((m) => (m[method] ?? true) == true);
+                return remoteMatrix.values.any(
+                  (m) => (m[method] ?? true) == true,
+                );
               }
 
               final globalMethodsRaw = remoteNotifPrefs['global_methods'];
@@ -448,16 +641,25 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
                   NotificationMethod.sound: globalMethodsRaw['sound'] is bool
                       ? globalMethodsRaw['sound'] as bool
                       : inferRemoteGlobalFromMatrix(NotificationMethod.sound),
-                  NotificationMethod.vibrate: globalMethodsRaw['vibrate'] is bool
+                  NotificationMethod.vibrate:
+                      globalMethodsRaw['vibrate'] is bool
                       ? globalMethodsRaw['vibrate'] as bool
                       : inferRemoteGlobalFromMatrix(NotificationMethod.vibrate),
                 };
               } else {
                 remoteGlobalMethods = {
-                  NotificationMethod.push: inferRemoteGlobalFromMatrix(NotificationMethod.push),
-                  NotificationMethod.inApp: inferRemoteGlobalFromMatrix(NotificationMethod.inApp),
-                  NotificationMethod.sound: inferRemoteGlobalFromMatrix(NotificationMethod.sound),
-                  NotificationMethod.vibrate: inferRemoteGlobalFromMatrix(NotificationMethod.vibrate),
+                  NotificationMethod.push: inferRemoteGlobalFromMatrix(
+                    NotificationMethod.push,
+                  ),
+                  NotificationMethod.inApp: inferRemoteGlobalFromMatrix(
+                    NotificationMethod.inApp,
+                  ),
+                  NotificationMethod.sound: inferRemoteGlobalFromMatrix(
+                    NotificationMethod.sound,
+                  ),
+                  NotificationMethod.vibrate: inferRemoteGlobalFromMatrix(
+                    NotificationMethod.vibrate,
+                  ),
                 };
               }
             }
@@ -465,7 +667,7 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
             state = state.copyWith(
               unitSystem: _parseUnitSystem(remoteUnitStr) ?? state.unitSystem,
               timeFormat: _parseTimeFormat(remoteTimeStr) ?? state.timeFormat,
-              highAccuracyMode: highAccuracy,
+              backgroundMatchingMode: remoteHighAccuracy ?? highAccuracy,
               notifications: NotificationPreferencesState(
                 matrix: remoteMatrix,
                 globalMethods: remoteGlobalMethods,
@@ -473,6 +675,11 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
                 pausedDurationSeconds: remotePausedDurationSeconds,
                 pausedIndefinitely: remotePausedIndefinitely,
               ),
+              preferredCurrency:
+                  remotePreferredCurrency ?? localPreferredCurrency,
+              recentCurrencies: remoteRecentCurrencies.isNotEmpty
+                  ? remoteRecentCurrencies
+                  : localRecentCurrencies,
             );
             _syncNotificationMuteTimer();
 
@@ -487,34 +694,86 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
               await prefs.setString('theme_mode', remoteThemeStr);
             }
             if (remoteHighAccuracy != null) {
-              await prefs.setBool(_prefsHighAccuracyKey, remoteHighAccuracy);
+              await prefs.setBool(
+                _prefsBackgroundMatchingKey,
+                remoteHighAccuracy,
+              );
             }
+            if (remotePreferredCurrency != null) {
+              await prefs.setString(
+                _prefsPreferredCurrencyKey,
+                remotePreferredCurrency,
+              );
+            } else {
+              await prefs.remove(_prefsPreferredCurrencyKey);
+            }
+            await prefs.setStringList(
+              _prefsRecentCurrenciesKey,
+              remoteRecentCurrencies.isNotEmpty
+                  ? remoteRecentCurrencies
+                  : localRecentCurrencies,
+            );
             if (remoteNotifPrefs != null) {
               await prefs.setBool(_prefsChatNotificationsKey, remoChatNotifs);
-              await prefs.setBool(_prefsNewMatchNotificationsKey, remoteNewMatchNotifs);
-              await prefs.setBool(_prefsMatchExpiryNotificationsKey, remoteMatchExpiryNotifs);
-              await prefs.setBool(_prefsAdminNotificationsKey, remoteAdminNotifs);
+              await prefs.setBool(
+                _prefsNewMatchNotificationsKey,
+                remoteNewMatchNotifs,
+              );
+              await prefs.setBool(
+                _prefsMatchExpiryNotificationsKey,
+                remoteMatchExpiryNotifs,
+              );
+              await prefs.setBool(
+                _prefsAdminNotificationsKey,
+                remoteAdminNotifs,
+              );
               await prefs.setBool(_prefsSoundKey, remoteSound);
               await prefs.setBool(_prefsVibrationKey, remoteVibration);
               await prefs.setBool(_prefsInAppNotificationsKey, remoteInApp);
-              await prefs.setBool(_prefsGlobalPushKey, remoteGlobalMethods[NotificationMethod.push] ?? true);
-              await prefs.setBool(_prefsGlobalInAppKey, remoteGlobalMethods[NotificationMethod.inApp] ?? true);
-              await prefs.setBool(_prefsGlobalSoundKey, remoteGlobalMethods[NotificationMethod.sound] ?? true);
-              await prefs.setBool(_prefsGlobalVibrationKey, remoteGlobalMethods[NotificationMethod.vibrate] ?? true);
+              await prefs.setBool(
+                _prefsGlobalPushKey,
+                remoteGlobalMethods[NotificationMethod.push] ?? true,
+              );
+              await prefs.setBool(
+                _prefsGlobalInAppKey,
+                remoteGlobalMethods[NotificationMethod.inApp] ?? true,
+              );
+              await prefs.setBool(
+                _prefsGlobalSoundKey,
+                remoteGlobalMethods[NotificationMethod.sound] ?? true,
+              );
+              await prefs.setBool(
+                _prefsGlobalVibrationKey,
+                remoteGlobalMethods[NotificationMethod.vibrate] ?? true,
+              );
               if (remotePausedUntilMsUtc != null) {
-                await prefs.setInt(_prefsPausedUntilKey, remotePausedUntilMsUtc);
+                await prefs.setInt(
+                  _prefsPausedUntilKey,
+                  remotePausedUntilMsUtc,
+                );
               } else {
                 await prefs.remove(_prefsPausedUntilKey);
               }
               if (remotePausedDurationSeconds != null) {
-                await prefs.setInt(_prefsPausedDurationSecondsKey, remotePausedDurationSeconds);
+                await prefs.setInt(
+                  _prefsPausedDurationSecondsKey,
+                  remotePausedDurationSeconds,
+                );
               } else {
                 await prefs.remove(_prefsPausedDurationSecondsKey);
               }
-              await prefs.setBool(_prefsPausedIndefinitelyKey, remotePausedIndefinitely);
-              await prefs.setString(_prefsMatrixKey, jsonEncode(_matrixToJson(remoteMatrix)));
+              await prefs.setBool(
+                _prefsPausedIndefinitelyKey,
+                remotePausedIndefinitely,
+              );
+              await prefs.setString(
+                _prefsMatrixKey,
+                jsonEncode(_matrixToJson(remoteMatrix)),
+              );
             }
 
+            _lastFullSyncAt = DateTime.now();
+            ResumeDiagnostics.log('User preferences: remote sync completed');
             return;
           }
         } catch (e) {
@@ -526,7 +785,7 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
       state = state.copyWith(
         unitSystem: _parseUnitSystem(unitStr) ?? state.unitSystem,
         timeFormat: _parseTimeFormat(timeStr) ?? state.timeFormat,
-        highAccuracyMode: highAccuracy,
+        backgroundMatchingMode: highAccuracy,
         notifications: NotificationPreferencesState(
           matrix: localMatrix,
           globalMethods: localGlobalMethods,
@@ -534,10 +793,19 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
           pausedDurationSeconds: pausedDurationSeconds,
           pausedIndefinitely: pausedIndefinitely,
         ),
+        preferredCurrency: localPreferredCurrency,
+        recentCurrencies: localRecentCurrencies,
       );
       _syncNotificationMuteTimer();
+      _lastFullSyncAt = DateTime.now();
+      ResumeDiagnostics.log('User preferences: local snapshot applied');
     } catch (_) {
       // ignore
+    } finally {
+      if (!completer.isCompleted) {
+        completer.complete();
+      }
+      _loadSyncInFlight = null;
     }
   }
 
@@ -559,7 +827,8 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
           // If sync fails, store in outbox for later
           final localDb = ref.read(localDbProvider);
           await localDb.saveProfileUpdateToOutbox(userId, {
-            'unit_system': value.name,
+            'userId': userId,
+            'updates': {'unit_system': value.name},
           });
         }
       }
@@ -584,37 +853,175 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
           // If sync fails, store in outbox for later
           final localDb = ref.read(localDbProvider);
           await localDb.saveProfileUpdateToOutbox(userId, {
-            'time_format': value.name,
+            'userId': userId,
+            'updates': {'time_format': value.name},
           });
         }
       }
     } catch (_) {}
   }
 
-  Future<void> setHighAccuracyMode(bool value) async {
-    state = state.copyWith(highAccuracyMode: value);
+  Future<void> setPreferredCurrency(String code) async {
+    final normalized = _normalizeCurrencyCode(code);
+    if (normalized == null) return;
+
+    final nextRecent = _buildRecentCurrencyList(
+      normalized,
+      state.recentCurrencies,
+    );
+    state = state.copyWith(
+      preferredCurrency: normalized,
+      recentCurrencies: nextRecent,
+    );
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_prefsPreferredCurrencyKey, normalized);
+      await prefs.setStringList(_prefsRecentCurrenciesKey, nextRecent);
+
+      final userId = supabase.auth.currentUser?.id;
+      if (userId != null && !shouldSkipSupabaseCalls()) {
+        try {
+          await supabase
+              .from('users')
+              .update({
+                'preferred_currency': normalized,
+                'recent_currencies': nextRecent,
+              })
+              .eq('id', userId);
+        } catch (e) {
+          final localDb = ref.read(localDbProvider);
+          await localDb.saveProfileUpdateToOutbox(userId, {
+            'userId': userId,
+            'updates': {
+              'preferred_currency': normalized,
+              'recent_currencies': nextRecent,
+            },
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> setBackgroundMatchingMode(bool value) async {
+    state = state.copyWith(backgroundMatchingMode: value);
+
     final prefs = await SharedPreferences.getInstance();
     try {
-      await prefs.setBool(_prefsHighAccuracyKey, value);
+      await prefs.setBool(_prefsBackgroundMatchingKey, value);
+      if (value) {
+        await prefs.remove(_prefsPendingBackgroundMatchingEnableKey);
+      } else {
+        await prefs.setBool(_prefsPendingBackgroundMatchingEnableKey, false);
+      }
+      // Clean up legacy key if present
+      if (prefs.containsKey(_prefsLegacyHighAccuracyKey)) {
+        await prefs.remove(_prefsLegacyHighAccuracyKey);
+      }
+      if (prefs.containsKey(_prefsLegacyPendingHighAccuracyEnableKey)) {
+        await prefs.remove(_prefsLegacyPendingHighAccuracyEnableKey);
+      }
     } catch (e) {
-      debugPrint('Failed to persist High Accuracy Mode preference: $e');
+      print('Failed to persist Background Matching Mode preference: $e');
+      state = state.copyWith(backgroundMatchingMode: !value);
+      rethrow;
     }
+
     try {
-      await BackgroundService.updateHighAccuracyMode(value);
+      await BackgroundService.updateBackgroundMatchingMode(value);
     } catch (e) {
-      debugPrint('Failed to update native High Accuracy Mode: $e');
+      print('Failed to update native Background Matching Mode: $e');
     }
+
     try {
-      // Sync to Supabase if user is logged in
       final userId = supabase.auth.currentUser?.id;
       if (userId != null) {
         await supabase
             .from('users')
-            .update({'high_accuracy_mode': value})
+            .update({'background_matching_mode': value})
             .eq('id', userId);
       }
     } catch (e) {
-      debugPrint('Failed to sync high_accuracy_mode to Supabase: $e');
+      print('Failed to sync background_matching_mode to Supabase: $e');
+    }
+  }
+
+  Future<void> setPendingBackgroundMatchingEnable(bool value) async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (value) {
+        await prefs.setBool(_prefsPendingBackgroundMatchingEnableKey, true);
+      } else {
+        await prefs.remove(_prefsPendingBackgroundMatchingEnableKey);
+      }
+    } catch (e) {
+      print('Failed to persist pending Background Matching Mode intent: $e');
+    }
+  }
+
+  Future<void> syncBackgroundMatchingPermissionState() async {
+    if (kIsWeb || !Platform.isAndroid) return;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final pendingEnable =
+          prefs.getBool(_prefsPendingBackgroundMatchingEnableKey) ?? false;
+
+      if (pendingEnable) {
+        final hasBackgroundLocation =
+            await PermissionCoordinator.hasBackgroundLocationPermission();
+        if (hasBackgroundLocation) {
+          print(
+            'Background location permission granted after Settings, enabling Background Matching Mode',
+          );
+          ResumeDiagnostics.log(
+            'User preferences: enabling Background Matching Mode after Settings return',
+          );
+          await setBackgroundMatchingMode(true);
+        } else {
+          await prefs.remove(_prefsPendingBackgroundMatchingEnableKey);
+          ResumeDiagnostics.log(
+            'User preferences: cleared pending Background Matching enable after Settings return without permission',
+          );
+        }
+        return;
+      }
+
+      await validateBackgroundMatchingPermission();
+    } catch (e) {
+      print('Error syncing Background Matching Mode permission state: $e');
+    }
+  }
+
+  bool _shouldRunFullSyncOnResume() {
+    final lastFullSyncAt = _lastFullSyncAt;
+    if (lastFullSyncAt == null) {
+      return true;
+    }
+
+    final pausedAt = _lastPausedAt;
+    if (pausedAt == null) {
+      return false;
+    }
+
+    return DateTime.now().difference(pausedAt) >= _resumeFullSyncThreshold;
+  }
+
+  Future<void> validateBackgroundMatchingPermission() async {
+    if (kIsWeb || !state.backgroundMatchingMode || !Platform.isAndroid) return;
+
+    try {
+      final hasBackgroundLocation =
+          await PermissionCoordinator.hasBackgroundLocationPermission();
+      if (!hasBackgroundLocation) {
+        print(
+          'Background location permission revoked, disabling Background Matching Mode',
+        );
+        await setBackgroundMatchingMode(false);
+      }
+    } catch (e) {
+      print('Error validating Background Matching Mode permission: $e');
     }
   }
 
@@ -631,7 +1038,10 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
   }
 
   Future<void> setAdminNotifications(bool value) async {
-    await setNotificationTypeEnabled(NotificationType.adminAnnouncements, value);
+    await setNotificationTypeEnabled(
+      NotificationType.adminAnnouncements,
+      value,
+    );
   }
 
   Future<void> setNotificationSound(bool value) async {
@@ -647,7 +1057,10 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
   }
 
   Future<void> pauseNotificationsFor(Duration duration) async {
-    final untilMsUtc = DateTime.now().toUtc().add(duration).millisecondsSinceEpoch;
+    final untilMsUtc = DateTime.now()
+        .toUtc()
+        .add(duration)
+        .millisecondsSinceEpoch;
     state = state.copyWith(
       notifications: state.notifications.copyWith(
         pausedUntilEpochMsUtc: untilMsUtc,
@@ -694,16 +1107,23 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
       method: method,
       value: value,
     );
-    state = state.copyWith(notifications: state.notifications.copyWith(matrix: next));
+    state = state.copyWith(
+      notifications: state.notifications.copyWith(matrix: next),
+    );
     await _saveNotificationPreferences();
   }
 
-  Future<void> setNotificationMethodForAll(NotificationMethod method, bool value) async {
+  Future<void> setNotificationMethodForAll(
+    NotificationMethod method,
+    bool value,
+  ) async {
     var next = state.notifications.matrix;
     for (final type in NotificationType.values) {
       next = _setMatrixValue(next, type: type, method: method, value: value);
     }
-    state = state.copyWith(notifications: state.notifications.copyWith(matrix: next));
+    state = state.copyWith(
+      notifications: state.notifications.copyWith(matrix: next),
+    );
     await _saveNotificationPreferences();
   }
 
@@ -716,20 +1136,27 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
     for (final type in types) {
       next = _setMatrixValue(next, type: type, method: method, value: value);
     }
-    state = state.copyWith(notifications: state.notifications.copyWith(matrix: next));
+    state = state.copyWith(
+      notifications: state.notifications.copyWith(matrix: next),
+    );
     await _saveNotificationPreferences();
   }
 
-  Future<void> setGlobalNotificationMethodEnabled(NotificationMethod method, bool enabled) async {
-    final next = {
-      ...state.notifications.globalMethods,
-      method: enabled,
-    };
-    state = state.copyWith(notifications: state.notifications.copyWith(globalMethods: next));
+  Future<void> setGlobalNotificationMethodEnabled(
+    NotificationMethod method,
+    bool enabled,
+  ) async {
+    final next = {...state.notifications.globalMethods, method: enabled};
+    state = state.copyWith(
+      notifications: state.notifications.copyWith(globalMethods: next),
+    );
     await _saveNotificationPreferences();
   }
 
-  Future<void> setNotificationTypeEnabled(NotificationType type, bool enabled) async {
+  Future<void> setNotificationTypeEnabled(
+    NotificationType type,
+    bool enabled,
+  ) async {
     bool globalEnabledForMethod(NotificationMethod method) {
       return state.notifications.isGlobalMethodEnabled(method);
     }
@@ -737,10 +1164,13 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
     final next = <NotificationType, Map<NotificationMethod, bool>>{
       ...state.notifications.matrix,
       type: {
-        for (final m in NotificationMethod.values) m: enabled ? globalEnabledForMethod(m) : false,
+        for (final m in NotificationMethod.values)
+          m: enabled ? globalEnabledForMethod(m) : false,
       },
     };
-    state = state.copyWith(notifications: state.notifications.copyWith(matrix: next));
+    state = state.copyWith(
+      notifications: state.notifications.copyWith(matrix: next),
+    );
     await _saveNotificationPreferences();
   }
 
@@ -749,15 +1179,33 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
       final prefs = await SharedPreferences.getInstance();
       final notifs = state.notifications;
 
-      await prefs.setBool(_prefsChatNotificationsKey, notifs.enableChatNotifications);
-      await prefs.setBool(_prefsNewMatchNotificationsKey, notifs.enableNewMatchNotifications);
-      await prefs.setBool(_prefsMatchExpiryNotificationsKey, notifs.enableMatchExpiryNotifications);
-      await prefs.setBool(_prefsAdminNotificationsKey, notifs.enableAdminNotifications);
+      await prefs.setBool(
+        _prefsChatNotificationsKey,
+        notifs.enableChatNotifications,
+      );
+      await prefs.setBool(
+        _prefsNewMatchNotificationsKey,
+        notifs.enableNewMatchNotifications,
+      );
+      await prefs.setBool(
+        _prefsMatchExpiryNotificationsKey,
+        notifs.enableMatchExpiryNotifications,
+      );
+      await prefs.setBool(
+        _prefsAdminNotificationsKey,
+        notifs.enableAdminNotifications,
+      );
       await prefs.setBool(_prefsSoundKey, notifs.enableSound);
       await prefs.setBool(_prefsVibrationKey, notifs.enableVibration);
-      await prefs.setBool(_prefsInAppNotificationsKey, notifs.enableInAppNotifications);
+      await prefs.setBool(
+        _prefsInAppNotificationsKey,
+        notifs.enableInAppNotifications,
+      );
       await prefs.setBool(_prefsGlobalPushKey, notifs.enablePushNotifications);
-      await prefs.setBool(_prefsGlobalInAppKey, notifs.enableInAppNotifications);
+      await prefs.setBool(
+        _prefsGlobalInAppKey,
+        notifs.enableInAppNotifications,
+      );
       await prefs.setBool(_prefsGlobalSoundKey, notifs.enableSound);
       await prefs.setBool(_prefsGlobalVibrationKey, notifs.enableVibration);
       if (notifs.pausedUntilEpochMsUtc != null) {
@@ -766,12 +1214,21 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
         await prefs.remove(_prefsPausedUntilKey);
       }
       if (notifs.pausedDurationSeconds != null) {
-        await prefs.setInt(_prefsPausedDurationSecondsKey, notifs.pausedDurationSeconds!);
+        await prefs.setInt(
+          _prefsPausedDurationSecondsKey,
+          notifs.pausedDurationSeconds!,
+        );
       } else {
         await prefs.remove(_prefsPausedDurationSecondsKey);
       }
-      await prefs.setBool(_prefsPausedIndefinitelyKey, notifs.pausedIndefinitely);
-      await prefs.setString(_prefsMatrixKey, jsonEncode(_matrixToJson(notifs.matrix)));
+      await prefs.setBool(
+        _prefsPausedIndefinitelyKey,
+        notifs.pausedIndefinitely,
+      );
+      await prefs.setString(
+        _prefsMatrixKey,
+        jsonEncode(_matrixToJson(notifs.matrix)),
+      );
 
       // Sync to Supabase if user is logged in
       final userId = supabase.auth.currentUser?.id;
@@ -794,18 +1251,26 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
                     'vibrate': notifs.enableVibration,
                   },
                   'enable_chat_notifications': notifs.enableChatNotifications,
-                  'enable_new_match_notifications': notifs.enableNewMatchNotifications,
-                  'enable_match_expiry_notifications': notifs.enableMatchExpiryNotifications,
+                  'enable_new_match_notifications':
+                      notifs.enableNewMatchNotifications,
+                  'enable_match_expiry_notifications':
+                      notifs.enableMatchExpiryNotifications,
+                  'enable_match_extended_notifications':
+                      notifs.isMethodEnabled(
+                        NotificationType.matchExtended,
+                        NotificationMethod.push,
+                      ),
                   'enable_admin_notifications': notifs.enableAdminNotifications,
                   'enable_sound': notifs.enableSound,
                   'enable_vibration': notifs.enableVibration,
-                  'enable_in_app_notifications': notifs.enableInAppNotifications,
-                }
+                  'enable_in_app_notifications':
+                      notifs.enableInAppNotifications,
+                },
               })
               .eq('id', userId);
         } catch (e) {
           // If sync fails, we've already updated local state
-          debugPrint('Failed to sync notification preferences: $e');
+          print('Failed to sync notification preferences: $e');
         }
       }
     } catch (_) {}
@@ -817,31 +1282,39 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
       _clearRealtimeSubscription();
       return;
     }
-    if (_settingsSubscription != null && _settingsSubscriptionUserId == userId) {
+    if (_settingsSubscription != null &&
+        _settingsSubscriptionUserId == userId) {
       return;
     }
     _clearRealtimeSubscription();
 
-    _settingsSubscription = supabase
-        .channel('user_settings_$userId')
-        .onPostgresChanges(
-          event: PostgresChangeEvent.update,
-          schema: 'public',
-          table: 'users',
-          filter: PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'id', value: userId),
-          callback: (payload) {
-            final newData = payload.newRecord as Map<String, dynamic>?;
-            if (newData == null) return;
+    final channelName = 'user_settings_$userId';
+    SupabaseRealtimeManager.instance.register(channelName, () {
+      _settingsSubscription = supabase
+          .channel(channelName)
+          .onPostgresChanges(
+            event: PostgresChangeEvent.update,
+            schema: 'public',
+            table: 'users',
+            filter: PostgresChangeFilter(
+              type: PostgresChangeFilterType.eq,
+              column: 'id',
+              value: userId,
+            ),
+            callback: (payload) {
+              final newData = payload.newRecord as Map<String, dynamic>?;
+              if (newData == null) return;
 
-            // Update state with realtime changes
-            final updatedState = _mergeRealtimeUpdate(newData);
-            if (updatedState != state) {
-              state = updatedState;
-            }
-          },
-        )
-        .subscribe();
-    _settingsSubscriptionUserId = userId;
+              final updatedState = _mergeRealtimeUpdate(newData);
+              if (updatedState != state) {
+                state = updatedState;
+              }
+            },
+          )
+          .subscribe();
+      _settingsSubscriptionUserId = userId;
+      return _settingsSubscription!;
+    });
   }
 
   UserPreferencesState _mergeRealtimeUpdate(Map<String, dynamic> remoteData) {
@@ -850,8 +1323,15 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
     // Extract settings from remote data
     final remoteUnitStr = remoteData['unit_system'] as String?;
     final remoteTimeStr = remoteData['time_format'] as String?;
-    final remoteHighAccuracy = remoteData['high_accuracy_mode'] as bool?;
-    final remoteNotifPrefs = remoteData['notification_preferences'] as Map<String, dynamic>?;
+    final remoteHighAccuracy = remoteData['background_matching_mode'] as bool?;
+    final remoteNotifPrefs =
+        remoteData['notification_preferences'] as Map<String, dynamic>?;
+    final remotePreferredCurrency = _normalizeCurrencyCode(
+      remoteData['preferred_currency'] as String?,
+    );
+    final remoteRecentCurrencies = _sanitizeCurrencyCodeList(
+      remoteData['recent_currencies'],
+    );
 
     // Parse notification preferences
     NotificationPreferencesState notifications = currentPrefs.notifications;
@@ -863,28 +1343,97 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
     }
 
     return UserPreferencesState(
-      unitSystem: remoteUnitStr != null ? _parseUnitSystem(remoteUnitStr) ?? currentPrefs.unitSystem : currentPrefs.unitSystem,
-      timeFormat: remoteTimeStr != null ? _parseTimeFormat(remoteTimeStr) ?? currentPrefs.timeFormat : currentPrefs.timeFormat,
-      highAccuracyMode: remoteHighAccuracy ?? currentPrefs.highAccuracyMode,
+      unitSystem: remoteUnitStr != null
+          ? _parseUnitSystem(remoteUnitStr) ?? currentPrefs.unitSystem
+          : currentPrefs.unitSystem,
+      timeFormat: remoteTimeStr != null
+          ? _parseTimeFormat(remoteTimeStr) ?? currentPrefs.timeFormat
+          : currentPrefs.timeFormat,
+      backgroundMatchingMode:
+          remoteHighAccuracy ?? currentPrefs.backgroundMatchingMode,
       notifications: notifications,
+      preferredCurrency:
+          remotePreferredCurrency ?? currentPrefs.preferredCurrency,
+      recentCurrencies: remoteRecentCurrencies.isNotEmpty
+          ? remoteRecentCurrencies
+          : currentPrefs.recentCurrencies,
     );
   }
 
-  NotificationPreferencesState? _parseNotificationPreferences(Map<String, dynamic> data) {
+  static String? _normalizeCurrencyCode(String? value) {
+    final code = value?.trim().toUpperCase() ?? '';
+    if (!RegExp(r'^[A-Z]{3}$').hasMatch(code)) return null;
+    return code;
+  }
+
+  static List<String> _sanitizeCurrencyCodeList(dynamic raw) {
+    final source = <String>[];
+    if (raw is List) {
+      for (final item in raw) {
+        source.add(item.toString());
+      }
+    } else if (raw is String && raw.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is List) {
+          for (final item in decoded) {
+            source.add(item.toString());
+          }
+        }
+      } catch (_) {}
+    }
+
+    final out = <String>[];
+    for (final item in source) {
+      final normalized = _normalizeCurrencyCode(item);
+      if (normalized == null || out.contains(normalized)) continue;
+      out.add(normalized);
+      if (out.length >= 6) break;
+    }
+    return out;
+  }
+
+  static List<String> _buildRecentCurrencyList(
+    String selected,
+    List<String> existing,
+  ) {
+    final next = <String>[selected];
+    for (final item in existing) {
+      final normalized = _normalizeCurrencyCode(item);
+      if (normalized == null || next.contains(normalized)) continue;
+      next.add(normalized);
+      if (next.length >= 6) break;
+    }
+    return next;
+  }
+
+  NotificationPreferencesState? _parseNotificationPreferences(
+    Map<String, dynamic> data,
+  ) {
     try {
       final matrix = _parseMatrix(data['matrix']);
       final globalMethods = data['global_methods'] as Map<String, dynamic>?;
       final pausedUntilMsUtc = (data['paused_until_ms_utc'] as num?)?.toInt();
-      final pausedDurationSeconds = (data['paused_duration_seconds'] as num?)?.toInt();
+      final pausedDurationSeconds = (data['paused_duration_seconds'] as num?)
+          ?.toInt();
       final pausedIndefinitely = data['paused_indefinitely'] as bool? ?? false;
 
-      Map<NotificationMethod, bool> parsedGlobalMethods = NotificationPreferencesState._defaultGlobalMethods;
+      Map<NotificationMethod, bool> parsedGlobalMethods =
+          NotificationPreferencesState._defaultGlobalMethods;
       if (globalMethods != null) {
         parsedGlobalMethods = {
-          NotificationMethod.push: globalMethods['push'] is bool ? globalMethods['push'] as bool : true,
-          NotificationMethod.inApp: globalMethods['in_app'] is bool ? globalMethods['in_app'] as bool : true,
-          NotificationMethod.sound: globalMethods['sound'] is bool ? globalMethods['sound'] as bool : true,
-          NotificationMethod.vibrate: globalMethods['vibrate'] is bool ? globalMethods['vibrate'] as bool : true,
+          NotificationMethod.push: globalMethods['push'] is bool
+              ? globalMethods['push'] as bool
+              : true,
+          NotificationMethod.inApp: globalMethods['in_app'] is bool
+              ? globalMethods['in_app'] as bool
+              : true,
+          NotificationMethod.sound: globalMethods['sound'] is bool
+              ? globalMethods['sound'] as bool
+              : true,
+          NotificationMethod.vibrate: globalMethods['vibrate'] is bool
+              ? globalMethods['vibrate'] as bool
+              : true,
         };
       }
 
@@ -900,10 +1449,12 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
     }
   }
 
-  static Map<NotificationType, Map<NotificationMethod, bool>> _buildMatrixFromLegacy({
+  static Map<NotificationType, Map<NotificationMethod, bool>>
+  _buildMatrixFromLegacy({
     required bool chatNotifs,
     required bool newMatchNotifs,
     required bool matchExpiryNotifs,
+    required bool matchExtendedNotifs,
     required bool adminNotifs,
     required bool sound,
     required bool vibration,
@@ -928,6 +1479,12 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
         NotificationMethod.sound: sound,
         NotificationMethod.vibrate: vibration,
       },
+      NotificationType.matchExtended: {
+        NotificationMethod.push: matchExtendedNotifs,
+        NotificationMethod.inApp: inApp,
+        NotificationMethod.sound: sound,
+        NotificationMethod.vibrate: vibration,
+      },
       NotificationType.adminAnnouncements: {
         NotificationMethod.push: adminNotifs,
         NotificationMethod.inApp: inApp,
@@ -937,17 +1494,22 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
     };
   }
 
-  static Map<String, dynamic> _matrixToJson(Map<NotificationType, Map<NotificationMethod, bool>> matrix) {
+  static Map<String, dynamic> _matrixToJson(
+    Map<NotificationType, Map<NotificationMethod, bool>> matrix,
+  ) {
     final out = <String, dynamic>{};
     for (final entry in matrix.entries) {
       out[_notificationTypeKey(entry.key)] = {
-        for (final methodEntry in entry.value.entries) _notificationMethodKey(methodEntry.key): methodEntry.value,
+        for (final methodEntry in entry.value.entries)
+          _notificationMethodKey(methodEntry.key): methodEntry.value,
       };
     }
     return out;
   }
 
-  static Map<NotificationType, Map<NotificationMethod, bool>>? _parseMatrix(dynamic raw) {
+  static Map<NotificationType, Map<NotificationMethod, bool>>? _parseMatrix(
+    dynamic raw,
+  ) {
     if (raw is! Map) return null;
     final out = <NotificationType, Map<NotificationMethod, bool>>{};
     for (final entry in raw.entries) {
@@ -970,12 +1532,11 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
     if (out.isEmpty) return null;
     final merged = <NotificationType, Map<NotificationMethod, bool>>{};
     for (final type in NotificationType.values) {
-      final base = NotificationPreferencesState._defaultMatrix[type] ?? const <NotificationMethod, bool>{};
+      final base =
+          NotificationPreferencesState._defaultMatrix[type] ??
+          const <NotificationMethod, bool>{};
       final override = out[type];
-      merged[type] = {
-        ...base,
-        if (override != null) ...override,
-      };
+      merged[type] = {...base, ...?override};
     }
     return merged;
   }
@@ -989,10 +1550,7 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
     final currentType = current[type] ?? const <NotificationMethod, bool>{};
     return {
       ...current,
-      type: {
-        ...currentType,
-        method: value,
-      },
+      type: {...currentType, method: value},
     };
   }
 
@@ -1011,14 +1569,72 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState> {
     }
     return null;
   }
+
+  void _attachLifecycleObserver() {
+    if (_lifecycleObserverAttached) return;
+    try {
+      WidgetsBinding.instance.addObserver(this);
+      _lifecycleObserverAttached = true;
+    } catch (_) {}
+  }
+
+  void _detachLifecycleObserver() {
+    if (!_lifecycleObserverAttached) return;
+    try {
+      WidgetsBinding.instance.removeObserver(this);
+    } catch (_) {}
+    _lifecycleObserverAttached = false;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      _lastPausedAt = DateTime.now();
+      ResumeDiagnostics.logThrottled(
+        'User preferences: app paused',
+        category: 'prefs-paused',
+        minIntervalMs: 500,
+      );
+      return;
+    }
+
+    if (state == AppLifecycleState.resumed) {
+      unawaited(() async {
+        final shouldRunFullSync = _shouldRunFullSyncOnResume();
+        ResumeDiagnostics.log(
+          'User preferences: app resumed, full sync ${shouldRunFullSync ? 'scheduled' : 'skipped'}',
+        );
+
+        // Re-establish realtime subscription and reconcile local permission-driven state.
+        _ensureRealtimeSubscription();
+        await syncBackgroundMatchingPermissionState();
+        if (shouldRunFullSync) {
+          await _loadFromLocalAndSync();
+        }
+      }());
+    }
+  }
 }
 
 final userPreferencesProvider =
     NotifierProvider<UserPreferencesNotifier, UserPreferencesState>(
-  () => UserPreferencesNotifier(),
-);
+      () => UserPreferencesNotifier(),
+    );
 
 /// Provider that exposes only the unit system preference to avoid unnecessary rebuilds
 final userUnitSystemProvider = Provider<UnitSystemPreference>(
-  (ref) => ref.watch(userPreferencesProvider.select((state) => state.unitSystem)),
+  (ref) =>
+      ref.watch(userPreferencesProvider.select((state) => state.unitSystem)),
+);
+
+final userPreferredCurrencyProvider = Provider<String?>(
+  (ref) => ref.watch(
+    userPreferencesProvider.select((state) => state.preferredCurrency),
+  ),
+);
+
+final userRecentCurrenciesProvider = Provider<List<String>>(
+  (ref) => ref.watch(
+    userPreferencesProvider.select((state) => state.recentCurrencies),
+  ),
 );

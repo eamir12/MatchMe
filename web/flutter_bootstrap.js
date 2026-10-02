@@ -1,11 +1,14 @@
 {{flutter_js}}
 {{flutter_build_config}}
 
-_flutter.loader.load({
-  onEntrypointLoaded: async function (engineInitializer) {
-    const appRunner = await engineInitializer.initializeEngine({
-      renderer: "html",
-    });
-    await appRunner.runApp();
-  },
-});
+const rendererParam = new URLSearchParams(window.location.search).get(
+  "renderer",
+);
+const renderer =
+  rendererParam === "canvaskit" || rendererParam === "skwasm"
+    ? rendererParam
+    : null;
+
+const config = renderer ? { renderer } : {};
+
+_flutter.loader.load({ config });

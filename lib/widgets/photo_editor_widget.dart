@@ -5,14 +5,22 @@ import 'package:extended_image/extended_image.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/services/photo_prescreen_service.dart';
+import 'package:matchme/services/voice_guidance_service.dart';
 import 'package:matchme/web_imports.dart' as web;
 import 'package:image/image.dart' as img;
 import 'package:http/http.dart' as http;
 import 'package:matchme/widgets/custom_camera_widget.dart';
+import 'package:matchme/widgets/please_wait_dialog.dart';
+import 'package:matchme/services/primary_selfie_capture.dart';
 
 class PhotoEditor {
   /// Show image editor dialog and return edited bytes
-  static Future<Uint8List?> _showImageEditor(BuildContext context, Uint8List bytes) async {
+  static Future<Uint8List?> _showImageEditor(
+    BuildContext context,
+    Uint8List bytes,
+  ) async {
     final result = await showDialog<Uint8List>(
       context: context,
       builder: (context) => ImageEditorDialog(bytes: bytes),
@@ -20,58 +28,183 @@ class PhotoEditor {
     return result;
   }
 
-  /// Pick an image and return its edited bytes.
+  /// Pick an image, let the user crop/adjust it, run the prescreen on the
+  /// final result and return bytes ready for upload — or null if the user
+  /// cancelled / could not produce a compliant photo.
   static Future<Uint8List?> pickAndEdit({
     required BuildContext context,
     ImageSource source = ImageSource.gallery,
+    String? preparingMessage,
+    bool isPrimaryPhoto = false,
+    WidgetRef? ref,
+    Set<String>? existingHashes,
   }) async {
+    Uint8List? bytes;
     try {
-      Uint8List? bytes;
-      if (kIsWeb && source == ImageSource.camera) {
+      if (source == ImageSource.camera && isPrimaryPhoto && ref != null) {
+        // Primary selfie on any platform: live-gated capture reusing the
+        // verification selfie UX in face-only mode. The oval turns green
+        // only while a single clear face is inside it, the face must hold
+        // steady inside the oval (~2s + 1s best-frame selection), and
+        // auto-capture waits for the spoken instructions to finish — a
+        // body-only shot can never satisfy the gate.
+        if (!context.mounted) return null;
+        bytes = await openPrimarySelfieCapture(context: context, ref: ref);
+        if (bytes == null || !context.mounted) return null;
+        bytes = await _prepareBytes(context, bytes, preparingMessage);
+      } else if (kIsWeb && source == ImageSource.camera) {
         bytes = await web.pickImageBytesFromCamera(capture: 'user');
+        if (bytes == null || !context.mounted) return null;
+        bytes = await _prepareBytes(context, bytes, preparingMessage);
+      } else if (source == ImageSource.camera) {
+        bytes = await showCustomCamera(context: context, useFrontCamera: true);
+        if (bytes == null || !context.mounted) return null;
+        bytes = await _prepareBytes(context, bytes, preparingMessage);
       } else {
-        // Use custom camera implementation for better control
-        if (source == ImageSource.camera) {
-          bytes = await showCustomCamera(
-            context: context,
-            useFrontCamera: true,
-          );
-        } else {
-          // For gallery, still use image_picker
-          final picker = ImagePicker();
-          final XFile? file = await picker.pickImage(
-            source: source, 
-            imageQuality: 90,
-          );
-          if (file == null) {
-            return null;
-          }
-          bytes = await file.readAsBytes();
+        final picker = ImagePicker();
+        final XFile? file = await picker.pickImage(
+          source: source,
+          imageQuality: await (() async {
+            try {
+              return await AppConfigService().getInt(
+                'profile.image_quality_percent',
+                defaultValue: 90,
+              );
+            } catch (e) {
+              return 90;
+            }
+          })(),
+        );
+        if (file == null || !context.mounted) {
+          return null;
         }
+        bytes = await _prepareBytesFromFile(context, file, preparingMessage);
       }
-      if (bytes == null) {
-        return null;
-      }
-
-      // Show editor dialog
-      final result = await _showImageEditor(context, bytes); // ignore: use_build_context_synchronously
-      return result;
     } catch (e) {
-      // Return null on error to indicate failure
       return null;
     }
+    if (bytes == null || !context.mounted) {
+      return null;
+    }
+
+    if (ref == null) {
+      // No ref provided: skip prescreen (legacy behaviour) and just edit.
+      final editorContext = context;
+      // ignore: use_build_context_synchronously
+      final edited = await _showImageEditor(editorContext, bytes);
+      if (edited == null) return null;
+      return compressImage(edited);
+    }
+
+    final finalBytes = await editWithPrescreen(
+      context: context,
+      bytes: bytes,
+      isPrimaryPhoto: isPrimaryPhoto,
+      ref: ref,
+      existingHashes: existingHashes,
+    );
+    return finalBytes;
+  }
+
+  /// Open the editor on [bytes], run the prescreen on the edited result and
+  /// loop until the photo passes, the user fixes it, or gives up.
+  ///
+  /// Prescreen runs AFTER the editor so the user can fix issues (crop away
+  /// extra people, zoom in on a small face) before being judged. If the
+  /// prescreen fails, the dialog offers "Adjust photo" to re-open the editor
+  /// with the same image, or "Choose another photo" to abort and start over.
+  static Future<Uint8List?> editWithPrescreen({
+    required BuildContext context,
+    required Uint8List bytes,
+    bool isPrimaryPhoto = false,
+    required WidgetRef ref,
+    Set<String>? existingHashes,
+  }) async {
+    Uint8List candidate = bytes;
+    while (true) {
+      final editorContext = context;
+      if (!editorContext.mounted) return null;
+      // ignore: use_build_context_synchronously
+      final edited = await _showImageEditor(editorContext, candidate);
+      if (edited == null) return null; // user cancelled
+      candidate = edited;
+
+      final prescreenService = ref.read(photoPrescreenServiceProvider);
+      final prescreenResult = await prescreenService.prescreenPhoto(
+        candidate,
+        isPrimary: isPrimaryPhoto,
+        existingHashes: existingHashes,
+      );
+      if (prescreenResult.passed) {
+        return await compressImage(candidate);
+      }
+
+      if (!context.mounted) return null;
+      final action = await showPrescreenFailureDialog(
+        context,
+        prescreenResult,
+        ref,
+        photoBytes: candidate,
+      );
+      if (action != PrescreenFailureAction.adjust) {
+        return null; // user chose another photo / dismissed
+      }
+    }
+  }
+
+  static Future<Uint8List?> _prepareBytesFromFile(
+    BuildContext context,
+    XFile file,
+    String? preparingMessage,
+  ) async {
+    _showPreparingDialog(context, preparingMessage);
+    try {
+      final raw = await file.readAsBytes();
+      return await compressImage(raw);
+    } finally {
+      _hidePreparingDialog(context);
+    }
+  }
+
+  static Future<Uint8List> _prepareBytes(
+    BuildContext context,
+    Uint8List raw,
+    String? preparingMessage,
+  ) async {
+    _showPreparingDialog(context, preparingMessage);
+    try {
+      return await compressImage(raw);
+    } finally {
+      _hidePreparingDialog(context);
+    }
+  }
+
+  static void _showPreparingDialog(BuildContext context, String? message) {
+    if (!context.mounted) return;
+    PleaseWaitDialog.show(context, message: message);
+  }
+
+  static void _hidePreparingDialog(BuildContext context) {
+    if (!context.mounted) return;
+    PleaseWaitDialog.hide(context);
   }
 
   /// Pick a camera image with front camera preference for verification
   static Future<Uint8List?> pickVerificationPhoto(BuildContext context) async {
     // This method is now handled by the verification screen directly
     // using the CameraPreviewWidget for live preview
-    throw UnimplementedError('Use CameraPreviewWidget directly from verification screen');
+    throw UnimplementedError(
+      'Use CameraPreviewWidget directly from verification screen',
+    );
   }
 
   /// Edit existing bytes
-  static Future<Uint8List?> editBytes(BuildContext context, Uint8List bytes) async {
+  static Future<Uint8List?> editBytes(
+    BuildContext context,
+    Uint8List bytes,
+  ) async {
     try {
+      if (!context.mounted) return bytes;
       return await _showImageEditor(context, bytes);
     } catch (e) {
       return bytes; // Return original on error
@@ -88,7 +221,10 @@ class PhotoEditor {
       final bytes = await _downloadImageBytes(imagePath);
       if (bytes == null) return null;
 
-      return await _showImageEditor(context, bytes); // ignore: use_build_context_synchronously
+      final editorContext = context;
+      if (!editorContext.mounted) return null;
+      // ignore: use_build_context_synchronously
+      return await _showImageEditor(editorContext, bytes);
     } catch (e) {
       return null;
     }
@@ -106,6 +242,34 @@ class PhotoEditor {
       return null;
     }
   }
+
+  static Future<Uint8List> compressImage(Uint8List bytes) async {
+    if (kIsWeb) {
+      return _compressImageSync(bytes);
+    }
+    return await compute(_compressImageSync, bytes);
+  }
+}
+
+Uint8List _compressImageSync(Uint8List original) {
+  try {
+    final image = img.decodeImage(original);
+    if (image == null) return original;
+
+    img.Image target = image;
+    if (target.width > 1200 || target.height > 1200) {
+      if (target.width >= target.height) {
+        target = img.copyResize(target, width: 1200);
+      } else {
+        target = img.copyResize(target, height: 1200);
+      }
+    }
+
+    return Uint8List.fromList(img.encodeJpg(target, quality: 85));
+  } catch (e) {
+    debugPrint('Image compression failed: $e');
+    return original;
+  }
 }
 
 class ImageEditorDialog extends ConsumerStatefulWidget {
@@ -118,7 +282,9 @@ class ImageEditorDialog extends ConsumerStatefulWidget {
 }
 
 class _ImageEditorDialogState extends ConsumerState<ImageEditorDialog> {
-  final GlobalKey<ExtendedImageEditorState> editorKey = GlobalKey<ExtendedImageEditorState>();
+  final GlobalKey<ExtendedImageEditorState> editorKey =
+      GlobalKey<ExtendedImageEditorState>();
+  bool _isProcessing = false;
 
   static img.Image? _decodeImageBytes(Uint8List data) => img.decodeImage(data);
   static List<int> _encodeJpg(img.Image image) => img.encodeJpg(image);
@@ -163,7 +329,9 @@ class _ImageEditorDialogState extends ConsumerState<ImageEditorDialog> {
       );
     }
 
-    final List<int> out = kIsWeb ? _encodeJpg(decoded) : await compute(_encodeJpg, decoded);
+    final List<int> out = kIsWeb
+        ? _encodeJpg(decoded)
+        : await compute(_encodeJpg, decoded);
     return Uint8List.fromList(out);
   }
 
@@ -223,20 +391,29 @@ class _ImageEditorDialogState extends ConsumerState<ImageEditorDialog> {
                   child: Text(l10n.getString('cancel')),
                 ),
                 ElevatedButton(
-                  onPressed: () async {
-                    final state = editorKey.currentState;
-                    if (state == null) return;
+                  onPressed: _isProcessing
+                      ? null
+                      : () async {
+                          final state = editorKey.currentState;
+                          if (state == null) return;
 
-                    try {
-                      final bytes = await _exportEditedBytes(state);
-                      if (!context.mounted) return;
-                      Navigator.of(context).pop(bytes);
-                    } catch (_) {
-                      if (!context.mounted) return;
-                      Navigator.of(context).pop(state.rawImageData);
-                    }
-                  },
-                  child: Text(l10n.getString('done')),
+                          setState(() => _isProcessing = true);
+                          try {
+                            final bytes = await _exportEditedBytes(state);
+                            if (!context.mounted) return;
+                            Navigator.of(context).pop(bytes);
+                          } catch (_) {
+                            if (!context.mounted) return;
+                            Navigator.of(context).pop(state.rawImageData);
+                          }
+                        },
+                  child: _isProcessing
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Text(l10n.getString('done')),
                 ),
               ],
             ),
@@ -245,4 +422,98 @@ class _ImageEditorDialogState extends ConsumerState<ImageEditorDialog> {
       ),
     );
   }
+}
+
+enum PrescreenFailureAction { adjust, chooseAnother }
+
+/// Visual failure dialog: shows the rejected photo, a per-rule icon and a
+/// user-friendly message, with actions to fix the current photo or pick a
+/// different one. Returns what the user chose (null when dismissed).
+Future<PrescreenFailureAction?> showPrescreenFailureDialog(
+  BuildContext context,
+  PhotoPrescreenResult result,
+  WidgetRef ref, {
+  Uint8List? photoBytes,
+}) {
+  final l10n = ref.read(localizationProvider);
+
+  final String errorMessage;
+  if (result.failureReason == null) {
+    errorMessage = result.errorMessage ?? l10n.getString('photoErrorGeneral');
+  } else {
+    errorMessage = l10n.getString(
+      prescreenFailureL10nKey(result.failureReason),
+    );
+  }
+
+  final (IconData icon, Color iconColor) = switch (result.failureReason) {
+    PrescreenFailureReason.multipleFaces ||
+    PrescreenFailureReason.noFaceOrBody ||
+    PrescreenFailureReason.noFaceDetected ||
+    PrescreenFailureReason.bodyShotNotAllowed ||
+    PrescreenFailureReason.faceTooSmall ||
+    PrescreenFailureReason.faceNotVisible => (
+      Icons.face_retouching_off,
+      Colors.orange.shade700,
+    ),
+    PrescreenFailureReason.imageTooBlurry ||
+    PrescreenFailureReason.imageTooDark ||
+    PrescreenFailureReason.imageTooBright => (
+      Icons.auto_awesome_motion_outlined,
+      Colors.orange.shade700,
+    ),
+    PrescreenFailureReason.duplicatePhoto => (
+      Icons.photo_library_outlined,
+      Colors.orange.shade700,
+    ),
+    _ => (Icons.image_not_supported_outlined, Colors.red.shade400),
+  };
+
+  return showDialog<PrescreenFailureAction>(
+    context: context,
+    barrierDismissible: false,
+    builder: (dialogContext) {
+      // Voice guidance repeats the reason so the user hears what to fix
+      // (same localized string shown in the dialog).
+      unawaited(VoiceGuidanceService.instance.speakText(errorMessage));
+      return AlertDialog(
+        title: Row(
+          children: [
+            Icon(icon, color: iconColor),
+            const SizedBox(width: 12),
+            Expanded(child: Text(l10n.getString('photoPrescreenFailedTitle'))),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (photoBytes != null)
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 180),
+                  child: Image.memory(photoBytes, fit: BoxFit.cover),
+                ),
+              ),
+            const SizedBox(height: 16),
+            Text(errorMessage),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(
+              dialogContext,
+            ).pop(PrescreenFailureAction.chooseAnother),
+            child: Text(l10n.getString('photoPrescreenChooseAnother')),
+          ),
+          ElevatedButton(
+            onPressed: () =>
+                Navigator.of(dialogContext).pop(PrescreenFailureAction.adjust),
+            child: Text(l10n.getString('photoPrescreenAdjustPhoto')),
+          ),
+        ],
+      );
+    },
+  );
 }

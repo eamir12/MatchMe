@@ -17,7 +17,8 @@ class BatteryInfo {
 /// Use [stream] to get updates whenever a change is detected.
 class BatteryService {
   final Battery _battery = Battery();
-  final StreamController<BatteryInfo> _controller = StreamController.broadcast();
+  final StreamController<BatteryInfo> _controller =
+      StreamController.broadcast();
 
   Timer? _pollTimer;
   int? _lastLevel;
@@ -59,7 +60,7 @@ class BatteryService {
         _emitIfChanged(level, state);
       } catch (e) {
         // ignore
-        if (kDebugMode) debugPrint('BatteryService poll error: $e');
+        if (kDebugMode) print('BatteryService poll error: $e');
       }
     });
   }
@@ -79,7 +80,9 @@ class BatteryService {
     try {
       final binding = WidgetsBinding.instance;
       if (_lifecycleObserver != null) return;
-      _lifecycleObserver = _BatteryServiceLifecycleObserver(onState: _handleLifecycleState);
+      _lifecycleObserver = _BatteryServiceLifecycleObserver(
+        onState: _handleLifecycleState,
+      );
       binding.addObserver(_lifecycleObserver!);
     } catch (_) {}
   }
@@ -90,7 +93,9 @@ class BatteryService {
       return;
     }
 
-    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
       _stop();
     }
   }

@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.example.matchme",
+      "sha256_cert_fingerprints": [
+        "9D:23:D7:27:DD:CF:F0:EE:66:4B:B8:88:09:B9:16:C6:8D:44:B7:9C:52:78:E0:7B:90:7C:34:37:F6:42:F3:57"
+      ]
+    }
+  }
+]

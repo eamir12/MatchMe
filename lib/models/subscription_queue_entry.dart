@@ -42,14 +42,15 @@ class SubscriptionQueueEntry {
       expiresAt: DateTime.parse(map['expires_at'] as String),
       paymentProvider: map['payment_provider'] as String?,
       transactionId: map['transaction_id'] as String?,
-      purchaseMetadata: (map['purchase_metadata'] as Map<String, dynamic>?) ?? {},
+      purchaseMetadata:
+          (map['purchase_metadata'] as Map<String, dynamic>?) ?? {},
       createdAt: DateTime.parse(map['created_at'] as String),
       updatedAt: DateTime.parse(map['updated_at'] as String),
-      activatedAt: map['activated_at'] != null 
-          ? DateTime.parse(map['activated_at'] as String) 
+      activatedAt: map['activated_at'] != null
+          ? DateTime.parse(map['activated_at'] as String)
           : null,
-      cancelledAt: map['cancelled_at'] != null 
-          ? DateTime.parse(map['cancelled_at'] as String) 
+      cancelledAt: map['cancelled_at'] != null
+          ? DateTime.parse(map['cancelled_at'] as String)
           : null,
       cancellationReason: map['cancellation_reason'] as String?,
     );
@@ -90,7 +91,9 @@ class SubscriptionQueueEntry {
   Duration get duration => expiresAt.difference(startsAt);
 
   /// Check if this subscription has started
-  bool get hasStarted => DateTime.now().isAfter(startsAt) || DateTime.now().isAtSameMomentAs(startsAt);
+  bool get hasStarted =>
+      DateTime.now().isAfter(startsAt) ||
+      DateTime.now().isAtSameMomentAs(startsAt);
 
   /// Check if this subscription has expired
   bool get hasExpired => DateTime.now().isAfter(expiresAt);
@@ -192,10 +195,7 @@ class SubscriptionTimeline {
   final SubscriptionQueueEntry? current;
   final List<SubscriptionQueueEntry> queued;
 
-  SubscriptionTimeline({
-    this.current,
-    required this.queued,
-  });
+  SubscriptionTimeline({this.current, required this.queued});
 
   /// Check if user has any active or pending subscription
   bool get hasAnySubscription => current != null || queued.isNotEmpty;
@@ -204,7 +204,8 @@ class SubscriptionTimeline {
   int get queuedCount => queued.length;
 
   /// Get the next subscription to start (first in queue)
-  SubscriptionQueueEntry? get nextInQueue => queued.isNotEmpty ? queued.first : null;
+  SubscriptionQueueEntry? get nextInQueue =>
+      queued.isNotEmpty ? queued.first : null;
 
   /// Get the last subscription expiry date (including current and all queued)
   DateTime? get lastExpiryDate {

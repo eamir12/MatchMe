@@ -128,7 +128,7 @@ function parseIcs(ics: string): { calendarName: string; events: Array<Record<str
           const startParsed = parseDateValue(startRaw);
           const endParsed = endRaw != null ? parseDateValue(endRaw) : { iso: null, allDay: startParsed.allDay };
           if (startParsed.iso != null) {
-            const generatedId = uid?.trim().isNotEmpty == true
+            const generatedId = uid?.trim()
                 ? uid!.trim()
                 : `${summary}_${startParsed.iso}`;
             events.push({

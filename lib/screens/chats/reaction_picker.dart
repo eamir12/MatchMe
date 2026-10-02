@@ -9,14 +9,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/chat_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/utils/emoji_presentation_utils.dart';
 import 'package:matchme/widgets/emoji_widget.dart';
-import 'package:hive/hive.dart';
+import 'package:matchme/widgets/signed_image.dart';
+import 'package:matchme/services/hive_encryption_service.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
-
 
 Future<void> recordEmojiUse(String emoji) async {
   try {
-    final box = await Hive.openBox<int>('emoji_usage');
+    final box = await HiveEncryptionService.instance.openEncryptedBox<int>(
+      'emoji_usage',
+    );
     final current = box.get(emoji) ?? 0;
     await box.put(emoji, current + 1);
   } catch (_) {}
@@ -75,16 +78,29 @@ Future<void> showReactionPicker(
                         Navigator.pop(context);
                         await _recordEmojiUse(emoji);
                         try {
-                          if (effectiveMatchId == null || effectiveMessageId == null) return;
+                          if (effectiveMatchId == null ||
+                              effectiveMessageId == null) {
+                            return;
+                          }
                           await chatSvc.setReaction(
                             matchId: effectiveMatchId,
                             messageId: effectiveMessageId,
                             reaction: emoji,
                           );
-                          try { ref.invalidate(chatMessagesProvider(effectiveMatchId)); } catch (_) {}
+                          try {
+                            ref.invalidate(
+                              chatMessagesProvider(effectiveMatchId),
+                            );
+                          } catch (_) {}
                         } catch (e) {
-                          debugPrint('setReaction failed in picker for message $effectiveMessageId: $e');
-                          try { scaffoldMessenger.showSnackBar(SnackBar(content: Text(l10n.getString('generalError')))); } catch (_) {}
+                          print('setReaction failed in picker: $e');
+                          try {
+                            scaffoldMessenger.showSnackBar(
+                              SnackBar(
+                                content: Text(l10n.getString('generalError')),
+                              ),
+                            );
+                          } catch (_) {}
                         }
                       },
                       child: Container(
@@ -121,25 +137,54 @@ Future<void> showReactionPicker(
                           height: MediaQuery.of(context).size.height * 0.75,
                           decoration: const BoxDecoration(
                             color: Colors.white,
-                            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                            borderRadius: BorderRadius.vertical(
+                              top: Radius.circular(20),
+                            ),
                           ),
-                          child: EmojiPicker(
-                            onEmojiSelected: (category, emoji) async {
-                              final scaffoldMessenger = ScaffoldMessenger.of(context);
-                              final l10n = ref.read(localizationProvider);
-                              Navigator.pop(context);
-                              await _recordEmojiUse(emoji.emoji);
+                          child: DefaultTextStyle(
+                            style: withEmojiFallback(
+                              Theme.of(context).textTheme.bodyMedium ??
+                                  const TextStyle(fontSize: 28),
+                            ),
+                            child: EmojiPicker(
+                              onEmojiSelected: (category, emoji) async {
+                                final scaffoldMessenger =
+                                    ScaffoldMessenger.of(context);
+                                final l10n = ref.read(localizationProvider);
+                                Navigator.pop(context);
+                                await _recordEmojiUse(
+                                  ensureEmojiPresentation(emoji.emoji),
+                                );
                               try {
-                                if (effectiveMatchId == null || effectiveMessageId == null) return;
+                                if (effectiveMatchId == null ||
+                                    effectiveMessageId == null) {
+                                  return;
+                                }
                                 await chatSvc.setReaction(
                                   matchId: effectiveMatchId,
                                   messageId: effectiveMessageId,
-                                  reaction: emoji.emoji,
+                                  reaction: ensureEmojiPresentation(
+                                    emoji.emoji,
+                                  ),
                                 );
-                                try { ref.invalidate(chatMessagesProvider(effectiveMatchId)); } catch (_) {}
+                                try {
+                                  ref.invalidate(
+                                    chatMessagesProvider(effectiveMatchId),
+                                  );
+                                } catch (_) {}
                               } catch (e) {
-                                debugPrint('setReaction failed in picker custom emoji for message $effectiveMessageId: $e');
-                                try { scaffoldMessenger.showSnackBar(SnackBar(content: Text(l10n.getString('generalError')))); } catch (_) {}
+                                print(
+                                  'setReaction failed in picker custom emoji: $e',
+                                );
+                                try {
+                                  scaffoldMessenger.showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        l10n.getString('generalError'),
+                                      ),
+                                    ),
+                                  );
+                                } catch (_) {}
                               }
                             },
                             config: Config(
@@ -150,9 +195,14 @@ Future<void> showReactionPicker(
                                 backgroundColor: Theme.of(context).cardColor,
                               ),
                               categoryViewConfig: CategoryViewConfig(
-                                indicatorColor: Theme.of(context).colorScheme.primary,
-                                iconColorSelected: Theme.of(context).colorScheme.primary,
+                                indicatorColor: Theme.of(
+                                  context,
+                                ).colorScheme.primary,
+                                iconColorSelected: Theme.of(
+                                  context,
+                                ).colorScheme.primary,
                               ),
+                            ),
                             ),
                           ),
                         ),
@@ -173,7 +223,11 @@ Future<void> showReactionPicker(
                         ],
                       ),
                       alignment: Alignment.center,
-                      child: const Icon(Icons.add, size: 28, color: Colors.grey),
+                      child: const Icon(
+                        Icons.add,
+                        size: 28,
+                        color: Colors.grey,
+                      ),
                     ),
                   ),
                 ),
@@ -192,12 +246,20 @@ Future<void> showReactorsSheet(
   String matchId,
   String messageId,
   String emoji, {
-  Future<List<Map<String, dynamic>>> Function(String messageId, String reaction)? getReactorsFn,
+  Future<List<Map<String, dynamic>>> Function(
+    String messageId,
+    String reaction,
+  )?
+  getReactorsFn,
   Map<String, int>? reactionSummary,
 }) async {
   final chatSvc = ref.read(chatServiceProvider);
+  final l10n = ref.read(localizationProvider);
 
-  final fetch = getReactorsFn ?? ((String mid, String r) => chatSvc.getReactors(messageId: mid, reaction: r));
+  final fetch =
+      getReactorsFn ??
+      ((String mid, String r) =>
+          chatSvc.getReactors(messageId: mid, reaction: r));
 
   final reactors = await fetch(messageId, emoji);
   if (!context.mounted) return;
@@ -212,11 +274,21 @@ Future<void> showReactorsSheet(
             padding: const EdgeInsets.all(12.0),
             child: Column(
               children: [
-                Text('$emoji — ${reactors.length}'),
+                Text(
+                  l10n.getString(
+                    'chatReactorsHeader',
+                    params: {
+                      'emoji': emoji,
+                      'count': reactors.length.toString(),
+                    },
+                  ),
+                ),
                 const SizedBox(height: 8),
                 for (var r in reactors)
                   ListTile(
-                    leading: CircleAvatar(backgroundImage: NetworkImage(r['avatar_url'] ?? '')),
+                    leading: _ReactionAvatar(
+                      avatarUrl: r['avatar_url']?.toString(),
+                    ),
                     title: Text(r['full_name'] ?? r['user_id'] ?? ''),
                     subtitle: Text(r['pronouns'] ?? ''),
                   ),
@@ -227,4 +299,32 @@ Future<void> showReactorsSheet(
       );
     },
   );
+}
+
+class _ReactionAvatar extends StatelessWidget {
+  final String? avatarUrl;
+
+  const _ReactionAvatar({this.avatarUrl});
+
+  @override
+  Widget build(BuildContext context) {
+    final source = avatarUrl?.trim() ?? '';
+    if (source.isEmpty) {
+      return const CircleAvatar(child: Icon(Icons.person_outline));
+    }
+
+    return CircleAvatar(
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: ClipOval(
+        child: SignedImage(
+          source: source,
+          width: 40,
+          height: 40,
+          fit: BoxFit.cover,
+          placeholder: const SizedBox.shrink(),
+          errorWidget: const Icon(Icons.person_outline),
+        ),
+      ),
+    );
+  }
 }

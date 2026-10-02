@@ -7,11 +7,7 @@ class PermissionHelper {
     if (!kIsWeb && Platform.isAndroid) {
       final status = await Permission.notification.status;
       if (status.isDenied) {
-        debugPrint('Requesting notification permission...');
-        final result = await Permission.notification.request();
-        debugPrint('Notification permission result: $result');
-      } else {
-        debugPrint('Notification permission status: $status');
+        await Permission.notification.request();
       }
     }
   }

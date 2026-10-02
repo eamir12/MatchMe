@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/services/error_localization_service.dart';
 
 class PhotoConfirmationWidget extends ConsumerWidget {
   final Uint8List photoBytes;
@@ -23,12 +24,7 @@ class PhotoConfirmationWidget extends ConsumerWidget {
       body: Stack(
         children: [
           // Photo preview
-          Positioned.fill(
-            child: Image.memory(
-              photoBytes,
-              fit: BoxFit.contain,
-            ),
-          ),
+          Positioned.fill(child: Image.memory(photoBytes, fit: BoxFit.contain)),
 
           // Top bar
           Positioned(
@@ -47,7 +43,9 @@ class PhotoConfirmationWidget extends ConsumerWidget {
                     ),
                     Expanded(
                       child: Text(
-                        ref.watch(localizationProvider).getString('confirmYourPhoto'),
+                        ref
+                            .watch(localizationProvider)
+                            .getString('confirmYourPhoto'),
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 18,
@@ -79,7 +77,9 @@ class PhotoConfirmationWidget extends ConsumerWidget {
                       child: ElevatedButton.icon(
                         onPressed: onRetake,
                         icon: const Icon(Icons.refresh),
-                        label: Text(ref.watch(localizationProvider).getString('retake')),
+                        label: Text(
+                          ref.watch(localizationProvider).getString('retake'),
+                        ),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.grey.shade700,
                           foregroundColor: Colors.white,
@@ -95,7 +95,9 @@ class PhotoConfirmationWidget extends ConsumerWidget {
                       child: ElevatedButton.icon(
                         onPressed: onConfirm,
                         icon: const Icon(Icons.check),
-                        label: Text(ref.watch(localizationProvider).getString('usePhoto')),
+                        label: Text(
+                          ref.watch(localizationProvider).getString('usePhoto'),
+                        ),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.green,
                           foregroundColor: Colors.white,
@@ -130,7 +132,8 @@ class CameraPreviewWidget extends ConsumerStatefulWidget {
   });
 
   @override
-  ConsumerState<CameraPreviewWidget> createState() => _CameraPreviewWidgetState();
+  ConsumerState<CameraPreviewWidget> createState() =>
+      _CameraPreviewWidgetState();
 }
 
 class _CameraPreviewWidgetState extends ConsumerState<CameraPreviewWidget> {
@@ -151,10 +154,10 @@ class _CameraPreviewWidgetState extends ConsumerState<CameraPreviewWidget> {
         await widget.controller.pausePreview();
         await Future.delayed(const Duration(milliseconds: 300));
         await widget.controller.resumePreview();
-        
+
         // Add additional delay to ensure camera fully resets
         await Future.delayed(const Duration(milliseconds: 200));
-        
+
         // Force a widget rebuild to ensure fresh preview
         if (mounted) {
           setState(() {
@@ -164,7 +167,7 @@ class _CameraPreviewWidgetState extends ConsumerState<CameraPreviewWidget> {
         }
       }
     } catch (e) {
-      debugPrint('Error resetting camera preview: $e');
+      // Ignore camera reset errors
     }
   }
 
@@ -208,18 +211,19 @@ class _CameraPreviewWidgetState extends ConsumerState<CameraPreviewWidget> {
     try {
       final XFile photoFile = await widget.controller.takePicture();
       final Uint8List photoBytes = await photoFile.readAsBytes();
-      
+
       if (!mounted) return;
-      
+
       // Return to verification screen with the photo
       Navigator.pop(context, photoBytes);
-      
     } catch (e) {
-      debugPrint('Error taking photo: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${ref.watch(localizationProvider).getString('errorTakingPhoto')}: $e')),
-        );
+        final l10n = ref.watch(localizationProvider);
+        final errorKey = ErrorLocalizationService.getErrorTranslationKey(e);
+        final errorMessage = l10n.getString(errorKey);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(errorMessage)));
         setState(() {
           _isTakingPhoto = false;
         });
@@ -231,7 +235,7 @@ class _CameraPreviewWidgetState extends ConsumerState<CameraPreviewWidget> {
   Widget build(BuildContext context) {
     // Build children list dynamically to handle conditional countdown overlay
     final List<Widget> children = [];
-    
+
     // Show camera preview - force rebuild when state changes
     children.add(
       // Camera preview - fill screen with proper aspect ratio
@@ -254,7 +258,9 @@ class _CameraPreviewWidgetState extends ConsumerState<CameraPreviewWidget> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              ref.watch(localizationProvider).getString('cameraVerificationInstruction'),
+              ref
+                  .watch(localizationProvider)
+                  .getString('cameraVerificationInstruction'),
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 18,
@@ -287,7 +293,9 @@ class _CameraPreviewWidgetState extends ConsumerState<CameraPreviewWidget> {
         child: AspectRatio(
           aspectRatio: widget.controller.value.aspectRatio,
           child: CustomPaint(
-            painter: FaceGuidePainter(orientation: MediaQuery.of(context).orientation),
+            painter: FaceGuidePainter(
+              orientation: MediaQuery.of(context).orientation,
+            ),
           ),
         ),
       ),
@@ -328,15 +336,23 @@ class _CameraPreviewWidgetState extends ConsumerState<CameraPreviewWidget> {
                           backgroundColor: Colors.transparent,
                           elevation: 0,
                           child: _isTakingPhoto
-                              ? const CircularProgressIndicator(color: Colors.black)
-                              : const Icon(Icons.camera, color: Colors.black, size: 32),
+                              ? const CircularProgressIndicator(
+                                  color: Colors.black,
+                                )
+                              : const Icon(
+                                  Icons.camera,
+                                  color: Colors.black,
+                                  size: 32,
+                                ),
                         ),
                       ),
                       const SizedBox(height: 8),
                       Text(
                         _isCountdownActive
                             ? '${ref.watch(localizationProvider).getString('takingPhotoIn')} $_countdownSeconds...'
-                            : ref.watch(localizationProvider).getString('takePhoto'),
+                            : ref
+                                  .watch(localizationProvider)
+                                  .getString('takePhoto'),
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 16,
@@ -366,15 +382,24 @@ class _CameraPreviewWidgetState extends ConsumerState<CameraPreviewWidget> {
                           backgroundColor: Colors.transparent,
                           elevation: 0,
                           child: _isTakingPhoto
-                              ? const CircularProgressIndicator(color: Colors.black, strokeWidth: 2)
-                              : const Icon(Icons.camera, color: Colors.black, size: 28),
+                              ? const CircularProgressIndicator(
+                                  color: Colors.black,
+                                  strokeWidth: 2,
+                                )
+                              : const Icon(
+                                  Icons.camera,
+                                  color: Colors.black,
+                                  size: 28,
+                                ),
                         ),
                       ),
                       const SizedBox(width: 20),
                       Text(
                         _isCountdownActive
                             ? '${ref.watch(localizationProvider).getString('takingPhotoIn')} $_countdownSeconds...'
-                            : ref.watch(localizationProvider).getString('takePhoto'),
+                            : ref
+                                  .watch(localizationProvider)
+                                  .getString('takePhoto'),
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 16,
@@ -408,7 +433,9 @@ class _CameraPreviewWidgetState extends ConsumerState<CameraPreviewWidget> {
                   child: Text(
                     _countdownSeconds.toString(),
                     style: TextStyle(
-                      fontSize: currentOrientation == Orientation.portrait ? 48 : 36,
+                      fontSize: currentOrientation == Orientation.portrait
+                          ? 48
+                          : 36,
                       fontWeight: FontWeight.bold,
                       color: Colors.black,
                     ),
@@ -443,10 +470,12 @@ class FaceGuidePainter extends CustomPainter {
     // Calculate oval dimensions based on canvas size and orientation
     final centerX = size.width / 2;
     final centerY = size.height / 2;
-    
+
     // Adjust oval size based on orientation for better face fitting
-    final ovalWidth = size.width * (orientation == Orientation.portrait ? 0.6 : 0.4);
-    final ovalHeight = size.height * (orientation == Orientation.portrait ? 0.4 : 0.6);
+    final ovalWidth =
+        size.width * (orientation == Orientation.portrait ? 0.6 : 0.4);
+    final ovalHeight =
+        size.height * (orientation == Orientation.portrait ? 0.4 : 0.6);
 
     // Draw the face guide oval
     canvas.drawOval(

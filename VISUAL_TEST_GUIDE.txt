@@ -1,0 +1,138 @@
+╔════════════════════════════════════════════════════════════════════════════════╗
+║                    ONLINE MAP DEBUG - VISUAL TEST GUIDE                        ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+┌─ STEP 1: BUILD RELEASE APK ─────────────────────────────────────────────────────┐
+│                                                                                  │
+│  Terminal 1:                                                                     │
+│  $ flutter clean                                                                 │
+│  $ flutter build apk --release                                                   │
+│  $ flutter install --release                                                     │
+│                                                                                  │
+│  ⏳ Wait for installation to complete                                            │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ STEP 2: START LOGS ────────────────────────────────────────────────────────────┐
+│                                                                                  │
+│  Terminal 2 (NEW WINDOW):                                                        │
+│  $ flutter logs                                                                  │
+│                                                                                  │
+│  ⏳ Keep this terminal open                                                      │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ STEP 3: OPEN APP ON DEVICE ────────────────────────────────────────────────────┐
+│                                                                                  │
+│  On Your Phone:                                                                  │
+│  1. Close the app completely (swipe away from recent apps)                       │
+│  2. Open the app from home screen                                                │
+│  3. Wait for it to fully load                                                    │
+│                                                                                  │
+│  ⏳ You should see bootstrap logs in Terminal 2                                  │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ STEP 4: NAVIGATE TO ONLINE MAP ────────────────────────────────────────────────┐
+│                                                                                  │
+│  On Your Phone:                                                                  │
+│  1. Tap the "Online" button/tab                                                  │
+│  2. Wait 2-3 seconds                                                             │
+│                                                                                  │
+│  ⏳ Watch Terminal 2 for logs                                                    │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ STEP 5: WATCH FOR LOGS ────────────────────────────────────────────────────────┐
+│                                                                                  │
+│  Terminal 2 should show:                                                         │
+│                                                                                  │
+│  ✅ SUCCESS PATTERN:                                                             │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ 🗺️ OnlineWorldMapScreen: initState called                                 │ │
+│  │ 🗺️ OnlineWorldMapScreen: Calling _refresh from initState                  │ │
+│  │ 🗺️ OnlineWorldMapScreen: _refresh() called                                │ │
+│  │ 🗺️ OnlineWorldMapScreen: _refreshPresence start for user=abc123           │ │
+│  │ ✅ OnlineWorldMapScreen: User activity updated - user marked as ONLINE    │ │
+│  │ 🗺️ OnlineWorldMapScreen: _refresh() - parsed 5 countries with online users│ │
+│  │ 🗺️ OnlineWorldMapScreen: _refresh() - complete                            │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+│  ❌ FAILURE PATTERN:                                                             │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ 🗺️ OnlineWorldMapScreen: initState called                                 │ │
+│  │ 🗺️ OnlineWorldMapScreen: _refreshPresence start for user=abc123           │ │
+│  │ ⚠️ OnlineWorldMapScreen: Location refresh failed: PermissionDeniedException│ │
+│  │ ❌ OnlineWorldMapScreen: CRITICAL - Failed to update user activity: 401   │ │
+│  │ ❌ This is why you don't appear online on the map!                        │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ STEP 6: IDENTIFY THE ISSUE ────────────────────────────────────────────────────┐
+│                                                                                  │
+│  Look for these patterns:                                                        │
+│                                                                                  │
+│  ⚠️ Location refresh failed: PermissionDeniedException                           │
+│     → Grant location permission in Settings                                      │
+│                                                                                  │
+│  ⚠️ Location refresh failed: LocationServiceDisabledException                    │
+│     → Enable location services in Settings                                       │
+│                                                                                  │
+│  ❌ Failed to update user activity: 401 Unauthorized                             │
+│     → Sign out and sign back in                                                  │
+│                                                                                  │
+│  ❌ Failed to update user activity: SocketException                              │
+│     → Check internet connection                                                  │
+│                                                                                  │
+│  ❌ Failed to update user activity: 500 Internal Server Error                    │
+│     → Check Supabase dashboard                                                   │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ STEP 7: SHARE RESULTS ─────────────────────────────────────────────────────────┐
+│                                                                                  │
+│  Copy and share:                                                                 │
+│  1. The complete log output (or screenshot)                                      │
+│  2. Any error messages (look for ❌ or ⚠️)                                       │
+│  3. Whether you see "Online: 0" or a number on the map                           │
+│                                                                                  │
+│  This will help identify the exact issue                                         │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+╔════════════════════════════════════════════════════════════════════════════════╗
+║                              QUICK REFERENCE                                   ║
+╠════════════════════════════════════════════════════════════════════════════════╣
+║                                                                                ║
+║  🗺️  = Information/Flow                                                        ║
+║  ✅ = Success                                                                  ║
+║  ❌ = Critical Error                                                           ║
+║  ⚠️  = Warning                                                                 ║
+║                                                                                ║
+║  If you see ✅ for "User activity updated - user marked as ONLINE"             ║
+║  → You should appear online on the map                                         ║
+║                                                                                ║
+║  If you see ❌ for "Failed to update user activity"                            ║
+║  → That's why you don't appear online                                          ║
+║                                                                                ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+TROUBLESHOOTING:
+
+Q: I don't see any logs with 🗺️
+A: The screen might not be opening. Try:
+   - Make sure you're actually on the Online map
+   - Try: flutter logs | grep "OnlineWorldMapScreen"
+   - Restart the app
+
+Q: Logs are cut off
+A: Scroll up in the terminal or save to file:
+   - flutter logs > logs.txt
+
+Q: App crashes when opening Online map
+A: Check the logs for error messages and share them
+
+Q: Still showing "Online: 0"
+A: Check Supabase directly:
+   SELECT user_id, is_online FROM user_activity WHERE user_id = 'YOUR_ID';

@@ -20,7 +20,9 @@ class SemanticColors extends ThemeExtension<SemanticColors> {
     if (other is! SemanticColors) return this;
     return SemanticColors(
       success: Color.lerp(success, other.success, t) ?? success,
-      successContainer: Color.lerp(successContainer, other.successContainer, t) ?? successContainer,
+      successContainer:
+          Color.lerp(successContainer, other.successContainer, t) ??
+          successContainer,
     );
   }
 }

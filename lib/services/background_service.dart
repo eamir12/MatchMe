@@ -6,24 +6,75 @@ import 'package:flutter/services.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/services/local_db_service.dart';
+import 'package:matchme/services/pinned_location_gate.dart';
+import 'package:matchme/services/offline_cache_manager.dart';
+import 'package:matchme/services/session_registration_coordinator.dart';
 import 'package:matchme/services/session_service.dart';
 import 'package:matchme/services/web_notification_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:matchme/services/user_activity_service.dart';
+import 'package:matchme/utils/offline_utils.dart';
 
 /// Background service that maintains app functionality when UI is closed
 class BackgroundService {
-  static const MethodChannel _channel = MethodChannel('matchme/background_service');
-  static const MethodChannel _mainActivityChannel = MethodChannel('matchme/main_activity');
+  static const MethodChannel _channel = MethodChannel(
+    'matchme/background_service',
+  );
+  static const MethodChannel _mainActivityChannel = MethodChannel(
+    'matchme/main_activity',
+  );
   static const String _serviceName = 'MatchMeBackgroundService';
 
   /// Store localized permission texts for native (post-reboot) notifications.
-  static Future<void> setNativePermissionStrings(Map<String, String> strings) async {
+  static Future<void> setNativePermissionStrings(
+    Map<String, String> strings,
+  ) async {
     if (kIsWeb || !Platform.isAndroid) return;
     try {
       await _channel.invokeMethod('setPermissionStrings', strings);
     } catch (e) {
-      debugPrint('Failed to set native permission strings: $e');
+      // print('Failed to set native permission strings: $e');
     }
+  }
+
+  /// Store localized strings for the persistent "MatchMe Active" foreground
+  /// notification so it appears in the user's chosen display language, and
+  /// refresh the notification if the service is currently in the foreground.
+  static Future<void> setNativeBackgroundNotificationStrings({
+    required String title,
+    required String text,
+  }) async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    try {
+      // Persist via SharedPreferences (flutter.* keys are read by the native
+      // service's createNotification()) for survival across process death /
+      // reboot, and also notify the native side to refresh the live
+      // notification immediately.
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('bgNotificationTitle', title);
+      await prefs.setString('bgNotificationText', text);
+    } catch (_) {}
+    try {
+      await _channel.invokeMethod('setBackgroundNotificationStrings', {
+        'title': title,
+        'text': text,
+      });
+    } catch (_) {
+      // Fallback: at least try to refresh via the dedicated channel.
+      try {
+        await _channel.invokeMethod('refreshBackgroundNotification');
+      } catch (_) {}
+    }
+  }
+
+  /// Ask the native service to re-create its foreground notification (e.g.
+  /// after the display language changed). No-op if the service is not in the
+  /// foreground.
+  static Future<void> refreshNativeBackgroundNotification() async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    try {
+      await _channel.invokeMethod('refreshBackgroundNotification');
+    } catch (_) {}
   }
 
   /// Returns the last permission issue reported by the native background service (if any),
@@ -45,7 +96,7 @@ class BackgroundService {
     try {
       await _channel.invokeMethod('setPermissionIssue', {'code': code});
     } catch (e) {
-      debugPrint('Failed to set native permission issue code: $e');
+      // print('Failed to set native permission issue code: $e');
     }
   }
 
@@ -55,7 +106,7 @@ class BackgroundService {
     try {
       await _channel.invokeMethod('openAppNotificationSettings');
     } catch (e) {
-      debugPrint('Failed to open notification settings: $e');
+      // print('Failed to open notification settings: $e');
     }
   }
 
@@ -68,15 +119,15 @@ class BackgroundService {
     String? matchId,
   }) async {
     if (kIsWeb || !Platform.isAndroid) {
-      debugPrint('🔄 [BACKGROUND] Skipping notification trigger - not Android platform');
+      // print('🔄 [BACKGROUND] Skipping notification trigger - not Android platform');
       return;
     }
     try {
-      debugPrint('🔄 [BACKGROUND] Triggering Android background service notification check for messageId: $messageId');
-      
+      // print('🔄 [BACKGROUND] Triggering Android background service notification check for messageId: $messageId');
+
       // Get the currently viewing chat ID from notification service
       final currentViewingChatId = WebNotificationService.currentViewingChatId;
-      
+
       await _channel.invokeMethod('checkNotifications', {
         'messageId': messageId,
         'translatedContent': translatedContent,
@@ -85,15 +136,15 @@ class BackgroundService {
         'matchId': matchId,
         'currentViewingChatId': currentViewingChatId,
       });
-      debugPrint('🔄 [BACKGROUND] Android background service notification check triggered successfully');
+      // print('🔄 [BACKGROUND] Android background service notification check triggered successfully');
     } catch (e) {
-      debugPrint('🔄 [BACKGROUND] Failed to trigger notification check: $e');
+      // print('🔄 [BACKGROUND] Failed to trigger notification check: $e');
     }
   }
 
   // Service state
   static bool _isRunning = false;
-  static bool _highAccuracyMode = false;
+  static bool _backgroundMatchingMode = false;
   static bool _isOnline = true;
   static Timer? _heartbeatTimer;
   static Timer? _syncTimer;
@@ -101,6 +152,12 @@ class BackgroundService {
   static int? _lastSentGpsInterval;
   static bool? _lastSentSmartThrottlingEnabled;
 
+  // Debouncing for rapid visibility/foreground changes to prevent service restart loops
+  static Timer? _visibilityDebounceTimer;
+  static bool? _pendingVisibilityUpdate;
+  static Timer? _foregroundDebounceTimer;
+  static bool? _pendingForegroundUpdate;
+  static const Duration _debounceDelay = Duration(milliseconds: 500);
 
   // Minimal data needed for background operation
   static String? _userId;
@@ -111,14 +168,16 @@ class BackgroundService {
 
   /// Get initial route from notification launch
   static Future<Map<String, dynamic>?> getInitialRoute() async {
-    if (kIsWeb || Platform.isLinux || Platform.isWindows || Platform.isMacOS) return null;
+    if (kIsWeb || Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
+      return null;
+    }
     try {
       final result = await _mainActivityChannel.invokeMethod('getInitialRoute');
       if (result != null && result is Map) {
         return Map<String, dynamic>.from(result);
       }
     } catch (e) {
-      debugPrint('Error getting initial route: $e');
+      // print('Error getting initial route: $e');
     }
     return null;
   }
@@ -130,8 +189,8 @@ class BackgroundService {
     String? notificationTitle,
     String? notificationText,
   }) async {
-    final initializeStart = DateTime.now();
-    debugPrint('[BG] BackgroundService.initialize: start');
+    final _ = DateTime.now();
+    // print('[BG] BackgroundService.initialize: start');
 
     // Store Supabase config for background service
     if (supabaseUrl != null) _supabaseUrl = supabaseUrl;
@@ -141,27 +200,27 @@ class BackgroundService {
       // Web and desktop platforms don't support background services
       // Use periodic task scheduling as fallback
       _initializeFallbackService();
-      debugPrint('[BG] BackgroundService.initialize: fallback service set (elapsed=${DateTime.now().difference(initializeStart).inMilliseconds}ms)');
+      // print('[BG] BackgroundService.initialize: fallback service set (elapsed=${DateTime.now().difference(initializeStart).inMilliseconds}ms)');
       return;
     }
 
     try {
       // Initialize platform-specific background service
-      debugPrint('[BG] BackgroundService.initialize: invoking native initialize (elapsed=${DateTime.now().difference(initializeStart).inMilliseconds}ms)');
+      // print('[BG] BackgroundService.initialize: invoking native initialize (elapsed=${DateTime.now().difference(initializeStart).inMilliseconds}ms)');
       await _channel.invokeMethod('initialize', {
         'serviceName': _serviceName,
         'notificationTitle': notificationTitle,
         'notificationText': notificationText,
       });
-      debugPrint('[BG] BackgroundService.initialize: native initialize returned (elapsed=${DateTime.now().difference(initializeStart).inMilliseconds}ms)');
+      // print('[BG] BackgroundService.initialize: native initialize returned (elapsed=${DateTime.now().difference(initializeStart).inMilliseconds}ms)');
 
       // Set up method call handler for communication from native side
       _channel.setMethodCallHandler(_handleMethodCall);
-      debugPrint('[BG] BackgroundService.initialize: setMethodCallHandler done (elapsed=${DateTime.now().difference(initializeStart).inMilliseconds}ms)');
+      // print('[BG] BackgroundService.initialize: setMethodCallHandler done (elapsed=${DateTime.now().difference(initializeStart).inMilliseconds}ms)');
 
-      debugPrint('[BG] Background service initialized successfully (total_elapsed=${DateTime.now().difference(initializeStart).inMilliseconds}ms)');
-    } catch (e, st) {
-      debugPrint('[BG] Failed to initialize background service: $e\n$st (elapsed=${DateTime.now().difference(initializeStart).inMilliseconds}ms)');
+      // print('[BG] Background service initialized successfully (total_elapsed=${DateTime.now().difference(initializeStart).inMilliseconds}ms)');
+    } catch (_) {
+      // print('[BG] Failed to initialize background service: $e\n$st (elapsed=${DateTime.now().difference(initializeStart).inMilliseconds}ms)');
       _initializeFallbackService();
     }
   }
@@ -171,20 +230,29 @@ class BackgroundService {
   ///
   /// Returns a permission-issue code if the native start failed due to a missing permission.
   static Future<String?> start() async {
-    final startStart = DateTime.now();
-    debugPrint('[BG] BackgroundService.start: start');
+    final _ = DateTime.now();
+    debugPrint(
+      '🔍 [BG] BackgroundService.start: entered (isRunning=$_isRunning)',
+    );
 
     if (_isRunning) return null;
+    if (offlineCacheManager.shouldUseCachedData()) {
+      debugPrint(
+        '🔍 [BG] BackgroundService.start: skipped (offline cache mode active)',
+      );
+      return null;
+    }
 
-    // Load High Accuracy Mode preference from local storage before starting
+    // Load Background Matching Mode preference from local storage before starting.
+    // Default true to match UserPreferencesState + DB default for new users.
     try {
       if (!kIsWeb) {
         final prefs = await SharedPreferences.getInstance();
-        _highAccuracyMode = prefs.getBool('flutter.high_accuracy_mode') ?? false;
-        debugPrint('[BG] BackgroundService.start: loaded highAccuracyMode=$_highAccuracyMode');
+        _backgroundMatchingMode =
+            prefs.getBool('flutter.background_matching_mode') ?? true;
       }
     } catch (e) {
-      debugPrint('[BG] BackgroundService.start: failed to load highAccuracyMode: $e');
+      // print('[BG] BackgroundService.start: failed to load backgroundMatchingMode: $e');
     }
 
     final user = Supabase.instance.client.auth.currentUser;
@@ -193,30 +261,48 @@ class BackgroundService {
     _userId = user.id;
     // Get the current session and refresh token if needed
     final session = Supabase.instance.client.auth.currentSession;
-    debugPrint('[BG] BackgroundService.start: session present=${session != null} (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
+    // print('[BG] BackgroundService.start: session present=${session != null} (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
     if (session != null) {
       // Check if token is expired and refresh if needed
       final now = DateTime.now().millisecondsSinceEpoch / 1000;
       if (session.expiresAt != null && session.expiresAt! < now) {
+        // POLICY: never auto-sign-out here. An expired token only means
+        // the background service skips its network work until a refresh
+        // succeeds; the user's login state is untouched. Only
+        // auth.forced_sign_out_days or an explicit UI logout may sign out.
         if (kIsWeb) {
-          try {
-            await Supabase.instance.client.auth.signOut(scope: SignOutScope.local);
-          } catch (_) {}
+          unawaited(
+            SessionService.persistSignOutReason(
+              reason: 'Token expired on web (kept session)',
+              source: 'backgroundService',
+            ),
+          );
           return null;
         }
-        try {
-          debugPrint('[BG] BackgroundService.start: refreshing session (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
-          await Supabase.instance.client.auth.refreshSession();
-          final refreshedSession = Supabase.instance.client.auth.currentSession;
-          _userToken = refreshedSession?.accessToken;
-          // Update refresh token to the new one from the refreshed session
-          if (refreshedSession?.refreshToken != null) {
-            _refreshToken = refreshedSession!.refreshToken;
+        if (offlineCacheManager.shouldUseCachedData()) {
+          // print('[BG] BackgroundService.start: session expired but device is offline, keeping cached token');
+          _userToken = session.accessToken;
+        } else {
+          try {
+            await SessionService.safeRefreshSession();
+            final refreshedSession =
+                Supabase.instance.client.auth.currentSession;
+            _userToken = refreshedSession?.accessToken ?? session.accessToken;
+            if (refreshedSession?.refreshToken != null) {
+              _refreshToken = refreshedSession!.refreshToken;
+            }
+          } catch (e) {
+            final lower = e.toString().toLowerCase();
+            if (lower.contains('refresh_token_already_used') ||
+                lower.contains('already used')) {
+              // Native may have refreshed, use latest from currentSession
+              final s = Supabase.instance.client.auth.currentSession;
+              _userToken = s?.accessToken ?? session.accessToken;
+              _refreshToken = s?.refreshToken ?? session.refreshToken;
+            } else {
+              _userToken = session.accessToken;
+            }
           }
-          debugPrint('[BG] BackgroundService.start: refreshed token=${_userToken != null} (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
-        } catch (e) {
-          debugPrint('[BG] BackgroundService.start: Failed to refresh token: $e (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
-          _userToken = session.accessToken; // Use existing token as fallback
         }
       } else {
         _userToken = session.accessToken;
@@ -227,49 +313,74 @@ class BackgroundService {
       _refreshToken ??= session.refreshToken;
 
       // Try to register session on server (best effort) — defer to avoid blocking startup
+      // Always update user_session with country, even if offline or invisible
       try {
         final user = Supabase.instance.client.auth.currentUser;
         if (user != null) {
-          final platformText = kIsWeb ? 'web' : (Platform.isAndroid ? 'android' : (Platform.isIOS ? 'ios' : 'unknown'));
-          debugPrint('[BG] BackgroundService.start: scheduling async registerSession (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
-          unawaited(() async {
-            debugPrint('[BG] BackgroundService.start: async registerSession start');
-            try {
-              await SessionService.registerSession(user.id, platform: platformText);
-              debugPrint('[BG] BackgroundService.start: async registerSession done');
-            } catch (e, st) {
-              debugPrint('[BG] BackgroundService.start: async registerSession failed: $e\n$st');
-            }
-          }());
+          final platformText = kIsWeb
+              ? 'web'
+              : (Platform.isAndroid
+                    ? 'android'
+                    : (Platform.isIOS ? 'ios' : 'unknown'));
+          // print('[BG] BackgroundService.start: scheduling async registerSession (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
+          SessionRegistrationCoordinator.instance.schedule(
+            userId: user.id,
+            platform: platformText,
+            source: 'background-service-start',
+          );
         }
-      } catch (e, st) {
-        debugPrint('[BG] BackgroundService.start: Background upsert_user_session scheduling failed: $e\n$st (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
+      } catch (_) {
+        // print('[BG] BackgroundService.start: Background upsert_user_session scheduling failed: $e\n$st (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
       }
 
-      debugPrint('[BG] BackgroundService.start: token present=${_userToken != null} (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
+      // print('[BG] BackgroundService.start: token present=${_userToken != null} (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
     } else {
-      debugPrint('[BG] BackgroundService.start: No session found for background service (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
+      // print('[BG] BackgroundService.start: No session found for background service (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
     }
     // Supabase config should already be set during initialization
 
     try {
-      if (kIsWeb || Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
+      if (kIsWeb ||
+          Platform.isLinux ||
+          Platform.isWindows ||
+          Platform.isMacOS) {
         _startFallbackService();
-        debugPrint('[BG] BackgroundService.start: started fallback service (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
+        // print('[BG] BackgroundService.start: started fallback service (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
       } else {
         // Ensure HTTPS URL
-        final httpsUrl = _supabaseUrl?.startsWith('https://') == true ? _supabaseUrl : 'https://${_supabaseUrl?.replaceFirst('http://', '')}';
+        final httpsUrl = _supabaseUrl?.startsWith('https://') == true
+            ? _supabaseUrl
+            : 'https://${_supabaseUrl?.replaceFirst('http://', '')}';
 
-        // Load High Accuracy Mode preference from local storage before starting
+        // Load Background Matching Mode preference from local storage before starting.
+        // Default true to match UserPreferencesState + DB default for new users.
         try {
           if (!kIsWeb) {
             final prefs = await SharedPreferences.getInstance();
-            _highAccuracyMode = prefs.getBool('flutter.high_accuracy_mode') ?? false;
-            debugPrint('[BG] BackgroundService.start: loaded highAccuracyMode=$_highAccuracyMode');
+            _backgroundMatchingMode =
+                prefs.getBool('flutter.background_matching_mode') ?? true;
           }
-        } catch (e) {
-          debugPrint('[BG] BackgroundService.start: failed to load highAccuracyMode: $e');
-        }
+        } catch (e) {}
+
+        // Load GPS interval and smart throttling so native service starts at correct rate
+        int gpsInterval = 5;
+        bool smartThrottlingEnabled = true;
+        try {
+          if (!kIsWeb) {
+            final prefs = await SharedPreferences.getInstance();
+            gpsInterval =
+                prefs.getInt('flutter.gps_interval') ??
+                prefs.getInt('gps_interval') ??
+                5;
+            smartThrottlingEnabled =
+                prefs.getBool('flutter.smart_throttling_enabled') ??
+                prefs.getBool('smart_throttling_enabled') ??
+                true;
+            if (gpsInterval <= 0) gpsInterval = 5;
+            _lastSentGpsInterval = gpsInterval;
+            _lastSentSmartThrottlingEnabled = smartThrottlingEnabled;
+          }
+        } catch (e) {}
 
         // Load visibility preference
         bool isVisible = true;
@@ -278,14 +389,43 @@ class BackgroundService {
           // Prioritize effective visibility (persisted by VisibilityProvider) if available
           if (prefs.containsKey('effective_visibility')) {
             isVisible = prefs.getBool('effective_visibility') ?? true;
-            debugPrint('[BG] BackgroundService.start: loaded effective visibility=$isVisible');
+            // print('[BG] BackgroundService.start: loaded effective visibility=$isVisible');
           } else {
             // Fallback to manual visibility or default
             isVisible = prefs.getBool('manual_visibility') ?? true;
-            debugPrint('[BG] BackgroundService.start: loaded manual visibility=$isVisible');
+            // print('[BG] BackgroundService.start: loaded manual visibility=$isVisible');
           }
         } catch (e) {
-          debugPrint('[BG] BackgroundService.start: failed to load visibility: $e');
+          // print('[BG] BackgroundService.start: failed to load visibility: $e');
+        }
+
+        // A user whose profile is not complete yet (e.g. still in the
+        // onboarding wizard) has never made a visibility choice and is not
+        // part of the matching pool. Never start the native service in a
+        // visible state for them — otherwise the persistent "MatchMe Active"
+        // foreground notification appears as soon as the app is backgrounded.
+        if (isVisible) {
+          try {
+            final userId = Supabase.instance.client.auth.currentUser?.id;
+            if (userId != null) {
+              final localDb = await LocalDbService.instance;
+              final localProfile = await localDb.getLocalProfile(userId);
+              final raw =
+                  localProfile?['isProfileComplete'] ??
+                  localProfile?['is_profile_complete'];
+              final profileComplete =
+                  raw != null &&
+                  (raw == true || raw.toString().toLowerCase() == 'true');
+              if (!profileComplete) {
+                debugPrint(
+                  '🔍 [BG] BackgroundService.start: profile not complete, starting invisible',
+                );
+                isVisible = false;
+              }
+            }
+          } catch (e) {
+            // ignore — fall back to the pref-derived visibility
+          }
         }
 
         // Check initial connectivity
@@ -294,39 +434,61 @@ class BackgroundService {
           final health = await getCurrentConnectivityHealth();
           isOnline = health.isOnline;
           _isOnline = isOnline;
-          debugPrint('[BG] BackgroundService.start: initial isOnline=$isOnline');
-          
+          // print('[BG] BackgroundService.start: initial isOnline=$isOnline');
+
           _connectivitySubscription?.cancel();
-          _connectivitySubscription = createConnectivityHealthStream().listen((health) {
+          _connectivitySubscription = createConnectivityHealthStream().listen((
+            health,
+          ) {
             _handleConnectivityChange(health);
           });
         } catch (e) {
-          debugPrint('[BG] BackgroundService.start: failed to check connectivity: $e');
+          // print('[BG] BackgroundService.start: failed to check connectivity: $e');
         }
 
         // Start platform-specific background service
-        debugPrint('[BG] BackgroundService.start: invoking native startService (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
-        final result = await _channel.invokeMethod('startService', {
+        debugPrint(
+          '🔍 [BG] BackgroundService.start: invoking native startService interval=$gpsInterval throttling=$smartThrottlingEnabled',
+        );
+        final _ = await _channel.invokeMethod('startService', {
           'userId': _userId,
           'supabaseUrl': httpsUrl,
           'supabaseKey': _supabaseKey,
           'userToken': _userToken,
           'refreshToken': _refreshToken,
-          'highAccuracyMode': _highAccuracyMode,
+          'backgroundMatchingMode': _backgroundMatchingMode,
           'isVisible': isVisible,
           'isOnline': isOnline,
+          'gpsInterval': gpsInterval,
+          'smartThrottlingEnabled': smartThrottlingEnabled,
           // Inform native code that the UI is currently open. This allows the service to
           // avoid leaving the persistent foreground notification visible after cold starts.
           'appInForeground': true,
         });
-        debugPrint('[BG] BackgroundService.start: native startService returned result=$result (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
+
+        // Immediately dump what the native service logged during startup so the
+        // flutter console (which filters out non-"flutter" log tags) can show it.
+        try {
+          final diag = await _channel.invokeMethod('getDiagnostics');
+          if (diag is List) {
+            debugPrint(
+              '🔍 Native background service diagnostics (after start):',
+            );
+            for (final line in diag) {
+              debugPrint('🔍   $line');
+            }
+          }
+        } catch (e) {
+          debugPrint('🔍 [BG] getDiagnostics after start failed: $e');
+        }
+        // print('[BG] BackgroundService.start: native startService returned result=$_ (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
       }
 
       _isRunning = true;
-      debugPrint('[BG] BackgroundService.start: Background service started (total_elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
+      // print('[BG] BackgroundService.start: Background service started (total_elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
       return null;
-    } catch (e, st) {
-      debugPrint('[BG] BackgroundService.start: Failed to start background service: $e\n$st (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
+    } catch (e) {
+      // print('[BG] BackgroundService.start: Failed to start background service: $e\n$_ (elapsed=${DateTime.now().difference(startStart).inMilliseconds}ms)');
 
       // If the native layer rejected the call due to missing permissions, record it so the UI can prompt.
       String? issue;
@@ -345,29 +507,45 @@ class BackgroundService {
     final shouldAttemptNativeStop = !kIsWeb && Platform.isAndroid;
     if (!_isRunning && !shouldAttemptNativeStop) return;
 
+    // Cancel any pending debounced updates
+    _visibilityDebounceTimer?.cancel();
+    _visibilityDebounceTimer = null;
+    _pendingVisibilityUpdate = null;
+    _foregroundDebounceTimer?.cancel();
+    _foregroundDebounceTimer = null;
+    _pendingForegroundUpdate = null;
+
     // Use RPC to mark the user offline; do NOT modify the user's manual visibility setting here
     try {
-      final targetUserId = _userId ?? Supabase.instance.client.auth.currentUser?.id;
+      final targetUserId =
+          _userId ?? Supabase.instance.client.auth.currentUser?.id;
       if (targetUserId != null) {
-        debugPrint('BackgroundService.stop: marking user offline via RPC for $targetUserId');
+        // print('BackgroundService.stop: marking user offline via RPC for $targetUserId');
       }
     } catch (e) {
-      debugPrint('BackgroundService.stop: failed to mark offline (RPC may handle this): $e');
+      // print('BackgroundService.stop: failed to mark offline (RPC may handle this): $e');
     }
 
     // Also try to mark the user's presence offline immediately via RPC
     try {
-      final targetUserId = _userId ?? Supabase.instance.client.auth.currentUser?.id;
+      final targetUserId =
+          _userId ?? Supabase.instance.client.auth.currentUser?.id;
       if (targetUserId != null) {
-        await Supabase.instance.client.rpc('set_user_offline', params: {'p_user_id': targetUserId});
-        debugPrint('BackgroundService.stop: set_user_offline RPC called for $targetUserId');
+        await Supabase.instance.client.rpc(
+          'set_user_offline',
+          params: {'p_user_id': targetUserId},
+        );
+        // print('BackgroundService.stop: set_user_offline RPC called for $targetUserId');
       }
     } catch (e) {
-      debugPrint('BackgroundService.stop: set_user_offline RPC failed: $e');
+      // print('BackgroundService.stop: set_user_offline RPC failed: $e');
     }
 
     try {
-      if (kIsWeb || Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
+      if (kIsWeb ||
+          Platform.isLinux ||
+          Platform.isWindows ||
+          Platform.isMacOS) {
         _stopFallbackService();
       } else {
         await _channel.invokeMethod('stopService');
@@ -382,14 +560,16 @@ class BackgroundService {
       _syncTimer = null;
       _connectivitySubscription = null;
 
-
       // Clear sensitive memory
       _userId = null;
       _userToken = null;
+      _refreshToken = null;
+      _supabaseUrl = null;
+      _supabaseKey = null;
 
-      debugPrint('Background service stopped and cleaned up');
+      // print('Background service stopped and cleaned up');
     } catch (e) {
-      debugPrint('Failed to stop background service: $e');
+      // print('Failed to stop background service: $e');
       _stopFallbackService();
     }
   }
@@ -397,7 +577,10 @@ class BackgroundService {
   /// Check if background service is running
   static Future<bool> isRunning() async {
     try {
-      if (kIsWeb || Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
+      if (kIsWeb ||
+          Platform.isLinux ||
+          Platform.isWindows ||
+          Platform.isMacOS) {
         return _isRunning;
       }
       final result = await _channel.invokeMethod('isRunning');
@@ -407,19 +590,61 @@ class BackgroundService {
     }
   }
 
+  /// Fetch the native service's in-memory event log (last ~300 events) plus
+  /// whether the service process is alive. Used for diagnosing background
+  /// GPS/matching issues after the app resumes.
+  static Future<List<String>> getDiagnostics() async {
+    try {
+      if (kIsWeb ||
+          Platform.isLinux ||
+          Platform.isWindows ||
+          Platform.isMacOS) {
+        return const [];
+      }
+      final result = await _channel.invokeMethod('getDiagnostics');
+      if (result is List) {
+        return result.map((e) => e.toString()).toList();
+      }
+      return const [];
+    } catch (e) {
+      return ['Failed to fetch diagnostics: $e'];
+    }
+  }
+
   /// Update user visibility status in background
+  /// Debounced to prevent rapid stop/start cycles when visibility toggles
   static Future<void> updateVisibility(bool isVisible) async {
     try {
-      if (kIsWeb || Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
+      if (kIsWeb ||
+          Platform.isLinux ||
+          Platform.isWindows ||
+          Platform.isMacOS) {
         return;
       }
-      try {
-        await _channel.invokeMethod('updateVisibility', {'isVisible': isVisible});
-      } catch (e) {
-        debugPrint('Native updateVisibility failed: $e');
-      }
+
+      _pendingVisibilityUpdate = isVisible;
+
+      // Cancel existing debounce timer
+      _visibilityDebounceTimer?.cancel();
+
+      // Set up new debounce timer
+      _visibilityDebounceTimer = Timer(_debounceDelay, () async {
+        final updateValue = _pendingVisibilityUpdate;
+        _visibilityDebounceTimer = null;
+        _pendingVisibilityUpdate = null;
+
+        if (updateValue == null) return;
+
+        try {
+          await _channel.invokeMethod('updateVisibility', {
+            'isVisible': updateValue,
+          });
+        } catch (e) {
+          // print('Native updateVisibility failed: $e');
+        }
+      });
     } catch (e) {
-      debugPrint('Failed to update visibility in background: $e');
+      // print('Failed to update visibility in background: $e');
     }
   }
 
@@ -427,44 +652,95 @@ class BackgroundService {
   ///
   /// On Android, this lets us hide the persistent foreground-service notification while the
   /// app is open, and re-enable foreground mode when the app is backgrounded.
+  /// Debounced to prevent rapid stop/start cycles during provider initialization.
   static Future<void> updateAppForeground(bool isForeground) async {
     try {
-      if (kIsWeb || Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
+      if (kIsWeb ||
+          Platform.isLinux ||
+          Platform.isWindows ||
+          Platform.isMacOS) {
         return;
       }
-      await _channel.invokeMethod('updateAppForeground', {'isForeground': isForeground});
+
+      _pendingForegroundUpdate = isForeground;
+
+      // Cancel existing debounce timer
+      _foregroundDebounceTimer?.cancel();
+
+      // Set up new debounce timer
+      _foregroundDebounceTimer = Timer(_debounceDelay, () async {
+        final updateValue = _pendingForegroundUpdate;
+        _foregroundDebounceTimer = null;
+        _pendingForegroundUpdate = null;
+
+        if (updateValue == null) return;
+
+        try {
+          await _channel.invokeMethod('updateAppForeground', {
+            'isForeground': updateValue,
+          });
+        } catch (e) {
+          // print('BackgroundService.updateAppForeground failed: $e');
+        }
+      });
     } catch (e) {
-      debugPrint('BackgroundService.updateAppForeground failed: $e');
+      // print('BackgroundService.updateAppForeground failed: $e');
     }
   }
 
-  /// Update High Accuracy Mode setting
+  /// Update Background Matching Mode setting
   ///
   /// When enabled, the Android service runs as a Foreground Service with a persistent notification
-  /// to ensure continuous execution.
+  /// to ensure continuous background matching and online presence.
   /// When disabled (Standard Mode), the service behaves like a standard social app (no persistent notification),
   /// which may result in process death when backgrounded.
-  static Future<void> updateHighAccuracyMode(bool enabled) async {
-    _highAccuracyMode = enabled;
+  static Future<void> updateBackgroundMatchingMode(bool enabled) async {
+    _backgroundMatchingMode = enabled;
     try {
-      if (!kIsWeb && !Platform.isLinux && !Platform.isWindows && !Platform.isMacOS) {
-        await _channel.invokeMethod('updateHighAccuracyMode', {
+      if (!kIsWeb &&
+          !Platform.isLinux &&
+          !Platform.isWindows &&
+          !Platform.isMacOS) {
+        await _channel.invokeMethod('updateBackgroundMatchingMode', {
           'enabled': enabled,
         });
-        
-        // If mode changed to disabled and app is in background, native side should stop service
-        // If mode changed to enabled and app is in background, native side should start service
       }
     } catch (e) {
-      debugPrint('BackgroundService.updateHighAccuracyMode failed: $e');
+      // print('BackgroundService.updateBackgroundMatchingMode failed: $e');
     }
+  }
+
+  /// Tell the native service that the pinned home-base changed (pin / unpin /
+  /// expire) so it can re-evaluate the foreground notification and GPS
+  /// polling immediately. While a pin is active the native side suppresses
+  /// the persistent notification and stops accessing GPS; matching continues
+  /// server-side and chat notifications still arrive via FCM.
+  /// No-op off Android; failures are swallowed like the other signals.
+  static Future<void> notifyPinnedStateChanged() async {
+    try {
+      if (kIsWeb ||
+          Platform.isLinux ||
+          Platform.isWindows ||
+          Platform.isMacOS) {
+        return;
+      }
+      await _channel.invokeMethod('updatePinnedState');
+    } catch (_) {}
   }
 
   /// Update background service configuration (GPS interval, throttling)
-  static Future<void> updateConfig({required int gpsInterval, required bool smartThrottlingEnabled}) async {
+  static Future<void> updateConfig({
+    required int gpsInterval,
+    required bool smartThrottlingEnabled,
+    bool force = false,
+  }) async {
     try {
-      if (!kIsWeb && !Platform.isLinux && !Platform.isWindows && !Platform.isMacOS) {
-        if (_lastSentGpsInterval == gpsInterval &&
+      if (!kIsWeb &&
+          !Platform.isLinux &&
+          !Platform.isWindows &&
+          !Platform.isMacOS) {
+        if (!force &&
+            _lastSentGpsInterval == gpsInterval &&
             _lastSentSmartThrottlingEnabled == smartThrottlingEnabled) {
           return;
         }
@@ -474,33 +750,46 @@ class BackgroundService {
         });
         _lastSentGpsInterval = gpsInterval;
         _lastSentSmartThrottlingEnabled = smartThrottlingEnabled;
-        debugPrint('Background service config updated: interval=$gpsInterval, throttling=$smartThrottlingEnabled');
+        // print('Background service config updated: interval=$gpsInterval, throttling=$smartThrottlingEnabled');
       }
     } catch (e) {
-      debugPrint('Failed to update background service config: $e');
+      // print('Failed to update background service config: $e');
     }
   }
 
   /// Update JWT token in background service (call when token is refreshed)
   static Future<void> updateToken(String? token, {String? refreshToken}) async {
-    _userToken = token;
-    if (refreshToken != null && refreshToken.isNotEmpty) {
-      _refreshToken = refreshToken;
+    final normalizedToken = token?.trim();
+    final normalizedRefreshToken = refreshToken?.trim();
+    final previousToken = _userToken;
+    final previousRefreshToken = _refreshToken;
+    final nextRefreshToken = normalizedToken == null && refreshToken == null
+        ? null
+        : (normalizedRefreshToken != null && normalizedRefreshToken.isNotEmpty
+              ? normalizedRefreshToken
+              : previousRefreshToken);
+    if (previousToken == normalizedToken &&
+        previousRefreshToken == nextRefreshToken) {
+      // print('Background service token update skipped: credentials unchanged');
+      return;
     }
-    debugPrint(
-      'Background service token update: token present=${token != null}; refreshToken present=${_refreshToken != null}',
-    );
+    _userToken = normalizedToken;
+    _refreshToken = nextRefreshToken;
+    // Token update logging disabled
     try {
-      if (!kIsWeb && !Platform.isLinux && !Platform.isWindows && !Platform.isMacOS) {
-        final result = await _channel.invokeMethod('updateToken', {
-          'token': token,
+      if (!kIsWeb &&
+          !Platform.isLinux &&
+          !Platform.isWindows &&
+          !Platform.isMacOS) {
+        final _ = await _channel.invokeMethod('updateToken', {
+          'token': normalizedToken,
           'refreshToken': _refreshToken,
         });
-        debugPrint('Background service token update result: $result');
+        // print('Background service token update result: $result');
       }
-      debugPrint('Updated JWT token in background service successfully');
+      // print('Updated JWT token in background service successfully');
     } catch (e) {
-      debugPrint('Failed to update token in background service: $e');
+      // print('Failed to update token in background service: $e');
     }
   }
 
@@ -508,7 +797,8 @@ class BackgroundService {
   static Future<bool> isIgnoringBatteryOptimizations() async {
     if (kIsWeb || !Platform.isAndroid) return true;
     try {
-      return await _channel.invokeMethod('isIgnoringBatteryOptimizations') ?? true;
+      return await _channel.invokeMethod('isIgnoringBatteryOptimizations') ??
+          true;
     } catch (e) {
       return true;
     }
@@ -520,7 +810,64 @@ class BackgroundService {
     try {
       await _channel.invokeMethod('requestIgnoreBatteryOptimizations');
     } catch (e) {
-      debugPrint('Failed to request ignore battery optimizations: $e');
+      // print('Failed to request ignore battery optimizations: $e');
+    }
+  }
+
+  /// Tell the native background service to start broadcasting live location
+  /// updates for the given match. The service reads the persisted session key
+  /// and match metadata from SharedPreferences and writes encrypted position
+  /// updates to the `location_share_positions` table via the Supabase REST API.
+  static Future<void> startLocationShare({
+    required String matchId,
+    required String otherUserId,
+    required String sessionKeyBase64,
+    required int updateIntervalSeconds,
+    String? expiresAtIso,
+  }) async {
+    if (kIsWeb) return;
+    try {
+      await _channel.invokeMethod('startLocationShare', {
+        'matchId': matchId,
+        'otherUserId': otherUserId,
+        'sessionKeyBase64': sessionKeyBase64,
+        'updateIntervalSeconds': updateIntervalSeconds,
+        'expiresAtIso': expiresAtIso,
+      });
+    } catch (e) {
+      // print('Failed to start location share in background: $e');
+    }
+  }
+
+  /// Tell the native background service to stop broadcasting live location
+  /// updates.
+  static Future<void> stopLocationShare() async {
+    if (kIsWeb) return;
+    try {
+      await _channel.invokeMethod('stopLocationShare');
+    } catch (e) {
+      // print('Failed to stop location share in background: $e');
+    }
+  }
+
+  /// Notify the native background service that the location share duration
+  /// has changed. The background service uses [expiresAt] to compute the
+  /// countdown shown in the persistent foreground notification (Android) and
+  /// to decide when to stop broadcasting on native expiry timers (iOS).
+  /// Passing `null` means the share has no expiry (runs until stopped
+  /// manually).
+  ///
+  /// No-op on web: browsers do not expose native foreground notifications or
+  /// background broadcast timers that can be updated from Dart.
+  static Future<void> updateLocationShareDuration(DateTime? expiresAt) async {
+    if (kIsWeb) return;
+    try {
+      await _channel.invokeMethod('updateLocationShareDuration', {
+        'expiresAtIso': expiresAt?.toUtc().toIso8601String(),
+      });
+    } catch (e) {
+      // Swallow: failing to update the native counter does not break the
+      // share itself (the peer still receives the new expiry over Realtime).
     }
   }
 
@@ -529,10 +876,12 @@ class BackgroundService {
   static Future<void> resetChatNotification(String matchId) async {
     if (kIsWeb || !Platform.isAndroid) return;
     try {
-      final result = await _channel.invokeMethod('resetChatNotification', {'matchId': matchId});
-      debugPrint('BackgroundService: resetChatNotification result: $result');
+      final _ = await _channel.invokeMethod('resetChatNotification', {
+        'matchId': matchId,
+      });
+      // print('BackgroundService: resetChatNotification result: $result');
     } catch (e) {
-      debugPrint('Failed to reset chat notification: $e');
+      // print('Failed to reset chat notification: $e');
     }
   }
 
@@ -541,36 +890,52 @@ class BackgroundService {
   static Future<void> dismissChatNotification(String matchId) async {
     if (kIsWeb || !Platform.isAndroid) return;
     try {
-      debugPrint('BackgroundService: Calling dismissChatNotification for matchId: $matchId');
-      final result = await _channel.invokeMethod('dismissChatNotification', {'matchId': matchId});
-      debugPrint('BackgroundService: dismissChatNotification result: $result');
+      // print('BackgroundService: Calling dismissChatNotification for matchId: $matchId');
+      final _ = await _channel.invokeMethod('dismissChatNotification', {
+        'matchId': matchId,
+      });
+      // print('BackgroundService: dismissChatNotification result: $result');
     } catch (e) {
-      debugPrint('Failed to dismiss chat notification: $e');
+      // print('Failed to dismiss chat notification: $e');
     }
   }
 
   /// Notify background service that user is viewing a specific chat (Android only)
-  /// This prevents notifications for that chat while it's being viewed
+  /// This prevents notifications for that chat while it's being viewed.
+  /// Also mirrors to SharedPreferences so the FCM background isolate and
+  /// post-reboot native service can suppress without UI state.
   static Future<void> setViewingChat(String matchId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('flutter.viewing_chat_id', matchId);
+      await prefs.setString('viewing_chat_id', matchId);
+    } catch (_) {}
     if (kIsWeb || !Platform.isAndroid) return;
     try {
-      debugPrint('BackgroundService: Calling setViewingChat for matchId: $matchId');
-      final result = await _channel.invokeMethod('setViewingChat', {'matchId': matchId});
-      debugPrint('BackgroundService: setViewingChat result: $result');
+      // print('BackgroundService: Calling setViewingChat for matchId: $matchId');
+      final _ = await _channel.invokeMethod('setViewingChat', {
+        'matchId': matchId,
+      });
+      // print('BackgroundService: setViewingChat result: $result');
     } catch (e) {
-      debugPrint('Failed to set viewing chat: $e');
+      // print('Failed to set viewing chat: $e');
     }
   }
 
   /// Notify background service that user is no longer viewing any chat (Android only)
   static Future<void> clearViewingChat() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('flutter.viewing_chat_id');
+      await prefs.remove('viewing_chat_id');
+    } catch (_) {}
     if (kIsWeb || !Platform.isAndroid) return;
     try {
-      debugPrint('BackgroundService: Calling clearViewingChat');
-      final result = await _channel.invokeMethod('clearViewingChat');
-      debugPrint('BackgroundService: clearViewingChat result: $result');
+      // print('BackgroundService: Calling clearViewingChat');
+      final _ = await _channel.invokeMethod('clearViewingChat');
+      // print('BackgroundService: clearViewingChat result: $result');
     } catch (e) {
-      debugPrint('Failed to clear viewing chat: $e');
+      // print('Failed to clear viewing chat: $e');
     }
   }
 
@@ -590,13 +955,13 @@ class BackgroundService {
         await _handleBackgroundNewMatch(call.arguments);
         break;
       default:
-        debugPrint('Unknown method call from background service: ${call.method}');
+      // print('Unknown method call from background service: ${call.method}');
     }
   }
 
   /// Initialize fallback service for platforms that don't support background services
   static void _initializeFallbackService() {
-    debugPrint('Using fallback background service (limited functionality)');
+    // print('Using fallback background service (limited functionality)');
   }
 
   /// Start fallback background service
@@ -617,11 +982,13 @@ class BackgroundService {
 
     // Monitor connectivity
     _connectivitySubscription?.cancel();
-    _connectivitySubscription = createConnectivityHealthStream().listen((health) {
+    _connectivitySubscription = createConnectivityHealthStream().listen((
+      health,
+    ) {
       _handleConnectivityChange(health);
     });
 
-    debugPrint('Fallback background service started');
+    // print('Fallback background service started');
   }
 
   /// Stop fallback background service
@@ -633,7 +1000,7 @@ class BackgroundService {
     _heartbeatTimer = null;
     _syncTimer = null;
     _connectivitySubscription = null;
-    debugPrint('Fallback background service stopped');
+    // print('Fallback background service stopped');
   }
 
   /// Background heartbeat to keep user online
@@ -641,13 +1008,10 @@ class BackgroundService {
     if (_userId == null) return;
     if (!_isOnline) return;
 
-    try {
-      final hbStart = DateTime.now();
-      await Supabase.instance.client.rpc('update_user_activity', params: <String, dynamic>{'p_user_id': _userId});
-      debugPrint('[BG] _backgroundHeartbeat: update_user_activity completed (elapsed=${DateTime.now().difference(hbStart).inMilliseconds}ms)');
-    } catch (e) {
-      debugPrint('Background heartbeat failed: $e');
-    }
+    await UserActivityService.instance.pingIfDue(
+      _userId!,
+      source: 'bg-heartbeat',
+    );
   }
 
   /// Background sync operations
@@ -656,24 +1020,28 @@ class BackgroundService {
     if (!_isOnline) return;
 
     try {
-      final syncStart = DateTime.now();
-
       // Sync matches
-      final matchesStart = DateTime.now();
-      await Supabase.instance.client.from('matches').select('id').or('user1_id.eq.$_userId,user2_id.eq.$_userId');
-      debugPrint('[BG] _backgroundSync: matches sync elapsed=${DateTime.now().difference(matchesStart).inMilliseconds}ms');
+      await Supabase.instance.client
+          .from('matches')
+          .select('id')
+          .or('user1_id.eq.$_userId,user2_id.eq.$_userId');
+      // print('[BG] _backgroundSync: matches sync elapsed=${DateTime.now().difference(matchesStart).inMilliseconds}ms');
 
       // Sync recent chats
-      final chatsStart = DateTime.now();
-      await Supabase.instance.client.from('chat_messages').select('id').eq('sender_id', _userId!).order('created_at', ascending: false).limit(1);
-      debugPrint('[BG] _backgroundSync: recent chats sync elapsed=${DateTime.now().difference(chatsStart).inMilliseconds}ms');
+      await Supabase.instance.client
+          .from('chat_messages')
+          .select('id')
+          .eq('sender_id', _userId!)
+          .order('created_at', ascending: false)
+          .limit(1);
+      // print('[BG] _backgroundSync: recent chats sync elapsed=${DateTime.now().difference(chatsStart).inMilliseconds}ms');
 
-      debugPrint('[BG] _backgroundSync: total elapsed=${DateTime.now().difference(syncStart).inMilliseconds}ms');
+      // print('[BG] _backgroundSync: total elapsed=${DateTime.now().difference(syncStart).inMilliseconds}ms');
 
       // Note: Match engine is now handled server-side autonomously
       // No client-side triggering needed - matches are created by Supabase functions
     } catch (e) {
-      debugPrint('Background sync failed: $e');
+      // print('Background sync failed: $e');
     }
   }
 
@@ -684,57 +1052,73 @@ class BackgroundService {
       return;
     }
     _isOnline = isOnline;
-    debugPrint('Background connectivity changed: ${isOnline ? 'online' : 'offline'}');
-    
+    // print('Background connectivity changed: ${isOnline ? 'online' : 'offline'}');
+
     // Background service will handle reconnection automatically
     // Update native service about connectivity state
     if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
-      _channel.invokeMethod('setConnectivity', {'isOnline': isOnline}).catchError((e) {
-        debugPrint('Failed to update native connectivity: $e');
-      });
+      _channel
+          .invokeMethod('setConnectivity', {'isOnline': isOnline})
+          .catchError((e) {
+            // print('Failed to update native connectivity: $e');
+          });
     }
 
     final userId = _userId ?? Supabase.instance.client.auth.currentUser?.id;
     if (userId != null) {
       if (!isOnline) {
-        Supabase.instance.client
-            .rpc('set_user_offline', params: {'p_user_id': userId})
-            .catchError((e) {
-          debugPrint('BackgroundService: set_user_offline RPC failed: $e');
-          return null;
-        });
+        // Do NOT call set_user_offline on transient offline – 61s window + WorkManager heartbeat
+        // will expire naturally. Immediate offline breaks bg=ON contract (10:50->16:30 bug).
       } else {
-        Supabase.instance.client
-            .rpc('update_user_activity', params: {'p_user_id': userId})
-            .catchError((e) {
-          debugPrint('BackgroundService: update_user_activity RPC failed: $e');
-          return null;
-        });
+        UserActivityService.instance.pingIfDue(
+          userId,
+          force: true,
+          source: 'bg-connectivity',
+        );
       }
     }
   }
 
   /// Handle location updates from background service
-  static Future<void> _handleBackgroundLocationUpdate(Map<String, dynamic> data) async {
+  static Future<void> _handleBackgroundLocationUpdate(
+    Map<String, dynamic> data,
+  ) async {
     final userId = data['userId'] as String?;
     final latitude = data['latitude'] as double?;
     final longitude = data['longitude'] as double?;
 
     if (userId == null || latitude == null || longitude == null) return;
+    if (shouldSkipSupabaseCalls()) return;
+
+    // Pinned home-base: never forward native GPS fixes while a pin is active.
+    // (The server RPC would ignore them anyway; this avoids needless writes.)
+    if (await PinnedLocationGate.isActive()) {
+      debugPrint(
+        '⏸️ [BG] Pinned location active — GPS update dropped, GPS not accessed for upload',
+      );
+      return;
+    }
 
     try {
       // Check user visibility in DB before updating location - do not transmit location for invisible users
       try {
-        final resp = await Supabase.instance.client.from('users').select('user_visibility_setting, system_visibility_status').eq('id', userId).maybeSingle();
-        final userVisibilitySetting = resp != null && resp['user_visibility_setting'] == true;
-        final systemVisibility = resp != null ? (resp['system_visibility_status'] as String?) : null;
+        final resp = await Supabase.instance.client
+            .from('users')
+            .select('user_visibility_setting, system_visibility_status')
+            .eq('id', userId)
+            .maybeSingle();
+        final userVisibilitySetting =
+            resp != null && resp['user_visibility_setting'] == true;
+        final systemVisibility = resp != null
+            ? (resp['system_visibility_status'] as String?)
+            : null;
         if (!userVisibilitySetting || systemVisibility == 'invisible') {
-          debugPrint('BackgroundService: user is not visible (setting/system) - ignoring background location update for $userId');
+          // print('BackgroundService: user is not visible (setting/system) - ignoring background location update for $userId');
           return;
         }
       } catch (e) {
         // If visibility check fails, log and proceed conservatively (skip update)
-        debugPrint('BackgroundService: Could not verify user visibility - skipping location update: $e');
+        // print('BackgroundService: Could not verify user visibility - skipping location update: $e');
         return;
       }
 
@@ -749,63 +1133,100 @@ class BackgroundService {
       // Note: Match engine is now handled server-side autonomously
       // Location updates will trigger server-side matching via database triggers or scheduled jobs
     } catch (e) {
-      debugPrint('Failed to handle background location update: $e');
+      // print('Failed to handle background location update: $e');
     }
   }
 
   /// Handle connectivity changes from background service
-  static Future<void> _handleBackgroundConnectivityChange(Map<String, dynamic> data) async {
+  static Future<void> _handleBackgroundConnectivityChange(
+    Map<String, dynamic> data,
+  ) async {
     final isOnline = data['isOnline'] as bool? ?? false;
-    debugPrint('Background connectivity changed: ${isOnline ? 'online' : 'offline'}');
+    // print('Background connectivity changed: ${isOnline ? 'online' : 'offline'}');
 
     if (isOnline && _userId != null) {
+      // The native layer only knows about the OS transport, so it is a reason to
+      // probe Supabase now — never a reason to declare the app online. A device
+      // with working internet and an unreachable Supabase is offline here.
       try {
-        await Supabase.instance.client.rpc('update_user_activity', params: {'p_user_id': _userId});
+        final health = await getCurrentConnectivityHealth();
+        if (health.status != ConnectivityHealthStatus.online) {
+          debugPrint(
+            '💡 [BG] Native reported online but Supabase is ${health.status.name} - staying offline',
+          );
+          return;
+        }
       } catch (e) {
-        debugPrint('BackgroundService: update_user_activity RPC failed: $e');
+        // print('BackgroundService: immediate connectivity check failed: $e');
       }
+
+      await UserActivityService.instance.pingIfDue(
+        _userId!,
+        force: true,
+        source: 'bg-native-online',
+      );
       // Sync any pending data when coming back online
       await _backgroundSync();
     } else if (!isOnline && _userId != null) {
+      // A native "offline" is likewise only a hint: let the Supabase probe and
+      // OfflineCacheManager's grace period decide (non-forced, so a single
+      // native hiccup cannot flap availability).
+      offlineCacheManager.setSupabaseAvailability(false);
+
       try {
-        await Supabase.instance.client.rpc('set_user_offline', params: {'p_user_id': _userId});
+        await Supabase.instance.client.rpc(
+          'set_user_offline',
+          params: {'p_user_id': _userId},
+        );
       } catch (e) {
-        debugPrint('BackgroundService: set_user_offline RPC failed: $e');
+        // print('BackgroundService: set_user_offline RPC failed: $e');
       }
     }
   }
 
   /// Handle new messages from background service
-  static Future<void> _handleBackgroundNewMessage(Map<String, dynamic> data) async {
+  static Future<void> _handleBackgroundNewMessage(
+    Map<String, dynamic> data,
+  ) async {
     final messageId = data['messageId'] as String?;
     final matchId = data['matchId'] as String?;
     final senderId = data['senderId'] as String?;
     final content = data['content'] as String?;
 
-    if (messageId == null || matchId == null || senderId == null || content == null) return;
+    if (messageId == null ||
+        matchId == null ||
+        senderId == null ||
+        content == null) {
+      return;
+    }
 
     try {
       // Store message locally if LocalDbService is available
       final localDb = await LocalDbService.instance;
       // Note: Background service doesn't have Supabase access, so we skip currentUserId
       // The RPC call will be made when the app comes to foreground and syncs
-      await localDb.addMessages(matchId, [{
-        'id': messageId,
-        'match_id': matchId,
-        'sender_id': senderId,
-        'content_original': content,
-        'created_at': DateTime.now().toIso8601String(),
-      }]);
+      // Don't store raw content in legacy columns — the sync process will fetch
+      // the encrypted content when the app comes to foreground.
+      await localDb.addMessages(matchId, [
+        {
+          'id': messageId,
+          'match_id': matchId,
+          'sender_id': senderId,
+          'created_at': DateTime.now().toIso8601String(),
+        },
+      ]);
 
       // TODO: Show notification if app is not in foreground
-      debugPrint('New message received in background: $messageId');
+      // print('New message received in background: $messageId');
     } catch (e) {
-      debugPrint('Failed to handle background message: $e');
+      // print('Failed to handle background message: $e');
     }
   }
 
   /// Handle new matches from background service
-  static Future<void> _handleBackgroundNewMatch(Map<String, dynamic> data) async {
+  static Future<void> _handleBackgroundNewMatch(
+    Map<String, dynamic> data,
+  ) async {
     final matchId = data['matchId'] as String?;
     final user1Id = data['user1Id'] as String?;
     final user2Id = data['user2Id'] as String?;
@@ -813,20 +1234,33 @@ class BackgroundService {
     if (matchId == null || user1Id == null || user2Id == null) return;
 
     try {
+      // Determine current user from the match data
+      String? currentUserId;
+      try {
+        currentUserId = Supabase.instance.client.auth.currentUser?.id;
+      } catch (_) {}
+      if (currentUserId == null ||
+          (currentUserId != user1Id && currentUserId != user2Id)) {
+        // Can't determine which user this match is for; skip local save
+        // (sync will pick it up when the app opens)
+        return;
+      }
+
       // Store match locally if LocalDbService is available
       final localDb = await LocalDbService.instance;
-      await localDb.saveMatches([{
-        'match_id': matchId,
-        'user1_id': user1Id,
-        'user2_id': user2Id,
-        'created_at': DateTime.now().toIso8601String(),
-      }]);
+      await localDb.saveMatches(currentUserId, [
+        {
+          'match_id': matchId,
+          'user1_id': user1Id,
+          'user2_id': user2Id,
+          'created_at': DateTime.now().toIso8601String(),
+        },
+      ]);
 
       // TODO: Show notification
-      debugPrint('New match received in background: $matchId');
+      // print('New match received in background: $matchId');
     } catch (e) {
-      debugPrint('Failed to handle background match: $e');
+      // print('Failed to handle background match: $e');
     }
   }
-
 }

@@ -7,6 +7,8 @@ import 'dart:js_interop';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/user_preferences_provider.dart';
+import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/utils/notification_limits.dart';
 
 /// Web notification service that provides similar functionality to mobile notifications
 /// Uses the browser's Notification API for web platforms
@@ -17,6 +19,13 @@ class WebNotificationService {
   static final Map<String, List<String>> _messageHistory = {};
   static final Map<String, int> _lastNotifiedChatIds = {};
   static final Map<String, web.Notification> _activeChatNotifications = {};
+  // Live-countdown location share notification state. Tracks the most recent
+  // notification so per-second silent updates can replace it via the same
+  // tag, and whether the user dismissed it (so updates don't resurrect it).
+  static web.Notification? _lastLocationShareNotification;
+  static bool _locationShareDismissed = false;
+  static final Set<web.Notification> _expectedLocationShareCloses =
+      <web.Notification>{};
 
   /// Set the ProviderContainer to access preferences
   static void setProviderContainer(ProviderContainer container) {
@@ -28,33 +37,34 @@ class WebNotificationService {
     if (!kIsWeb) return;
 
     try {
-       // Accessing a static property to check existence/support
-       web.Notification.permission;
-       _isSupported = true; 
+      // Accessing a static property to check existence/support
+      web.Notification.permission;
+      _isSupported = true;
     } catch (e) {
-       _isSupported = false;
-       return;
+      _isSupported = false;
+      return;
     }
 
     if (_isSupported) {
       // Check current permission status
       // Use JS interop comparison
       final currentPermission = web.Notification.permission;
-      
+
       // Request permission if not already granted
       if (currentPermission != 'granted') {
         try {
-            final permission = await web.Notification.requestPermission().toDart;
-            _isSupported = permission.toDart == 'granted';
+          final permission = await web.Notification.requestPermission().toDart;
+          _isSupported = permission.toDart == 'granted';
         } catch (_) {
-            _isSupported = false;
+          _isSupported = false;
         }
       }
     }
   }
 
   /// Check if web notifications are supported and permitted
-  static bool get isSupported => _isSupported && web.Notification.permission == 'granted';
+  static bool get isSupported =>
+      _isSupported && web.Notification.permission == 'granted';
 
   /// Force re-request permission (useful for debugging)
   static Future<String> requestPermission() async {
@@ -71,7 +81,12 @@ class WebNotificationService {
     }
   }
 
-  /// Show a notification for new messages
+  /// Show a notification for new messages.
+  /// Foreground/maximized/minimized all funnel here: the service worker
+  /// handles the hidden/minimized case, this handles the visible case.
+  /// Every message updates the tray (history-merged) instead of dropping
+  /// 2nd+ messages per chat — the old once-per-chat `return` made
+  /// foreground web miss all follow-ups until the chat was re-entered.
   static Future<void> showMessageNotification({
     required String chatId,
     required String senderName,
@@ -84,7 +99,6 @@ class WebNotificationService {
 
     // Check if chat notifications are enabled
     if (!_shouldShowChatNotification()) {
-      debugPrint('Chat notifications disabled - skipping web notification for chat: $chatId');
       return;
     }
 
@@ -94,30 +108,58 @@ class WebNotificationService {
     // Don't show notifications when viewing the chat AND the page is visible
     final isPageVisible = web.window.document.visibilityState == 'visible';
     if (isViewingChat && isPageVisible) {
-      debugPrint('Web: Skipping notification - currently viewing chat and page is visible');
       return;
     }
 
-    // Check if we should show notification alert (avoid spam - once per chat)
-    // Only show if we haven't already notified for this chat in this session
-    final shouldAlert = _lastNotifiedChatIds[chatId] == null;
-
-    if (!shouldAlert) {
-      return;
+    // History-merge so minimized/maximized/foreground all show the latest
+    // context (mirrors mobile MessagingStyle + SW 5-message merge).
+    final history = _messageHistory.putIfAbsent(chatId, () => <String>[]);
+    if (messageContent.trim().isNotEmpty) {
+      final last = history.isNotEmpty ? history.last : null;
+      if (last != messageContent) {
+        history.add(messageContent);
+        while (history.length > 5) {
+          history.removeAt(0);
+        }
+      }
     }
+    final mergedBody = history.isNotEmpty ? history.join('\n') : messageContent;
+    // Updates replace silently via the same tag so follow-ups never go
+    // missing. Record first post per chat for badge/count parity with mobile.
+    _lastNotifiedChatIds.putIfAbsent(chatId, () => chatId.hashCode);
 
     try {
-      final options = web.NotificationOptions(
-        body: messageContent,
-        icon: '/icons/Icon-192.png',
-        tag: chatId,
+      final enforced = enforceTitleBody(
+        '💬 New message from ${firstTokenName(senderName)}',
+        mergedBody,
       );
-      
-      final notification = web.Notification('💬 New message from $senderName', options);
+      // Close the previous notification with the same tag before posting the
+      // merged update (some browsers stack instead of replacing).
+      try {
+        _activeChatNotifications[chatId]?.close();
+      } catch (_) {}
+      final options = web.NotificationOptions(
+        body: enforced.body,
+        icon: '/icons/Icon-192.png',
+        tag: 'match_$chatId',
+      );
+
+      final notification = web.Notification(enforced.title, options);
       _activeChatNotifications[chatId] = notification;
 
       // Keep notification visible for 15 seconds to ensure user sees it
-      Future.delayed(const Duration(seconds: 15), () {
+      final chatDelay = await (() async {
+        try {
+          final seconds = await appConfigService.getInt(
+            'notification.web_delay_seconds',
+            defaultValue: 15,
+          );
+          return Duration(seconds: seconds);
+        } catch (e) {
+          return const Duration(seconds: 15);
+        }
+      })();
+      Future.delayed(chatDelay, () {
         try {
           notification.close();
           if (identical(_activeChatNotifications[chatId], notification)) {
@@ -130,19 +172,17 @@ class WebNotificationService {
 
       // Handle click to focus/open chat
       notification.onclick = ((web.Event e) {
-         web.window.focus();
-         notification.close();
-         if (identical(_activeChatNotifications[chatId], notification)) {
-           _activeChatNotifications.remove(chatId);
-         }
+        web.window.focus();
+        notification.close();
+        if (identical(_activeChatNotifications[chatId], notification)) {
+          _activeChatNotifications.remove(chatId);
+        }
       }).toJS;
 
       // Update last notified to prevent duplicate notifications for this chat
       _lastNotifiedChatIds[chatId] = chatId.hashCode;
-      debugPrint('Web: Notification shown for chat: $chatId');
-
     } catch (e) {
-      debugPrint('Failed to show web notification: $e');
+      // Ignore notification errors
     }
   }
 
@@ -185,7 +225,10 @@ class WebNotificationService {
     final notifs = _getNotifs();
     if (notifs == null) return true;
     if (notifs.isPausedNow) return false;
-    return notifs.isMethodEnabled(NotificationType.chatMessages, NotificationMethod.push);
+    return notifs.isMethodEnabled(
+      NotificationType.chatMessages,
+      NotificationMethod.push,
+    );
   }
 
   /// Check if match expiry notifications should be shown
@@ -193,7 +236,10 @@ class WebNotificationService {
     final notifs = _getNotifs();
     if (notifs == null) return true;
     if (notifs.isPausedNow) return false;
-    return notifs.isMethodEnabled(NotificationType.newMatch, NotificationMethod.push);
+    return notifs.isMethodEnabled(
+      NotificationType.newMatch,
+      NotificationMethod.push,
+    );
   }
 
   /// Check if admin notifications should be shown
@@ -201,7 +247,10 @@ class WebNotificationService {
     final notifs = _getNotifs();
     if (notifs == null) return true;
     if (notifs.isPausedNow) return false;
-    return notifs.isMethodEnabled(NotificationType.adminAnnouncements, NotificationMethod.push);
+    return notifs.isMethodEnabled(
+      NotificationType.adminAnnouncements,
+      NotificationMethod.push,
+    );
   }
 
   /// Diagnostic function to help debug notification issues
@@ -211,7 +260,9 @@ class WebNotificationService {
       'permission': _isSupported ? web.Notification.permission : 'unknown',
       'currentViewingChatId': _currentViewingChatId,
       'lastNotifiedChatIds': Map.from(_lastNotifiedChatIds),
-      'messageHistory': Map.from(_messageHistory.map((k, v) => MapEntry(k, List.from(v)))),
+      'messageHistory': Map.from(
+        _messageHistory.map((k, v) => MapEntry(k, List.from(v))),
+      ),
       'userAgent': web.window.navigator.userAgent,
       'notificationCenterVisible': _checkNotificationCenter(),
     };
@@ -222,9 +273,9 @@ class WebNotificationService {
     try {
       // Try to create and immediately close a notification to test if it works
       if (isSupported) {
-         final n = web.Notification('Test');
-         n.close();
-         return true;
+        final n = web.Notification('Test');
+        n.close();
+        return true;
       }
       return false;
     } catch (e) {
@@ -232,20 +283,50 @@ class WebNotificationService {
     }
   }
 
-  /// Set service worker user ID for push notifications
+  /// Set service worker user ID for push notifications.
+  /// Posts SET_USER_ID to the active service worker so
+  /// `firebase-messaging-sw.js` can drop pushes for the wrong account
+  /// (shared browser) and keep them for the right one after restart.
+  /// Without this the SW `_currentUserId` stays empty and filtering is off.
   // ignore: unused_field
   static String? _serviceWorkerUserId;
   static void setServiceWorkerUserId(String userId) {
-    _serviceWorkerUserId = userId;
-    // ignore: avoid_print
-    debugPrint('Web: Service worker user ID set: $userId');
+    final trimmed = userId.trim();
+    _serviceWorkerUserId = trimmed.isEmpty ? null : trimmed;
+    if (trimmed.isEmpty) return;
+    try {
+      _postToServiceWorker(<String, dynamic>{
+        'type': 'SET_USER_ID',
+        'userId': trimmed,
+        'user_id': trimmed,
+      });
+    } catch (_) {}
   }
 
   /// Clear service worker user ID
   static void clearServiceWorkerUserId() {
     _serviceWorkerUserId = null;
-    // ignore: avoid_print
-    debugPrint('Web: Service worker user ID cleared');
+    try {
+      _postToServiceWorker(<String, dynamic>{'type': 'CLEAR_USER_ID'});
+    } catch (_) {}
+  }
+
+  static void _postToServiceWorker(Map<String, dynamic> payload) {
+    try {
+      final nav = web.window.navigator;
+      // `serviceWorker` is not in package:web's typed API on all versions;
+      // reach it via JS interop so this compiles everywhere.
+      final sw = (nav as dynamic).serviceWorker as dynamic;
+      if (sw == null) return;
+      final controller = sw.controller as dynamic;
+      if (controller == null) {
+        // SW not yet controlling this page (first load after install).
+        // The SW will still get the id on next setServiceWorkerUserId call
+        // (login + every foreground launch call it).
+        return;
+      }
+      (controller.postMessage as dynamic)(payload.jsify() as JSAny);
+    } catch (_) {}
   }
 
   /// Show match notification
@@ -260,21 +341,35 @@ class WebNotificationService {
 
     // Check if match notifications are enabled
     if (!_shouldShowNewMatchNotification()) {
-      debugPrint('Match notifications disabled - skipping web notification for match: $matchId');
       return;
     }
 
     try {
+      final enforced = enforceTitleBody(
+        '💕 New match with ${firstTokenName(matchName)}',
+        'New match! Tap to start chatting',
+      );
       final options = web.NotificationOptions(
-        body: 'New match! Tap to start chatting',
+        body: enforced.body,
         icon: matchPhotoUrl.isNotEmpty ? matchPhotoUrl : '/icons/Icon-192.png',
         tag: 'match_$matchId',
       );
-      
-      final notification = web.Notification('💕 New match with $matchName', options);
+
+      final notification = web.Notification(enforced.title, options);
 
       // Keep notification visible for 15 seconds
-      Future.delayed(const Duration(seconds: 15), () {
+      final matchDelay = await (() async {
+        try {
+          final seconds = await appConfigService.getInt(
+            'notification.web_delay_seconds',
+            defaultValue: 15,
+          );
+          return Duration(seconds: seconds);
+        } catch (e) {
+          return const Duration(seconds: 15);
+        }
+      })();
+      Future.delayed(matchDelay, () {
         try {
           notification.close();
         } catch (e) {
@@ -286,10 +381,8 @@ class WebNotificationService {
         web.window.focus();
         notification.close();
       }).toJS;
-
-      debugPrint('Web: Match notification shown for match: $matchId');
     } catch (e) {
-      debugPrint('Failed to show match notification: $e');
+      // Ignore notification errors
     }
   }
 
@@ -305,21 +398,32 @@ class WebNotificationService {
 
     // Check if admin notifications are enabled
     if (!_shouldShowAdminNotification()) {
-      debugPrint('Admin notifications disabled - skipping web notification');
       return;
     }
 
     try {
+      final enforced = enforceTitleBody('📢 $title', message);
       final options = web.NotificationOptions(
-        body: message,
+        body: enforced.body,
         icon: '/icons/Icon-192.png',
         tag: 'admin_$notificationId',
       );
-      
-      final notification = web.Notification('📢 $title', options);
+
+      final notification = web.Notification(enforced.title, options);
 
       // Keep notification visible for 20 seconds for important announcements
-      Future.delayed(const Duration(seconds: 20), () {
+      final adminDelay = await (() async {
+        try {
+          final seconds = await appConfigService.getInt(
+            'notification.web_delay_seconds',
+            defaultValue: 20,
+          );
+          return Duration(seconds: seconds);
+        } catch (e) {
+          return const Duration(seconds: 20);
+        }
+      })();
+      Future.delayed(adminDelay, () {
         try {
           notification.close();
         } catch (e) {
@@ -331,10 +435,99 @@ class WebNotificationService {
         web.window.focus();
         notification.close();
       }).toJS;
-
-      debugPrint('Web: Admin broadcast notification shown: $notificationId');
     } catch (e) {
-      debugPrint('Failed to show admin broadcast notification: $e');
+      // Ignore notification errors
+    }
+  }
+
+  /// Check if location sharing notifications should be shown
+  static bool _shouldShowLocationShareNotification() {
+    final notifs = _getNotifs();
+    if (notifs == null) return true;
+    if (notifs.isPausedNow) return false;
+    return notifs.isMethodEnabled(
+      NotificationType.locationSharing,
+      NotificationMethod.push,
+    );
+  }
+
+  /// Show location share notification
+  static Future<void> showLocationShareNotification({
+    required String title,
+    required String body,
+    bool silent = false,
+  }) async {
+    if (!isSupported) {
+      return;
+    }
+
+    if (!_shouldShowLocationShareNotification()) {
+      return;
+    }
+
+    // Per-second countdown updates must not resurrect a notification the
+    // user dismissed or clicked away.
+    if (silent && _locationShareDismissed) {
+      return;
+    }
+    if (!silent) {
+      _locationShareDismissed = false;
+    }
+
+    try {
+      final previous = _lastLocationShareNotification;
+
+      final options = web.NotificationOptions(
+        body: body,
+        icon: '/icons/Icon-192.png',
+        tag: 'location_share',
+      );
+
+      final notification = web.Notification('📍 $title', options);
+
+      // Posting a new notification with the same tag closes the previous
+      // one — that close event is not a user dismissal.
+      if (previous != null) {
+        _expectedLocationShareCloses.add(previous);
+      }
+      _lastLocationShareNotification = notification;
+
+      notification.onclose = ((web.Event e) {
+        if (!_expectedLocationShareCloses.remove(notification)) {
+          // Closed by the user — stop re-posting it on subsequent updates.
+          if (_lastLocationShareNotification == notification) {
+            _lastLocationShareNotification = null;
+          }
+          _locationShareDismissed = true;
+        }
+      }).toJS;
+
+      final locationDelay = await (() async {
+        try {
+          final seconds = await appConfigService.getInt(
+            'notification.web_delay_seconds',
+            defaultValue: 15,
+          );
+          return Duration(seconds: seconds);
+        } catch (e) {
+          return const Duration(seconds: 15);
+        }
+      })();
+      Future.delayed(locationDelay, () {
+        try {
+          _expectedLocationShareCloses.add(notification);
+          notification.close();
+        } catch (e) {
+          // Ignore
+        }
+      });
+
+      notification.onclick = ((web.Event e) {
+        web.window.focus();
+        notification.close();
+      }).toJS;
+    } catch (e) {
+      // Ignore notification errors
     }
   }
 }

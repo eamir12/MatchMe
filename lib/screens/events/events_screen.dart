@@ -1,4 +1,5 @@
 // lib/screens/events_screen.dart
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,18 +7,26 @@ import 'dart:ui' as ui;
 import 'package:intl/intl.dart';
 import 'package:matchme/models/event_model.dart';
 import 'package:matchme/providers/calendar_sync_provider.dart';
+import 'package:matchme/services/calendar_sync_service.dart';
 import 'package:matchme/providers/event_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
-import 'package:matchme/services/web_calendar_service.dart';
 import 'package:matchme/screens/events/add_event_screen.dart'; // <-- CORRECTED PATH
 import 'package:matchme/screens/events/attendees_screen.dart'; // <-- CORRECTED PATH
+import 'package:matchme/models/sponsored_ad.dart';
 import 'package:matchme/screens/events/calendar_sync_screen.dart';
+import 'package:matchme/screens/events/online_providers_screen.dart';
+import 'package:matchme/widgets/ad_slot.dart';
+import 'package:matchme/widgets/app_empty_state.dart';
+import 'package:matchme/widgets/event_attendance_summary.dart';
+import 'package:matchme/widgets/event_matched_attendees.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/map_utils.dart';
+import 'package:matchme/utils/event_venue_utils.dart';
+import 'package:matchme/services/web_calendar_service.dart';
 
 class EventsTab extends ConsumerStatefulWidget {
   final GlobalKey<NavigatorState> navigatorKey;
@@ -110,8 +119,107 @@ class _EventsTabState extends ConsumerState<EventsTab> {
   }
 }
 
+/// Search text for the Events list.
+///
+/// EventsScreen is a ConsumerWidget, so the query lives in a Notifier rather
+/// than in State. That keeps the widget itself untouched apart from reading
+/// this value, instead of converting a 1300-line widget to stateful.
+class EventsSearchQueryNotifier extends Notifier<String> {
+  @override
+  String build() => '';
+
+  void update(String value) => state = value;
+
+  void clear() => state = '';
+}
+
+final eventsSearchQueryProvider =
+    NotifierProvider<EventsSearchQueryNotifier, String>(
+      EventsSearchQueryNotifier.new,
+    );
+
+/// Search field for the Events list, styled to match the one on the Chats and
+/// Matches screens.
+class EventsSearchField extends ConsumerStatefulWidget {
+  const EventsSearchField({super.key});
+
+  @override
+  ConsumerState<EventsSearchField> createState() => _EventsSearchFieldState();
+}
+
+class _EventsSearchFieldState extends ConsumerState<EventsSearchField> {
+  late final TextEditingController _controller = TextEditingController(
+    text: ref.read(eventsSearchQueryProvider),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_onTextChanged);
+  }
+
+  void _onTextChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _controller.removeListener(_onTextChanged);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = ref.watch(localizationProvider);
+    final rawText = _controller.text;
+    final isEmpty = rawText.trim().isEmpty;
+    final isRtl = !isEmpty && rawText.trimLeft().isRtlByFirstStrongChar();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      child: TextField(
+        controller: _controller,
+        onChanged: (value) =>
+            ref.read(eventsSearchQueryProvider.notifier).update(value),
+        textInputAction: TextInputAction.search,
+        textDirection: isEmpty
+            ? Directionality.of(context)
+            : (isRtl ? ui.TextDirection.rtl : ui.TextDirection.ltr),
+        textAlign: isEmpty
+            ? TextAlign.start
+            : (isRtl ? TextAlign.right : TextAlign.left),
+        decoration: InputDecoration(
+          labelText: l10n.getString('eventsSearchLabel'),
+          hintText: l10n.getString('eventsSearchHint'),
+          prefixIcon: const Icon(Icons.search),
+          suffixIcon: isEmpty
+              ? null
+              : IconButton(
+                  tooltip: l10n.getString('generalClear'),
+                  onPressed: () {
+                    _controller.clear();
+                    ref.read(eventsSearchQueryProvider.notifier).clear();
+                    setState(() {});
+                  },
+                  icon: const Icon(Icons.close),
+                ),
+          isDense: true,
+          filled: true,
+          fillColor: Theme.of(
+            context,
+          ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.55),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(16),
+            borderSide: BorderSide.none,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class EventsScreen extends ConsumerWidget {
-  static const bool _enableDeviceCalendarImportOption = true;
   final bool showAppBar;
   final VoidCallback? onAddEvent;
   final void Function(EventModel event)? onOpenEvent;
@@ -152,6 +260,7 @@ class EventsScreen extends ConsumerWidget {
             ? Alignment.centerRight
             : Alignment.centerLeft;
         return AlertDialog(
+          scrollable: true,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(24),
           ),
@@ -230,6 +339,20 @@ class EventsScreen extends ConsumerWidget {
 
     if (provider != CalendarProvider.device) {
       _openCalendarSync(context, provider, CalendarSource.api);
+      return;
+    }
+
+    // Device calendar is Android/iOS only (device_calendar_plus has no other
+    // implementation). Guard here too, not just on the button: this screen can
+    // also be entered with an explicit `initialProvider`.
+    if (!CalendarSyncService.isDeviceCalendarSupported) {
+      if (!context.mounted) return;
+      final l10n = ref.read(localizationProvider);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(l10n.getString('calendarSyncDeviceNotSupported')),
+        ),
+      );
       return;
     }
 
@@ -312,9 +435,9 @@ class EventsScreen extends ConsumerWidget {
   void _openCalendarSync(
     BuildContext context,
     CalendarProvider provider,
-    CalendarSource source,
-    {List<ExternalCalendar>? initialCalendars}
-  ) {
+    CalendarSource source, {
+    List<ExternalCalendar>? initialCalendars,
+  }) {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => CalendarSyncScreen(
@@ -323,6 +446,14 @@ class EventsScreen extends ConsumerWidget {
           initialCalendars: initialCalendars,
         ),
       ),
+    );
+  }
+
+  /// Opens the new multi-account online providers screen
+  /// This displays all connected accounts' events similar to device calendar import
+  void _openMultiAccountOnlineProvidersScreen(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (context) => const OnlineProvidersScreen()),
     );
   }
 
@@ -361,7 +492,8 @@ class EventsScreen extends ConsumerWidget {
                             const SizedBox(height: 10),
                             _buildImportProviderButton(
                               label: l10n.getString('eventsImportOutlook'),
-                              assetPath: 'assets/images/providers/microsoft.png',
+                              assetPath:
+                                  'assets/images/providers/microsoft.png',
                               onPressed: () async {
                                 await _startOnlineProviderImportFlow(
                                   context,
@@ -437,8 +569,10 @@ class EventsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final l10n = ref.watch(localizationProvider);
     final eventsAsync = ref.watch(eventManagerProvider);
-    final userId = Supabase.instance.client.auth.currentUser!.id;
-    final profileAsync = ref.watch(profileEditProvider(userId));
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    final profileAsync = userId == null
+        ? const AsyncValue<UserProfile?>.data(null)
+        : ref.watch(profileEditProvider(userId));
     final screenWidth = MediaQuery.of(context).size.width;
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
@@ -451,7 +585,7 @@ class EventsScreen extends ConsumerWidget {
         (screenWidth - 32 - ((importButtonColumns - 1) * 8)) /
         importButtonColumns;
 
-    if (profileAsync is AsyncLoading) {
+    if (userId != null && profileAsync is AsyncLoading) {
       Future.microtask(
         () =>
             ref.read(profileEditProvider(userId).notifier).loadInitialProfile(),
@@ -483,217 +617,237 @@ class EventsScreen extends ConsumerWidget {
               ],
             )
           : null,
-      body: Column(
-        children: [
-          if (profileAsync.hasValue && profileAsync.value != null)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              color: Theme.of(context).scaffoldBackgroundColor,
-              child: Column(
-                children: [
-                  Row(
+      body: RefreshIndicator(
+        onRefresh: () => ref
+            .read(eventManagerProvider.notifier)
+            .fetchUserEvents(forceRemote: true),
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            if (profileAsync.hasValue && profileAsync.value != null)
+              SliverToBoxAdapter(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  color: Theme.of(context).scaffoldBackgroundColor,
+                  child: Column(
                     children: [
-                      Expanded(
-                        child: Text(
-                          l10n.getString('settingsSharedEventMatching'),
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
-                            color: Theme.of(context).colorScheme.onSurface,
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              l10n.getString('settingsSharedEventMatching'),
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                                color: Theme.of(context).colorScheme.onSurface,
+                              ),
+                            ),
                           ),
-                        ),
-                      ),
-                      Switch(
-                        value: profileAsync.value!.sharedEventMatchingEnabled,
-                        onChanged: (value) async {
-                          try {
-                            await ref
-                                .read(profileEditProvider(userId).notifier)
-                                .updateSharedEventMatching(value);
-                            if (context.mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(
-                                    l10n.getString(
-                                      'settingsSharedEventMatchingUpdated',
+                          Switch(
+                            value:
+                                profileAsync.value!.sharedEventMatchingEnabled,
+                            onChanged: (value) async {
+                              final resolvedUserId = userId;
+                              if (resolvedUserId == null) return;
+                              try {
+                                await ref
+                                    .read(
+                                      profileEditProvider(
+                                        resolvedUserId,
+                                      ).notifier,
+                                    )
+                                    .updateSharedEventMatching(value);
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        l10n.getString(
+                                          'settingsSharedEventMatchingUpdated',
+                                        ),
+                                      ),
+                                      backgroundColor: Theme.of(
+                                        context,
+                                      ).colorScheme.primary,
                                     ),
-                                  ),
-                                  backgroundColor: Theme.of(
-                                    context,
-                                  ).colorScheme.primary,
+                                  );
+                                }
+                              } catch (e) {
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        '${l10n.getString('settingsSharedEventMatchingUpdateFailed')}: $e',
+                                      ),
+                                      backgroundColor: Theme.of(
+                                        context,
+                                      ).colorScheme.error,
+                                    ),
+                                  );
+                                }
+                              }
+                            },
+                            activeThumbColor: Theme.of(
+                              context,
+                            ).colorScheme.secondary,
+                            activeTrackColor: Theme.of(
+                              context,
+                            ).colorScheme.secondary.withValues(alpha: 0.3),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              l10n.getString('showPastEvents'),
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Theme.of(context).colorScheme.onSurface,
+                              ),
+                            ),
+                          ),
+                          Switch(
+                            value: ref
+                                .read(eventManagerProvider.notifier)
+                                .showPastEvents,
+                            onChanged: (value) async {
+                              ref
+                                  .read(eventManagerProvider.notifier)
+                                  .setShowPastEvents(value);
+                              await ref
+                                  .read(eventManagerProvider.notifier)
+                                  .fetchUserEvents();
+                            },
+                            activeThumbColor: Theme.of(
+                              context,
+                            ).colorScheme.secondary,
+                            activeTrackColor: Theme.of(
+                              context,
+                            ).colorScheme.secondary.withValues(alpha: 0.3),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          if (CalendarSyncService.isDeviceCalendarSupported)
+                            SizedBox(
+                              width: importButtonWidth,
+                              child: _buildImportProviderButton(
+                                label: l10n.getString(
+                                  'eventsImportDeviceCalendar',
                                 ),
-                              );
-                            }
-                          } catch (e) {
-                            if (context.mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(
-                                    '${l10n.getString('settingsSharedEventMatchingUpdateFailed')}: $e',
-                                  ),
-                                  backgroundColor: Theme.of(
+                                iconData: Icons.devices_outlined,
+                                onPressed: () async {
+                                  print(
+                                    'CalendarSync EventsScreen import tap provider=device',
+                                  );
+                                  await _startImportFlow(
                                     context,
-                                  ).colorScheme.error,
+                                    ref,
+                                    CalendarProvider.device,
+                                  );
+                                },
+                              ),
+                            ),
+                          if (!kIsWeb)
+                            SizedBox(
+                              width: importButtonWidth,
+                              child: _buildImportProviderButton(
+                                label: l10n.getString(
+                                  'eventsImportOnlineProviders',
                                 ),
-                              );
-                            }
-                          }
-                        },
-                        activeThumbColor: Theme.of(
-                          context,
-                        ).colorScheme.secondary,
-                        activeTrackColor: Theme.of(
-                          context,
-                        ).colorScheme.secondary.withValues(alpha: 0.3),
+                                iconData: Icons.cloud_outlined,
+                                onPressed: () async {
+                                  _openMultiAccountOnlineProvidersScreen(
+                                    context,
+                                  );
+                                },
+                              ),
+                            ),
+                          if (kIsWeb) ...[
+                            SizedBox(
+                              width: importButtonWidth,
+                              child: _buildImportProviderButton(
+                                label: l10n.getString('eventsImportGoogle'),
+                                assetPath: 'assets/images/providers/google.png',
+                                onPressed: () async {
+                                  print(
+                                    'CalendarSync EventsScreen import tap provider=google',
+                                  );
+                                  final handler = onImportGoogleCalendar;
+                                  if (handler != null) {
+                                    handler();
+                                    return;
+                                  }
+                                  await _startImportFlow(
+                                    context,
+                                    ref,
+                                    CalendarProvider.google,
+                                  );
+                                },
+                              ),
+                            ),
+                            SizedBox(
+                              width: importButtonWidth,
+                              child: _buildImportProviderButton(
+                                label: l10n.getString('eventsImportOutlook'),
+                                assetPath:
+                                    'assets/images/providers/microsoft.png',
+                                onPressed: () async {
+                                  print(
+                                    'CalendarSync EventsScreen import tap provider=outlook',
+                                  );
+                                  final handler = onImportOutlookCalendar;
+                                  if (handler != null) {
+                                    handler();
+                                    return;
+                                  }
+                                  await _startImportFlow(
+                                    context,
+                                    ref,
+                                    CalendarProvider.outlook,
+                                  );
+                                },
+                              ),
+                            ),
+                            SizedBox(
+                              width: importButtonWidth,
+                              child: _buildImportProviderButton(
+                                label: l10n.getString('eventsImportApple'),
+                                assetPath: 'assets/images/providers/apple.png',
+                                onPressed: () async {
+                                  print(
+                                    'CalendarSync EventsScreen import tap provider=apple',
+                                  );
+                                  final handler = onImportAppleCalendar;
+                                  if (handler != null) {
+                                    handler();
+                                    return;
+                                  }
+                                  await _startImportFlow(
+                                    context,
+                                    ref,
+                                    CalendarProvider.apple,
+                                  );
+                                },
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          l10n.getString('showPastEvents'),
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Theme.of(context).colorScheme.onSurface,
-                          ),
-                        ),
-                      ),
-                      // Use EventManager's notifier to persist the toggle and refresh the list
-                      Switch(
-                        value: ref
-                            .read(eventManagerProvider.notifier)
-                            .showPastEvents,
-                        onChanged: (value) async {
-                          ref
-                              .read(eventManagerProvider.notifier)
-                              .setShowPastEvents(value);
-                          await ref
-                              .read(eventManagerProvider.notifier)
-                              .fetchUserEvents();
-                        },
-                        activeThumbColor: Theme.of(
-                          context,
-                        ).colorScheme.secondary,
-                        activeTrackColor: Theme.of(
-                          context,
-                        ).colorScheme.secondary.withValues(alpha: 0.3),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      if (!kIsWeb && _enableDeviceCalendarImportOption)
-                        SizedBox(
-                          width: importButtonWidth,
-                          child: _buildImportProviderButton(
-                            label: l10n.getString('eventsImportDeviceCalendar'),
-                            iconData: Icons.devices_outlined,
-                            onPressed: () async {
-                              debugPrint(
-                                'CalendarSync EventsScreen import tap provider=device',
-                              );
-                              await _startImportFlow(
-                                context,
-                                ref,
-                                CalendarProvider.device,
-                              );
-                            },
-                          ),
-                        ),
-                      if (!kIsWeb)
-                        SizedBox(
-                          width: importButtonWidth,
-                          child: _buildImportProviderButton(
-                            label: l10n.getString('eventsImportOnlineProviders'),
-                            iconData: Icons.cloud_outlined,
-                            onPressed: () async {
-                              _openOnlineProvidersScreen(context);
-                            },
-                          ),
-                        ),
-                      if (kIsWeb) ...[
-                        SizedBox(
-                          width: importButtonWidth,
-                          child: _buildImportProviderButton(
-                            label: l10n.getString('eventsImportGoogle'),
-                            assetPath: 'assets/images/providers/google.png',
-                            onPressed: () async {
-                              debugPrint(
-                                'CalendarSync EventsScreen import tap provider=google',
-                              );
-                              final handler = onImportGoogleCalendar;
-                              if (handler != null) {
-                                handler();
-                                return;
-                              }
-                              await _startImportFlow(
-                                context,
-                                ref,
-                                CalendarProvider.google,
-                              );
-                            },
-                          ),
-                        ),
-                        SizedBox(
-                          width: importButtonWidth,
-                          child: _buildImportProviderButton(
-                            label: l10n.getString('eventsImportOutlook'),
-                            assetPath: 'assets/images/providers/microsoft.png',
-                            onPressed: () async {
-                              debugPrint(
-                                'CalendarSync EventsScreen import tap provider=outlook',
-                              );
-                              final handler = onImportOutlookCalendar;
-                              if (handler != null) {
-                                handler();
-                                return;
-                              }
-                              await _startImportFlow(
-                                context,
-                                ref,
-                                CalendarProvider.outlook,
-                              );
-                            },
-                          ),
-                        ),
-                        SizedBox(
-                          width: importButtonWidth,
-                          child: _buildImportProviderButton(
-                            label: l10n.getString('eventsImportApple'),
-                            assetPath: 'assets/images/providers/apple.png',
-                            onPressed: () async {
-                              debugPrint(
-                                'CalendarSync EventsScreen import tap provider=apple',
-                              );
-                              final handler = onImportAppleCalendar;
-                              if (handler != null) {
-                                handler();
-                                return;
-                              }
-                              await _startImportFlow(
-                                context,
-                                ref,
-                                CalendarProvider.apple,
-                              );
-                            },
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ],
+                ),
               ),
-            ),
-          Expanded(
-            child: eventsAsync.when(
+            ...eventsAsync.when(
               data: (events) {
-                // Final safety net: apply "show past events" filter at UI level as well,
-                // in case any stale or cached data slipped through.
                 final showPast = ref
                     .read(eventManagerProvider.notifier)
                     .showPastEvents;
@@ -704,90 +858,128 @@ class EventsScreen extends ConsumerWidget {
                           .where((event) => !event.endTime.isBefore(now))
                           .toList();
 
-                if (visibleEvents.isEmpty) {
-                  return LayoutBuilder(
-                    builder: (context, constraints) => SingleChildScrollView(
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(
-                          minHeight: constraints.maxHeight,
-                        ),
-                        child: Padding(
-                          padding: const EdgeInsets.all(32.0),
-                          child: Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(24),
-                                  decoration: BoxDecoration(
-                                    gradient: LinearGradient(
-                                      colors: [
-                                        Theme.of(context).colorScheme.primary
-                                            .withValues(alpha: 0.1),
-                                        Theme.of(context).colorScheme.secondary
-                                            .withValues(alpha: 0.1),
-                                      ],
-                                    ),
-                                    shape: BoxShape.circle,
-                                  ),
-                                  child: Icon(
-                                    Icons.calendar_today_outlined,
-                                    size: 48,
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.primary,
-                                  ),
-                                ),
-                                const SizedBox(height: 24),
-                                Text(
-                                  l10n.getString('eventNoActiveEvents'),
-                                  textAlign: TextAlign.center,
-                                  style: Theme.of(context).textTheme.titleLarge
-                                      ?.copyWith(
-                                        fontWeight: FontWeight.w600,
-                                        color: Theme.of(
-                                          context,
-                                        ).colorScheme.onSurface,
-                                      ),
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  l10n.getString('eventCreateFirst'),
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurface
-                                        .withValues(alpha: 0.7),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
+                // Text search across the fields a user would actually
+                // remember: the event name, where it is, and the description.
+                // Personal notes are deliberately excluded — they are private
+                // to the user and not what someone is searching for.
+                final normalizedQuery = ref
+                    .watch(eventsSearchQueryProvider)
+                    .trim()
+                    .toLowerCase();
+                final searchedEvents = normalizedQuery.isEmpty
+                    ? visibleEvents
+                    : visibleEvents.where((event) {
+                        final haystack = [
+                          event.eventName,
+                          event.eventVenue ?? '',
+                          event.description ?? '',
+                        ].join(' ').toLowerCase();
+                        return haystack.contains(normalizedQuery);
+                      }).toList();
+
+                if (searchedEvents.isEmpty && visibleEvents.isNotEmpty) {
+                  return <Widget>[
+                    SliverToBoxAdapter(child: EventsSearchField()),
+                    SliverFillRemaining(
+                      hasScrollBody: false,
+                      child: AppEmptyState(
+                        icon: Icons.search_off_rounded,
+                        title: l10n.getString('eventsNoSearchResults'),
+                        message: l10n.getString('eventsNoSearchResultsMessage'),
+                        actionLabel: l10n.getString('generalClear'),
+                        onAction: () => ref
+                            .read(eventsSearchQueryProvider.notifier)
+                            .clear(),
                       ),
                     ),
-                  );
+                  ];
                 }
-                return RefreshIndicator(
-                  onRefresh: () =>
-                      ref.read(eventManagerProvider.notifier).fetchUserEvents(),
-                  child: ListView.builder(
-                    itemCount: visibleEvents.length,
-                    itemBuilder: (context, index) {
-                      final event = visibleEvents[index];
+
+                if (visibleEvents.isEmpty) {
+                  return <Widget>[
+                    SliverFillRemaining(
+                      hasScrollBody: false,
+                      child: Column(
+                        children: [
+                          Expanded(
+                            child: AppEmptyState(
+                              icon: Icons.calendar_today_outlined,
+                              title: l10n.getString('eventNoActiveEvents'),
+                              message: l10n.getString('eventCreateFirst'),
+                              actionLabel: l10n.getString('eventAdd'),
+                              onAction: () {
+                                final handler = onAddEvent;
+                                if (handler != null) {
+                                  handler();
+                                  return;
+                                }
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) =>
+                                        const AddEventScreen(),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                          const AdSlot(placement: AdPlacement.eventsInline),
+                          const SizedBox(height: 32),
+                        ],
+                      ),
+                    ),
+                  ];
+                }
+
+                final itemCount = searchedEvents.length + 2;
+                return <Widget>[
+                  if (visibleEvents.isNotEmpty)
+                    const SliverToBoxAdapter(child: EventsSearchField()),
+                  SliverList(
+                    delegate: SliverChildBuilderDelegate((context, index) {
+                      if (index == searchedEvents.length) {
+                        return const AdSlot(
+                          placement: AdPlacement.eventsInline,
+                        );
+                      }
+
+                      if (index == searchedEvents.length + 1) {
+                        return const SizedBox(height: 32);
+                      }
+
+                      final event = searchedEvents[index];
                       return _buildEventListItem(context, ref, l10n, event);
-                    },
+                    }, childCount: itemCount),
                   ),
-                );
+                ];
               },
-              loading: () => const Center(child: CircularProgressIndicator()),
-              error: (e, s) =>
-                  Center(child: Text('${l10n.getString('generalError')}: $e')),
+              loading: () => <Widget>[
+                SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: Semantics(
+                    liveRegion: true,
+                    label: l10n.getString('generalLoading'),
+                    child: const Center(child: CircularProgressIndicator()),
+                  ),
+                ),
+              ],
+              error: (e, s) => <Widget>[
+                SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: AppEmptyState(
+                    icon: Icons.cloud_off,
+                    title: l10n.getString('eventLoadErrorTitle'),
+                    message: l10n.getString('eventLoadErrorMessage'),
+                    actionLabel: l10n.getString('generalRetry'),
+                    onAction: () => ref
+                        .read(eventManagerProvider.notifier)
+                        .fetchUserEvents(),
+                  ),
+                ),
+              ],
             ),
-          ),
-        ],
+          ],
+        ),
       ),
       floatingActionButton: FloatingActionButton.extended(
         heroTag: 'events_add_fab',
@@ -835,7 +1027,7 @@ class EventsScreen extends ConsumerWidget {
               ).colorScheme.onSurface.withValues(alpha: 0.85),
             ),
             maxLines: 2,
-            overflow: TextOverflow.ellipsis,
+            overflow: TextOverflow.visible,
           ),
         ),
         const SizedBox(width: 8),
@@ -849,51 +1041,11 @@ class EventsScreen extends ConsumerWidget {
               ).colorScheme.onSurface.withValues(alpha: 0.7),
             ),
             maxLines: 2,
-            overflow: TextOverflow.ellipsis,
+            overflow: TextOverflow.visible,
           ),
         ),
       ],
     );
-  }
-
-  bool _isVirtualMeetingLocation(String raw) {
-    final s = raw.toLowerCase().trim();
-    if (s.isEmpty) {
-      return false;
-    }
-    if (s == 'online' || s == 'virtual') {
-      return true;
-    }
-    if (s.contains('http://') || s.contains('https://')) {
-      return true;
-    }
-    if (s.contains('zoom.us') || s.contains('zoom.com') || s.contains('zoom')) {
-      return true;
-    }
-    if (s.contains('meet.google.com') || s.contains('google meet')) {
-      return true;
-    }
-    if (s.contains('teams.microsoft.com') ||
-        s.contains('microsoft teams') ||
-        s.contains('ms teams')) {
-      return true;
-    }
-    if (s.contains('webex') ||
-        s.contains('gotomeeting') ||
-        s.contains('go to meeting') ||
-        s.contains('skype') ||
-        s.contains('hangouts') ||
-        s.contains('discord.gg') ||
-        s.contains('discord.com')) {
-      return true;
-    }
-    if (s.contains('online meeting') ||
-        s.contains('virtual meeting') ||
-        s.contains('video call') ||
-        s.contains('conference call')) {
-      return true;
-    }
-    return false;
   }
 
   Widget _buildEventListItem(
@@ -904,7 +1056,7 @@ class EventsScreen extends ConsumerWidget {
   ) {
     final venue = event.eventVenue?.trim();
     final hasVenue = venue != null && venue.isNotEmpty;
-    final showMap = hasVenue && !_isVirtualMeetingLocation(venue);
+    final showMap = hasVenue && !isVirtualMeetingLocation(venue);
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -935,7 +1087,7 @@ class EventsScreen extends ConsumerWidget {
           );
         },
         child: Padding(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.all(16),
           child: Stack(
             children: [
               // Main content uses the full width; delete button is overlaid so it doesn't shrink the title.
@@ -961,7 +1113,7 @@ class EventsScreen extends ConsumerWidget {
                               ? ui.TextDirection.rtl
                               : ui.TextDirection.ltr,
                           maxLines: 3,
-                          overflow: TextOverflow.ellipsis,
+                          overflow: TextOverflow.visible,
                         ),
                         const SizedBox(height: 8),
                         _buildLocationRow(
@@ -990,50 +1142,40 @@ class EventsScreen extends ConsumerWidget {
                           ),
                         ),
                         const SizedBox(height: 8),
-                        if (event.eventLink != null &&
-                            event.eventLink!.isNotEmpty) ...[
-                          InkWell(
-                            onTap: () async {
-                              final Uri url = Uri.parse(event.eventLink!);
-                              if (await canLaunchUrl(url)) {
-                                await launchUrl(
-                                  url,
-                                  mode: LaunchMode.externalApplication,
-                                );
-                              }
-                            },
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  Icons.link,
-                                  size: 14,
-                                  color: Theme.of(context).colorScheme.primary,
-                                ),
-                                const SizedBox(width: 4),
-                                Flexible(
-                                  child: Text(
-                                    l10n.getString('eventViewDetails'),
-                                    style: TextStyle(
-                                      fontSize: 13,
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.primary,
-                                      decoration: TextDecoration.underline,
-                                    ),
+                        EventAttendanceSummary(
+                          attendeeCount: event.attendeeCount,
+                          l10n: l10n,
+                        ),
+                        EventMatchedAttendees(
+                          event: event,
+                          l10n: l10n,
+                        ),
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          textDirection: l10n.textDirection,
+                          children: [
+                            if (event.eventLink != null &&
+                                event.eventLink!.isNotEmpty)
+                              _buildEventCardAction(
+                                context,
+                                label: l10n.getString('eventViewDetails'),
+                                icon: Icons.link,
+                                onPressed: () => unawaited(
+                                  _openEventLink(
+                                    context,
+                                    l10n,
+                                    event.eventLink!,
                                   ),
                                 ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                        ],
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.end,
-                          children: [
-                            if (showMap) ...[
-                              InkWell(
-                                onTap: () async {
+                              ),
+                            if (showMap)
+                              _buildEventCardAction(
+                                context,
+                                label: l10n.getString('eventOpenInMaps'),
+                                icon: Icons.map_outlined,
+                                onPressed: () async {
                                   final success = await openGoogleMaps(venue);
                                   if (!success && context.mounted) {
                                     ScaffoldMessenger.of(context).showSnackBar(
@@ -1043,54 +1185,21 @@ class EventsScreen extends ConsumerWidget {
                                             'errorCouldNotOpenMaps',
                                           ),
                                         ),
-                                        backgroundColor: Colors.orange,
+                                        backgroundColor: Theme.of(
+                                          context,
+                                        ).colorScheme.error,
                                       ),
                                     );
                                   }
                                 },
-                                borderRadius: BorderRadius.circular(8),
-                                child: Container(
-                                  padding: const EdgeInsets.all(8),
-                                  margin: const EdgeInsets.only(right: 8),
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .primaryContainer
-                                        .withValues(alpha: 0.3),
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: Border.all(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .primary
-                                          .withValues(alpha: 0.5),
-                                      width: 1,
-                                    ),
-                                  ),
-                                  child: Icon(
-                                    Icons.map_outlined,
-                                    size: 20,
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.primary,
-                                  ),
-                                ),
                               ),
-                            ],
-                            IconButton(
-                              icon: Icon(
-                                Icons.delete_outline,
-                                color: Theme.of(context).colorScheme.error,
-                              ),
+                            _buildEventCardAction(
+                              context,
+                              label: l10n.getString('eventLeave'),
+                              icon: Icons.logout_rounded,
+                              isDestructive: true,
                               onPressed: () =>
-                                  _confirmDelete(context, ref, l10n, event),
-                              style: IconButton.styleFrom(
-                                backgroundColor: Theme.of(
-                                  context,
-                                ).colorScheme.error.withValues(alpha: 0.1),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
+                                  _confirmLeave(context, ref, l10n, event),
                             ),
                           ],
                         ),
@@ -1106,46 +1215,194 @@ class EventsScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _confirmDelete(
+  Widget _buildEventCardAction(
+    BuildContext context, {
+    required String label,
+    required IconData icon,
+    required VoidCallback onPressed,
+    bool isDestructive = false,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final foreground = isDestructive ? colorScheme.error : colorScheme.primary;
+    return OutlinedButton.icon(
+      onPressed: onPressed,
+      icon: Icon(icon, size: 16),
+      label: Text(
+        label,
+        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+      ),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: foreground,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        minimumSize: const Size(0, 40),
+        visualDensity: VisualDensity.compact,
+        side: BorderSide(color: foreground.withValues(alpha: 0.5)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
+    );
+  }
+
+  Future<void> _openEventLink(
+    BuildContext context,
+    LocalizationState l10n,
+    String rawUrl,
+  ) async {
+    final uri = Uri.tryParse(rawUrl.trim());
+    final scheme = uri?.scheme.toLowerCase();
+    if (uri == null || (scheme != 'http' && scheme != 'https')) {
+      _showEventLinkOpenFailed(context, l10n, rawUrl);
+      return;
+    }
+
+    var launched = false;
+    try {
+      launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {}
+    if (!launched) {
+      try {
+        launched = await launchUrl(uri, mode: LaunchMode.platformDefault);
+      } catch (_) {}
+    }
+    if (!launched) {
+      _showEventLinkOpenFailed(context, l10n, rawUrl);
+    }
+  }
+
+  void _showEventLinkOpenFailed(
+    BuildContext context,
+    LocalizationState l10n,
+    String rawUrl,
+  ) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(l10n.getString('eventLinkOpenFailed')),
+        backgroundColor: Theme.of(context).colorScheme.error,
+        action: SnackBarAction(
+          label: l10n.getString('generalRetry'),
+          textColor: Theme.of(context).colorScheme.onError,
+          onPressed: () => unawaited(_openEventLink(context, l10n, rawUrl)),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmLeave(
     BuildContext context,
     WidgetRef ref,
     LocalizationState l10n,
     EventModel event,
   ) async {
-    final bool? shouldDelete = await showDialog<bool>(
+    final bool? shouldLeave = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(l10n.getString('eventDeleteConfirm')),
-        content: Text(event.eventName),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text(l10n.getString('generalCancel')),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: TextButton.styleFrom(
-              foregroundColor: Theme.of(context).colorScheme.error,
+      builder: (dialogContext) {
+        var busy = false;
+        return StatefulBuilder(
+          builder: (dialogStateContext, setDialogState) => AlertDialog(
+            title: Text(l10n.getString('eventLeaveConfirmTitle')),
+            content: Text(
+              l10n.getString(
+                'eventLeaveConfirmBodyWithName',
+                params: {'eventName': event.eventName},
+              ),
             ),
-            child: Text(l10n.getString('generalDelete')),
-          ),
-        ],
-      ),
-    );
-
-    if (shouldDelete == true) {
-      final success = await ref
-          .read(eventManagerProvider.notifier)
-          .deleteEvent(event.id);
-      if (context.mounted && success) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(l10n.getString('eventDeleted')),
-            backgroundColor: Colors.orange,
+            actions: [
+              TextButton(
+                onPressed: busy
+                    ? null
+                    : () => Navigator.of(dialogStateContext).pop(false),
+                child: Text(l10n.getString('generalCancel')),
+              ),
+              TextButton(
+                onPressed: busy
+                    ? null
+                    : () async {
+                        setDialogState(() => busy = true);
+                        var success = false;
+                        try {
+                          success = await ref
+                              .read(eventManagerProvider.notifier)
+                              .leaveEvent(event.id);
+                        } catch (_) {}
+                        if (!dialogStateContext.mounted) return;
+                        Navigator.of(dialogStateContext).pop(success);
+                        if (!success && context.mounted) {
+                          _showLeaveFailed(context, ref, l10n, event);
+                        }
+                      },
+                style: TextButton.styleFrom(
+                  foregroundColor: Theme.of(
+                    dialogStateContext,
+                  ).colorScheme.error,
+                ),
+                child: busy
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Text(l10n.getString('eventLeave')),
+              ),
+            ],
           ),
         );
-      }
+      },
+    );
+
+    if (shouldLeave == true && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(l10n.getString('eventLeft')),
+          backgroundColor: Theme.of(context).colorScheme.primary,
+        ),
+      );
     }
+  }
+
+  void _showLeaveFailed(
+    BuildContext context,
+    WidgetRef ref,
+    LocalizationState l10n,
+    EventModel event,
+  ) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(l10n.getString('eventLeaveFailed')),
+        backgroundColor: Theme.of(context).colorScheme.error,
+        action: SnackBarAction(
+          label: l10n.getString('generalRetry'),
+          textColor: Theme.of(context).colorScheme.onError,
+          onPressed: () => unawaited(_retryLeave(context, ref, l10n, event)),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _retryLeave(
+    BuildContext context,
+    WidgetRef ref,
+    LocalizationState l10n,
+    EventModel event,
+  ) async {
+    var success = false;
+    try {
+      success = await ref
+          .read(eventManagerProvider.notifier)
+          .leaveEvent(event.id);
+    } catch (_) {}
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          l10n.getString(success ? 'eventLeft' : 'eventLeaveFailed'),
+        ),
+        backgroundColor: success
+            ? Theme.of(context).colorScheme.primary
+            : Theme.of(context).colorScheme.error,
+      ),
+    );
   }
 
   Widget _buildEventDetailRow(
@@ -1168,7 +1425,7 @@ class EventsScreen extends ConsumerWidget {
               ).colorScheme.onSurface.withValues(alpha: 0.85),
             ),
             maxLines: 2,
-            overflow: TextOverflow.ellipsis,
+            overflow: TextOverflow.visible,
           ),
         ),
         const SizedBox(width: 8),
@@ -1182,7 +1439,7 @@ class EventsScreen extends ConsumerWidget {
               ).colorScheme.onSurface.withValues(alpha: 0.7),
             ),
             maxLines: 2,
-            overflow: TextOverflow.ellipsis,
+            overflow: TextOverflow.visible,
           ),
         ),
       ],

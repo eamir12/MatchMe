@@ -1,6 +1,12 @@
 # Download Noto fonts used by the app into assets/fonts/
 # Usage: Open PowerShell in the repo root and run: .\tools\download_noto_fonts.ps1
 # The script will attempt to download a best-effort set of fonts from googlefonts GitHub.
+#
+# Emoji and CJK faces are deliberately NOT here: NotoColorEmoji.ttf and
+# NotoSansTC cost ~24 MB per build and every target platform already has a
+# system font for those glyphs (Segoe UI Emoji / Noto Color Emoji / Apple Color
+# Emoji, plus the platform CJK fonts). Re-add them only if a target platform
+# ever needs to render those glyphs with no system fallback.
 
 $fonts = @(
   @{name='NotoSans-Regular.ttf'; url='https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf'},
@@ -8,10 +14,7 @@ $fonts = @(
   @{name='NotoSansHebrew-Regular.ttf'; url='https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansHebrew/NotoSansHebrew-Regular.ttf'},
   @{name='NotoSansHebrew-Bold.ttf'; url='https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansHebrew/NotoSansHebrew-Bold.ttf'},
   @{name='NotoSansArabic-Regular.ttf'; url='https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansArabic/NotoSansArabic-Regular.ttf'},
-  @{name='NotoSansArabic-Bold.ttf'; url='https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansArabic/NotoSansArabic-Bold.ttf'},
-  @{name='NotoSansTC-Regular.ttf'; url='https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansTC/NotoSansTC-Regular.ttf'},
-  @{name='NotoSansTC-Bold.ttf'; url='https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansTC/NotoSansTC-Bold.ttf'},
-  @{name='NotoColorEmoji.ttf'; url='https://github.com/googlefonts/noto-emoji/raw/main/fonts/NotoColorEmoji.ttf'}
+  @{name='NotoSansArabic-Bold.ttf'; url='https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansArabic/NotoSansArabic-Bold.ttf'}
 )
 
 $dest = "assets/fonts"

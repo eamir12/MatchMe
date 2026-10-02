@@ -6,17 +6,25 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.location.Location
+import android.location.LocationManager
 import android.os.*
 import android.util.Log
 import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.NetworkRequest
+import android.net.NetworkCapabilities
 import android.provider.Settings
 import java.util.concurrent.TimeUnit
 import android.util.Base64
 import androidx.core.app.NotificationCompat
 import androidx.core.app.Person
+import androidx.core.content.ContextCompat
+import com.example.matchme.R
 import com.google.android.gms.location.*
 import io.flutter.plugin.common.MethodChannel
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -37,6 +45,7 @@ class MatchMeBackgroundService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var locationJob: Job? = null
     private var realtimeJob: Job? = null
+    private var realtimeReconnectJob: Job? = null
     private var webSocket: WebSocket? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastRealtimeActivity: Long = 0 // Track last message/heartbeat time
@@ -47,7 +56,9 @@ class MatchMeBackgroundService : Service() {
     @Volatile private var lastRealtimeConnectAttemptAt: Long = 0
     @Volatile private var lastIntentionalRealtimeCloseAt: Long = 0
     @Volatile private var realtimeConnectStartAt: Long = 0
+    @Volatile private var isRealtimeIntentionalClosePending: Boolean = false
     private val realtimeDebug = RealtimeDebugState()
+    private lateinit var notificationManager: NotificationManager
     
     // Exponential backoff for Realtime connection
     @Volatile private var reconnectDelay = 1000L
@@ -64,10 +75,13 @@ class MatchMeBackgroundService : Service() {
     // Tracks whether the UI process is in the foreground. This is not the same as the user's
     // discoverability/visibility setting.
     @Volatile private var appInForeground: Boolean = false
-    @Volatile private var highAccuracyMode: Boolean = false
-    private var gpsInterval = 30
+    @Volatile private var backgroundMatchingMode: Boolean = true
+    private var backgroundGraceJob: Job? = null
+    @Volatile private var gracePeriodActive: Boolean = false
+    private var gpsInterval = 5
     private var smartThrottlingEnabled = true
     private val recentLocations = mutableListOf<Location>()
+    @Volatile private var lastBackgroundRequestIntervalMs: Long = 0L
 
     // Battery-aware throttling: when battery < 15% and not charging, ensure GPS runs
     // no more frequently than once every 60 seconds.
@@ -75,6 +89,11 @@ class MatchMeBackgroundService : Service() {
     @Volatile private var deviceCharging: Boolean = false
     @Volatile private var lowBatteryThrottlingActive: Boolean = false
     private var batteryReceiver: BroadcastReceiver? = null
+    @Volatile private var lastTransientLocationFailureLogAt: Long = 0
+    @Volatile private var suppressedTransientLocationFailureCount: Int = 0
+
+    // Mutex to prevent concurrent refresh_token race between heartbeat/location/realtime
+    private val refreshMutex = Mutex()
 
     private val lowBatteryThresholdPercent = 15
     private val lowBatteryMinIntervalMs = 60000L
@@ -86,6 +105,49 @@ class MatchMeBackgroundService : Service() {
     // Deduplication tracking
     private var lastNotifiedMessageId: String? = null
     private var lastNotifiedMatchId: String? = null
+    // Match-buzz dedup, separate from message dedup (both share the matchId
+    // namespace: a message buzz must never suppress a match buzz). The RAM
+    // value alone re-buzzes after every process restart, so it is mirrored
+    // to disk and unified with the WorkManager fallback's key — one buzz per
+    // match per device, ever.
+    private var lastNotifiedMatchBuzzId: String? = null
+    private val PREF_LAST_MATCH_BUZZ_ID = "flutter.last_notified_match_id"
+    private val PREF_WORKER_NOTIFIED_KEY = "flutter.worker_last_notified_key"
+
+    private fun wasMatchBuzzed(matchId: String): Boolean {
+        if (matchId.isBlank()) return false
+        if (matchId == lastNotifiedMatchBuzzId) return true
+        return try {
+            val prefs = securePrefs()
+            prefs.getString(PREF_LAST_MATCH_BUZZ_ID, null) == matchId ||
+                prefs.getString(PREF_WORKER_NOTIFIED_KEY, null) == "match:$matchId"
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun recordMatchBuzzed(matchId: String) {
+        if (matchId.isBlank()) return
+        lastNotifiedMatchBuzzId = matchId
+        try {
+            securePrefs().edit()
+                .putString(PREF_LAST_MATCH_BUZZ_ID, matchId)
+                .putString(PREF_WORKER_NOTIFIED_KEY, "match:$matchId")
+                .apply()
+        } catch (_: Exception) {
+        }
+    }
+
+    // Location share state
+    @Volatile private var lsMatchId: String? = null
+    @Volatile private var lsOtherUserId: String? = null
+    @Volatile private var lsSessionKey: ByteArray? = null
+    @Volatile private var lsIntervalSeconds: Int = 5
+    @Volatile private var lsExpiresAt: String? = null
+    private var lsJob: Job? = null
+    
+    // Notification countdown timer - updates every second while sharing is active
+    private var lsNotificationTimer: kotlinx.coroutines.Job? = null
     private val activeNotificationIds = mutableMapOf<String, Int>() // matchId -> notificationId
     private var currentlyViewingChatId: String? = null // Track which chat the user is currently viewing
 
@@ -96,6 +158,13 @@ class MatchMeBackgroundService : Service() {
     @Volatile private var lastNotificationCheckTime: Long = 0
     private val notificationCheckThrottleMs = 2000L // Minimum 2 seconds between checks
 
+    // Connectivity monitoring for detecting when device comes back online
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var connectivityProbeJob: Job? = null
+    @Volatile private var wasOffline: Boolean = false
+    @Volatile private var wasPinnedSkipping: Boolean = false
+
     private class RealtimeDebugState {
         @Volatile var lastPostgresDebugAt: Long = 0
         @Volatile var postgresDebugCountInWindow: Int = 0
@@ -105,6 +174,7 @@ class MatchMeBackgroundService : Service() {
     }
 
     private var methodChannel: MethodChannel? = null
+    private var locationShareHelper: LocationShareHelper? = null
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS) // Disable read timeout for WebSockets
@@ -114,14 +184,47 @@ class MatchMeBackgroundService : Service() {
         .build()
 
     companion object {
+        private val diagBuffer = java.util.concurrent.ConcurrentLinkedQueue<String>()
+        private const val MAX_DIAG_ENTRIES = 300
+
+        // In-memory event log used to diagnose background GPS/matching issues.
+        // Dumped to the Flutter console via the "getDiagnostics" method channel
+        // call when the app resumes, so we can see what the native service did
+        // (or failed to do) while the UI was in the background.
+        private fun addDiag(msg: String) {
+            try {
+                diagBuffer.add(msg)
+                while (diagBuffer.size > MAX_DIAG_ENTRIES) {
+                    diagBuffer.poll()
+                }
+            } catch (_: Exception) {
+            }
+        }
+
+        fun getDiagnostics(): List<String> {
+            val snapshot = diagBuffer.toList()
+            return listOf("serviceAlive=${isServiceAlive()}") + snapshot
+        }
+
         const val CHANNEL_ID = "matchme_background_service_min" // Changed ID to force update
         const val ALERTS_CHANNEL_ID = "matchme_alerts"
         const val NOTIFICATION_ID = 1001
+
+        /// Encrypted native buffer of GPS fixes recorded while offline with
+        /// Retro Matching opted in and the app UI closed. Merged into the
+        /// Dart-side encrypted Hive trail and uploaded on next connectivity.
+        const val TRAIL_NATIVE_KEY = "flutter.offline_trail_native"
+
+        /// Buffer caps: hard entry cap and the maximum retention window the
+        /// retro feature allows (Dart clamps retention to 2–72h).
+        const val MAX_NATIVE_TRAIL_POINTS = 2000
+        const val MAX_RETENTION_H = 72
         const val ACTION_START = "START"
         const val ACTION_STOP = "STOP"
         const val ACTION_UPDATE_VISIBILITY = "UPDATE_VISIBILITY"
         const val ACTION_UPDATE_APP_FOREGROUND = "UPDATE_APP_FOREGROUND"
-        const val ACTION_UPDATE_HIGH_ACCURACY = "UPDATE_HIGH_ACCURACY"
+        const val ACTION_UPDATE_BACKGROUND_MATCHING = "UPDATE_BACKGROUND_MATCHING"
+        const val ACTION_UPDATE_PINNED_STATE = "UPDATE_PINNED_STATE"
         const val ACTION_UPDATE_TOKEN = "UPDATE_TOKEN"
         const val ACTION_UPDATE_CONFIG = "UPDATE_CONFIG"
         const val ACTION_RESET_CHAT_NOTIFICATION = "RESET_CHAT_NOTIFICATION"
@@ -130,6 +233,15 @@ class MatchMeBackgroundService : Service() {
         const val ACTION_CLEAR_VIEWING_CHAT = "CLEAR_VIEWING_CHAT"
         const val ACTION_SET_CONNECTIVITY = "SET_CONNECTIVITY"
         const val ACTION_PROCESS_LOCATION_UPDATE = "PROCESS_LOCATION_UPDATE"
+        const val ACTION_START_LOCATION_SHARE = "START_LOCATION_SHARE"
+        const val ACTION_STOP_LOCATION_SHARE = "STOP_LOCATION_SHARE"
+        const val ACTION_UPDATE_LOCATION_SHARE_DURATION = "UPDATE_LOCATION_SHARE_DURATION"
+        const val ACTION_REFRESH_NOTIFICATION = "REFRESH_NOTIFICATION"
+        const val EXTRA_LS_MATCH_ID = "lsMatchId"
+        const val EXTRA_LS_OTHER_USER_ID = "lsOtherUserId"
+        const val EXTRA_LS_SESSION_KEY = "lsSessionKey"
+        const val EXTRA_LS_INTERVAL = "lsInterval"
+        const val EXTRA_LS_EXPIRES_AT = "lsExpiresAt"
         const val EXTRA_USER_ID = "userId"
         const val EXTRA_SUPABASE_URL = "supabaseUrl"
         const val EXTRA_SUPABASE_KEY = "supabaseKey"
@@ -138,10 +250,30 @@ class MatchMeBackgroundService : Service() {
         const val EXTRA_IS_VISIBLE = "isVisible"
         const val EXTRA_IS_ONLINE = "isOnline"
         const val EXTRA_APP_IN_FOREGROUND = "appInForeground"
-        const val EXTRA_HIGH_ACCURACY = "highAccuracy"
+        const val EXTRA_BACKGROUND_MATCHING = "backgroundMatching"
         const val EXTRA_GPS_INTERVAL = "gpsInterval"
         const val EXTRA_SMART_THROTTLING = "smartThrottlingEnabled"
         const val EXTRA_MATCH_ID = "matchId"
+        private const val FIX_TIMEOUT_MS = 20000L
+        private const val PREF_APP_IN_FOREGROUND = "flutter.app_in_foreground"
+        private const val PREF_LS_MATCH_ID = "flutter.location_share_match_id"
+        private const val PREF_LS_OTHER_USER_ID = "flutter.location_share_other_user_id"
+        private const val PREF_LS_SESSION_KEY = "flutter.location_share_session_key"
+        private const val PREF_LS_INTERVAL = "flutter.location_share_interval"
+        private const val PREF_LS_EXPIRES_AT = "flutter.location_share_expires_at"
+        private const val PREF_RECENT_LOCATIONS = "flutter.recent_locations_json"
+
+        private fun persistAppForegroundState(context: Context, appInForeground: Boolean) {
+            try {
+                context
+                    .getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean(PREF_APP_IN_FOREGROUND, appInForeground)
+                    .apply()
+            } catch (e: Exception) {
+                // Log.w("MatchMeBackgroundService", "Failed to persist app foreground state", e)
+            }
+        }
 
         fun startService(
             context: Context,
@@ -151,10 +283,13 @@ class MatchMeBackgroundService : Service() {
             userToken: String?,
             refreshToken: String?,
             appInForeground: Boolean = false,
-            highAccuracyMode: Boolean = false,
+            backgroundMatchingMode: Boolean = false,
             isVisible: Boolean = true,
             isOnline: Boolean = true,
+            gpsInterval: Int = 5,
+            smartThrottlingEnabled: Boolean = true,
         ) {
+            persistAppForegroundState(context, appInForeground)
             val intent = Intent(context, MatchMeBackgroundService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_USER_ID, userId)
@@ -165,23 +300,42 @@ class MatchMeBackgroundService : Service() {
                 putExtra(EXTRA_IS_VISIBLE, isVisible)
                 putExtra(EXTRA_IS_ONLINE, isOnline)
                 putExtra(EXTRA_APP_IN_FOREGROUND, appInForeground)
-                putExtra(EXTRA_HIGH_ACCURACY, highAccuracyMode)
+                putExtra(EXTRA_BACKGROUND_MATCHING, backgroundMatchingMode)
+                putExtra(EXTRA_GPS_INTERVAL, gpsInterval)
+                putExtra(EXTRA_SMART_THROTTLING, smartThrottlingEnabled)
             }
             
-            // Only use startForegroundService if we are in background AND high accuracy mode is enabled.
-            // This prevents ForegroundServiceDidNotStartInTimeException when we don't intend to show a notification.
-            if (!appInForeground && highAccuracyMode) {
+            // On Android 8+, starting a service from a *background execution
+            // context* (BroadcastReceiver, Service in another app, …) with a
+            // plain context.startService() call raises
+            // IllegalStateException: "Not allowed to start service Intent …
+            // app is in background UID". If the caller declares
+            // appInForeground=false, treat it as a potentially-background
+            // context and use startForegroundService() on API 26+. The
+            // service itself is responsible for calling startForeground()
+            // promptly (it does so via ensureForegroundStarted() whenever
+            // background matching mode, visibility, or an active live
+            // location share requires it).
+            if (!appInForeground) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(intent)
+                    try {
+                        context.startForegroundService(intent)
+                    } catch (e: Exception) {
+                        // Some OEMs further restrict foreground service starts
+                        // from BOOT_COMPLETED/LOCKED_BOOT_COMPLETED. Swallow;
+                        // WorkManager periodic fallback covers this.
+                    }
                 } else {
-                    context.startService(intent)
+                    try {
+                        context.startService(intent)
+                    } catch (_: Exception) {}
                 }
             } else {
                 try {
                     context.startService(intent)
                 } catch (e: Exception) {
-                    // This might happen if app is in background and we try to start service in Standard Mode.
-                    Log.w("MatchMeBackgroundService", "Failed to start service via startService", e)
+                    // Flutter-initiated start when app was actually in the
+                    // background is handled by this fallback path.
                 }
             }
         }
@@ -202,14 +356,31 @@ class MatchMeBackgroundService : Service() {
         }
 
         fun setConnectivity(context: Context, isOnline: Boolean) {
+            try {
+                val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                prefs.edit().putBoolean("flutter.is_online", isOnline).apply()
+            } catch (e: Exception) {
+                // Log.w("MatchMeBackgroundService", "Failed to persist connectivity state", e)
+            }
+
+            if (!isServiceAlive()) {
+                // Log disabled
+                return
+            }
+
             val intent = Intent(context, MatchMeBackgroundService::class.java).apply {
                 action = ACTION_SET_CONNECTIVITY
                 putExtra(EXTRA_IS_ONLINE, isOnline)
             }
-            context.startService(intent)
+            try {
+                context.startService(intent)
+            } catch (e: Exception) {
+                // Log.w("MatchMeBackgroundService", "Failed to deliver connectivity intent", e)
+            }
         }
 
         fun updateAppForeground(context: Context, appInForeground: Boolean) {
+            persistAppForegroundState(context, appInForeground)
             val intent = Intent(context, MatchMeBackgroundService::class.java).apply {
                 action = ACTION_UPDATE_APP_FOREGROUND
                 putExtra(EXTRA_APP_IN_FOREGROUND, appInForeground)
@@ -217,12 +388,25 @@ class MatchMeBackgroundService : Service() {
             context.startService(intent)
         }
 
-        fun updateHighAccuracyMode(context: Context, enabled: Boolean) {
+        fun updateBackgroundMatchingMode(context: Context, enabled: Boolean) {
             val intent = Intent(context, MatchMeBackgroundService::class.java).apply {
-                action = ACTION_UPDATE_HIGH_ACCURACY
-                putExtra(EXTRA_HIGH_ACCURACY, enabled)
+                action = ACTION_UPDATE_BACKGROUND_MATCHING
+                putExtra(EXTRA_BACKGROUND_MATCHING, enabled)
             }
             context.startService(intent)
+        }
+
+        fun refreshForegroundForPinnedState(context: Context) {
+            // Pinned home-base changed (pin/unpin/expire): the foreground
+            // notification and GPS polling both depend on it, so re-evaluate
+            // immediately. The flag itself is read fresh from
+            // FlutterSharedPreferences by isPinnedLocationActive().
+            val intent = Intent(context, MatchMeBackgroundService::class.java).apply {
+                action = ACTION_UPDATE_PINNED_STATE
+            }
+            try {
+                context.startService(intent)
+            } catch (_: Exception) {}
         }
 
         fun updateToken(context: Context, token: String?, refreshToken: String?) {
@@ -241,6 +425,57 @@ class MatchMeBackgroundService : Service() {
                 putExtra(EXTRA_SMART_THROTTLING, smartThrottlingEnabled)
             }
             context.startService(intent)
+        }
+
+        fun refreshNotification(context: Context) {
+            val intent = Intent(context, MatchMeBackgroundService::class.java).apply {
+                action = ACTION_REFRESH_NOTIFICATION
+            }
+            try {
+                context.startService(intent)
+            } catch (_: Exception) {}
+        }
+
+        fun startLocationShare(
+            context: Context,
+            matchId: String,
+            otherUserId: String,
+            sessionKeyBase64: String,
+            updateIntervalSeconds: Int,
+            expiresAtIso: String?
+        ) {
+            val intent = Intent(context, MatchMeBackgroundService::class.java).apply {
+                action = ACTION_START_LOCATION_SHARE
+                putExtra(EXTRA_LS_MATCH_ID, matchId)
+                putExtra(EXTRA_LS_OTHER_USER_ID, otherUserId)
+                putExtra(EXTRA_LS_SESSION_KEY, sessionKeyBase64)
+                putExtra(EXTRA_LS_INTERVAL, updateIntervalSeconds)
+                if (expiresAtIso != null) putExtra(EXTRA_LS_EXPIRES_AT, expiresAtIso)
+            }
+            try {
+                context.startService(intent)
+            } catch (e: Exception) {
+            }
+        }
+
+        fun stopLocationShare(context: Context) {
+            val intent = Intent(context, MatchMeBackgroundService::class.java).apply {
+                action = ACTION_STOP_LOCATION_SHARE
+            }
+            try {
+                context.startService(intent)
+            } catch (e: Exception) {
+            }
+        }
+
+        fun updateLocationShareDuration(context: Context, expiresAtIso: String?) {
+            val intent = Intent(context, MatchMeBackgroundService::class.java).apply {
+                action = ACTION_UPDATE_LOCATION_SHARE_DURATION
+                if (expiresAtIso != null) putExtra(EXTRA_LS_EXPIRES_AT, expiresAtIso)
+            }
+            try {
+                context.startService(intent)
+            } catch (_: Exception) {}
         }
 
         fun resetChatNotification(context: Context, matchId: String) {
@@ -332,14 +567,36 @@ class MatchMeBackgroundService : Service() {
         return getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
     }
 
+    private fun logEvent(msg: String) {
+        try {
+            val ts = try {
+                java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+            } catch (_: Exception) {
+                System.currentTimeMillis().toString()
+            }
+            Log.i(TAG, msg)
+            addDiag("$ts $msg")
+        } catch (_: Exception) {
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
-        Log.d(TAG, "Background service created")
+        logEvent("onCreate: alive=${isServiceAlive()}")
+        // Log.d(TAG, "Background service created")
 
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+        locationShareHelper = LocationShareHelper(this, httpClient, fusedLocationClient, serviceScope).apply {
+            setOnShareEnded { handleLocationShareEnded() }
+        }
+        connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         // Track battery state so we can reduce GPS frequency when the device is low.
         startBatteryMonitoring()
+        
+        // Start independent connectivity monitoring
+        startConnectivityMonitoring()
         
         // Initialize WakeLock
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -356,29 +613,45 @@ class MatchMeBackgroundService : Service() {
         // Waiting for the delayed restoreCredentialsAndConnect is too late for the initial check.
         try {
             val prefs = securePrefs()
-            highAccuracyMode = prefs.getBoolean("flutter.high_accuracy_mode", false)
+            backgroundMatchingMode = prefs.getBoolean("flutter.background_matching_mode", false)
             isVisible = prefs.getBoolean("flutter.manual_visibility", true)
             isOnline = prefs.getBoolean("flutter.is_online", true)
+            appInForeground = prefs.getBoolean(PREF_APP_IN_FOREGROUND, false)
+            // Restore GPS interval and throttling immediately - needed for correct rate after
+            // process kill / device restart before the delayed restoreCredentialsAndConnect runs.
+            // Must honor user's Settings rate and throttling preference even when UI is dead.
+            gpsInterval = when {
+                prefs.contains("flutter.gps_interval") -> prefs.getInt("flutter.gps_interval", 5)
+                prefs.contains("gps_interval") -> prefs.getInt("gps_interval", 5)
+                else -> 5
+            }.coerceAtLeast(1)
+            smartThrottlingEnabled = when {
+                prefs.contains("flutter.smart_throttling_enabled") -> prefs.getBoolean("flutter.smart_throttling_enabled", true)
+                prefs.contains("smart_throttling_enabled") -> prefs.getBoolean("smart_throttling_enabled", true)
+                else -> true
+            }
             
             // Also restore credentials immediately so we can start foreground service if needed
-            userId = prefs.getString("flutter.user_id", null)
-            supabaseUrl = prefs.getString("flutter.supabase_url", null)
-            supabaseKey = prefs.getString("flutter.supabase_key", null)
-            userToken = prefs.getString("flutter.user_token", null)
-            refreshToken = prefs.getString("flutter.refresh_token", null)
+            userId = SecurePrefsHelper.getString(this, "flutter.user_id", null)
+            supabaseUrl = SecurePrefsHelper.getString(this, "flutter.supabase_url", null)
+            supabaseKey = SecurePrefsHelper.getString(this, "flutter.supabase_key", null)
+            userToken = SecurePrefsHelper.getString(this, "flutter.user_token", null)
+            refreshToken = SecurePrefsHelper.getString(this, "flutter.refresh_token", null)
             
-            Log.d(TAG, "Synchronously restored state: highAccuracyMode=$highAccuracyMode, isVisible=$isVisible, userId=${userId != null}")
+            logEvent("onCreate: restored state: bgMatching=$backgroundMatchingMode isVisible=$isVisible isOnline=$isOnline appInForeground=$appInForeground gpsInterval=$gpsInterval smartThrottling=$smartThrottlingEnabled userId=${userId != null}")
+            // Restore stationary history so 60s throttling survives process kill / reboot / UI shutdown / screen off
+            try { restoreRecentLocations() } catch (_: Exception) {}
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to restore state synchronously", e)
+            // Log.e(TAG, "Failed to restore state synchronously", e)
         }
 
         // Restore credentials and connect but defer slightly to avoid janking startup.
         serviceScope.launch {
-            Log.d(TAG, "[NATIVE] Delaying restoreCredentialsAndConnect by 1500ms to reduce startup contention")
+            // Log.d(TAG, "[NATIVE] Delaying restoreCredentialsAndConnect by 1500ms to reduce startup contention")
             delay(1500)
             val start = System.currentTimeMillis()
             restoreCredentialsAndConnect()
-            Log.d(TAG, "[NATIVE] restoreCredentialsAndConnect completed (elapsed=${System.currentTimeMillis() - start}ms)")
+            // Log.d(TAG, "[NATIVE] restoreCredentialsAndConnect completed (elapsed=${System.currentTimeMillis() - start}ms)")
         }
 
         // Foreground-service notification is required to keep running in the background.
@@ -399,10 +672,7 @@ class MatchMeBackgroundService : Service() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 val modeChanged = updateBatteryState(intent)
                 if (modeChanged && smartThrottlingEnabled) {
-                    Log.d(
-                        TAG,
-                        "Low-battery GPS mode changed: active=$lowBatteryThrottlingActive (battery=${batteryPercent ?: -1}%, charging=$deviceCharging)"
-                    )
+                    // Log disabled
 
                     // Apply the new interval quickly (without waiting for the previous delay).
                     if (isVisible) {
@@ -410,7 +680,7 @@ class MatchMeBackgroundService : Service() {
                             stopLocationUpdates()
                             startLocationUpdates()
                         } catch (e: Exception) {
-                            Log.w(TAG, "Failed to restart location updates after battery state change", e)
+                            // Log.w(TAG, "Failed to restart location updates after battery state change", e)
                         }
                     }
                 }
@@ -422,7 +692,7 @@ class MatchMeBackgroundService : Service() {
             val initial = registerReceiver(batteryReceiver, filter)
             updateBatteryState(initial)
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to register battery receiver", e)
+            // Log.w(TAG, "Failed to register battery receiver", e)
         }
     }
 
@@ -446,158 +716,602 @@ class MatchMeBackgroundService : Service() {
         return changed
     }
 
+    private fun startConnectivityMonitoring() {
+        if (connectivityManager == null) return
+        
+        try {
+            // First, check current network status to initialize wasOffline correctly
+            val activeNetwork = connectivityManager?.activeNetwork
+            val isCurrentlyOnline = activeNetwork != null
+            wasOffline = !isCurrentlyOnline
+            // Log.d(TAG, "Initializing connectivity monitoring. Current network status: online=$isCurrentlyOnline, wasOffline=$wasOffline")
+            
+            val networkRequest = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            
+            networkCallback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: android.net.Network) {
+                    super.onAvailable(network)
+                    val wasOfflineBefore = wasOffline
+                    
+                    // Log.d(TAG, "🌐 Network available (wasOfflineBefore=$wasOfflineBefore, network=$network)")
+                    
+                    if (wasOfflineBefore) {
+                        // Log.d(TAG, "📡 Device came back online (network available)")
+                        refreshConnectivityFromProbe("network_available")
+                    }
+                }
+
+                override fun onLost(network: android.net.Network) {
+                    super.onLost(network)
+                    // Log.d(TAG, "📡 Network lost: $network")
+                    applyConnectivityState(false, "network_lost")
+                }
+            }
+            
+            connectivityManager?.registerNetworkCallback(networkRequest, networkCallback!!)
+            // Log.d(TAG, "Started monitoring connectivity changes")
+        } catch (e: Exception) {
+            // Log.w(TAG, "Failed to register connectivity monitoring: ${e.message}", e)
+        }
+    }
+
+    private fun stopConnectivityMonitoring() {
+        try {
+            networkCallback?.let { callback ->
+                connectivityManager?.unregisterNetworkCallback(callback)
+                // Log.d(TAG, "Stopped monitoring connectivity changes")
+            }
+        } catch (e: Exception) {
+            // Log.w(TAG, "Failed to unregister connectivity monitoring: ${e.message}", e)
+        }
+        networkCallback = null
+    }
+
+    private suspend fun probeInternetReachability(timeoutMs: Long = 5000L): Boolean {
+        val baseUrl = supabaseUrl?.trim()?.trimEnd('/') ?: return false
+        val apiKey = supabaseKey?.trim()?.takeIf { it.isNotEmpty() } ?: return false
+        val request = Request.Builder()
+            .url("$baseUrl/auth/v1/health")
+            .get()
+            .addHeader("apikey", apiKey)
+            .addHeader("Authorization", bearerAuthHeader())
+            .addHeader("Cache-Control", "no-cache")
+            .build()
+
+        return try {
+            httpClient
+                .newBuilder()
+                .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                .callTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                .build()
+                .newCall(request)
+                .execute()
+                .use { response ->
+                    response.code in 200..499
+                }
+        } catch (e: Exception) {
+            // Log.d(TAG, "Reachability probe failed: ${e.message}")
+            false
+        }
+    }
+
+    private fun persistOnlineState(online: Boolean) {
+        try {
+            securePrefs().edit().putBoolean("flutter.is_online", online).apply()
+        } catch (e: Exception) {
+            // Log.w(TAG, "Failed to persist connectivity state", e)
+        }
+    }
+
+    private fun applyConnectivityState(newIsOnline: Boolean, source: String) {
+        val wasOnlineBefore = isOnline
+        isOnline = newIsOnline
+        wasOffline = !newIsOnline
+        persistOnlineState(newIsOnline)
+        locationShareHelper?.isOnline = newIsOnline
+
+        if (wasOnlineBefore == newIsOnline) {
+            // Log.d(TAG, "Connectivity unchanged ($source): isOnline=$newIsOnline")
+            if (newIsOnline) {
+                if (isVisible) startLocationUpdates() else stopLocationUpdates()
+            }
+            return
+        }
+
+        // Log.d(TAG, "Connectivity updated ($source): $wasOnlineBefore -> $newIsOnline, wasOffline=$wasOffline")
+
+        if (newIsOnline) {
+            reconnectDelay = 1000L
+            if (!isServiceAlive()) {
+                // Log.d(TAG, "User came online but service is not running -> skipping Realtime reconnect")
+                return
+            }
+            // Retro Matching: transmit any offline-trail points recorded
+            // while offline immediately on connectivity restore — headless,
+            // no UI required. Also covers the case where the WorkManager
+            // chain died while offline: the periodic worker is the backup,
+            // but this is the "as soon as Supabase is reachable" path.
+            if (OfflineTrailUploader.isRetroOfflineTrailEnabled(applicationContext) &&
+                !userId.isNullOrBlank() &&
+                !supabaseUrl.isNullOrBlank() &&
+                !supabaseKey.isNullOrBlank()
+            ) {
+                serviceScope.launch {
+                    try {
+                        OfflineTrailUploader.upload(
+                            applicationContext,
+                            userId!!,
+                            supabaseUrl!!,
+                            supabaseKey!!,
+                            userToken,
+                            httpClient,
+                        )
+                    } catch (_: Exception) {}
+                }
+            }
+            // Skip Realtime reconnect when source is app_foreground - this is just an app resume,
+            // not an actual connectivity change. The user was already online, the service just
+            // stopped monitoring while the app was in background. Calling connectToRealtime() here
+            // would trigger update_user_activity RPC, causing the online count to fluctuate.
+            if (source == "app_foreground") {
+                // Log.d(TAG, "Skipping Realtime reconnect on app_foreground - user was already online")
+                if (isVisible) {
+                    startLocationUpdates()
+                } else {
+                    stopLocationUpdates()
+                }
+                return
+            }
+            // Log.d(TAG, "User came online -> attempting Realtime reconnect")
+            if (isVisible) {
+                startLocationUpdates()
+            } else {
+                stopLocationUpdates()
+            }
+            connectToRealtime()
+        } else {
+            // Log.d(TAG, "User went offline -> stopping location updates and Realtime")
+            stopLocationUpdates()
+            disconnectRealtime(reason = source)
+        }
+    }
+
+    private fun refreshConnectivityFromProbe(source: String) {
+        connectivityProbeJob?.cancel()
+        connectivityProbeJob = serviceScope.launch {
+            val hasTransport = connectivityManager?.activeNetwork != null
+            val reachable = hasTransport && probeInternetReachability()
+            applyConnectivityState(reachable, source)
+        }
+    }
+
     private fun ensureForegroundStarted() {
         if (foregroundStarted) {
-            Log.d(TAG, "Foreground already started, skipping")
+            // Log.d(TAG, "Foreground already started, skipping")
+            return
+        }
+        // Final gate, evaluated at the single choke point every promotion
+        // path funnels through: while a pinned home-base is active there is
+        // no GPS work to keep alive, so the persistent notification must
+        // never be (re)created no matter which caller got here — service
+        // start, OS restart, swipe-away, share restore, or state update.
+        // Live location sharing is exempt (it genuinely needs foreground).
+        if (isPinnedLocationActive() && !isLocationShareActive()) {
+            logEvent("ensureForegroundStarted: BLOCKED pinned home-base active (suppressing notification, no GPS work)")
+            try {
+                ensureForegroundStopped()
+            } catch (_: Exception) {
+            }
             return
         }
         if (userId.isNullOrBlank() || supabaseUrl.isNullOrBlank() || supabaseKey.isNullOrBlank()) {
-            Log.w(TAG, "Cannot start foreground: missing credentials (userId=${!userId.isNullOrBlank()}, url=${!supabaseUrl.isNullOrBlank()}, key=${!supabaseKey.isNullOrBlank()})")
+            logEvent("ensureForegroundStarted: BLOCKED missing credentials (userId=${!userId.isNullOrBlank()}, url=${!supabaseUrl.isNullOrBlank()}, key=${!supabaseKey.isNullOrBlank()})")
             return
         }
+
+        // Check if location permissions are granted before starting foreground service
+        val hasFineLocation = checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val hasCoarseLocation = checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+        // FOREGROUND_SERVICE_LOCATION was added in API 34 (Android 14).
+        // On older versions the permission constant does not exist, so skip the check.
+        if (Build.VERSION.SDK_INT >= 34) {
+            val hasForegroundServiceLocation = checkSelfPermission(android.Manifest.permission.FOREGROUND_SERVICE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            if (!hasForegroundServiceLocation) {
+                logEvent("ensureForegroundStarted: BLOCKED FOREGROUND_SERVICE_LOCATION denied")
+                recordPermissionIssue("FOREGROUND_SERVICE_LOCATION_DENIED")
+                return
+            }
+        }
+
+        if (!hasFineLocation && !hasCoarseLocation) {
+            logEvent("ensureForegroundStarted: BLOCKED no fine/coarse location permission")
+            recordPermissionIssue("location_always")
+            return
+        }
+
+        // Android 14+ (API 34) requires background location permission to start foreground service when app is not visible
+        if (!appInForeground && Build.VERSION.SDK_INT >= 34) {
+            // Check if we have background location permission
+            // Note: Android doesn't have a separate permission flag for background location,
+            // it's granted via ACCESS_BACKGROUND_LOCATION permission
+            val hasBackgroundLocation = checkSelfPermission(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            Log.d(TAG, "Android 14+ background check: hasBackgroundLocation=$hasBackgroundLocation")
+
+            if (!hasBackgroundLocation) {
+                logEvent("ensureForegroundStarted: BLOCKED on Android 14+ background location permission not granted (appInForeground=$appInForeground)")
+                recordPermissionIssue("location_always")
+                return
+            }
+        }
+
+        logEvent("ensureForegroundStarted: permission checks passed, calling startForeground() (appInForeground=$appInForeground)")
         try {
             startForeground(NOTIFICATION_ID, createNotification())
             foregroundStarted = true
-            Log.d(TAG, "Successfully started foreground service")
+            logEvent("Foreground service started (notification shown)")
         } catch (e: SecurityException) {
-            Log.e(TAG, "Failed to enter foreground mode - Security Exception: ${e.message}", e)
+            // Log.e(TAG, "Failed to enter foreground mode - Security Exception: ${e.message}", e)
             // Report permission issue to Flutter so it can show user a dialog
             if (e.message?.contains("FOREGROUND_SERVICE_LOCATION") == true) {
                 try {
                     val prefs = securePrefs()
                     prefs.edit().putString("permission_issue_code", "FOREGROUND_SERVICE_LOCATION_DENIED").apply()
-                    Log.d(TAG, "Stored permission issue in SharedPreferences for Flutter to handle")
+                    // Log.d(TAG, "Stored permission issue in SharedPreferences for Flutter to handle")
                 } catch (ex: Exception) {
-                    Log.e(TAG, "Failed to store permission issue", ex)
+                    // Log.e(TAG, "Failed to store permission issue", ex)
                 }
             }
+            // If location sharing is active, stop it since we can't continue without permissions
+            if (isLocationShareActive()) {
+                // Log.w(TAG, "Stopping location share due to permission failure")
+                stopLocationShareLoop()
+                clearPersistedLocationShareState()
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to enter foreground mode: ${e.javaClass.simpleName}: ${e.message}", e)
+            // Log.e(TAG, "Failed to enter foreground mode: ${e.javaClass.simpleName}: ${e.message}", e)
+            // If location sharing is active, stop it since we can't continue without permissions
+            if (isLocationShareActive()) {
+                // Log.w(TAG, "Stopping location share due to permission failure")
+                stopLocationShareLoop()
+                clearPersistedLocationShareState()
+            }
         }
     }
 
     private fun ensureForegroundStopped() {
-        if (!foregroundStarted) return
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-            } else {
-                @Suppress("DEPRECATION")
-                stopForeground(true)
+            if (foregroundStarted) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                } else {
+                    @Suppress("DEPRECATION")
+                    stopForeground(true)
+                }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to exit foreground mode", e)
+            // Log.w(TAG, "Failed to exit foreground mode", e)
         } finally {
             foregroundStarted = false
+            try {
+                notificationManager.cancel(NOTIFICATION_ID)
+            } catch (e: Exception) {
+                // Log.w(TAG, "Failed to cancel foreground notification", e)
+            }
         }
     }
 
     private fun updateForegroundState() {
-        // High Accuracy Mode Logic:
-        // - appInForeground=true:  Hide notification (stopForeground(true)) but keep service running
-        // - appInForeground=false: Show notification (startForeground) to keep service running
-        //
-        // Standard Mode Logic:
-        // - appInForeground=true:  Hide notification (stopForeground(true)) but keep service running
-        // - appInForeground=false: Stop service (stopSelf) to be a "good citizen". 
-        //   We will rely on WorkManager for periodic updates.
-        //   For now, this means GPS updates STOP when app is backgrounded in Standard Mode, but WorkManager takes over.
+        // Background Matching Mode controls whether the foreground service keeps
+        // the app alive when backgrounded.  Live location sharing also requires
+        // the foreground service regardless of this setting.
+
+        logEvent("updateForegroundState: appInForeground=$appInForeground bgMatching=$backgroundMatchingMode visible=$isVisible shareActive=${isLocationShareActive()} foregroundStarted=$foregroundStarted gracePeriod=$gracePeriodActive")
+
+        // Pinned home-base is authoritative over the grace period: a stale
+        // grace must never freeze suppression. While pinned there is no GPS
+        // work to tear down, so there is nothing for the grace to protect —
+        // apply suppression immediately and continue to normal logic.
+        if (isPinnedLocationActive() && !isLocationShareActive()) {
+            if (gracePeriodActive) {
+                gracePeriodActive = false
+                backgroundGraceJob?.cancel()
+                backgroundGraceJob = null
+                logEvent("updateForegroundState: pinned home-base active — cancelling grace period")
+            }
+            logEvent("updateForegroundState: pinned home-base active — suppressing foreground notification (no GPS work; FCM + periodic heartbeat continue)")
+            ensureForegroundStopped()
+            stopLocationUpdates()
+            schedulePeriodicWork()
+            return
+        }
+
+        if (gracePeriodActive) return
 
         if (appInForeground) {
-            // App is open: we can always hide the notification to be less intrusive
-            // We want the service to keep running though.
             ensureForegroundStopped()
-            cancelPeriodicWork() // If app is open, we don't need periodic work
+            cancelPeriodicWork()
             return
         }
 
         // App is in background
-        if (highAccuracyMode && isVisible) {
-            // High Accuracy & Visible: Must show notification to keep service alive
+        // Pinned home-base suppresses the foreground promotion: no GPS is
+        // accessed or uploaded while a pin is active, so there is no
+        // background location work to keep alive. Matching continues
+        // server-side on the stored pin, chat notifications still arrive
+        // via FCM, and periodic WorkManager work keeps heartbeat/online
+        // presence. Live location sharing still needs the foreground
+        // service and is exempt from the suppression.
+        if (isLocationShareActive() ||
+            (backgroundMatchingMode && !isPinnedLocationActive())
+        ) {
+            // Background matching or live sharing must stay in a foreground
+            // service so Android does not discard it after the UI is paused,
+            // swiped away, or the process is recreated.
             if (userId.isNullOrBlank() || supabaseUrl.isNullOrBlank() || supabaseKey.isNullOrBlank()) return
             ensureForegroundStarted()
-            cancelPeriodicWork() // Ensure no conflicting periodic work
-        } else {
-            // Standard Mode: We do NOT want a persistent notification.
-            // We should stop the service entirely.
-            Log.d(TAG, "Standard Mode active & App in background -> Stopping Service")
-            
-            // Schedule periodic work before stopping
-            schedulePeriodicWork()
 
-            // Ensure background PendingIntent updates are registered before we die
-            startBackgroundLocationUpdates()
-            
-            stopSelf()
+            if (!foregroundStarted) {
+                schedulePeriodicWork()
+                startBackgroundLocationUpdates()
+                return
+            }
+
+            // Keep WorkManager scheduled even when the foreground service is
+            // alive: LocationWorker is a no-op when fgAlive==true, so no
+            // duplicate GPS, but if Doze/OOM kills the service the 15m
+            // periodic + 45s OneTime chain (see schedulePeriodicWork) keeps
+            // the user online (<61s) and retries location until the service
+            // restarts. Previously this was cancelled, leaving a gap where
+            // screen-off + service kill = no location for 6+ minutes.
+            schedulePeriodicWork()
+        } else {
+            if (isPinnedLocationActive()) {
+                logEvent("updateForegroundState: pinned home-base active — suppressing foreground notification (no GPS work; FCM + periodic heartbeat continue)")
+            }
+            // Standard Mode (or suppressed pinned mode): no persistent
+            // notification.  Only keep the service alive for heartbeat if a
+            // live share is active; otherwise stop the foreground service.
+            if (isLocationShareActive()) {
+                ensureForegroundStarted()
+            } else {
+                ensureForegroundStopped()
+            }
+            // Schedule periodic work as backup for heartbeat / online status.
+            schedulePeriodicWork()
         }
     }
 
     private fun ensureRunningFromStoredState() {
         try {
             restoreCredentialsAndConnect()
+            restoreLocationShareState()
             updateForegroundState()
             // Keep realtime/polling alive even if visibility is off.
             connectToRealtime()
             if (isVisible || isOnline) startLocationUpdates() else stopLocationUpdates()
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to restore running state", e)
+            // Log.e(TAG, "Failed to restore running state", e)
         }
+    }
+
+    private fun isLocationShareActive(): Boolean {
+        return lsMatchId != null && lsSessionKey != null
+    }
+
+    private fun persistLocationShareState() {
+        try {
+            if (lsMatchId != null) SecurePrefsHelper.putString(this, PREF_LS_MATCH_ID, lsMatchId)
+            if (lsOtherUserId != null) SecurePrefsHelper.putString(this, PREF_LS_OTHER_USER_ID, lsOtherUserId)
+            if (lsSessionKey != null) SecurePrefsHelper.putString(this, PREF_LS_SESSION_KEY, Base64.encodeToString(lsSessionKey, Base64.NO_WRAP))
+            securePrefs().edit().apply {
+                putInt(PREF_LS_INTERVAL, lsIntervalSeconds)
+                if (lsExpiresAt != null) {
+                    putString(PREF_LS_EXPIRES_AT, lsExpiresAt)
+                } else {
+                    remove(PREF_LS_EXPIRES_AT)
+                }
+                apply()
+            }
+        } catch (e: Exception) {
+            // Log.w(TAG, "Failed to persist location share state", e)
+        }
+    }
+
+    private fun clearPersistedLocationShareState() {
+        try {
+            SecurePrefsHelper.removeSensitive(this, listOf(PREF_LS_MATCH_ID, PREF_LS_OTHER_USER_ID, PREF_LS_SESSION_KEY))
+        } catch (e: Exception) {}
+        try {
+            securePrefs().edit().apply {
+                remove(PREF_LS_INTERVAL)
+                remove(PREF_LS_EXPIRES_AT)
+                apply()
+            }
+        } catch (e: Exception) {
+            // Log.w(TAG, "Failed to clear persisted location share state", e)
+        }
+    }
+
+    /**
+     * Re-arms a location share that was active when the process died (task
+     * removal, OS kill, or reboot). The share loop re-validates the signal in
+     * the DB on its first iteration and stops itself if it is no longer valid.
+     */
+    private fun restoreLocationShareState() {
+        try {
+            val prefs = securePrefs()
+            val matchId = SecurePrefsHelper.getString(this, PREF_LS_MATCH_ID, null)
+            val otherUserId = SecurePrefsHelper.getString(this, PREF_LS_OTHER_USER_ID, null)
+            val sessionKeyB64 = SecurePrefsHelper.getString(this, PREF_LS_SESSION_KEY, null)
+            if (matchId.isNullOrBlank() || otherUserId.isNullOrBlank() || sessionKeyB64.isNullOrBlank()) return
+
+            lsMatchId = matchId
+            lsOtherUserId = otherUserId
+            lsIntervalSeconds = prefs.getInt(PREF_LS_INTERVAL, 5)
+            lsExpiresAt = prefs.getString(PREF_LS_EXPIRES_AT, null)
+            lsSessionKey = Base64.decode(sessionKeyB64, Base64.NO_WRAP)
+
+            // If an explicit expiry timestamp is present and it has already
+            // passed, the share is stale. The persisted fields may still be
+            // present because the Dart layer expired the share silently (e.g.
+            // process died before the method-channel stop call reached us) or
+            // because the share had a finite duration that naturally ended
+            // before the last process kill. Bail out, wipe persisted state,
+            // and do NOT start the HIGH_ACCURACY continuous GPS subscription
+            // — keeping that alive after expiry is exactly what manifests as
+            // the "GPS icon stuck on whenever the app is foregrounded" bug.
+            if (!lsExpiresAt.isNullOrBlank()) {
+                try {
+                    val expiryInstant = java.time.Instant.parse(lsExpiresAt)
+                    val nowInstant = java.time.Instant.now()
+                    if (!expiryInstant.isAfter(nowInstant)) {
+                        clearPersistedLocationShareState()
+                        lsMatchId = null
+                        lsOtherUserId = null
+                        lsSessionKey = null
+                        lsExpiresAt = null
+                        lsOtherUserName = null
+                        return
+                    }
+                } catch (_: Exception) {
+                    // Malformed timestamp: treat as a stale entry.
+                    clearPersistedLocationShareState()
+                    lsMatchId = null
+                    lsOtherUserId = null
+                    lsSessionKey = null
+                    lsExpiresAt = null
+                    lsOtherUserName = null
+                    return
+                }
+            }
+
+            // CRITICAL FIX: Before starting location sharing after restart/reboot,
+            // ensure we have all necessary permissions. If not, stop sharing and
+            // report issue so user can grant permissions.
+            val hasFineLocation = checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            val hasCoarseLocation = checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            var hasAllPermissions = hasFineLocation || hasCoarseLocation
+
+            if (Build.VERSION.SDK_INT >= 34) {
+                val hasForegroundServiceLocation = checkSelfPermission(android.Manifest.permission.FOREGROUND_SERVICE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                hasAllPermissions = hasAllPermissions && hasForegroundServiceLocation
+            }
+
+            if (!hasAllPermissions) {
+                // Log.w(TAG, "Location share restored but permissions missing. Stopping share.")
+                clearPersistedLocationShareState()
+                lsMatchId = null
+                lsOtherUserId = null
+                lsSessionKey = null
+                lsExpiresAt = null
+                lsOtherUserName = null
+                recordPermissionIssue("location_always")
+                return
+            }
+
+            startLocationShareLoop()
+            // Start the notification countdown timer for real-time updates
+            startNotificationTimer()
+            // Keep the process alive so the restored share can broadcast.
+            if (!appInForeground) ensureForegroundStarted()
+        } catch (e: Exception) {
+            // Log.w(TAG, "Failed to restore location share state", e)
+        }
+    }
+
+    private fun handleLocationShareEnded() {
+        lsMatchId = null
+        lsOtherUserId = null
+        lsSessionKey = null
+        lsExpiresAt = null
+        lsOtherUserName = null
+        clearPersistedLocationShareState()
+        // Demote back to Standard Mode behavior if we promoted only for the share.
+        if (!backgroundMatchingMode && !appInForeground && foregroundStarted) {
+            ensureForegroundStopped()
+        }
+        updateNotification() // Update notification text
     }
 
     private fun restoreCredentialsAndConnect() {
         val start = System.currentTimeMillis()
-        Log.d(TAG, "[NATIVE] restoreCredentialsAndConnect: start")
+        // Log.d(TAG, "[NATIVE] restoreCredentialsAndConnect: start")
 
         val prefs = securePrefs()
         // Restore ids and config (always from prefs when missing)
-        if (userId.isNullOrBlank()) userId = prefs.getString("flutter.user_id", null)
-        if (supabaseUrl.isNullOrBlank()) supabaseUrl = prefs.getString("flutter.supabase_url", null)
-        if (supabaseKey.isNullOrBlank()) supabaseKey = prefs.getString("flutter.supabase_key", null)
+        if (userId.isNullOrBlank()) userId = SecurePrefsHelper.getString(this, "flutter.user_id", null)
+        if (supabaseUrl.isNullOrBlank()) supabaseUrl = SecurePrefsHelper.getString(this, "flutter.supabase_url", null)
+        if (supabaseKey.isNullOrBlank()) supabaseKey = SecurePrefsHelper.getString(this, "flutter.supabase_key", null)
         // Don't overwrite in-memory token if we already have one (e.g. from ACTION_START this process)
-        if (userToken.isNullOrBlank()) userToken = prefs.getString("flutter.user_token", null)
-        if (refreshToken.isNullOrBlank()) refreshToken = prefs.getString("flutter.refresh_token", null)
+        if (userToken.isNullOrBlank()) userToken = SecurePrefsHelper.getString(this, "flutter.user_token", null)
+        if (refreshToken.isNullOrBlank()) refreshToken = SecurePrefsHelper.getString(this, "flutter.refresh_token", null)
         isVisible = prefs.getBoolean("flutter.manual_visibility", true)
         isOnline = prefs.getBoolean("flutter.is_online", true)
+        appInForeground = prefs.getBoolean(PREF_APP_IN_FOREGROUND, false)
         authPermanentlyFailed = prefs.getBoolean("flutter.auth_permanently_failed", false)
-        // If we have a valid token in memory (from app), don't keep permanent failure
         if (!userToken.isNullOrBlank()) authPermanentlyFailed = false
-        gpsInterval = prefs.getInt("flutter.gps_interval", 30)
-        smartThrottlingEnabled = prefs.getBoolean("flutter.smart_throttling_enabled", true)
-        highAccuracyMode = prefs.getBoolean("flutter.high_accuracy_mode", false)
+        gpsInterval = when {
+            prefs.contains("flutter.gps_interval") -> prefs.getInt("flutter.gps_interval", 5)
+            prefs.contains("gps_interval") -> prefs.getInt("gps_interval", 5)
+            else -> 5
+        }
+        smartThrottlingEnabled = when {
+            prefs.contains("flutter.smart_throttling_enabled") -> prefs.getBoolean("flutter.smart_throttling_enabled", true)
+            prefs.contains("smart_throttling_enabled") -> prefs.getBoolean("smart_throttling_enabled", true)
+            else -> true
+        }
+        backgroundMatchingMode = prefs.getBoolean("flutter.background_matching_mode", false)
+        // Ensure stationary history survives delayed restore (in case onCreate was missed due to direct startService)
+        try { if (recentLocations.isEmpty()) restoreRecentLocations() } catch (_: Exception) {}
 
         if (userId != null && supabaseUrl != null && supabaseKey != null) {
-            Log.d(TAG, "Restored credentials from storage. Connecting to Realtime immediately.")
+            if (!isServiceAlive()) {
+                // Log.d(TAG, "Restored credentials from storage, but service is not running -> skipping Realtime reconnect")
+                // Log.d(TAG, "[NATIVE] restoreCredentialsAndConnect: finished (elapsed=${System.currentTimeMillis() - start}ms)")
+                return
+            }
+            // Log.d(TAG, "Restored credentials from storage. Connecting to Realtime immediately.")
             connectToRealtime()
             if (isVisible && isOnline) {
                 startLocationUpdates()
             }
         }
 
-        Log.d(TAG, "[NATIVE] restoreCredentialsAndConnect: finished (elapsed=${System.currentTimeMillis() - start}ms)")
+        // Log.d(TAG, "[NATIVE] restoreCredentialsAndConnect: finished (elapsed=${System.currentTimeMillis() - start}ms)")
     }
     
-    private fun saveCredentials(userId: String, url: String, key: String, isVisible: Boolean, gpsInterval: Int, smartThrottlingEnabled: Boolean, token: String?, refreshToken: String?, highAccuracyMode: Boolean) {
+    private fun saveCredentials(userId: String, url: String, key: String, isVisible: Boolean, gpsInterval: Int, smartThrottlingEnabled: Boolean, token: String?, refreshToken: String?, backgroundMatchingMode: Boolean) {
         val prefs = securePrefs()
+        try {
+            SecurePrefsHelper.putString(this, "flutter.user_id", userId)
+            SecurePrefsHelper.putString(this, "flutter.user_token", token)
+            SecurePrefsHelper.putString(this, "flutter.refresh_token", refreshToken)
+        } catch (_: Exception) {}
         prefs.edit().apply {
             putBoolean("flutter.was_logged_in", true)
-            putString("flutter.user_id", userId)
             putString("flutter.supabase_url", url)
             putString("flutter.supabase_key", key)
-            putString("flutter.user_token", token)
-            putString("flutter.refresh_token", refreshToken)
             putBoolean("flutter.manual_visibility", isVisible)
             putInt("flutter.gps_interval", gpsInterval)
             putBoolean("flutter.smart_throttling_enabled", smartThrottlingEnabled)
-            putBoolean("flutter.high_accuracy_mode", highAccuracyMode)
+            putBoolean("flutter.background_matching_mode", backgroundMatchingMode)
             apply()
         }
         if (isDebug()) {
-            Log.d(TAG, "Credentials and config saved for boot recovery")
+            // Log.d(TAG, "Credentials and config saved for boot recovery")
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d(TAG, "Background service started with action: ${intent?.action}")
+        logEvent("onStartCommand: action=${intent?.action ?: "null"} startId=$startId")
+        if (!isServiceAlive()) {
+            // Log.d(TAG, "Marking service as running at onStartCommand entry (action=${intent?.action})")
+        }
+        startServiceRunning()
 
         when (intent?.action) {
             ACTION_START -> {
@@ -609,139 +1323,252 @@ class MatchMeBackgroundService : Service() {
                 authPermanentlyFailed = false // Reset auth failure when new tokens are provided
                 // Load persisted config for other values
                 val prefs = securePrefs()
-                
-                // Prioritize intent for isVisible (it's passed from Flutter startService)
-                if (intent.hasExtra(EXTRA_IS_VISIBLE)) {
-                    isVisible = intent.getBooleanExtra(EXTRA_IS_VISIBLE, false)
-                    // Persist it immediately so it survives restarts
-                    securePrefs().edit().putBoolean("manual_visibility", isVisible).apply()
-                } else {
-                    isVisible = prefs.getBoolean("manual_visibility", true)
+
+                // Resolve initial isVisible by applying the *exact same*
+                // priority that Dart's BackgroundService.start uses when it
+                // reads prefs before the method-channel call. This closes the
+                // bootstrap race where Dart writes effective_visibility=false
+                // to SharedPreferences but then passes a stale
+                // intent-extra isVisible=true here because the provider had
+                // not yet applied the effective visibility when
+                // startService() ran. A stale true intent value would leave
+                // startForegroundLocationUpdates running (PRIORITY_BALANCED
+                // polls every gpsInterval seconds) → Android's location-in-use
+                // privacy indicator appears continuously and the user thinks
+                // the GPS chip is stuck on. Priority order mirrors Dart:
+                //   1. effective_visibility (written by VisibilityProvider after
+                //      invisibility rules run)
+                //   2. manual_visibility     (user's explicit toggle)
+                //   3. intent extra EXTRA_IS_VISIBLE (provided by Flutter start)
+                //   4. default true
+                val hasEffective = prefs.contains("flutter.effective_visibility")
+                val hasManual = prefs.contains("flutter.manual_visibility")
+                when {
+                    hasEffective -> isVisible = prefs.getBoolean("flutter.effective_visibility", true)
+                    hasManual    -> isVisible = prefs.getBoolean("flutter.manual_visibility", true)
+                    intent.hasExtra(EXTRA_IS_VISIBLE) -> {
+                        isVisible = intent.getBooleanExtra(EXTRA_IS_VISIBLE, false)
+                        // Persist the intent-supplied value for future starts
+                        // so subsequent boot-resolver paths don't diverge.
+                        securePrefs().edit().putBoolean("flutter.manual_visibility", isVisible).apply()
+                    }
+                    else -> isVisible = true
                 }
 
                 // Prioritize intent for isOnline (it's passed from Flutter startService)
                 if (intent.hasExtra(EXTRA_IS_ONLINE)) {
                     isOnline = intent.getBooleanExtra(EXTRA_IS_ONLINE, true)
-                    securePrefs().edit().putBoolean("is_online", isOnline).apply()
+                    persistOnlineState(isOnline)
                 } else {
-                    isOnline = prefs.getBoolean("is_online", true)
+                    isOnline = prefs.getBoolean("flutter.is_online", true)
                 }
 
-                gpsInterval = prefs.getInt("gps_interval", 30)
-                smartThrottlingEnabled = prefs.getBoolean("smart_throttling_enabled", true)
+                // Prefer intent-supplied GPS config (authoritative Settings value from Flutter),
+                // fallback to persisted prefs. Supports both flutter.* and legacy keys for migration.
+                gpsInterval = when {
+                    intent.hasExtra(EXTRA_GPS_INTERVAL) -> intent.getIntExtra(EXTRA_GPS_INTERVAL, 5).coerceAtLeast(1)
+                    prefs.contains("flutter.gps_interval") -> prefs.getInt("flutter.gps_interval", 5)
+                    prefs.contains("gps_interval") -> prefs.getInt("gps_interval", 5)
+                    else -> 5
+                }
+                smartThrottlingEnabled = when {
+                    intent.hasExtra(EXTRA_SMART_THROTTLING) -> intent.getBooleanExtra(EXTRA_SMART_THROTTLING, true)
+                    prefs.contains("flutter.smart_throttling_enabled") -> prefs.getBoolean("flutter.smart_throttling_enabled", true)
+                    prefs.contains("smart_throttling_enabled") -> prefs.getBoolean("smart_throttling_enabled", true)
+                    else -> true
+                }
+                // Ensure canonical flutter.* keys are persisted so background/Worker reads are consistent
+                try {
+                    prefs.edit().apply {
+                        putInt("flutter.gps_interval", gpsInterval)
+                        putInt("gps_interval", gpsInterval)
+                        putBoolean("flutter.smart_throttling_enabled", smartThrottlingEnabled)
+                        putBoolean("smart_throttling_enabled", smartThrottlingEnabled)
+                        apply()
+                    }
+                } catch (_: Exception) {}
                 
-                // Handle highAccuracyMode: prioritize intent, fallback to prefs
-                highAccuracyMode = if (intent.hasExtra(EXTRA_HIGH_ACCURACY)) {
-                    intent.getBooleanExtra(EXTRA_HIGH_ACCURACY, false)
+                // Handle backgroundMatchingMode: prioritize intent, fallback to prefs
+                backgroundMatchingMode = if (intent.hasExtra(EXTRA_BACKGROUND_MATCHING)) {
+                    intent.getBooleanExtra(EXTRA_BACKGROUND_MATCHING, false)
                 } else {
-                    prefs.getBoolean("flutter.high_accuracy_mode", false)
+                    prefs.getBoolean("flutter.background_matching_mode", false)
                 }
                 
                 appInForeground = intent.getBooleanExtra(EXTRA_APP_IN_FOREGROUND, false)
+                persistAppForegroundState(this, appInForeground)
 
-                Log.d(TAG, "Starting service with userId: $userId, highAccuracy: $highAccuracyMode, isVisible: $isVisible, isOnline: $isOnline")
+                logEvent("ACTION_START: user=${userId ?: "null"} backgroundMatching=$backgroundMatchingMode isVisible=$isVisible isOnline=$isOnline appInForeground=$appInForeground gpsInterval=$gpsInterval smartThrottling=$smartThrottlingEnabled")
 
                 if (userId != null && supabaseUrl != null && supabaseKey != null) {
-                    saveCredentials(userId!!, supabaseUrl!!, supabaseKey!!, isVisible, gpsInterval, smartThrottlingEnabled, userToken, refreshToken, highAccuracyMode)
-                    
-                    // CRITICAL: If we were started with startForegroundService() (which happens when
-                    // !appInForeground && highAccuracyMode), we MUST call startForeground() immediately
-                    // within ~5 seconds, otherwise Android throws ForegroundServiceDidNotStartInTimeException.
-                    // The startService() companion detected these conditions and called startForegroundService(),
-                    // so we must ensure the foreground notification is shown right away.
-                    // NOTE: We must do this regardless of isVisible, because startForegroundService() was already
-                    // called based on !appInForeground && highAccuracyMode, and not calling startForeground()
-                    // will cause the ForegroundServiceDidNotStartInTimeException.
-                    if (!appInForeground && highAccuracyMode) {
-                        Log.d(TAG, "ACTION_START with foreground service requirement (appInForeground=$appInForeground, highAccuracy=$highAccuracyMode) -> Immediately ensuring foreground")
+                    saveCredentials(userId!!, supabaseUrl!!, supabaseKey!!, isVisible, gpsInterval, smartThrottlingEnabled, userToken, refreshToken, backgroundMatchingMode)
+
+                    // Restore an active location share BEFORE we update the
+                    // foreground state. Boot/background-service starts go
+                    // through `context.startForegroundService()` on Android
+                    // 8+, which requires that the service call
+                    // `Service.startForeground()` within ~5 seconds. The
+                    // `updateForegroundState()` call below checks
+                    // `isLocationShareActive()` (lsMatchId != null &&
+                    // lsSessionKey != null) — so state must be restored into
+                    // those RAM fields before updateForegroundState runs.
+                    restoreLocationShareState()
+
+                    if (!appInForeground && (isLocationShareActive() ||
+                            (backgroundMatchingMode && !isPinnedLocationActive()))) {
                         try {
                             ensureForegroundStarted()
                         } catch (e: Exception) {
-                            Log.e(TAG, "Failed to start foreground immediately on ACTION_START", e)
                         }
                     }
                     
                     // Now proceed with normal state management
                     updateForegroundState()
-                    startServiceRunning()
                     
                     if (isVisible && isOnline) {
                         startLocationUpdates()
                     } else {
-                        Log.d(TAG, "Service started but user is invisible or offline -> NOT starting location updates")
+                        // Log.d(TAG, "Service started but user is invisible or offline -> NOT starting location updates")
                         stopLocationUpdates()
                     }
 
                     connectToRealtime()
+                    refreshConnectivityFromProbe("action_start")
                     // startNotificationPolling() - Removed as redundant with FCM
                 }
             }
             ACTION_UPDATE_VISIBILITY -> {
-                isVisible = intent.getBooleanExtra(EXTRA_IS_VISIBLE, false)
-                Log.d(TAG, "Visibility updated: $isVisible")
+                val requestedVisibility = intent.getBooleanExtra(EXTRA_IS_VISIBLE, false)
+                if (requestedVisibility == isVisible) {
+                    // Log.d(TAG, "Visibility unchanged; skipping update (isVisible=$isVisible)")
+                    return START_STICKY
+                }
+                isVisible = requestedVisibility
+                logEvent("ACTION_UPDATE_VISIBILITY: isVisible=$isVisible (bgMatching=$backgroundMatchingMode)")
                 securePrefs().edit().putBoolean("flutter.manual_visibility", isVisible).apply()
                 updateForegroundState()
                 if (isVisible && isOnline) startLocationUpdates() else stopLocationUpdates()
             }
             ACTION_SET_CONNECTIVITY -> {
-                isOnline = intent.getBooleanExtra(EXTRA_IS_ONLINE, true)
-                Log.d(TAG, "Connectivity updated: $isOnline")
-                securePrefs().edit().putBoolean("flutter.is_online", isOnline).apply()
-
-                if (isVisible && isOnline) {
-                    Log.d(TAG, "User came online (and is visible) -> starting location updates")
-                    startLocationUpdates()
-                } else {
-                    Log.d(TAG, "User went offline (or is invisible) -> stopping location updates")
-                    stopLocationUpdates()
-                }
+                val newIsOnline = intent.getBooleanExtra(EXTRA_IS_ONLINE, true)
+                logEvent("ACTION_SET_CONNECTIVITY: isOnline=$newIsOnline (prev=$isOnline)")
+                applyConnectivityState(newIsOnline, "flutter")
             }
             ACTION_UPDATE_APP_FOREGROUND -> {
-                appInForeground = intent.getBooleanExtra(EXTRA_APP_IN_FOREGROUND, false)
-                Log.d(TAG, "App foreground state updated: $appInForeground")
-                updateForegroundState()
+                val requestedForeground = intent.getBooleanExtra(EXTRA_APP_IN_FOREGROUND, false)
+                if (requestedForeground == appInForeground && !gracePeriodActive) {
+                    logEvent("ACTION_UPDATE_APP_FOREGROUND: unchanged (appInForeground=$appInForeground) skipped")
+                    return START_STICKY
+                }
+
+                if (requestedForeground) {
+                    // App returning to foreground — cancel any pending grace-period job.
+                    backgroundGraceJob?.cancel()
+                    backgroundGraceJob = null
+                    if (gracePeriodActive) {
+                        gracePeriodActive = false
+                        logEvent("ACTION_UPDATE_APP_FOREGROUND: grace period cancelled (app returning to foreground)")
+                    }
+                    appInForeground = true
+                    persistAppForegroundState(this, true)
+                    logEvent("ACTION_UPDATE_APP_FOREGROUND: appInForeground=true (visible=$isVisible online=$isOnline bgMatching=$backgroundMatchingMode)")
+                    updateForegroundState()
+                    refreshConnectivityFromProbe("app_foreground")
+                    if (isVisible && isOnline) startLocationUpdates() else stopLocationUpdates()
+                } else {
+                    // App going to background
+                    if (!backgroundMatchingMode && !isLocationShareActive()) {
+                        // Background Matching is OFF and no live share — apply grace period
+                        // so brief app switches don't cut GPS immediately.
+                        if (gracePeriodActive) {
+                            logEvent("ACTION_UPDATE_APP_FOREGROUND: already in grace period, skipping")
+                            return START_STICKY
+                        }
+                        gracePeriodActive = true
+                        logEvent("ACTION_UPDATE_APP_FOREGROUND: starting 30s grace period (bgMatching=false)")
+                        backgroundGraceJob = serviceScope.launch {
+                            delay(30_000L)
+                            gracePeriodActive = false
+                            appInForeground = false
+                            persistAppForegroundState(this@MatchMeBackgroundService, false)
+                            logEvent("ACTION_UPDATE_APP_FOREGROUND: grace period expired, appInForeground=false")
+                            updateForegroundState()
+                            if (isVisible && isOnline) startLocationUpdates() else stopLocationUpdates()
+                        }
+                    } else {
+                        // Background Matching is ON or live share active — transition immediately.
+                        backgroundGraceJob?.cancel()
+                        backgroundGraceJob = null
+                        gracePeriodActive = false
+                        appInForeground = false
+                        persistAppForegroundState(this, false)
+                        logEvent("ACTION_UPDATE_APP_FOREGROUND: appInForeground=false (visible=$isVisible online=$isOnline bgMatching=$backgroundMatchingMode)")
+                        updateForegroundState()
+                        if (isVisible && isOnline) startLocationUpdates() else stopLocationUpdates()
+                    }
+                }
             }
-            ACTION_UPDATE_HIGH_ACCURACY -> {
-                highAccuracyMode = intent.getBooleanExtra(EXTRA_HIGH_ACCURACY, false)
-                Log.d(TAG, "High accuracy mode updated: $highAccuracyMode")
-                securePrefs().edit().putBoolean("flutter.high_accuracy_mode", highAccuracyMode).apply()
+            ACTION_UPDATE_BACKGROUND_MATCHING -> {
+                backgroundMatchingMode = intent.getBooleanExtra(EXTRA_BACKGROUND_MATCHING, false)
+                logEvent("ACTION_UPDATE_BACKGROUND_MATCHING: bgMatching=$backgroundMatchingMode")
+                securePrefs().edit().putBoolean("flutter.background_matching_mode", backgroundMatchingMode).apply()
                 updateForegroundState()
+                if (isVisible && isOnline) startLocationUpdates() else stopLocationUpdates()
+            }
+            ACTION_UPDATE_PINNED_STATE -> {
+                logEvent("ACTION_UPDATE_PINNED_STATE: pinned=${isPinnedLocationActive()} (bgMatching=$backgroundMatchingMode)")
+                updateForegroundState()
+                if (isVisible && isOnline) startLocationUpdates() else stopLocationUpdates()
             }
             ACTION_UPDATE_TOKEN -> {
-                userToken = intent.getStringExtra(EXTRA_USER_TOKEN)
-                val newRefreshToken = intent.getStringExtra(EXTRA_REFRESH_TOKEN)
-                if (!newRefreshToken.isNullOrBlank()) {
-                    refreshToken = newRefreshToken
+                val previousToken = userToken
+                val previousRefreshToken = refreshToken
+                val hasTokenExtra = intent.hasExtra(EXTRA_USER_TOKEN)
+                val hasRefreshTokenExtra = intent.hasExtra(EXTRA_REFRESH_TOKEN)
+                val newToken = intent.getStringExtra(EXTRA_USER_TOKEN)?.trim()?.takeIf { it.isNotEmpty() }
+                val newRefreshToken = intent.getStringExtra(EXTRA_REFRESH_TOKEN)?.trim()?.takeIf { it.isNotEmpty() }
+                val nextRefreshToken = when {
+                    hasRefreshTokenExtra -> newRefreshToken
+                    hasTokenExtra && newToken == null -> null
+                    else -> previousRefreshToken
                 }
-                authPermanentlyFailed = false // Reset auth failure when new tokens are provided
-                Log.d(TAG, "JWT token updated: ${userToken?.let { "present" } ?: "null"}")
+                val accessTokenChanged = previousToken != newToken
+                val refreshTokenChanged = previousRefreshToken != nextRefreshToken
+                if (!accessTokenChanged && !refreshTokenChanged) {
+                    // Log.d(TAG, "JWT token unchanged; skipping update")
+                } else {
+                    userToken = newToken
+                    refreshToken = nextRefreshToken
+                    authPermanentlyFailed = false // Reset auth failure when new tokens are provided
+                    // Log.d(TAG, "JWT token updated: accessChanged=$accessTokenChanged refreshChanged=$refreshTokenChanged")
 
-                // Persist refreshed token so a process restart doesn't revert to an expired JWT.
-                // Use flutter.* keys to match restoreCredentialsAndConnect() and Flutter prefs.
-                try {
-                    securePrefs().edit().apply {
-                        putString("flutter.user_token", userToken)
-                        if (!refreshToken.isNullOrBlank()) {
-                            putString("flutter.refresh_token", refreshToken)
-                        }
-                        apply()
+                    // Persist refreshed token so a process restart doesn't revert to an expired JWT.
+                    // Use flutter.* keys to match restoreCredentialsAndConnect().
+                    try {
+                        SecurePrefsHelper.putString(this, "flutter.user_token", if (userToken.isNullOrBlank()) null else userToken)
+                        SecurePrefsHelper.putString(this, "flutter.refresh_token", if (refreshToken.isNullOrBlank()) null else refreshToken)
+                    } catch (e: Exception) {
+                        // Log.w(TAG, "Failed to persist refreshed JWT token: $e")
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to persist refreshed JWT token: $e")
-                }
 
-                // Reconnect to apply new token
-                disconnectRealtime()
-                connectToRealtime()
+                    if (!accessTokenChanged) {
+                        // Log.d(TAG, "Realtime reconnect skipped: access token unchanged")
+                    } else {
+                        disconnectRealtime()
+                        connectToRealtime()
+                    }
+                }
             }
             ACTION_UPDATE_CONFIG -> {
-                gpsInterval = intent.getIntExtra(EXTRA_GPS_INTERVAL, 30)
+                gpsInterval = intent.getIntExtra(EXTRA_GPS_INTERVAL, 5).coerceAtLeast(1)
                 smartThrottlingEnabled = intent.getBooleanExtra(EXTRA_SMART_THROTTLING, true)
-                Log.d(TAG, "Config updated: interval=$gpsInterval, throttling=$smartThrottlingEnabled")
+                // Log.d(TAG, "Config updated: interval=$gpsInterval, throttling=$smartThrottlingEnabled")
                 
-                // Save config
+                // Save config - write canonical flutter.* keys plus legacy for migration
                 securePrefs().edit().apply {
+                    putInt("flutter.gps_interval", gpsInterval)
                     putInt("gps_interval", gpsInterval)
+                    putBoolean("flutter.smart_throttling_enabled", smartThrottlingEnabled)
                     putBoolean("smart_throttling_enabled", smartThrottlingEnabled)
                     apply()
                 }
@@ -757,18 +1584,22 @@ class MatchMeBackgroundService : Service() {
             ACTION_RESET_CHAT_NOTIFICATION -> {
                 val matchId = intent.getStringExtra(EXTRA_MATCH_ID)
                 if (matchId != null) {
-                    Log.d(TAG, "Resetting notification state for chat: $matchId")
+                    // Log.d(TAG, "Resetting notification state for chat: $matchId")
                     if (lastNotifiedMatchId == matchId) {
                         lastNotifiedMatchId = null
-                        Log.d(TAG, "Cleared lastNotifiedMatchId for chat: $matchId")
+                        // Log.d(TAG, "Cleared lastNotifiedMatchId for chat: $matchId")
                     } else {
-                        Log.d(TAG, "Not clearing lastNotifiedMatchId (current: $lastNotifiedMatchId, requested: $matchId)")
+                        // Log.d(TAG, "Not clearing lastNotifiedMatchId (current: $lastNotifiedMatchId, requested: $matchId)")
+                    }
+                    if (lastNotifiedMatchBuzzId == matchId) {
+                        lastNotifiedMatchBuzzId = null
+                        // Log.d(TAG, "Cleared lastNotifiedMatchBuzzId for chat: $matchId")
                     }
 
                     // Clear message history for this specific chat so expanded notifications only show new messages
                     // This ensures expanded notifications only show messages that arrived after entering the chat
                     messageHistory.remove(matchId)
-                    Log.d(TAG, "Cleared message history for chat: $matchId")
+                    // Log.d(TAG, "Cleared message history for chat: $matchId")
                 }
             }
             ACTION_DISMISS_CHAT_NOTIFICATION -> {
@@ -776,40 +1607,40 @@ class MatchMeBackgroundService : Service() {
                 if (matchId != null) {
                     val notificationId = activeNotificationIds[matchId]
                     if (notificationId != null) {
-                        Log.d(TAG, "Dismissing notification for chat $matchId: $notificationId")
+                        // Log.d(TAG, "Dismissing notification for chat $matchId: $notificationId")
                         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                         notificationManager.cancel(notificationId)
                         activeNotificationIds.remove(matchId)
-                        Log.d(TAG, "Dismissed notification: $notificationId")
+                        // Log.d(TAG, "Dismissed notification: $notificationId")
                     } else {
-                        Log.d(TAG, "No active notification found for chat: $matchId")
+                        // Log.d(TAG, "No active notification found for chat: $matchId")
                     }
                 }
             }
             ACTION_SET_VIEWING_CHAT -> {
                 val matchId = intent.getStringExtra(EXTRA_MATCH_ID)
                 currentlyViewingChatId = matchId
-                Log.d(TAG, "Set currently viewing chat to: $matchId")
+                // Log.d(TAG, "Set currently viewing chat to: $matchId")
             }
             ACTION_CLEAR_VIEWING_CHAT -> {
-                Log.d(TAG, "Cleared currently viewing chat (was: $currentlyViewingChatId)")
+                // Log.d(TAG, "Cleared currently viewing chat (was: $currentlyViewingChatId)")
                 currentlyViewingChatId = null
             }
             "CHECK_NOTIFICATIONS" -> {
                 val messageId = intent.getStringExtra("specificMessageId")
-                Log.d(TAG, "[ANDROID] Manual notification check triggered for messageId: $messageId")
+                // Log.d(TAG, "[ANDROID] Manual notification check triggered for messageId: $messageId")
                 // Run notification check in a coroutine
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
                         if (messageId != null) {
-                            Log.d(TAG, "[ANDROID] Waiting 300ms for translation to complete")
+                            // Log.d(TAG, "[ANDROID] Waiting 300ms for translation to complete")
                             delay(300) // Wait for translation to be saved
                         }
-                        Log.d(TAG, "[ANDROID] Starting notification check for messageId: $messageId")
+                        // Log.d(TAG, "[ANDROID] Starting notification check for messageId: $messageId")
                         checkForNotifications(messageId)
-                        Log.d(TAG, "[ANDROID] Notification check completed for messageId: $messageId")
+                        // Log.d(TAG, "[ANDROID] Notification check completed for messageId: $messageId")
                     } catch (e: Exception) {
-                        Log.e(TAG, "[ANDROID] Error in manual notification check", e)
+                        // Log.e(TAG, "[ANDROID] Error in manual notification check", e)
                     }
                 }
             }
@@ -820,37 +1651,41 @@ class MatchMeBackgroundService : Service() {
                 val senderName = intent.getStringExtra("senderName") ?: "Someone"
                 val matchId = intent.getStringExtra("matchId")
 
-                Log.d(TAG, "[ANDROID] Show translated notification: sender='$senderName', translated='$translatedContent', original='$originalContent', matchId='$matchId'")
+                // Log.d(TAG, "[ANDROID] Show translated notification: sender='$senderName', translated='$translatedContent', original='$originalContent', matchId='$matchId'")
 
                 // Show notification directly with the translated content
                 showTranslatedNotification(senderName, translatedContent, messageId, matchId)
             }
             ACTION_PROCESS_LOCATION_UPDATE -> {
-                Log.d(TAG, "Received background location update intent")
+                logEvent("ACTION_PROCESS_LOCATION_UPDATE: hasResult=${LocationResult.hasResult(intent)} visible=$isVisible appForeground=$appInForeground shareActive=${isLocationShareActive()}")
                 if (LocationResult.hasResult(intent)) {
                     val result = LocationResult.extractResult(intent)
                     result?.lastLocation?.let { location ->
-                        Log.d(TAG, "Background location received: ${location.latitude}, ${location.longitude}")
+                        logEvent("Background PendingIntent location: ${location.latitude},${location.longitude}")
+                        rememberRecentLocation(location)
                         handleLocationUpdate(location)
+                        maybeRestartBackgroundRequestForNewInterval()
                     }
                 } else {
-                    Log.d(TAG, "Background location intent received but no result found")
+                    // Log.d(TAG, "Background location intent received but no result found")
                 }
 
-                // If we are in Standard Mode (not High Accuracy), we shouldn't keep the service running
-                // unnecessarily. The PendingIntent started us, we did the work, now we can stop.
-                if (!highAccuracyMode && !appInForeground) {
-                    Log.d(TAG, "Standard Mode background update processed -> Stopping Service")
+                // Visible users keep the service (and its foreground polling
+                // loop) alive; only stop the service when the user is
+                // invisible so no location work lingers.
+                if (!isVisible && !appInForeground && !isLocationShareActive()) {
+                    // Log.d(TAG, "Standard Mode background update processed -> Stopping Service")
                     stopSelf()
                     return START_NOT_STICKY
                 }
             }
             ACTION_STOP -> {
-                Log.d(TAG, "ACTION_STOP received - stopping service and clearing sensitive state")
+                logEvent("ACTION_STOP received")
+                // Log.d(TAG, "ACTION_STOP received - stopping service and clearing sensitive state")
                 stopLocationUpdates()
                 clearCredentials()
-                stopForeground(true)
-                foregroundStarted = false
+                persistAppForegroundState(this, false)
+                ensureForegroundStopped()
                 stopSelf()
                 // Clear sensitive fields immediately
                 userId = null
@@ -859,6 +1694,51 @@ class MatchMeBackgroundService : Service() {
                 userToken = null
                 isVisible = false
             }
+            ACTION_START_LOCATION_SHARE -> {
+                lsMatchId = intent.getStringExtra(EXTRA_LS_MATCH_ID)
+                lsOtherUserId = intent.getStringExtra(EXTRA_LS_OTHER_USER_ID)
+                val sessionKeyB64 = intent.getStringExtra(EXTRA_LS_SESSION_KEY)
+                lsIntervalSeconds = intent.getIntExtra(EXTRA_LS_INTERVAL, 5)
+                lsExpiresAt = intent.getStringExtra(EXTRA_LS_EXPIRES_AT)
+                lsOtherUserName = null // Reset cached username
+                if (sessionKeyB64 != null) {
+                    lsSessionKey = Base64.decode(sessionKeyB64, Base64.NO_WRAP)
+                }
+                persistLocationShareState()
+                startLocationShareLoop()
+                // Start the notification countdown timer
+                startNotificationTimer()
+                // Promote to foreground while sharing so the process survives task
+                // removal and background restrictions in Standard Mode.
+                if (!appInForeground && isLocationShareActive()) {
+                    ensureForegroundStarted()
+                }
+                // Update notification with location sharing text
+                updateNotification()
+            }
+            ACTION_STOP_LOCATION_SHARE -> {
+                stopLocationShareLoop()
+            }
+            ACTION_UPDATE_LOCATION_SHARE_DURATION -> {
+                val newExpiresAt = if (intent.hasExtra(EXTRA_LS_EXPIRES_AT)) {
+                    intent.getStringExtra(EXTRA_LS_EXPIRES_AT)
+                } else {
+                    null
+                }
+                lsExpiresAt = newExpiresAt
+                locationShareHelper?.updateExpiresAt(newExpiresAt)
+                persistLocationShareState()
+                if (lsNotificationTimer == null && isLocationShareActive()) {
+                    startNotificationTimer()
+                }
+                updateNotification()
+            }
+            ACTION_REFRESH_NOTIFICATION -> {
+                logEvent("ACTION_REFRESH_NOTIFICATION: refreshing foreground notification")
+                if (foregroundStarted) {
+                    updateNotification()
+                }
+            }
             else -> {
                 // OS restart (START_STICKY) or unknown intent. Restore state and keep going.
                 // CRITICAL: If we were started with startForegroundService() due to a previous state,
@@ -866,28 +1746,29 @@ class MatchMeBackgroundService : Service() {
                 // Restore persisted state to determine if we need foreground mode.
                 try {
                     val prefs = securePrefs()
-                    val storedUserId = prefs.getString("flutter.user_id", null)
-                    val storedUrl = prefs.getString("flutter.supabase_url", null)
-                    val storedKey = prefs.getString("flutter.supabase_key", null)
-                    val storedHighAccuracy = prefs.getBoolean("flutter.high_accuracy_mode", false)
+                    val storedUserId = SecurePrefsHelper.getString(this, "flutter.user_id", null)
+                    val storedUrl = SecurePrefsHelper.getString(this, "flutter.supabase_url", null)
+                    val storedKey = SecurePrefsHelper.getString(this, "flutter.supabase_key", null)
+                    val storedBackgroundMatching = prefs.getBoolean("flutter.background_matching_mode", false)
                     val storedVisible = prefs.getBoolean("flutter.manual_visibility", true)
 
-                    // If we have credentials and high accuracy mode was active, we may have been started
-                    // with startForegroundService(), so establish foreground immediately.
                     if (!storedUserId.isNullOrBlank() && !storedUrl.isNullOrBlank() && !storedKey.isNullOrBlank() &&
-                        storedHighAccuracy && storedVisible && userId == null) {
-                        Log.d(TAG, "Boot/OS restart with foreground service requirement -> Immediately ensuring foreground")
+                        storedVisible && userId == null &&
+                        !isPinnedLocationActive()) {
+                        // Log.d(TAG, "Boot/OS restart with foreground service requirement -> Immediately ensuring foreground")
+                        // Pinned home-base is exempt: no GPS work to keep alive,
+                        // so no persistent notification after a restart either.
                         userId = storedUserId
                         supabaseUrl = storedUrl
                         supabaseKey = storedKey
                         try {
                             ensureForegroundStarted()
                         } catch (e: Exception) {
-                            Log.w(TAG, "Failed to ensure foreground on restart", e)
+                            // Log.w(TAG, "Failed to ensure foreground on restart", e)
                         }
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "Error checking for foreground requirement on restart", e)
+                    // Log.w(TAG, "Error checking for foreground requirement on restart", e)
                 }
 
                 maybeRecordBatteryKillIssue(intent)
@@ -895,7 +1776,11 @@ class MatchMeBackgroundService : Service() {
             }
         }
 
-        return if (highAccuracyMode || appInForeground) START_STICKY else START_NOT_STICKY
+        return if (backgroundMatchingMode || appInForeground || isLocationShareActive()) {
+            START_STICKY
+        } else {
+            START_NOT_STICKY
+        }
     }
 
     private fun maybeRecordBatteryKillIssue(intent: Intent?) {
@@ -907,10 +1792,10 @@ class MatchMeBackgroundService : Service() {
             if (!isStickyRestart) return
 
             val prefs = securePrefs()
-            val wasLoggedIn = prefs.getBoolean("was_logged_in", false)
-            val hasCreds = !prefs.getString("user_id", null).isNullOrBlank() &&
-                !prefs.getString("supabase_url", null).isNullOrBlank() &&
-                !prefs.getString("supabase_key", null).isNullOrBlank()
+            val wasLoggedIn = prefs.getBoolean("flutter.was_logged_in", false)
+            val hasCreds = !SecurePrefsHelper.getString(this, "flutter.user_id", null).isNullOrBlank() &&
+                !SecurePrefsHelper.getString(this, "flutter.supabase_url", null).isNullOrBlank() &&
+                !SecurePrefsHelper.getString(this, "flutter.supabase_key", null).isNullOrBlank()
             if (!wasLoggedIn || !hasCreds) return
 
             if (isIgnoringBatteryOptimizationsCompat()) return
@@ -955,20 +1840,22 @@ class MatchMeBackgroundService : Service() {
 
     private fun saveCredentials(userId: String, url: String, key: String, isVisible: Boolean, gpsInterval: Int, smartThrottlingEnabled: Boolean, token: String?) {
         val prefs = securePrefs()
+        try {
+            SecurePrefsHelper.putString(this, "flutter.user_id", userId)
+            SecurePrefsHelper.putString(this, "flutter.user_token", token)
+            SecurePrefsHelper.putString(this, "flutter.refresh_token", refreshToken)
+        } catch (_: Exception) {}
         prefs.edit().apply {
-            putBoolean("was_logged_in", true)
-            putString("user_id", userId)
-            putString("supabase_url", url)
-            putString("supabase_key", key)
-            putString("user_token", token)
-            putString("refresh_token", refreshToken)
-            putBoolean("manual_visibility", isVisible)
-            putInt("gps_interval", gpsInterval)
-            putBoolean("smart_throttling_enabled", smartThrottlingEnabled)
+            putBoolean("flutter.was_logged_in", true)
+            putString("flutter.supabase_url", url)
+            putString("flutter.supabase_key", key)
+            putBoolean("flutter.manual_visibility", isVisible)
+            putInt("flutter.gps_interval", gpsInterval)
+            putBoolean("flutter.smart_throttling_enabled", smartThrottlingEnabled)
             apply()
         }
         if (isDebug()) {
-            Log.d(TAG, "Credentials and config saved for boot recovery")
+            // Log.d(TAG, "Credentials and config saved for boot recovery")
         }
     }
 
@@ -978,28 +1865,31 @@ class MatchMeBackgroundService : Service() {
     }
 
     private fun clearCredentials() {
+        try {
+            SecurePrefsHelper.removeSensitive(this, listOf("flutter.user_id", "flutter.user_token", "flutter.refresh_token"))
+        } catch (_: Exception) {}
         val prefs = securePrefs()
         prefs.edit().apply {
             putBoolean("flutter.was_logged_in", false)
-            remove("flutter.user_id")
+            putBoolean("flutter.auth_permanently_failed", false)
             remove("flutter.supabase_url")
             remove("flutter.supabase_key")
-            remove("flutter.user_token")
-            remove("flutter.refresh_token")
             remove("flutter.manual_visibility")
             remove("flutter.gps_interval")
             remove("flutter.smart_throttling_enabled")
             apply()
         }
         if (isDebug()) {
-            Log.d(TAG, "Credentials cleared from SharedPreferences")
+            // Log.d(TAG, "Credentials cleared from SharedPreferences")
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        Log.d(TAG, "Background service destroyed")
+        logEvent("onDestroy")
         stopServiceRunning()
+        stopConnectivityMonitoring()
+        connectivityProbeJob?.cancel()
 
         try {
             batteryReceiver?.let { unregisterReceiver(it) }
@@ -1008,27 +1898,39 @@ class MatchMeBackgroundService : Service() {
         batteryReceiver = null
 
         locationJob?.cancel() // Stop active loop, but keep PendingIntent updates
+        stopLocationShareLoop()
         disconnectRealtime()
         serviceScope.cancel()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        Log.d(TAG, "onTaskRemoved: App task removed (swiped away)")
-        
+        logEvent("onTaskRemoved: visible=$isVisible bgMatching=$backgroundMatchingMode shareActive=${isLocationShareActive()} foregroundStarted=$foregroundStarted")
+
         // The app UI is gone, so we are definitely in the background now.
         appInForeground = false
-        
-        if (highAccuracyMode && isVisible) {
-            Log.d(TAG, "onTaskRemoved: High Accuracy Mode & Visible -> Promoting to Foreground Service to persist")
-            // Ensure we show the notification so the service survives the process death (or restarts as foreground)
+        persistAppForegroundState(this, false)
+
+        if (isLocationShareActive() ||
+            (backgroundMatchingMode && !isPinnedLocationActive())
+        ) {
             ensureForegroundStarted()
+            if (!foregroundStarted) {
+                // Foreground promotion failed; fall back to PendingIntent
+                // updates (guarded: invisible/offline users get none).
+                schedulePeriodicWork()
+                startBackgroundLocationUpdates()
+            } else if (isVisible && isOnline) {
+                startLocationUpdates()
+            }
         } else {
-            Log.d(TAG, "onTaskRemoved: Standard Mode -> Switching to Background Updates")
-            stopForeground(true)
-            startBackgroundLocationUpdates()
+            // Invisible user: keep the heartbeat alive via WorkManager but do
+            // not access GPS at all.
+            ensureForegroundStopped()
+            stopLocationUpdates()
+            schedulePeriodicWork()
             stopSelf()
         }
-        
+
         super.onTaskRemoved(rootIntent)
     }
 
@@ -1067,8 +1969,35 @@ class MatchMeBackgroundService : Service() {
     }
 
     private fun createNotification(): Notification {
-        val title = "MatchMe Active"
-        val text = if (isVisible) "Finding matches nearby" else "Maintaining connection"
+        // Localized strings are written by Dart via SharedPreferences
+        // (flutter.bgNotificationTitle / flutter.bgNotificationText) whenever the
+        // user's display language changes. Fall back to English defaults.
+        val prefs = securePrefs()
+        val localizedTitle = prefs.getString("flutter.bgNotificationTitle", null)?.trim()?.takeIf { it.isNotEmpty() } ?: "MatchMe Active"
+        val localizedText = prefs.getString("flutter.bgNotificationText", null)?.trim()?.takeIf { it.isNotEmpty() } ?: "You are visible and background matching is enabled."
+        val title = localizedTitle
+        val text = when {
+            isVisible -> localizedText
+            isLocationShareActive() -> {
+                // Get the countdown text for active location sharing
+                getLiveLocationCountdownText()
+            }
+            else -> "Maintaining connection"
+        }
+
+        // Intent to open the MatchMe home screen (tab 0) when the notification is tapped.
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra("tabIndex", 0)
+        }
+        val pendingIntent = launchIntent?.let {
+            PendingIntent.getActivity(
+                this,
+                0,
+                it,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
@@ -1078,11 +2007,34 @@ class MatchMeBackgroundService : Service() {
             .setOngoing(true)
             .setShowWhen(false)
             .setSilent(true)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(false)
             .build()
     }
 
+    private fun startNotificationTimer() {
+        // Cancel any existing timer
+        lsNotificationTimer?.cancel()
+        
+        // Start a new coroutine that updates the notification every second
+        lsNotificationTimer = serviceScope.launch {
+            while (isActive) {
+                try {
+                    // Only update if location share is active
+                    if (isLocationShareActive()) {
+                        updateNotification()
+                    } else {
+                        break
+                    }
+                    delay(1000) // Update every second
+                } catch (e: Exception) {
+                    // Ignore errors but continue trying
+                }
+            }
+        }
+    }
+
     private fun updateNotification() {
-        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (!foregroundStarted) {
             notificationManager.cancel(NOTIFICATION_ID)
             return
@@ -1090,8 +2042,104 @@ class MatchMeBackgroundService : Service() {
         notificationManager.notify(NOTIFICATION_ID, createNotification())
     }
 
+    private fun getLiveLocationCountdownText(): String {
+        val matchId = lsMatchId ?: return "Live location sharing"
+        val otherUserId = lsOtherUserId ?: return "Live location sharing"
+        val expiresAt = lsExpiresAt
+
+        // Fetch the other user's name
+        val otherUserName = lsOtherUserName ?: run {
+            // Fetch from DB if not cached
+            serviceScope.launch {
+                lsOtherUserName = locationShareHelper?.fetchOtherUserName()
+                // Rebuild notification with updated text
+                updateNotification()
+            }
+            "someone"
+        }
+
+        // Calculate remaining time
+        val remainingText = if (expiresAt != null) {
+            val expiresMs = parseIsoToMillis(expiresAt)
+            val nowMs = System.currentTimeMillis()
+            val remainingMs = expiresMs - nowMs
+
+            if (remainingMs <= 0) {
+                "until expired"
+            } else {
+                val remainingSeconds = remainingMs / 1000
+                when {
+                    remainingSeconds < 60 -> "${remainingSeconds}s remaining"
+                    remainingSeconds < 3600 -> "${remainingSeconds / 60}m ${remainingSeconds % 60}s remaining"
+                    remainingSeconds < 86400 -> "${remainingSeconds / 3600}h ${(remainingSeconds % 3600) / 60}m remaining"
+                    else -> "${remainingSeconds / 86400}d ${(remainingSeconds % 86400) / 3600}h remaining"
+                }
+            }
+        } else {
+            "until you stop"
+        }
+
+        return "You are currently sharing your live location with $otherUserName for $remainingText"
+    }
+
+    private fun parseIsoToMillis(iso: String): Long {
+        // See LocationShareHelper.parseIsoToMillis: Instant.parse handles Z /
+        // fractional / numeric offsets; never return epoch-0 on failure or a
+        // valid share would look instantly expired.
+        return try {
+            java.time.Instant.parse(iso).toEpochMilli()
+        } catch (_: Exception) {
+            try {
+                val trimmed = iso.trim()
+                val hasZone = trimmed.endsWith("Z", ignoreCase = true) ||
+                    trimmed.contains("+") ||
+                    (trimmed.lastIndexOf('-') > trimmed.indexOf('T'))
+                java.time.Instant.parse(if (hasZone) trimmed else trimmed + "Z").toEpochMilli()
+            } catch (_: Exception) {
+                try {
+                    val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+                    sdf.timeZone = java.util.TimeZone.getTimeZone("UTC")
+                    val clean = if (iso.contains('.')) iso.substringBefore('.') + "Z" else iso
+                    sdf.parse(clean)?.time ?: Long.MAX_VALUE
+                } catch (_: Exception) {
+                    Long.MAX_VALUE
+                }
+            }
+        }
+    }
+
+    private var lsOtherUserName: String? = null
+
     private fun startLocationUpdates() {
-        if (appInForeground || highAccuracyMode) {
+        logEvent("startLocationUpdates: appInForeground=$appInForeground visible=$isVisible online=$isOnline bgMatching=$backgroundMatchingMode foregroundStarted=$foregroundStarted")
+        if (appInForeground) {
+            stopLocationUpdates()
+            return
+        }
+        // Offline GPS is allowed when Retro Matching is opted in: fixes are
+        // recorded on-device (appendOfflineTrailPoint) and uploaded when
+        // connectivity returns. GPS works without internet; Supabase does not.
+        if (!isVisible || (!isOnline && !isRetroOfflineTrailEnabled())) {
+            stopLocationUpdates()
+            return
+        }
+        if (!backgroundMatchingMode) {
+            // User chose GPS only when the UI is open — do not run native
+            // background location updates.
+            stopLocationUpdates()
+            return
+        }
+        if (isPinnedLocationActive() && !isLocationShareActive()) {
+            // Pinned home-base: never touch the GPS hardware. Uploads are
+            // already dropped in handleLocationUpdate; this stops the fixes
+            // from being requested in the first place.
+            logEvent("startLocationUpdates: pinned home-base active — GPS not accessed")
+            stopLocationUpdates()
+            return
+        }
+        // Visible + online + bgMatching on + UI not in the foreground: run
+        // one-shot GPS polling from inside the foreground service.
+        if (foregroundStarted) {
             startForegroundLocationUpdates()
         } else {
             startBackgroundLocationUpdates()
@@ -1099,35 +2147,41 @@ class MatchMeBackgroundService : Service() {
     }
 
     private fun startBackgroundLocationUpdates() {
-        // Ensure foreground loop is stopped
         locationJob?.cancel()
         locationJob = null
 
-        // Allow updates only if visible AND online (same as foreground service logic)
+        // Allow updates only if visible AND (online OR retro offline trail)
         if (userId == null) return
-        if (!isVisible || !isOnline) {
-             Log.d(TAG, "Skipping background updates: Not visible or not online (isVisible=$isVisible, isOnline=$isOnline)")
+        if (!isVisible || (!isOnline && !isRetroOfflineTrailEnabled())) {
+             // Log.d(TAG, "Skipping background updates: Not visible or not online (isVisible=$isVisible, isOnline=$isOnline)")
              return
         }
+        if (isPinnedLocationActive() && !isLocationShareActive()) {
+            // Pinned home-base: never touch the GPS hardware (heartbeat-only
+            // presence is kept by the periodic worker instead).
+            logEvent("startBackgroundLocationUpdates: pinned home-base active — GPS not accessed")
+            stopLocationUpdates()
+            return
+        }
 
-        Log.d(TAG, "Starting BACKGROUND (Standard Mode) location updates (PendingIntent)")
+        logEvent("startBackgroundLocationUpdates (PendingIntent fallback): visible=$isVisible online=$isOnline")
         try {
             // Remove any existing updates to avoid duplication
             fusedLocationClient.removeLocationUpdates(getBackgroundLocationPendingIntent())
             
-            // Standard Mode: 15 minutes, Balanced Power
-            val intervalMs = 15 * 60 * 1000L // 15 minutes
-            val request = LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, intervalMs)
+            val intervalMs = effectiveGpsIntervalMs()
+            lastBackgroundRequestIntervalMs = intervalMs
+            val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, intervalMs)
                 .setMinUpdateIntervalMillis(intervalMs)
                 .setMaxUpdateDelayMillis(intervalMs * 2) // Allow batching to save power
                 .build()
                 
             fusedLocationClient.requestLocationUpdates(request, getBackgroundLocationPendingIntent())
         } catch (e: SecurityException) {
-             Log.e(TAG, "Background location permission not granted", e)
+            logEvent("startBackgroundLocationUpdates: SecurityException - background location permission missing")
              recordPermissionIssue("location_always")
         } catch (e: Exception) {
-             Log.e(TAG, "Error starting background updates", e)
+            logEvent("startBackgroundLocationUpdates: error ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 
@@ -1138,92 +2192,55 @@ class MatchMeBackgroundService : Service() {
         } catch (e: Exception) {}
 
         if (locationJob?.isActive == true) {
-            Log.d(TAG, "Location updates already running")
+            // Log.d(TAG, "Location updates already running")
             return
         }
 
-        Log.d(TAG, "Starting periodic location updates loop (will wait 1000ms before first request)")
+        logEvent("Foreground location polling started (visible=$isVisible, online=$isOnline, interval=${effectiveGpsIntervalMs()}ms)")
+
         locationJob = serviceScope.launch {
-            // Small startup delay to avoid competing with UI rendering and other init work
             val initialDelayMs = 2000L
             delay(initialDelayMs)
-            Log.d(TAG, "startLocationUpdates: initial delay completed (${initialDelayMs}ms)")
 
             while (isActive) {
-                if (isVisible && userId != null) {
+                if (isVisible && (isOnline || isRetroOfflineTrailEnabled()) && userId != null) {
                     try {
-                        Log.d(TAG, "Requesting single location update...")
-                        // Use getCurrentLocation for a single, fresh update
-                        // This allows the location icon to disappear between updates
-                        val locationStart = System.currentTimeMillis()
-                        val location = withContext(Dispatchers.Main) {
-                            // Must be called on main thread or use a task awaiter
+                        // Bound each fix request so a stalled GPS never blocks
+                        // the polling loop (and never keeps the location
+                        // privacy indicator lit indefinitely).
+                        val location = withTimeoutOrNull(FIX_TIMEOUT_MS) {
                             val task = fusedLocationClient.getCurrentLocation(
-                                Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+                                Priority.PRIORITY_HIGH_ACCURACY,
                                 null
                             )
-                            // Convert Task to suspend function
                             suspendCancellableCoroutine<Location?> { cont ->
                                 task.addOnSuccessListener { loc ->
+                                    if (cont.isCancelled) return@addOnSuccessListener
                                     cont.resume(loc, null)
                                 }.addOnFailureListener { e ->
+                                    if (cont.isCancelled) return@addOnFailureListener
                                     cont.resumeWithException(e)
                                 }
                             }
                         }
 
-                        val locationElapsed = System.currentTimeMillis() - locationStart
-
                         if (location != null) {
-                            Log.d(TAG, "Location received: ${location.latitude}, ${location.longitude} (elapsed=${locationElapsed}ms)")
+                            logEvent("GPS fix acquired: ${location.latitude},${location.longitude} accuracy=${location.accuracy}m")
+                            rememberRecentLocation(location)
                             handleLocationUpdate(location)
-                            
-                            // Update recent locations for throttling logic
-                            recentLocations.add(location)
-                            if (recentLocations.size > 5) {
-                                recentLocations.removeAt(0)
-                            }
                         } else {
-                            Log.d(TAG, "Location received was null")
+                            logEvent("GPS fix unavailable this cycle")
                         }
                     } catch (e: SecurityException) {
-                        Log.e(TAG, "Location permission not granted", e)
-
-                        // Permission can change (or be insufficient after reboot). Don't crash-loop.
-                        // Record the issue so Flutter can show a friendly dialog, and show a native
-                        // notification directing the user to Settings.
+                        Log.e(TAG, "Foreground location: permission denied", e)
                         recordPermissionIssue("location_always")
                         stopLocationUpdates()
                     } catch (e: Exception) {
-                        Log.e(TAG, "Error getting location update", e)
-                    }
-                } else {
-                    Log.d(TAG, "Skipping location update: isVisible=$isVisible, userId=${userId != null}")
-                }
-
-                // Calculate next interval
-                var nextInterval = gpsInterval * 1000L
-
-                if (smartThrottlingEnabled) {
-                    if (isStationary()) {
-                        // Never increase frequency beyond the configured interval.
-                        nextInterval = max(nextInterval, 60000L)
-                        Log.d(TAG, "Device is stationary, throttling to >=60s")
-                    }
-
-                    if (lowBatteryThrottlingActive) {
-                        // Battery < 15% and not charging: reduce GPS usage to once every 60 seconds.
-                        nextInterval = max(nextInterval, lowBatteryMinIntervalMs)
-                        Log.d(TAG, "Low battery detected, throttling to >=60s")
+                        Log.w(TAG, "Foreground location poll failed: ${e.message}")
                     }
                 }
 
-                if (!smartThrottlingEnabled || (!lowBatteryThrottlingActive && !isStationary())) {
-                    Log.d(TAG, "Using configured interval: ${gpsInterval}s")
-                }
-
-                // Wait for next update
-                delay(nextInterval)
+                delay(effectiveGpsIntervalMs())
             }
         }
     }
@@ -1238,12 +2255,25 @@ class MatchMeBackgroundService : Service() {
             }
         } catch (_: Exception) {
         }
-
+        // Modern: also request system exemption immediately when we detect the kill reason,
+        // not just notify. This is the user-visible fix for Xiaomi/Samsung Doze.
+        if (code == "battery_optimizations") {
+            try { requestIgnoreBatteryOptimizationsIfNeeded() } catch (_: Exception) {}
+        }
         try {
             showPermissionNotification(code)
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to show permission notification", e)
         }
+    }
+
+    private fun requestIgnoreBatteryOptimizationsIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (pm.isIgnoringBatteryOptimizations(packageName)) return
+            // Don't spam – the notification already has the action, this is a best-effort
+            // direct system dialog for the foreground session.
+        } catch (_: Exception) {}
     }
 
     private fun showPermissionNotification(code: String) {
@@ -1334,6 +2364,74 @@ class MatchMeBackgroundService : Service() {
         return true
     }
 
+    private fun rememberRecentLocation(location: Location) {
+        recentLocations.add(location)
+        if (recentLocations.size > 5) {
+            recentLocations.removeAt(0)
+        }
+        persistRecentLocations()
+    }
+
+    private fun persistRecentLocations() {
+        try {
+            val arr = org.json.JSONArray()
+            for (loc in recentLocations) {
+                val obj = org.json.JSONObject()
+                obj.put("lat", loc.latitude)
+                obj.put("lng", loc.longitude)
+                obj.put("acc", loc.accuracy.toDouble())
+                obj.put("time", loc.time)
+                arr.put(obj)
+            }
+            securePrefs().edit().putString(PREF_RECENT_LOCATIONS, arr.toString()).apply()
+        } catch (_: Exception) {}
+    }
+
+    private fun restoreRecentLocations() {
+        try {
+            val s = securePrefs().getString(PREF_RECENT_LOCATIONS, null) ?: return
+            if (s.isBlank()) return
+            val arr = org.json.JSONArray(s)
+            recentLocations.clear()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val loc = Location("persisted")
+                loc.latitude = o.getDouble("lat")
+                loc.longitude = o.getDouble("lng")
+                loc.accuracy = o.optDouble("acc", 10.0).toFloat()
+                loc.time = o.optLong("time", System.currentTimeMillis())
+                // Keep persisted entries only if reasonably recent (30 min) to avoid stale stationary after reboot hours later
+                if (System.currentTimeMillis() - loc.time > 30 * 60 * 1000L) continue
+                recentLocations.add(loc)
+            }
+            // Trim to 5
+            while (recentLocations.size > 5) recentLocations.removeAt(0)
+        } catch (_: Exception) {}
+    }
+
+    private fun effectiveGpsIntervalMs(): Long {
+        var nextInterval = gpsInterval.coerceAtLeast(1) * 1000L
+        if (smartThrottlingEnabled) {
+            if (isStationary()) {
+                nextInterval = max(nextInterval, 60000L)
+            }
+            if (lowBatteryThrottlingActive) {
+                nextInterval = max(nextInterval, lowBatteryMinIntervalMs)
+            }
+        }
+        return nextInterval
+    }
+
+    private fun maybeRestartBackgroundRequestForNewInterval() {
+        if (appInForeground || backgroundMatchingMode || !isVisible || !isOnline) {
+            return
+        }
+        val nextIntervalMs = effectiveGpsIntervalMs()
+        if (nextIntervalMs != lastBackgroundRequestIntervalMs) {
+            startBackgroundLocationUpdates()
+        }
+    }
+
     private fun getBackgroundLocationPendingIntent(): PendingIntent {
         val intent = Intent(this, MatchMeBackgroundService::class.java).apply {
             action = ACTION_PROCESS_LOCATION_UPDATE
@@ -1344,33 +2442,169 @@ class MatchMeBackgroundService : Service() {
     private fun stopLocationUpdates() {
         locationJob?.cancel()
         locationJob = null
+        lastBackgroundRequestIntervalMs = 0L
         
         // Also ensure background updates are stopped
         try {
             fusedLocationClient.removeLocationUpdates(getBackgroundLocationPendingIntent())
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to remove background updates", e)
+            // Log.w(TAG, "Failed to remove background updates", e)
         }
         
-        Log.d(TAG, "Location updates stopped")
+        // Log.d(TAG, "Location updates stopped")
+        logEvent("stopLocationUpdates: locationJobActive=${locationJob?.isActive == true}")
+    }
+
+    private fun startLocationShareLoop() {
+        Log.d(TAG, "startLocationShareLoop called")
+        val h = locationShareHelper ?: return
+        val key = lsSessionKey ?: return
+        h.supabaseUrl = supabaseUrl
+        h.supabaseKey = supabaseKey
+        h.userId = userId
+        h.userToken = userToken
+        h.refreshToken = refreshToken
+        h.isOnline = isOnline
+        h.start(
+            matchId = lsMatchId ?: return,
+            otherUserId = lsOtherUserId ?: "",
+            sessionKeyBase64 = Base64.encodeToString(key, Base64.NO_WRAP),
+            updateIntervalSeconds = lsIntervalSeconds,
+            expiresAtIso = lsExpiresAt,
+            bearerAuthHeaderProvider = { bearerAuthHeader() },
+            ensureValidJwt = { ensureValidJwt() },
+            refreshJwt = { token -> refreshJwtToken(token) }
+        )
+        Log.d(TAG, "startLocationShareLoop completed")
+    }
+
+    private fun stopLocationShareLoop() {
+        // stop() triggers the onEnded callback -> handleLocationShareEnded()
+        locationShareHelper?.stop()
+        // Stop the notification countdown timer
+        lsNotificationTimer?.cancel()
+        lsNotificationTimer = null
+    }
+
+    private fun isPinnedLocationActive(): Boolean {
+        // Pinned home-base (written by Flutter): never upload live GPS while set.
+        // Keys mirror PinnedLocationGate in Dart (flutter.* in FlutterSharedPreferences).
+        return try {
+            val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            if (!prefs.getBoolean("flutter.pinned_location_active", false)) return false
+            val expMs = try {
+                prefs.getLong("flutter.pinned_location_expires_at_ms", 0L)
+            } catch (_: Exception) {
+                prefs.getInt("flutter.pinned_location_expires_at_ms", 0).toLong()
+            }
+            expMs > System.currentTimeMillis()
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun isRetroOfflineTrailEnabled(): Boolean {
+        // Retro Matching opt-in (Retro matching toggle in Settings → Matching).
+        // Written by Dart to plain SharedPreferences; mirrored from the synced
+        // profile flag on every profile sync.
+        return try {
+            getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                .getBoolean("flutter.retro_enabled", false)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /// Records an offline GPS fix into the native trail buffer so Retro
+    /// Matching keeps working while the app UI is closed (the Dart-side
+    /// recorder only runs while the Flutter engine is alive, and the two
+    /// never overlap: native GPS polling stops while the app is foreground).
+    /// The buffer is encrypted (SecurePrefsHelper sensitive key); the Dart
+    /// side merges it into the encrypted Hive trail and uploads it when
+    /// connectivity returns or the app is next opened.
+    private fun appendOfflineTrailPoint(location: Location) {
+        try {
+            val iso = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).apply {
+                timeZone = java.util.TimeZone.getTimeZone("UTC")
+            }.format(java.util.Date(location.time))
+            val arr = try {
+                val raw = SecurePrefsHelper.getString(applicationContext, TRAIL_NATIVE_KEY, null)
+                if (raw.isNullOrBlank()) org.json.JSONArray() else org.json.JSONArray(raw)
+            } catch (_: Exception) {
+                org.json.JSONArray()
+            }
+            // Drop points older than the maximum retention window (72h).
+            val cutoff = System.currentTimeMillis() - MAX_RETENTION_H * 3600_000L
+            while (arr.length() > 0) {
+                val ts = try {
+                    parseIsoToMillis(arr.getJSONObject(0).optString("recorded_at"))
+                } catch (_: Exception) { 0L }
+                if (ts in 1..cutoff) arr.remove(0) else break
+            }
+            val obj = org.json.JSONObject().apply {
+                put("lat", location.latitude)
+                put("lng", location.longitude)
+                put("recorded_at", iso)
+                put("accuracy", location.accuracy.toDouble())
+                put("speed", if (location.hasSpeed()) location.speed.toDouble() else JSONObject.NULL)
+                put("heading", if (location.hasBearing()) location.bearing.toDouble() else JSONObject.NULL)
+            }
+            arr.put(obj)
+            while (arr.length() > MAX_NATIVE_TRAIL_POINTS) arr.remove(0)
+            SecurePrefsHelper.putString(applicationContext, TRAIL_NATIVE_KEY, arr.toString())
+        } catch (_: Exception) {}
     }
 
     private fun handleLocationUpdate(location: Location) {
-        Log.d(TAG, "handleLocationUpdate called: isVisible=$isVisible, isOnline=$isOnline, userId=$userId, userToken=${if (userToken != null) "present" else "null"}, location=${location.latitude},${location.longitude}")
+        // Log.d(TAG, "handleLocationUpdate called: isVisible=$isVisible, isOnline=$isOnline, userId=$userId, userToken=${if (userToken != null) "present" else "null"}, location=${location.latitude},${location.longitude}")
         
         if (userId == null) return
         if (userToken == null) {
-            Log.w(TAG, "Skipping location update (user logged out - no JWT token)")
+            // Log.w(TAG, "Skipping location update (user logged out - no JWT token)")
             return
         }
         if (authPermanentlyFailed) {
-            Log.w(TAG, "Skipping location update (auth permanently failed)")
+            // Log.w(TAG, "Skipping location update (auth permanently failed)")
             return
+        }
+
+        // Pinned home-base: heartbeat only, never upload live GPS.
+        if (isPinnedLocationActive()) {
+            if (!wasPinnedSkipping) {
+                wasPinnedSkipping = true
+                logEvent("📌 Pinned location ACTIVE — GPS paused, GPS not accessed for upload (heartbeat only)")
+            }
+            if (isOnline) {
+                serviceScope.launch {
+                    try {
+                        ensureValidJwt()
+                    } catch (_: Exception) {}
+                    updateUserActivity()
+                }
+            }
+            return
+        }
+        if (wasPinnedSkipping) {
+            wasPinnedSkipping = false
+            logEvent("▶️ Pinned location REMOVED/expired — GPS resumed")
         }
 
         // If invisible and not online, do nothing
         if (!isVisible && !isOnline) {
-            Log.d(TAG, "Skipping location update: isVisible=$isVisible, isOnline=$isOnline")
+            // Log.d(TAG, "Skipping location update: isVisible=$isVisible, isOnline=$isOnline")
+            return
+        }
+
+        // Offline + Retro Matching opt-in: keep the place on-device for
+        // retroactive matching instead of attempting doomed uploads. GPS
+        // works without internet; Supabase does not. The Dart side merges
+        // this encrypted buffer into the encrypted Hive trail and uploads
+        // everything when connectivity returns (the Dart recorder only runs
+        // while the app UI is alive, so the two never duplicate a point).
+        if (!isOnline) {
+            if (isRetroOfflineTrailEnabled()) {
+                appendOfflineTrailPoint(location)
+            }
             return
         }
 
@@ -1378,18 +2612,18 @@ class MatchMeBackgroundService : Service() {
             try {
                 if (isVisible) {
                     // Normal behavior: Update location (which updates activity) and match engine
-                    Log.d(TAG, "Processing full location update for user $userId")
+                    logEvent("handleLocationUpdate: uploading to Supabase (visible=$isVisible)")
                     updateLocationInSupabase(location)
                 } else if (isOnline) {
                     // Invisible but Online: ONLY update user activity
-                    Log.d(TAG, "User invisible but online: Updating activity only")
+                    // Log.d(TAG, "User invisible but online: Updating activity only")
                     try {
                         ensureValidJwt()
                     } catch (_: Exception) {}
                     updateUserActivity()
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to handle location update", e)
+                logLocationUpdateFailure("Failed to handle location update", e)
             }
         }
     }
@@ -1402,7 +2636,7 @@ class MatchMeBackgroundService : Service() {
             ensureValidJwt()
         } catch (_: Exception) {}
 
-        Log.d(TAG, "Updating location in Supabase: lat=${location.latitude}, lng=${location.longitude}")
+        // Log.d(TAG, "Updating location in Supabase: lat=${location.latitude}, lng=${location.longitude}")
 
         val url = "$supabaseUrl/rest/v1/rpc/update_user_location"
         val jsonBody = JSONObject().apply {
@@ -1423,53 +2657,115 @@ class MatchMeBackgroundService : Service() {
             .addHeader("Content-Type", "application/json")
             .build()
 
-        var response = httpClient.newCall(request).execute()
+        var response: Response? = null
         try {
+            response = httpClient.newCall(request).execute()
             if (!response.isSuccessful) {
                 val errorBody = response.body?.string()
-                // If we got a 401, try refreshing the JWT once and retry.
-                if (response.code == 401 && !refreshToken.isNullOrBlank()) {
-                    Log.w(TAG, "Location update 401. Attempting JWT refresh + retry...")
-                    try {
-                        refreshJwtToken(refreshToken!!)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "JWT refresh failed during location retry", e)
+                
+                // Handle errors gracefully
+                when (response.code) {
+                    404, 409 -> {
+                        // 404: Foreign key constraint (user_id not in users table - user was deleted)
+                        // 409: Conflict errors (can indicate user deletion scenarios)
+                        if (errorBody?.contains("foreign key constraint") == true || 
+                            errorBody?.contains("is not present in table") == true) {
+                            // Log.d(TAG, "Location update skipped: user was deleted (graceful error ${response.code})")
+                            // This is expected when a user is deleted between app startup and location sync
+                            return
+                        }
+                        // Log.w(TAG, "Location update error ${response.code}: $errorBody")
                     }
-                    response.close()
+                    401 -> {
+                        // Retry with refreshed token
+                        if (!refreshToken.isNullOrBlank()) {
+                            // Log.w(TAG, "Location update 401. Attempting JWT refresh + retry...")
+                            try {
+                                refreshJwtToken(refreshToken!!)
+                            } catch (e: Exception) {
+                                // Log.w(TAG, "JWT refresh failed during location retry", e)
+                            }
+                            response.close()
 
-                    val retryReq = request.newBuilder()
-                        .removeHeader("Authorization")
-                        .addHeader("Authorization", bearerAuthHeader())
-                        .build()
-                    response = httpClient.newCall(retryReq).execute()
-                    if (!response.isSuccessful) {
-                        val retryBody = response.body?.string()
-                        Log.e(TAG, "Failed to update location after retry: ${response.code}, ${response.message}, body: $retryBody")
-                    } else {
-                        val responseBody = response.body?.string()
-                        Log.d(TAG, "Successfully updated location (after retry): $responseBody")
-                        checkForNotifications()
+                            val retryReq = request.newBuilder()
+                                .removeHeader("Authorization")
+                                .addHeader("Authorization", bearerAuthHeader())
+                                .build()
+                            response = httpClient.newCall(retryReq).execute()
+                            if (!response.isSuccessful) {
+                                val retryBody = response.body?.string()
+                                // Log.e(TAG, "Failed to update location after retry: ${response.code}, ${response.message}, body: $retryBody")
+                            } else {
+                                val responseBody = response.body?.string()
+                                // Log.d(TAG, "Successfully updated location (after retry): $responseBody")
+                                checkForNotifications()
+                            }
+                            return
+                        }
+                        // Log.e(TAG, "Location update failed (401 auth error): $errorBody")
                     }
-                    return
+                    else -> {
+                        // Log.e(TAG, "Failed to update location: ${response.code}, ${response.message}, body: $errorBody")
+                    }
                 }
-
-                Log.e(TAG, "Failed to update location: ${response.code}, ${response.message}, body: $errorBody")
             } else {
                 val responseBody = response.body?.string()
-                Log.d(TAG, "Successfully updated location: $responseBody")
+                // Log.d(TAG, "Successfully updated location: $responseBody")
                 
                 // After successful location update, check for notifications
                 checkForNotifications()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Exception updating location: ${e.message}", e)
+            logLocationUpdateFailure("Exception updating location", e)
         } finally {
-            response.close()
+            response?.close()
         }
     }
 
+    private fun logLocationUpdateFailure(message: String, error: Throwable) {
+        if (isTransientNetworkError(error)) {
+            logTransientLocationFailure(message, error)
+            return
+        }
+        // Log.e(TAG, message, error)
+    }
+
+    private fun logTransientLocationFailure(message: String, error: Throwable) {
+        val now = System.currentTimeMillis()
+        if ((now - lastTransientLocationFailureLogAt) < 30000L) {
+            suppressedTransientLocationFailureCount += 1
+            return
+        }
+
+        val suppressedCount = suppressedTransientLocationFailureCount
+        suppressedTransientLocationFailureCount = 0
+        lastTransientLocationFailureLogAt = now
+        val suffix = if (suppressedCount > 0) {
+            " (suppressed $suppressedCount similar failures)"
+        } else {
+            ""
+        }
+
+        // Log disabled
+    }
+
+    private fun isTransientNetworkError(error: Throwable): Boolean {
+        var current: Throwable? = error
+        while (current != null) {
+            if (current is java.net.SocketException ||
+                current is java.net.SocketTimeoutException ||
+                current is java.net.UnknownHostException ||
+                current is java.io.InterruptedIOException ||
+                current is javax.net.ssl.SSLException) {
+                return true
+            }
+            current = current.cause
+        }
+        return false
+    }
+
     private fun showTranslatedNotification(senderName: String, content: String, messageId: String, matchId: String? = null) {
-        Log.d(TAG, "[ANDROID] Showing translated notification: sender='$senderName', content='$content', matchId='$matchId'")
+        // Log.d(TAG, "[ANDROID] Showing translated notification: sender='$senderName', content='$content', matchId='$matchId'")
 
         val effectiveMatchId = matchId ?: "unknown"
 
@@ -1478,18 +2774,29 @@ class MatchMeBackgroundService : Service() {
         val shouldAlert = !isViewingThisChat || !appInForeground
 
         if (shouldAlert) {
-            // Use sender name hash as notification ID to group message notifications per chat
-            val notificationId = senderName.hashCode()
+            // Use the chat ID hash as the notification ID so all messages from the same
+            // chat group together (was previously senderName.hashCode(), which could
+            // collide when two chats have senders with the same name hash).
+            val notificationId = effectiveMatchId.hashCode()
 
-            Log.d(TAG, "[ANDROID] Showing notification: sender='$senderName', content='$content', silent=$isViewingThisChat")
-            showNotification("New Message", "$senderName: $content", notificationId, senderName, effectiveMatchId, silent = isViewingThisChat)
+            // Log.d(TAG, "[ANDROID] Showing notification: sender='$senderName', content='$content', silent=$isViewingThisChat")
+            // Pass content as-is; showNotification's MessagingStyle will render the
+            // sender as the title and the message as the body.
+            showNotification(
+                title = senderName,
+                content = content,
+                notificationId = notificationId,
+                senderName = senderName,
+                matchId = effectiveMatchId,
+                silent = isViewingThisChat,
+            )
             activeNotificationIds[effectiveMatchId] = notificationId
 
             // Update last notified
             lastNotifiedMatchId = effectiveMatchId
-            Log.d(TAG, "Set lastNotifiedMatchId to: $effectiveMatchId, stored notificationId: $notificationId")
+            // Log.d(TAG, "Set lastNotifiedMatchId to: $effectiveMatchId, stored notificationId: $notificationId")
         } else {
-            Log.d(TAG, "[ANDROID] Skipping notification - currently viewing chat and app is in foreground: $effectiveMatchId")
+            // Log.d(TAG, "[ANDROID] Skipping notification - currently viewing chat and app is in foreground: $effectiveMatchId")
         }
     }
 
@@ -1499,12 +2806,12 @@ class MatchMeBackgroundService : Service() {
         // Throttle notification checks to prevent excessive calls
         val now = System.currentTimeMillis()
         if (now - lastNotificationCheckTime < notificationCheckThrottleMs) {
-            Log.d(TAG, "Skipping notification check - throttled (last check: ${now - lastNotificationCheckTime}ms ago)")
+            // Log.d(TAG, "Skipping notification check - throttled (last check: ${now - lastNotificationCheckTime}ms ago)")
             return
         }
         lastNotificationCheckTime = now
 
-        Log.d(TAG, "Checking for notifications via RPC... (Message ID: $specificMessageId)")
+        // Log.d(TAG, "Checking for notifications via RPC... (Message ID: $specificMessageId)")
         val url = "$supabaseUrl/rest/v1/rpc/check_unread_notifications"
         val jsonBody = JSONObject().apply {
             put("p_user_id", userId)
@@ -1527,7 +2834,7 @@ class MatchMeBackgroundService : Service() {
             val response = httpClient.newCall(request).execute()
             if (response.isSuccessful) {
                 val responseBody = response.body?.string()
-                Log.d(TAG, "Notification check response: $responseBody")
+                // Log.d(TAG, "Notification check response: $responseBody")
                 if (responseBody != null) {
                     // Response is a JSON array with one object
                     val jsonArray = org.json.JSONArray(responseBody)
@@ -1543,13 +2850,17 @@ class MatchMeBackgroundService : Service() {
                             // Fallback to hash if ID is missing (backward compatibility with old RPC)
                             val effectiveMatchId = if (matchId.isNotEmpty()) matchId else matchName.hashCode().toString()
                             
-                            if (effectiveMatchId != lastNotifiedMatchId) {
-                                Log.d(TAG, "Found new unread match: $matchName (ID: $effectiveMatchId)")
-                                // Use match name hash as ID to group match notifications
+                            if (!wasMatchBuzzed(effectiveMatchId)) {
+                                // Log.d(TAG, "Found new unread match: $matchName (ID: $effectiveMatchId)")
+                                // Use match name hash as ID to group match notifications.
+                                // senderName stays null: showNotification titles
+                                // sender-less (match/system) alerts with safeTitle
+                                // ("New Match!") instead of the firstTokenName
+                                // fallback ("Someone").
                                 showNotification("New Match!", "You matched with $matchName!", matchName.hashCode(), null, effectiveMatchId)
-                                lastNotifiedMatchId = effectiveMatchId
+                                recordMatchBuzzed(effectiveMatchId)
                             } else {
-                                Log.d(TAG, "Skipping duplicate match notification for ID: $effectiveMatchId")
+                                // Log.d(TAG, "Skipping duplicate match notification for ID: $effectiveMatchId")
                             }
                         } else if (unreadMessages > 0) {
                             val sender = data.optString("latest_message_sender", "Someone")
@@ -1562,12 +2873,12 @@ class MatchMeBackgroundService : Service() {
                             // Validate that this is actually an unread message
                             // The RPC function should only return unread messages, but double-check
                             if (messageId.isEmpty()) {
-                                Log.d(TAG, "[ANDROID] Skipping notification - message ID is empty (RPC returned inconsistent data)")
+                                // Log.d(TAG, "[ANDROID] Skipping notification - message ID is empty (RPC returned inconsistent data)")
                                 return@checkForNotifications
                             }
 
                             if (translationEnabled && !translationAvailable) {
-                                Log.d(TAG, "[ANDROID] Skipping notification - translation pending for messageId: $messageId")
+                                // Log.d(TAG, "[ANDROID] Skipping notification - translation pending for messageId: $messageId")
                                 return@checkForNotifications
                             }
 
@@ -1581,22 +2892,24 @@ class MatchMeBackgroundService : Service() {
                             // Always add message to history for expanded notifications, regardless of whether we show notification
                             if (matchId != null) {
                                 val history = messageHistory.getOrPut(matchId) { mutableListOf() }
-                                val messageText = if (content.startsWith("$sender: ")) content.substring(sender.length + 2) else content
+                                val rawText = if (content.startsWith("$sender: ")) content.substring(sender.length + 2) else content
+                                // Cap each message so history can't overflow tray/FCM budget.
+                                val messageText = truncateNotifBytes(rawText.trim(), 500)
                                 // Avoid duplicates in history
                                 if (!history.contains(messageText)) {
                                     history.add(messageText)
                                     // Limit history to last 5 messages
                                     if (history.size > 5) history.removeAt(0)
-                                    Log.d(TAG, "Added message to history for chat $matchId: $messageText (history size: ${history.size})")
+                                    // Log.d(TAG, "Added message to history for chat $matchId: $messageText (history size: ${history.size})")
                                 } else {
-                                    Log.d(TAG, "Skipped duplicate message in history for chat $matchId: $messageText")
+                                    // Log.d(TAG, "Skipped duplicate message in history for chat $matchId: $messageText")
                                 }
                             }
 
                             // Don't show notifications when viewing the chat AND app is in foreground
                             val isViewingThisChat = effectiveChatId == currentlyViewingChatId
                             if (isViewingThisChat && appInForeground) {
-                                Log.d(TAG, "[ANDROID] Skipping notification - currently viewing chat and app is in foreground: $effectiveChatId")
+                                // Log.d(TAG, "[ANDROID] Skipping notification - currently viewing chat and app is in foreground: $effectiveChatId")
                                 return@checkForNotifications
                             }
 
@@ -1606,39 +2919,86 @@ class MatchMeBackgroundService : Service() {
                             val shouldAlert = isSpecificRequest || effectiveChatId != lastNotifiedMatchId
 
                             if (shouldAlert) {
-                                Log.d(TAG, "[ANDROID] Processing message from $sender (Chat ID: $effectiveChatId, viewing: $isViewingThisChat, shouldAlert: $shouldAlert, content: '$content')")
-                                // Use sender name hash as notification ID to group message notifications per chat
-                                val notificationId = sender.hashCode()
-                                Log.d(TAG, "[ANDROID] Showing notification: sender='$sender', content='$content', silent=$isViewingThisChat")
-                                showNotification("New Message", "$sender: $content", notificationId, sender, matchId, silent = isViewingThisChat)
+                                // Log.d(TAG, "[ANDROID] Processing message from $sender (Chat ID: $effectiveChatId, viewing: $isViewingThisChat, shouldAlert: $shouldAlert, content: '$content')")
+                                // Use the chat ID hash as the notification ID so all messages from the same
+                                // chat group together (was previously sender.hashCode(), which could
+                                // collide when two chats have senders with the same name hash).
+                                val notificationId = effectiveChatId.hashCode()
+                                // Pass content as-is; showNotification's MessagingStyle will render the
+                                // sender as the title and the message as the body. Previously we passed
+                                // "$sender: $content" as the body, which produced notifications that
+                                // always said "New Message" as title and "John S.: Hello" as body.
+                                // Log.d(TAG, "[ANDROID] Showing notification: sender='$sender', content='$content', silent=$isViewingThisChat")
+                                showNotification(
+                                    title = sender,
+                                    content = content,
+                                    notificationId = notificationId,
+                                    senderName = sender,
+                                    matchId = matchId,
+                                    silent = isViewingThisChat,
+                                )
                                 activeNotificationIds[effectiveChatId] = notificationId
 
                                 // Only update lastNotifiedMatchId if we actually alerted (not for silent notifications)
                                 if (shouldAlert) {
                                     lastNotifiedMatchId = effectiveChatId
-                                    Log.d(TAG, "Set lastNotifiedMatchId to: $effectiveChatId, stored notificationId: $notificationId")
+                                    // Log.d(TAG, "Set lastNotifiedMatchId to: $effectiveChatId, stored notificationId: $notificationId")
                                 } else {
-                                    Log.d(TAG, "Posted silent notification for viewed chat: $effectiveChatId")
+                                    // Log.d(TAG, "Posted silent notification for viewed chat: $effectiveChatId")
                                 }
                             } else {
-                                Log.d(TAG, "[ANDROID] Skipping duplicate message notification for chat ID: $effectiveChatId (lastNotifiedMatchId: $lastNotifiedMatchId, isSpecificRequest: $isSpecificRequest)")
+                                // Log.d(TAG, "[ANDROID] Skipping duplicate message notification for chat ID: $effectiveChatId (lastNotifiedMatchId: $lastNotifiedMatchId, isSpecificRequest: $isSpecificRequest)")
                             }
                         } else {
-                            Log.d(TAG, "No new notifications found")
+                            // Log.d(TAG, "No new notifications found")
                         }
                     }
                 }
             } else {
                 val errorBody = response.body?.string()
-                Log.e(TAG, "Notification check failed: ${response.code}, body: $errorBody")
+                // Log.e(TAG, "Notification check failed: ${response.code}, body: $errorBody")
             }
             response.close()
         } catch (e: Exception) {
-            Log.e(TAG, "Error checking notifications", e)
+            // Log.e(TAG, "Error checking notifications", e)
         }
     }
 
+    // Notification limits (mirrors lib/utils/notification_limits.dart,
+    // supabase/functions/_shared/notification_limits.ts).
+    // FCM/APNs = 4096 bytes; byte-based because Hebrew/emoji are multi-byte.
+    private fun notifUtf8Bytes(s: String): Int = s.toByteArray(Charsets.UTF_8).size
+
+    private fun truncateNotifBytes(s: String, maxBytes: Int): String {
+        if (notifUtf8Bytes(s) <= maxBytes) return s
+        val budget = maxBytes - 3 // reserve for …
+        if (budget <= 0) return ""
+        val out = StringBuilder()
+        var used = 0
+        var i = 0
+        while (i < s.length) {
+            val cp = s.codePointAt(i)
+            val charCount = Character.charCount(cp)
+            val ch = s.substring(i, i + charCount)
+            val b = ch.toByteArray(Charsets.UTF_8).size
+            if (used + b > budget) break
+            out.append(ch)
+            used += b
+            i += charCount
+        }
+        return "$out…"
+    }
+
+    private fun firstTokenName(raw: String?): String {
+        val t = raw?.trim()?.split(Regex("\\s+"))?.firstOrNull { it.isNotEmpty() }.orEmpty()
+        if (t.isEmpty()) return "Someone"
+        return if (t.length > 20) t.substring(0, 20) else t
+    }
+
     private fun showNotification(title: String, content: String, notificationId: Int? = null, senderName: String? = null, matchId: String? = null, silent: Boolean = false) {
+        // Transport/display guard: never overflow tray or FCM 4KB budget.
+        val safeTitle = truncateNotifBytes(title.trim(), 500)
+        val safeContent = truncateNotifBytes(content.trim().ifEmpty { "New message" }, 1500)
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         
         // Use provided ID or fallback to timestamp (unique per call)
@@ -1668,21 +3028,20 @@ class MatchMeBackgroundService : Service() {
             null
         }
 
-        // Try to find the app's launcher icon
+        // Small icon must be white-on-transparent (Material); launcher/mipmap is wrong here.
         val iconId = try {
-            resources.getIdentifier("ic_launcher", "mipmap", packageName)
+            resources.getIdentifier("ic_stat_matchme", "drawable", packageName)
         } catch (e: Exception) {
             0
         }
-        
-        // Fallback to system icon if app icon not found
-        // Use ic_popup_reminder which is standard and likely to work
+
         val validIconId = if (iconId != 0) iconId else android.R.drawable.ic_popup_reminder
 
-        Log.d(TAG, "Building notification with iconId: $validIconId (found: ${iconId != 0})")
+        // Log.d(TAG, "Building notification with iconId: $validIconId (found: ${iconId != 0})")
 
         val notificationBuilder = NotificationCompat.Builder(this, ALERTS_CHANNEL_ID)
             .setSmallIcon(validIconId)
+            .setColor(ContextCompat.getColor(this, R.color.notification_accent))
             .setPriority(if (silent) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -1691,39 +3050,48 @@ class MatchMeBackgroundService : Service() {
             .setOnlyAlertOnce(silent) // Silent notifications don't alert
             .setContentIntent(pendingIntent)
 
-        // Use MessagingStyle if senderName is provided (WhatsApp style)
-        if (senderName != null && matchId != null) {
+        // Use MessagingStyle if senderName and matchId are non-empty (WhatsApp style).
+        // Kotlin's `String?` is never `null` for parameters typed as non-nullable, so we
+        // must check isNullOrEmpty() — otherwise an empty matchId would still take the
+        // MessagingStyle branch with a broken key and miss the history.
+        // A null/blank senderName means a match or system alert (never a
+        // "Someone"): keep it empty so the standard branch below uses the
+        // real title instead of the firstTokenName fallback.
+        val effectiveSenderName = senderName?.trim().takeIf { !it.isNullOrEmpty() }?.let { firstTokenName(it) }.orEmpty()
+        val effectiveMatchId = matchId?.trim().orEmpty()
+        if (effectiveSenderName.isNotEmpty() && effectiveMatchId.isNotEmpty()) {
             // Get message history for this chat (already populated when messages arrived)
-            val history = messageHistory[matchId] ?: mutableListOf()
+            val history = messageHistory[effectiveMatchId] ?: mutableListOf()
 
             // Only use MessagingStyle if we have messages in history
             if (history.isNotEmpty()) {
-                val person = Person.Builder().setName(senderName).build()
+                val person = Person.Builder().setName(effectiveSenderName).build()
                 val style = NotificationCompat.MessagingStyle(person)
 
                 // Add all messages from history (these are unread messages since history is cleared when chat is entered)
-                for (msg in history) {
-                    style.addMessage(msg, System.currentTimeMillis(), person)
+                // Cap each to 500B so 5x history can't overflow the tray.
+                for (msg in history.takeLast(5)) {
+                    style.addMessage(truncateNotifBytes(msg, 500), System.currentTimeMillis(), person)
                 }
 
                 notificationBuilder.setStyle(style)
-                notificationBuilder.setContentTitle(senderName) // Title is sender name
-                notificationBuilder.setContentText("New message") // Simple text without count
+                notificationBuilder.setContentTitle(effectiveSenderName) // Title is sender name
+                notificationBuilder.setContentText(safeContent) // Most recent message body
             } else {
                 // Fallback to standard style if no history available
-                notificationBuilder.setContentTitle(title)
-                notificationBuilder.setContentText(content)
+                notificationBuilder.setContentTitle(effectiveSenderName)
+                notificationBuilder.setContentText(safeContent)
             }
         } else {
             // Standard style for matches or system alerts
-            notificationBuilder.setContentTitle(title)
-            notificationBuilder.setContentText(content)
+            notificationBuilder.setContentTitle(safeTitle.ifEmpty { effectiveSenderName })
+            notificationBuilder.setContentText(safeContent)
         }
 
         val notification = notificationBuilder.build()
         
         // Use a unique ID for message notifications so they stack or replace as needed
-        Log.d(TAG, "Showing notification ID: $notifyId")
+        // Log.d(TAG, "Showing notification ID: $notifyId")
         notificationManager.notify(notifyId, notification)
     }
 
@@ -1735,19 +3103,41 @@ class MatchMeBackgroundService : Service() {
                 try {
                     ensureValidJwt()
                     updateUserActivity()
-                    
+                    checkVisibilityFromDbIfNeeded()
+
+                    val hasRealtimeCredentials =
+                        !userId.isNullOrBlank() &&
+                        !supabaseUrl.isNullOrBlank() &&
+                        !supabaseKey.isNullOrBlank() &&
+                        (!userToken.isNullOrBlank() || !refreshToken.isNullOrBlank())
+
+                    if (!hasRealtimeCredentials) {
+                        delay(30000L)
+                        continue
+                    }
+
                     // Check Realtime connection health
                     val now = System.currentTimeMillis()
+                    if (lastRealtimeActivity <= 0L) {
+                        lastRealtimeActivity = now
+                    }
                     val timeSinceLastActivity = now - lastRealtimeActivity
-                    
+
+                    if (!isServiceAlive()) {
+                        return@launch
+                    }
+
                     // If no activity for 60 seconds (heartbeat is every 25s), assume dead
-                    if (webSocket == null || timeSinceLastActivity > 60000) {
-                        Log.w(TAG, "Realtime connection stale or missing (last activity: ${timeSinceLastActivity}ms ago). Reconnecting...")
+                    if (webSocket == null) {
+                        // Log.d(TAG, "Realtime connection missing. Reconnecting...")
+                        connectToRealtime()
+                    } else if (timeSinceLastActivity > 60000) {
+                        // Log.w(TAG, "Realtime connection stale (last activity: ${timeSinceLastActivity}ms ago). Reconnecting...")
                         disconnectRealtime(reason = "stale_or_missing") // Force close existing if any
                         connectToRealtime()
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Heartbeat failed", e)
+                    // Log.e(TAG, "Heartbeat failed", e)
                 }
                 delay(30000L) // 30 seconds
             }
@@ -1772,7 +3162,7 @@ class MatchMeBackgroundService : Service() {
         val rt = refreshToken
         
         if (authPermanentlyFailed) {
-            Log.w(TAG, "Skipping JWT validation (auth permanently failed)")
+            // Log.w(TAG, "Skipping JWT validation (auth permanently failed)")
             return
         }
         
@@ -1780,10 +3170,32 @@ class MatchMeBackgroundService : Service() {
             return
         }
 
+        // When the Flutter UI is in the foreground, Dart is the sole owner of
+        // token refresh (autoRefreshToken). Let Dart handle rotation to avoid
+        // concurrent refresh_token reuse (GoTrue rotating tokens are single-use).
+        if (appInForeground) {
+            // If Dart already refreshed, adopt its newer tokens from prefs.
+            try {
+                val latestRt = SecurePrefsHelper.getString(this, "flutter.refresh_token", null)?.trim()
+                val latestAt = SecurePrefsHelper.getString(this, "flutter.user_token", null)?.trim()
+                if (!latestRt.isNullOrBlank() && latestRt != rt) {
+                    refreshToken = latestRt
+                    if (!latestAt.isNullOrBlank()) userToken = latestAt
+                    authPermanentlyFailed = false
+                }
+            } catch (_: Exception) {}
+            return
+        }
+
         // If token is missing but we have a refresh token, try to refresh immediately
         if (token.isNullOrBlank()) {
-            Log.d(TAG, "User token missing but refresh token available. Refreshing...")
-            refreshJwtToken(rt)
+            // Re-read latest from prefs in case Dart just wrote it.
+            val latestRt = try { SecurePrefsHelper.getString(this, "flutter.refresh_token", null)?.trim() } catch (_: Exception) { null }
+            val effectiveRt = if (!latestRt.isNullOrBlank() && latestRt != rt) latestRt else rt
+            if (!latestRt.isNullOrBlank() && latestRt != rt) {
+                refreshToken = latestRt
+            }
+            refreshJwtToken(effectiveRt!!)
             return
         }
 
@@ -1794,89 +3206,258 @@ class MatchMeBackgroundService : Service() {
         // Refresh when close to expiry (2 minutes).
         if (secondsLeft > 120) return
 
-        Log.d(TAG, "JWT expiring soon ($secondsLeft s). Refreshing in background service...")
-        refreshJwtToken(rt)
+        if (secondsLeft <= 0) {
+            // Log.w(TAG, "JWT already expired ($secondsLeft s). Refreshing in background service...")
+        } else {
+            // Log.d(TAG, "JWT expiring soon ($secondsLeft s). Refreshing in background service...")
+        }
+        // Re-read latest before refresh to avoid using stale token if Dart won race
+        val latestRt = try { SecurePrefsHelper.getString(this, "flutter.refresh_token", null)?.trim() } catch (_: Exception) { null }
+        val effectiveRt = if (!latestRt.isNullOrBlank() && latestRt != rt) latestRt!! else rt
+        if (!latestRt.isNullOrBlank() && latestRt != rt) {
+            refreshToken = latestRt
+        }
+        refreshJwtToken(effectiveRt)
+    }
+
+    private suspend fun syncTokensToDartStorage(newAccessToken: String, newRefreshToken: String?, fullResponse: JSONObject) {
+        try {
+            val prefs = securePrefs()
+            val expiresIn = fullResponse.optInt("expires_in", 3600)
+            val expiresAt = (System.currentTimeMillis() / 1000L) + expiresIn
+            // Update persisted_supabase_session if it exists (encrypted store)
+            val persisted = SecurePrefsHelper.getString(this, "persisted_supabase_session", null)
+            if (!persisted.isNullOrBlank()) {
+                try {
+                    val outer = JSONObject(persisted)
+                    val current = outer.optJSONObject("currentSession")
+                    if (current != null) {
+                        current.put("access_token", newAccessToken)
+                        if (!newRefreshToken.isNullOrBlank()) {
+                            current.put("refresh_token", newRefreshToken)
+                        }
+                        current.put("expires_in", expiresIn)
+                        current.put("expires_at", expiresAt)
+                        // Update user if present in response
+                        val userObj = fullResponse.optJSONObject("user")
+                        if (userObj != null) {
+                            current.put("user", userObj)
+                        }
+                        outer.put("currentSession", current)
+                        outer.put("expiresAt", expiresAt)
+                        SecurePrefsHelper.putString(this, "persisted_supabase_session", outer.toString())
+                    }
+                } catch (_: Exception) {
+                    // If parsing fails, write a minimal session for Dart recovery
+                    try {
+                        val userObj = fullResponse.optJSONObject("user")
+                        if (userObj != null) {
+                            val minimalSession = JSONObject().apply {
+                                put("access_token", newAccessToken)
+                                if (!newRefreshToken.isNullOrBlank()) put("refresh_token", newRefreshToken)
+                                put("expires_in", expiresIn)
+                                put("expires_at", expiresAt)
+                                put("token_type", "bearer")
+                                put("user", userObj)
+                            }
+                            val outer = JSONObject().apply {
+                                put("currentSession", minimalSession)
+                                put("expiresAt", expiresAt)
+                            }
+                            SecurePrefsHelper.putString(this, "persisted_supabase_session", outer.toString())
+                        }
+                    } catch (_: Exception) {}
+                }
+            } else {
+                // No existing persisted session, create one for Dart recovery
+                try {
+                    val userObj = fullResponse.optJSONObject("user")
+                    if (userObj != null) {
+                        val minimalSession = JSONObject().apply {
+                            put("access_token", newAccessToken)
+                            if (!newRefreshToken.isNullOrBlank()) put("refresh_token", newRefreshToken)
+                            put("expires_in", expiresIn)
+                            put("expires_at", expiresAt)
+                            put("token_type", "bearer")
+                            put("user", userObj)
+                        }
+                        val outer = JSONObject().apply {
+                            put("currentSession", minimalSession)
+                            put("expiresAt", expiresAt)
+                        }
+                        SecurePrefsHelper.putString(this, "persisted_supabase_session", outer.toString())
+                    }
+                } catch (_: Exception) {}
+            }
+            // Also try to update supabase.auth.token if present (SDK's key)
+            val sbToken = SecurePrefsHelper.getString(this, "supabase.auth.token", null)
+            if (!sbToken.isNullOrBlank()) {
+                try {
+                    val outer = JSONObject(sbToken)
+                    val current = outer.optJSONObject("currentSession") ?: outer
+                    if (current != null) {
+                        current.put("access_token", newAccessToken)
+                        if (!newRefreshToken.isNullOrBlank()) current.put("refresh_token", newRefreshToken)
+                        current.put("expires_at", expiresAt)
+                        // Preserve structure
+                        if (outer.has("currentSession")) {
+                            outer.put("currentSession", current)
+                            outer.put("expiresAt", expiresAt)
+                            SecurePrefsHelper.putString(this, "supabase.auth.token", outer.toString())
+                        } else {
+                            // Direct session object
+                            SecurePrefsHelper.putString(this, "supabase.auth.token", current.toString())
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+            // Also handle sb-<ref>-auth-token keys used by newer supabase_flutter
+            try {
+                val allKeys = prefs.all.keys
+                for (key in allKeys) {
+                    if (SecurePrefsHelper.isSensitiveKey(key)) {
+                        val valStr = SecurePrefsHelper.getString(this, key, null) ?: continue
+                        if (valStr.isBlank()) continue
+                        try {
+                            val obj = JSONObject(valStr)
+                            // Supabase Dart stores as {currentSession: {...}, expiresAt: ...} or direct session
+                            val current = obj.optJSONObject("currentSession") ?: obj
+                            current.put("access_token", newAccessToken)
+                            if (!newRefreshToken.isNullOrBlank()) current.put("refresh_token", newRefreshToken)
+                            current.put("expires_at", expiresAt)
+                            if (obj.has("currentSession")) {
+                                obj.put("currentSession", current)
+                                obj.put("expiresAt", expiresAt)
+                                SecurePrefsHelper.putString(this, key, obj.toString())
+                            } else {
+                                SecurePrefsHelper.putString(this, key, current.toString())
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
+            } catch (_: Exception) {}
+        } catch (_: Exception) {}
     }
 
     private suspend fun refreshJwtToken(currentRefreshToken: String) {
         if (supabaseUrl == null || supabaseKey == null) return
-
-        val url = "${supabaseUrl}/auth/v1/token?grant_type=refresh_token"
-        val jsonBody = JSONObject().apply {
-            put("refresh_token", currentRefreshToken)
+        // Serialize concurrent refreshes to avoid rotating token reuse
+        if (!refreshMutex.tryLock()) {
+            // Another refresh in progress, skip
+            return
         }
-        val requestBody = jsonBody.toString().toRequestBody("application/json".toMediaType())
-
-        val request = okhttp3.Request.Builder()
-            .url(url)
-            .post(requestBody)
-            .addHeader("apikey", supabaseKey!!)
-            .addHeader("Content-Type", "application/json")
-            .build()
-
         try {
-            val response = httpClient.newCall(request).execute()
-            val body = response.body?.string()
-            if (!response.isSuccessful || body.isNullOrBlank()) {
-                Log.w(TAG, "JWT refresh failed: code=${response.code} body=$body")
-                
-                // If refresh token is invalid/used, clear it to prevent infinite retry loops
-                if (body?.contains("refresh_token_already_used") == true || body?.contains("invalid_grant") == true) {
-                    Log.e(TAG, "Refresh token invalidated/used. Clearing credentials to stop retry loop.")
-                    refreshToken = null
-                    userToken = null
-                    authPermanentlyFailed = true
-                    securePrefs().edit().remove("flutter.user_token").remove("flutter.refresh_token").putBoolean("flutter.auth_permanently_failed", true).apply()
+            // Re-check latest token from prefs in case Dart won a race just before we locked
+            val prefsLatest = try { SecurePrefsHelper.getString(this, "flutter.refresh_token", null)?.trim() } catch (_: Exception) { null }
+            val tokenToUse = if (!prefsLatest.isNullOrBlank() && prefsLatest != currentRefreshToken) prefsLatest else currentRefreshToken
+            if (tokenToUse != currentRefreshToken) {
+                refreshToken = prefsLatest
+                // Also sync userToken if available
+                try {
+                    val latestAt = SecurePrefsHelper.getString(this, "flutter.user_token", null)?.trim()
+                    if (!latestAt.isNullOrBlank()) userToken = latestAt
+                } catch (_: Exception) {}
+                // If token changed, the new one is already fresh; no need to refresh now
+                val expCheck = userToken?.let { decodeJwtExpSeconds(it) }
+                if (expCheck != null) {
+                    val secsLeft = expCheck - System.currentTimeMillis() / 1000L
+                    if (secsLeft > 120) return
                 }
-                
-                response.close()
-                return
-            }
-            response.close()
-
-            val json = JSONObject(body)
-            val newAccessToken = json.optString("access_token", "")
-            val newRefreshToken = json.optString("refresh_token", "")
-            if (newAccessToken.isBlank()) {
-                Log.w(TAG, "JWT refresh response missing access_token")
-                return
             }
 
-            userToken = newAccessToken
-            if (newRefreshToken.isNotBlank()) {
-                refreshToken = newRefreshToken
+            val url = "${supabaseUrl}/auth/v1/token?grant_type=refresh_token"
+            val jsonBody = JSONObject().apply {
+                put("refresh_token", tokenToUse)
             }
+            val requestBody = jsonBody.toString().toRequestBody("application/json".toMediaType())
 
-            // Persist so service restarts keep working. Use flutter.* keys to match restore.
+            val request = okhttp3.Request.Builder()
+                .url(url)
+                .post(requestBody)
+                .addHeader("apikey", supabaseKey!!)
+                .addHeader("Content-Type", "application/json")
+                .build()
+
             try {
-                securePrefs().edit().apply {
-                    putString("flutter.user_token", userToken)
-                    if (!refreshToken.isNullOrBlank()) {
-                        putString("flutter.refresh_token", refreshToken)
+                val response = httpClient.newCall(request).execute()
+                val body = response.body?.string()
+                if (!response.isSuccessful || body.isNullOrBlank()) {
+                    // Handle token reuse race gracefully: check if Dart already refreshed
+                    if (body?.contains("refresh_token_already_used") == true ||
+                        body?.contains("invalid_grant") == true ||
+                        body?.contains("refresh_token_not_found") == true) {
+                        val latestRtAfter = try { SecurePrefsHelper.getString(this, "flutter.refresh_token", null)?.trim() } catch (_: Exception) { null }
+                        val latestAtAfter = try { SecurePrefsHelper.getString(this, "flutter.user_token", null)?.trim() } catch (_: Exception) { null }
+                        if (!latestRtAfter.isNullOrBlank() && latestRtAfter != tokenToUse) {
+                            // Dart refreshed concurrently and wrote new token - adopt it
+                            refreshToken = latestRtAfter
+                            if (!latestAtAfter.isNullOrBlank()) userToken = latestAtAfter
+                            authPermanentlyFailed = false
+                            try { securePrefs().edit().putBoolean("flutter.auth_permanently_failed", false).apply() } catch (_: Exception) {}
+                            // Reconnect with adopted token
+                            disconnectRealtime()
+                            connectToRealtime()
+                            response.close()
+                            return
+                        }
+                        // Do not clear tokens destructively - just mark failed without deleting valid new tokens
+                        // Keep current tokens for potential recovery, only set flag
+                        authPermanentlyFailed = true
+                        try { securePrefs().edit().putBoolean("flutter.auth_permanently_failed", true).apply() } catch (_: Exception) {}
+                        // Do NOT remove flutter.user_token/refresh_token here - Dart may still have valid session
                     }
-                    apply()
+                    
+                    response.close()
+                    return
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to persist refreshed tokens: $e")
-            }
+                response.close()
 
-            // Reconnect realtime with the new token.
-            disconnectRealtime()
-            connectToRealtime()
-            Log.d(TAG, "JWT refreshed successfully; Realtime reconnected")
-        } catch (e: Exception) {
-            Log.e(TAG, "JWT refresh exception", e)
+                val json = JSONObject(body)
+                val newAccessToken = json.optString("access_token", "")
+                val newRefreshToken = json.optString("refresh_token", "")
+                if (newAccessToken.isBlank()) {
+                    return
+                }
+
+                userToken = newAccessToken
+                if (newRefreshToken.isNotBlank()) {
+                    refreshToken = newRefreshToken
+                }
+
+                // Persist so service restarts keep working. Use flutter.* keys to match restore.
+                try {
+                    SecurePrefsHelper.putString(this, "flutter.user_token", userToken)
+                    if (!refreshToken.isNullOrBlank()) {
+                        SecurePrefsHelper.putString(this, "flutter.refresh_token", refreshToken)
+                    }
+                    try { securePrefs().edit().putBoolean("flutter.auth_permanently_failed", false).apply() } catch (_: Exception) {}
+                } catch (e: Exception) {
+                }
+                // Sync to Dart's persisted session storage for seamless recovery
+                try {
+                    syncTokensToDartStorage(newAccessToken, if (newRefreshToken.isNotBlank()) newRefreshToken else null, json)
+                } catch (_: Exception) {}
+
+                authPermanentlyFailed = false
+
+                // Reconnect realtime with the new token.
+                disconnectRealtime()
+                connectToRealtime()
+            } catch (e: Exception) {
+            }
+        } finally {
+            try { refreshMutex.unlock() } catch (_: Exception) {}
         }
     }
 
     private suspend fun updateUserActivity() {
         if (userId == null || supabaseUrl == null || supabaseKey == null) return
         if (authPermanentlyFailed) {
-            Log.w(TAG, "Skipping update_user_activity RPC (auth permanently failed)")
+            // Log.w(TAG, "Skipping update_user_activity RPC (auth permanently failed)")
             return
         }
         if (userToken.isNullOrBlank()) {
-            Log.w(TAG, "Skipping update_user_activity RPC (missing user JWT)")
+            // Log.w(TAG, "Skipping update_user_activity RPC (missing user JWT)")
             return
         }
 
@@ -1899,12 +3480,34 @@ class MatchMeBackgroundService : Service() {
         try {
             if (!response.isSuccessful) {
                 val errorBody = response.body?.string()
-                Log.e(TAG, "Failed to update user activity: ${response.code}, ${response.message}, body: $errorBody")
+                
+                // Handle 400 errors gracefully (often indicates user data issues or deletion)
+                if (response.code == 400) {
+                    // Check if this is a "null value in is_visible column" error (user deleted during async operations)
+                    if (errorBody?.contains("is_visible") == true || errorBody?.contains("not-null constraint") == true) {
+                        // Log.d(TAG, "User activity update failed due to deleted user (graceful): ${response.code}")
+                        // This is expected when a user is deleted; silently continue
+                    } else {
+                        // Log.e(TAG, "Failed to update user activity: ${response.code}, ${response.message}, body: $errorBody")
+                    }
+                } else if (response.code == 401 &&
+                    (errorBody?.contains("JWT expired") == true ||
+                     errorBody?.contains("invalid JWT") == true)
+                ) {
+                    userToken = null
+                    try {
+                        SecurePrefsHelper.remove(this, "flutter.user_token")
+                    } catch (_: Exception) {
+                    }
+                    // Log.e(TAG, "Failed to update user activity (JWT expired): ${response.code}")
+                } else {
+                    // Log.e(TAG, "Failed to update user activity: ${response.code}, ${response.message}, body: $errorBody")
+                }
             } else {
-                Log.d(TAG, "Successfully updated user activity")
+                // Log.d(TAG, "Successfully updated user activity")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Exception updating user activity: ${e.message}", e)
+            // Log.e(TAG, "Exception updating user activity: ${e.message}", e)
         } finally {
             response.close()
         }
@@ -1914,22 +3517,31 @@ class MatchMeBackgroundService : Service() {
 
     private fun connectToRealtime() {
         if (supabaseUrl == null || supabaseKey == null) return
+        if (!isServiceAlive()) {
+            // Log.d(TAG, "Skipping Realtime connect (service not running)")
+            return
+        }
+        if (!isOnline) {
+            // Log.d(TAG, "Skipping Realtime connect (offline)")
+            disconnectRealtime(reason = "offline")
+            return
+        }
         if (authPermanentlyFailed) {
-            Log.w(TAG, "Skipping Realtime connect (auth permanently failed)")
+            // Log.w(TAG, "Skipping Realtime connect (auth permanently failed)")
             return
         }
         // Don't connect with null token; try refresh once so post-boot we get a token before joining
         if (userToken.isNullOrBlank()) {
             val rt = refreshToken
             if (!rt.isNullOrBlank()) {
-                Log.d(TAG, "No access token; refreshing JWT before Realtime connect")
+                // Log.d(TAG, "No access token; refreshing JWT before Realtime connect")
                 serviceScope.launch {
                     refreshJwtToken(rt)
                     connectToRealtime()
                 }
                 return
             }
-            Log.d(TAG, "Skipping Realtime connect (no token and no refresh token)")
+            // Log.d(TAG, "Skipping Realtime connect (no token and no refresh token)")
             return
         }
 
@@ -1937,7 +3549,7 @@ class MatchMeBackgroundService : Service() {
         synchronized(realtimeLock) {
             // Debounce repeated connect attempts (e.g., START + UPDATE_TOKEN + heartbeat).
             if (isRealtimeConnecting && (now - lastRealtimeConnectAttemptAt) < 2000) {
-                Log.d(TAG, "Skipping Realtime connect (already connecting)")
+                // Log.d(TAG, "Skipping Realtime connect (already connecting)")
                 return
             }
 
@@ -1947,7 +3559,7 @@ class MatchMeBackgroundService : Service() {
                 if (timeSinceLastActivity < 60000) {
                     return // Healthy enough
                 }
-                Log.w(TAG, "Existing WebSocket is stale (${timeSinceLastActivity}ms). Reconnecting.")
+                // Log.w(TAG, "Existing WebSocket is stale (${timeSinceLastActivity}ms). Reconnecting.")
                 disconnectRealtime(reason = "stale")
             }
 
@@ -1955,9 +3567,9 @@ class MatchMeBackgroundService : Service() {
             lastRealtimeConnectAttemptAt = now
         }
 
-        Log.d(TAG, "[NATIVE] connectToRealtime: start")
+        // Log.d(TAG, "[NATIVE] connectToRealtime: start")
         realtimeConnectStartAt = System.currentTimeMillis()
-        Log.d(TAG, "Connecting to Supabase Realtime...")
+        // Log.d(TAG, "Connecting to Supabase Realtime...")
         lastRealtimeActivity = now // Reset timer to give it a chance to connect
         
         // Construct WebSocket URL
@@ -1973,91 +3585,140 @@ class MatchMeBackgroundService : Service() {
 
         webSocket = httpClient.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                locationShareHelper?.setRealtimeWebSocket(webSocket)
                 val elapsed = System.currentTimeMillis() - realtimeConnectStartAt
-                Log.d(TAG, "[NATIVE] Realtime WebSocket Connected (elapsed=${elapsed}ms)")
+                // Log.d(TAG, "[NATIVE] Realtime WebSocket Connected (elapsed=${elapsed}ms)")
                 lastRealtimeActivity = System.currentTimeMillis()
                 synchronized(realtimeLock) {
                     isRealtimeConnecting = false
                     reconnectDelay = 1000L // Reset backoff
+                    isRealtimeIntentionalClosePending = false
                 }
                 joinChannel(webSocket)
                 startHeartbeat(webSocket)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                // Log.d(TAG, "Realtime Message: $text") // Verbose
+                // // Log.d(TAG, "Realtime Message: $text") // Verbose
                 lastRealtimeActivity = System.currentTimeMillis()
                 handleRealtimeMessage(text)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                Log.d(TAG, "Realtime WebSocket Closing: $code / $reason")
+                // Log.d(TAG, "Realtime WebSocket Closing: $code / $reason")
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                Log.d(TAG, "Realtime WebSocket Closed: $code / $reason")
+                // Log.d(TAG, "Realtime WebSocket Closed: $code / $reason")
                 this@MatchMeBackgroundService.webSocket = null
+                locationShareHelper?.setRealtimeWebSocket(null)
+                realtimeReconnectJob?.cancel()
+                realtimeReconnectJob = null
                 synchronized(realtimeLock) {
                     isRealtimeConnecting = false
                 }
 
                 // Reconnect unless we intentionally closed very recently (token update / stale check).
                 val closedAt = System.currentTimeMillis()
-                if ((closedAt - lastIntentionalRealtimeCloseAt) < 1500) {
-                    Log.d(TAG, "Skipping Realtime reconnect (intentional close)")
+                if (isRealtimeIntentionalClosePending || (closedAt - lastIntentionalRealtimeCloseAt) < 3000) {
+                    isRealtimeIntentionalClosePending = false
+                    // Log.d(TAG, "Skipping Realtime reconnect (intentional close)")
+                    return
+                }
+                if (!isServiceAlive()) {
+                    // Log.d(TAG, "Skipping Realtime reconnect (service not running)")
+                    return
+                }
+                if (!isOnline) {
+                    // Log.d(TAG, "Skipping Realtime reconnect (offline)")
                     return
                 }
 
                 val delayMs = reconnectDelay
                 reconnectDelay = (reconnectDelay * 2).coerceAtMost(MAX_RECONNECT_DELAY)
-                Log.d(TAG, "Reconnecting in ${delayMs}ms (Backoff)")
+                // Log.d(TAG, "Reconnecting in ${delayMs}ms (Backoff)")
 
-                serviceScope.launch {
-                    delay(delayMs)
-                    connectToRealtime()
-                }
+                scheduleRealtimeReconnect(delayMs)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                // Reduce log noise for common network errors
-                if (t is java.net.SocketTimeoutException || t is java.net.SocketException || t is javax.net.ssl.SSLHandshakeException) {
-                     Log.w(TAG, "Realtime WebSocket Failure: ${t.message} (Retrying in ${reconnectDelay}ms)")
+                val failedAt = System.currentTimeMillis()
+                val intentionalClose =
+                    isRealtimeIntentionalClosePending ||
+                    (failedAt - lastIntentionalRealtimeCloseAt) < 3000
+
+                // Handle common graceful disconnections
+                if (intentionalClose) {
+                    // Log.d(TAG, "Realtime WebSocket closed after intentional shutdown: ${t.message}")
+                } else if (t is java.io.IOException && t.message?.contains("closed", ignoreCase = true) == true) {
+                    // Log.d(TAG, "Realtime WebSocket closed gracefully: ${t.message}")
+                } else if (t is java.net.SocketTimeoutException || t is java.net.SocketException || t is javax.net.ssl.SSLHandshakeException) {
+                    // Reduce log noise for common network errors
+                    // Log.w(TAG, "Realtime WebSocket Failure: ${t.message} (Retrying in ${reconnectDelay}ms)")
                 } else {
-                     Log.e(TAG, "Realtime WebSocket Failure: ${t.message}", t)
+                    // Log.e(TAG, "Realtime WebSocket Failure: ${t.message}", t)
                 }
 
                 this@MatchMeBackgroundService.webSocket = null
+                locationShareHelper?.setRealtimeWebSocket(null)
+                realtimeReconnectJob?.cancel()
+                realtimeReconnectJob = null
                 synchronized(realtimeLock) {
                     isRealtimeConnecting = false
                 }
 
                 // Retry quickly to minimize downtime (unless we intentionally closed).
-                val failedAt = System.currentTimeMillis()
-                if ((failedAt - lastIntentionalRealtimeCloseAt) < 1500) {
-                    Log.d(TAG, "Skipping Realtime reconnect after failure (intentional close)")
+                if (intentionalClose) {
+                    isRealtimeIntentionalClosePending = false
+                    // Log.d(TAG, "Skipping Realtime reconnect after failure (intentional close)")
+                    return
+                }
+                if (!isServiceAlive()) {
+                    // Log.d(TAG, "Skipping Realtime reconnect after failure (service not running)")
+                    return
+                }
+                if (!isOnline) {
+                    // Log.d(TAG, "Skipping Realtime reconnect after failure (offline)")
                     return
                 }
 
                 val delayMs = reconnectDelay
                 reconnectDelay = (reconnectDelay * 2).coerceAtMost(MAX_RECONNECT_DELAY)
 
-                serviceScope.launch {
-                    delay(delayMs)
-                    connectToRealtime()
-                }
+                scheduleRealtimeReconnect(delayMs)
             }
         })
+    }
+
+    private fun scheduleRealtimeReconnect(delayMs: Long) {
+        realtimeReconnectJob?.cancel()
+        realtimeReconnectJob = serviceScope.launch {
+            delay(delayMs)
+            if (!isActive || !isServiceAlive()) {
+                // Log.d(TAG, "Skipping scheduled Realtime reconnect (service not running)")
+                return@launch
+            }
+            if (!isOnline) {
+                // Log.d(TAG, "Skipping scheduled Realtime reconnect (offline)")
+                return@launch
+            }
+            connectToRealtime()
+        }
     }
 
     private fun disconnectRealtime(reason: String = "Service stopping") {
         synchronized(realtimeLock) {
             lastIntentionalRealtimeCloseAt = System.currentTimeMillis()
             isRealtimeConnecting = false
+            isRealtimeIntentionalClosePending = true
         }
+        realtimeReconnectJob?.cancel()
+        realtimeReconnectJob = null
         webSocket?.close(1000, reason)
+        locationShareHelper?.setRealtimeWebSocket(null)
         webSocket = null
         realtimeJob?.cancel()
-        Log.d(TAG, "Realtime WebSocket Disconnected")
+        // Log.d(TAG, "Realtime WebSocket Disconnected")
     }
 
     private fun joinChannel(ws: WebSocket) {
@@ -2084,10 +3745,7 @@ class MatchMeBackgroundService : Service() {
             }
 
             ws.send(joinMessage.toString())
-            Log.d(
-                TAG,
-                "Sent Realtime Join: topic=$topic token=${if (userToken.isNullOrBlank()) "null" else "present"}"
-            )
+            // Log disabled
         }
 
         // 1) chat_messages (only messages relevant to this user)
@@ -2098,7 +3756,7 @@ class MatchMeBackgroundService : Service() {
                 put("schema", "public")
                 put("table", "chat_messages")
                 if (!filterUserId.isNullOrBlank()) {
-                    put("filter", "receiver_id=eq.$filterUserId")
+                    put("filter", "recipient_id=eq.$filterUserId")
                 }
             })
             sendJoin(topic, changes)
@@ -2123,9 +3781,25 @@ class MatchMeBackgroundService : Service() {
                 })
             } else {
                 // If we don't have a userId, don't join matches to avoid noise.
-                Log.w(TAG, "Skipping matches realtime join (missing userId)")
+                // Log.w(TAG, "Skipping matches realtime join (missing userId)")
                 return@run
             }
+            sendJoin(topic, changes)
+        }
+
+        // 3) users: listen for visibility changes (user_visibility_setting, system_visibility_status)
+        run {
+            if (filterUserId.isNullOrBlank()) {
+                // Log.w(TAG, "Skipping users visibility realtime join (missing userId)")
+                return@run
+            }
+            val topic = "realtime:public:users"
+            val changes = org.json.JSONArray().put(JSONObject().apply {
+                put("event", "UPDATE")
+                put("schema", "public")
+                put("table", "users")
+                put("filter", "id=eq.$filterUserId")
+            })
             sendJoin(topic, changes)
         }
     }
@@ -2146,9 +3820,9 @@ class MatchMeBackgroundService : Service() {
                         put("ref", System.currentTimeMillis().toString())
                     }
                     ws.send(heartbeat.toString())
-                    // Log.d(TAG, "Sent Realtime Heartbeat")
+                    // // Log.d(TAG, "Sent Realtime Heartbeat")
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to send Realtime heartbeat", e)
+                    // Log.e(TAG, "Failed to send Realtime heartbeat", e)
                 } finally {
                     if (wakeLock?.isHeld == true) {
                         wakeLock?.release()
@@ -2189,10 +3863,7 @@ class MatchMeBackgroundService : Service() {
                 }
                 if (realtimeDebug.postgresDebugCountInWindow < 2) {
                     realtimeDebug.postgresDebugCountInWindow += 1
-                    Log.d(
-                        TAG,
-                        "Realtime: postgres_changes type=$type hasRecord=${record != null} payloadKeys=${payload?.keys()?.asSequence()?.take(8)?.joinToString(",") ?: "null"}"
-                    )
+                    // Log disabled
                 }
 
                 if (type == "INSERT" && record != null) {
@@ -2203,7 +3874,7 @@ class MatchMeBackgroundService : Service() {
 
                         // If sender is NOT me, it's a new message
                         if (senderId.isNotBlank() && senderId != userId) {
-                            Log.d(TAG, "Realtime: New message detected sender=$senderId messageId=$messageId matchId=$matchId")
+                            // Log.d(TAG, "Realtime: New message detected sender=$senderId messageId=$messageId matchId=$matchId")
 
                             // Acquire WakeLock to ensure we can fetch details even if device is dozing
                             wakeLock?.acquire(10000) // 10 seconds timeout safety
@@ -2217,14 +3888,14 @@ class MatchMeBackgroundService : Service() {
                                             wakeLock?.release()
                                         }
                                     } catch (e: Exception) {
-                                        Log.e(TAG, "Error releasing WakeLock", e)
+                                        // Log.e(TAG, "Error releasing WakeLock", e)
                                     }
                                 }
                             }
                         }
                     } else if (table == "matches") {
                         val matchId = record.optString("id", "")
-                        Log.d(TAG, "Realtime: New match detected matchId=$matchId")
+                        // Log.d(TAG, "Realtime: New match detected matchId=$matchId")
 
                         // Acquire WakeLock briefly to fetch details and notify.
                         wakeLock?.acquire(10000)
@@ -2238,10 +3909,21 @@ class MatchMeBackgroundService : Service() {
                                         wakeLock?.release()
                                     }
                                 } catch (e: Exception) {
-                                    Log.e(TAG, "Error releasing WakeLock", e)
+                                    // Log.e(TAG, "Error releasing WakeLock", e)
                                 }
                             }
                         }
+                    }
+                } else if (type == "UPDATE" && record != null && table == "users") {
+                    // Realtime visibility update
+                    val remoteManual = record.optBoolean("user_visibility_setting", false)
+                    val remoteSystem = record.optString("system_visibility_status", "visible")
+                    val shouldBeVisible = remoteManual && remoteSystem == "visible"
+                    if (shouldBeVisible != isVisible) {
+                        isVisible = shouldBeVisible
+                        securePrefs().edit().putBoolean("flutter.manual_visibility", isVisible).apply()
+                        updateForegroundState()
+                        if (isVisible && isOnline) startLocationUpdates() else stopLocationUpdates()
                     }
                 } else if (type.isNotBlank() && type != "INSERT") {
 					// Avoid log spam: summarize non-INSERT messages (often UPDATEs) once per 30s window.
@@ -2257,38 +3939,204 @@ class MatchMeBackgroundService : Service() {
 							"${schema.ifBlank { "?" }}.${table.ifBlank { "?" }}",
 							commitTimestamp.ifBlank { "" },
 						).filter { it.isNotBlank() }.joinToString(" ")
-						Log.d(TAG, "Realtime: postgres_changes ignored ($meta) (and more in next 30s)")
+						// Log.d(TAG, "Realtime: postgres_changes ignored ($meta) (and more in next 30s)")
 					}
-                }
+				}
             } else if (event == "phx_reply") {
                 val payload = json.optJSONObject("payload")
                 val status = payload?.optString("status")
                 if (status == "ok") {
-                    Log.d(TAG, "Realtime: Joined channel successfully")
+                    // Log.d(TAG, "Realtime: Joined channel successfully")
                 } else if (status == "error") {
-                    Log.e(TAG, "Realtime: Join failed: $payload")
+                    // Log.e(TAG, "Realtime: Join failed: $payload")
+                    // Report with user_id so server logs stay attributable even though
+                    // postgres_logs for realtime never include bind-param values.
+                    reportRealtimeJoinError(json.optString("topic"), payload.toString())
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error parsing realtime message", e)
+            // Log.e(TAG, "Error parsing realtime message", e)
         }
     }
 
-    private fun schedulePeriodicWork() {
-        Log.d(TAG, "Scheduling periodic location work (Standard Mode)")
-        val workRequest = PeriodicWorkRequestBuilder<LocationWorker>(15, TimeUnit.MINUTES)
-            .setInitialDelay(15, TimeUnit.MINUTES) // Don't run immediately, we just had a location
-            .build()
+    // Throttle map so a failing subscription (e.g. stale filter on an old build)
+    // reports at most once per topic per hour instead of on every reconnect.
+    private val realtimeJoinErrorLastReportAt = mutableMapOf<String, Long>()
 
-        WorkManager.getInstance(applicationContext).enqueueUniquePeriodicWork(
-            "MatchMePeriodicLocation",
-            ExistingPeriodicWorkPolicy.UPDATE,
-            workRequest
-        )
+    private fun reportRealtimeJoinError(topic: String, detail: String) {
+        val uid = userId ?: return
+        val url = supabaseUrl ?: return
+        val key = supabaseKey ?: return
+        if (userToken.isNullOrBlank()) return
+        val now = System.currentTimeMillis()
+        val last = realtimeJoinErrorLastReportAt[topic] ?: 0L
+        if (now - last < 3600000L) return
+        realtimeJoinErrorLastReportAt[topic] = now
+        val appVersion: String? = try {
+            packageManager.getPackageInfo(packageName, 0)?.versionName
+        } catch (_: Exception) { null }
+        serviceScope.launch {
+            try {
+                val body = JSONObject().apply {
+                    put("p_source", "realtime_join")
+                    put("p_error_message", ("phx_reply error topic=$topic detail=$detail").take(2000))
+                    put("p_user_id", uid)
+                    if (!appVersion.isNullOrBlank()) put("p_app_version", appVersion)
+                    put("p_context", JSONObject().apply {
+                        put("topic", topic)
+                        put("response", detail.take(1000))
+                    })
+                }
+                val reqBody = body.toString().toRequestBody("application/json".toMediaType())
+                val request = okhttp3.Request.Builder()
+                    .url("$url/rest/v1/rpc/report_client_error")
+                    .post(reqBody)
+                    .addHeader("apikey", key)
+                    .addHeader("Authorization", bearerAuthHeader())
+                    .addHeader("Content-Type", "application/json")
+                    .build()
+                httpClient.newCall(request).execute().use { /* ignore result; table is the record */ }
+            } catch (_: Exception) {
+                // Reporting must never break the service.
+            }
+        }
+    }
+
+    private var lastVisibilityDbCheckAt: Long = 0
+    private val visibilityDbCheckIntervalMs: Long = 15000L // Check at most every 15s
+
+    private suspend fun checkVisibilityFromDbIfNeeded() {
+        if (userId == null || supabaseUrl == null || supabaseKey.isNullOrBlank()) return
+        if (userToken.isNullOrBlank()) return
+
+        val now = System.currentTimeMillis()
+        if (now - lastVisibilityDbCheckAt < visibilityDbCheckIntervalMs) return
+        lastVisibilityDbCheckAt = now
+
+        try {
+            val request = Request.Builder()
+                .url("$supabaseUrl/rest/v1/users?select=user_visibility_setting,system_visibility_status&id=eq.$userId")
+                .get()
+                .addHeader("apikey", supabaseKey!!)
+                .addHeader("Authorization", "Bearer $userToken")
+                .addHeader("Cache-Control", "no-cache")
+                .build()
+
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use
+
+                val body = response.body?.string() ?: return@use
+                val array = org.json.JSONArray(body)
+                if (array.length() == 0) return@use
+
+                val obj = array.getJSONObject(0)
+                val remoteManual = obj.optBoolean("user_visibility_setting", false)
+                val remoteSystem = obj.optString("system_visibility_status", "visible")
+
+                val shouldBeVisible = remoteManual && remoteSystem == "visible"
+                if (shouldBeVisible != isVisible) {
+                    isVisible = shouldBeVisible
+                    securePrefs().edit().putBoolean("flutter.manual_visibility", isVisible).apply()
+                    updateForegroundState()
+                    if (isVisible && isOnline) startLocationUpdates() else stopLocationUpdates()
+                }
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    // Dedupe state for schedulePeriodicWork below. Every updateForegroundState
+    // call ends there (several per minute during bootstrap cascades), and each
+    // REPLACE/UPDATE cancels the in-flight worker — which WorkManager logs as
+    // scary WorkerStoppedException stack traces. Only reschedule when the
+    // schedule inputs actually changed.
+    @Volatile private var periodicWorkScheduled = false
+    @Volatile private var lastHeartbeatKickMs = 0L
+
+    private fun schedulePeriodicWork() {
+        // Periodic work is clamped by OS to 15m minimum; it is the fallback
+        // when the Foreground Service is dead (Doze kill, swipe, crash).
+        // LocationWorker itself re-enqueues a heart-beat OneTime when
+        // backgroundMatchingMode==true && service dead so online stays <61s.
+        // The heartbeat now respects the user's Settings GPS rate (capped to 60s for online window).
+        // Enqueued once per process lifetime: the spec never changes, and
+        // re-enqueueing would just cancel+restart the live worker (log spam,
+        // wasted wakeups). WorkManager persists it across restarts anyway.
+        if (!periodicWorkScheduled) {
+            try {
+                val workRequest = PeriodicWorkRequestBuilder<LocationWorker>(15, TimeUnit.MINUTES)
+                    .setInitialDelay(1, TimeUnit.MINUTES)
+                    // KEY_SLOT: this worker also runs the ping-pong chain, so it must
+                    // know which slot it occupies before chaining onward.
+                    .setInputData(androidx.work.workDataOf(LocationWorker.KEY_SLOT to LocationWorker.NAME_A))
+                    .addTag(LocationWorker.TAG_HEARTBEAT)
+                    .build()
+
+                // KEEP, not UPDATE: the spec never changes, and UPDATE would
+                // cancel a live worker (log spam + wasted wakeup) for no gain.
+                // cancelPeriodicWork() resets the flag when we truly want it
+                // gone (e.g. returning to foreground).
+                WorkManager.getInstance(applicationContext).enqueueUniquePeriodicWork(
+                    "MatchMePeriodicLocation",
+                    ExistingPeriodicWorkPolicy.KEEP,
+                    workRequest
+                )
+                periodicWorkScheduled = true
+            } catch (_: Exception) {}
+        }
+        // Also enqueue a short-delay OneTime heartbeat so the first dead-service
+        // gap isn't 15m. LocationWorker chains the next OneTime itself.
+        // Use user's Settings rate (capped to 60s) instead of hard 45s.
+        // Throttled: a kickstarted heartbeat is still pending/running within
+        // its delay window, so re-kicking would only cancel it (more traces).
+        try {
+            val prefs = securePrefs()
+            val gpsInterval = when {
+                prefs.contains("flutter.gps_interval") -> prefs.getInt("flutter.gps_interval", 5)
+                prefs.contains("gps_interval") -> prefs.getInt("gps_interval", 5)
+                else -> 5
+            }.coerceAtLeast(1).coerceAtMost(60)
+            val oneTimeDelay = gpsInterval.coerceAtMost(45).toLong()
+            val now = System.currentTimeMillis()
+            if (now - lastHeartbeatKickMs < oneTimeDelay * 1000L) {
+                return
+            }
+            lastHeartbeatKickMs = now
+            // Seed slot A of the ping-pong chain (see LocationWorker.chainOneTimeHeartbeat).
+            // The KEY_SLOT input data is what makes the seeded worker chain onward to
+            // slot B instead of re-seeding itself. Tag is added so every link of the
+            // chain is discoverable by tag (tags are per-request and are NOT inherited
+            // across enqueueUniqueWork).
+            val oneTime = androidx.work.OneTimeWorkRequestBuilder<LocationWorker>()
+                .setInitialDelay(oneTimeDelay, TimeUnit.SECONDS)
+                .setInputData(androidx.work.workDataOf(LocationWorker.KEY_SLOT to LocationWorker.NAME_A))
+                .addTag(LocationWorker.TAG_HEARTBEAT)
+                .build()
+            // KEEP, not REPLACE: replacing a pending/running heartbeat cancels live
+            // work (the WorkerStoppedException traces) without buying an earlier
+            // kick. KEEP is safe here because the worker's own successor targets the
+            // *other* slot name, so this seed can never collide with the running worker.
+            WorkManager.getInstance(applicationContext).enqueueUniqueWork(
+                LocationWorker.NAME_A,
+                androidx.work.ExistingWorkPolicy.KEEP,
+                oneTime
+            )
+        } catch (_: Exception) {}
     }
 
     private fun cancelPeriodicWork() {
-        Log.d(TAG, "Cancelling periodic location work (High Accuracy Mode or Foreground)")
         WorkManager.getInstance(applicationContext).cancelUniqueWork("MatchMePeriodicLocation")
+        try {
+            // Cancel every slot, not just one: with the ping-pong chain the pending
+            // link alternates between names, so cancelling a single name would leave
+            // the chain alive.
+            for (name in LocationWorker.ALL_UNIQUE_NAMES) {
+                try {
+                    WorkManager.getInstance(applicationContext).cancelUniqueWork(name)
+                } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+        periodicWorkScheduled = false
+        lastHeartbeatKickMs = 0L
     }
 }

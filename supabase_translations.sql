@@ -1,15 +1,14 @@
 -- English
-INSERT INTO translations (locale, key, value) VALUES ('en', 'settingsHighAccuracyMode', 'High Accuracy Mode') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
-INSERT INTO translations (locale, key, value) VALUES ('en', 'settingsHighAccuracyModeDesc', 'Increases location precision and frequency.') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
+INSERT INTO translations (locale, key, value) VALUES ('en', 'settingsHighAccuracyMode', 'Background Matching Mode') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
+INSERT INTO translations (locale, key, value) VALUES ('en', 'settingsHighAccuracyModeDesc', 'Keep matching even after closing the app. Your location updates periodically in the background so you stay visible to potential matches.') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
 
-INSERT INTO translations (locale, key, value) VALUES ('en', 'settingsHighAccuracyModeDesc_android', 'Increases location precision and frequency.
-• Updates every 30s-15m (requires persistent notification).') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
+INSERT INTO translations (locale, key, value) VALUES ('en', 'settingsHighAccuracyModeDesc_android', 'Keep matching even after closing the app. Your location updates periodically in the background so you stay visible to potential matches.
+• Requires a persistent notification so the system keeps the app running.') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
 
-INSERT INTO translations (locale, key, value) VALUES ('en', 'settingsHighAccuracyModeDesc_ios', 'Increases location precision and frequency.
-• Updates every ~10m of movement (uses more battery).') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
+INSERT INTO translations (locale, key, value) VALUES ('en', 'settingsHighAccuracyModeDesc_ios', 'Keep matching even after closing the app. Your location updates periodically in the background so you stay visible to potential matches.
+• Updates approximately every ~10 minutes of movement (uses more battery).') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
 
-INSERT INTO translations (locale, key, value) VALUES ('en', 'settingsHighAccuracyModeDesc_web', 'Increases location precision.
-• No background updates (foreground only).') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
+INSERT INTO translations (locale, key, value) VALUES ('en', 'settingsHighAccuracyModeDesc_web', 'Background matching is not supported on web. Matching only works while the app is open.') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
 
 INSERT INTO translations (locale, key, value) VALUES ('en', 'settingsSmartGpsThrottling', 'Smart GPS Throttling') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
 INSERT INTO translations (locale, key, value) VALUES ('en', 'settingsSmartGpsThrottlingDesc', 'Automatically reduces update frequency to save battery.') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
@@ -23,17 +22,16 @@ INSERT INTO translations (locale, key, value) VALUES ('en', 'settingsSmartGpsThr
 INSERT INTO translations (locale, key, value) VALUES ('en', 'settingsSmartGpsThrottlingDesc_web', 'Smart throttling is not available on Web.') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
 
 -- Spanish
-INSERT INTO translations (locale, key, value) VALUES ('es', 'settingsHighAccuracyMode', 'Modo de Alta Precisión') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
-INSERT INTO translations (locale, key, value) VALUES ('es', 'settingsHighAccuracyModeDesc', 'Aumenta la precisión y frecuencia de la ubicación.') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
+INSERT INTO translations (locale, key, value) VALUES ('es', 'settingsHighAccuracyMode', 'Modo de Coincidencia en Segundo Plano') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
+INSERT INTO translations (locale, key, value) VALUES ('es', 'settingsHighAccuracyModeDesc', 'Sigue coincidiendo incluso después de cerrar la app. Tu ubicación se actualiza periódicamente en segundo plano para que sigas siendo visible para posibles coincidencias.') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
 
-INSERT INTO translations (locale, key, value) VALUES ('es', 'settingsHighAccuracyModeDesc_android', 'Aumenta la precisión y frecuencia.
-• Actualiza cada 30s-15m (requiere notificación persistente).') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
+INSERT INTO translations (locale, key, value) VALUES ('es', 'settingsHighAccuracyModeDesc_android', 'Sigue coincidiendo incluso después de cerrar la app. Tu ubicación se actualiza periódicamente en segundo plano para que sigas siendo visible para posibles coincidencias.
+• Requiere una notificación persistente para que el sistema mantenga la app en ejecución.') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
 
-INSERT INTO translations (locale, key, value) VALUES ('es', 'settingsHighAccuracyModeDesc_ios', 'Aumenta la precisión y frecuencia.
-• Actualiza cada ~10m de movimiento (usa más batería).') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
+INSERT INTO translations (locale, key, value) VALUES ('es', 'settingsHighAccuracyModeDesc_ios', 'Sigue coincidiendo incluso después de cerrar la app. Tu ubicación se actualiza periódicamente en segundo plano para que sigas siendo visible para posibles coincidencias.
+• Se actualiza aproximadamente cada ~10 minutos de movimiento (usa más batería).') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
 
-INSERT INTO translations (locale, key, value) VALUES ('es', 'settingsHighAccuracyModeDesc_web', 'Aumenta la precisión.
-• Sin actualizaciones en segundo plano (solo primer plano).') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
+INSERT INTO translations (locale, key, value) VALUES ('es', 'settingsHighAccuracyModeDesc_web', 'La coincidencia en segundo plano no está disponible en web. Solo funciona mientras la app está abierta.') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
 
 INSERT INTO translations (locale, key, value) VALUES ('es', 'settingsSmartGpsThrottling', 'Ahorro de GPS Inteligente') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
 INSERT INTO translations (locale, key, value) VALUES ('es', 'settingsSmartGpsThrottlingDesc', 'Reduce automáticamente la frecuencia de actualización para ahorrar batería.') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
@@ -47,17 +45,16 @@ INSERT INTO translations (locale, key, value) VALUES ('es', 'settingsSmartGpsThr
 INSERT INTO translations (locale, key, value) VALUES ('es', 'settingsSmartGpsThrottlingDesc_web', 'El ahorro inteligente no está disponible en Web.') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
 
 -- Hebrew
-INSERT INTO translations (locale, key, value) VALUES ('he', 'settingsHighAccuracyMode', 'מצב דיוק גבוה') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
-INSERT INTO translations (locale, key, value) VALUES ('he', 'settingsHighAccuracyModeDesc', 'מגביר את דיוק ותדירות המיקום.') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
+INSERT INTO translations (locale, key, value) VALUES ('he', 'settingsHighAccuracyMode', 'מצב התאמה ברקע') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
+INSERT INTO translations (locale, key, value) VALUES ('he', 'settingsHighAccuracyModeDesc', 'המשך להתאים גם לאחר סגירת האפליקציה. המיקום שלך מתעדכן מעת לעת ברקע כך שתישאר גלוי להתאמות פוטנציאליות.') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
 
-INSERT INTO translations (locale, key, value) VALUES ('he', 'settingsHighAccuracyModeDesc_android', 'מגביר דיוק ותדירות.
-• מתעדכן כל 30 שניות עד 15 דקות (דורש התראה קבועה).') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
+INSERT INTO translations (locale, key, value) VALUES ('he', 'settingsHighAccuracyModeDesc_android', 'המשך להתאים גם לאחר סגירת האפליקציה. המיקום שלך מתעדכן מעת לעת ברקע כך שתישאר גלוי להתאמות פוטנציאליות.
+• דורש התראה קבועה כדי שהמערכת תשמור על האפליקציה פועלת.') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
 
-INSERT INTO translations (locale, key, value) VALUES ('he', 'settingsHighAccuracyModeDesc_ios', 'מגביר דיוק ותדירות.
-• מתעדכן כל ~10 מטרים של תנועה (צורך יותר סוללה).') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
+INSERT INTO translations (locale, key, value) VALUES ('he', 'settingsHighAccuracyModeDesc_ios', 'המשך להתאים גם לאחר סגירת האפליקציה. המיקום שלך מתעדכן מעת לעת ברקע כך שתישאר גלוי להתאמות פוטנציאליות.
+• מתעדכן בערך כל ~10 דקות של תנועה (צורך יותר סוללה).') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
 
-INSERT INTO translations (locale, key, value) VALUES ('he', 'settingsHighAccuracyModeDesc_web', 'מגביר דיוק.
-• אין עדכונים ברקע (קדמה בלבד).') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
+INSERT INTO translations (locale, key, value) VALUES ('he', 'settingsHighAccuracyModeDesc_web', 'התאמה ברקע אינה נתמכת בדפדפן. ההתאמה פועלת רק כשהאפליקציה פתוחה.') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
 
 INSERT INTO translations (locale, key, value) VALUES ('he', 'settingsSmartGpsThrottling', 'חיסכון GPS חכם') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;
 INSERT INTO translations (locale, key, value) VALUES ('he', 'settingsSmartGpsThrottlingDesc', 'מפחית אוטומטית את תדירות העדכון לחיסכון בסוללה.') ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;

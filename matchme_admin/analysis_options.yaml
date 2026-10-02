@@ -7,7 +7,25 @@
 
 # The following line activates a set of recommended lints for Flutter apps,
 # packages, and plugins designed to encourage good coding practices.
+analyzer:
+  exclude:
+    - build/**
+    - android/**
+    - ios/**
+    - web/**
+    - windows/**
+    - macos/**
+    - linux/**
 include: package:flutter_lints/flutter.yaml
+
+# Formatting is pinned here so `dart format` output is a deliberate, reviewable
+# project convention rather than an accident of each contributor's editor or
+# their Dart SDK version. `page_width` is the default (80); it is stated
+# explicitly so the intent survives an SDK upgrade.
+#
+# Run `dart format lib test` in this package before committing.
+formatter:
+  page_width: 80
 
 linter:
   # The lint rules applied to this project can be customized in the

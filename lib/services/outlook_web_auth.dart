@@ -35,57 +35,75 @@ extension MSALAuthResultExtension on MSALAuthResult {
   external bool? get fromCache;
 }
 
+@JS()
+@staticInterop
+class MSALAccount {}
+
+extension MSALAccountExtension on MSALAccount {
+  external String? get username;
+  external String? get name;
+}
+
+class OutlookWebAccount {
+  final String username;
+  final String? name;
+
+  const OutlookWebAccount({required this.username, this.name});
+}
+
 // PublicClientApplication dart wrapper
 class PublicClientApplication {
   final MSALPublicClientApplication _instance;
-  
+
   PublicClientApplication(this._instance);
-  
+
   Future<void> initialize() async {
     try {
-      debugPrint('🔄 [MSAL] Attempting to call initialize() on MSAL instance...');
+      print('🔄 [MSAL] Attempting to call initialize() on MSAL instance...');
       final promise = _instance.initialize();
-      debugPrint('🔄 [MSAL] Promise returned from initialize(), converting to Dart Future...');
+      print(
+        '🔄 [MSAL] Promise returned from initialize(), converting to Dart Future...',
+      );
       await promise.toDart;
-      debugPrint('✅ [MSAL] initialize() completed successfully');
+      print('✅ [MSAL] initialize() completed successfully');
     } catch (e, stack) {
-      debugPrint('❌ [MSAL] Error during initialize(): $e');
-      debugPrint('Stack: $stack');
+      print('❌ [MSAL] Error during initialize(): $e');
+      print('Stack: $stack');
       // Don't rethrow - initialize() might not be required in all MSAL versions
       // Continue without it and see if other methods work
     }
   }
-  
+
   Future<MSALAuthResult> loginPopup(JSObject request) async {
     final promise = _instance.loginPopup(request);
     return (await promise.toDart) as MSALAuthResult;
   }
-  
+
   Future<void> loginRedirect(JSObject request) async {
     final promise = _instance.loginRedirect(request);
     await promise.toDart;
   }
-  
+
   Future<MSALAuthResult?> handleRedirectPromise() async {
     final promise = _instance.handleRedirectPromise();
     final result = await promise.toDart;
     return result?.isUndefinedOrNull == false ? result as MSALAuthResult : null;
   }
-  
+
   Future<MSALAuthResult> acquireTokenSilent(JSObject request) async {
     final promise = _instance.acquireTokenSilent(request);
     return (await promise.toDart) as MSALAuthResult;
   }
-  
+
   Future<MSALAuthResult> acquireTokenPopup(JSObject request) async {
     final promise = _instance.acquireTokenPopup(request);
     return (await promise.toDart) as MSALAuthResult;
   }
-  
+
   JSArray getAllAccounts() {
     return _instance.getAllAccounts(); // Synchronous!
   }
-  
+
   Future<void> logoutPopup(JSObject request) async {
     final promise = _instance.logoutPopup(request);
     await promise.toDart;
@@ -100,7 +118,7 @@ class OutlookWebAuth {
 
   PublicClientApplication? _msalInstance;
   bool _isInitialized = false;
-  
+
   /// Check if MSAL is initialized (for external checking)
   bool get isInitialized => _isInitialized;
 
@@ -117,43 +135,45 @@ class OutlookWebAuth {
     if (_isInitialized) return;
 
     try {
-      debugPrint('✅ MSAL library loaded, creating instance...');
+      print('✅ MSAL library loaded, creating instance...');
 
       // Create MSAL configuration
-      final config = {
-        'auth': {
-          'clientId': clientId,
-          'authority': 'https://login.microsoftonline.com/$tenantId',
-          'redirectUri': redirectUri,
-        },
-        'cache': {
-          'cacheLocation': 'localStorage',
-          'storeAuthStateInCookie': false,
-        },
-        'system': {
-          'allowNativeBroker': false,
-          'windowHashTimeout': 60000,
-          'iframeHashTimeout': 6000,
-          'loadFrameTimeout': 0,
-        },
-      }.jsify() as JSObject;
+      final config =
+          {
+                'auth': {
+                  'clientId': clientId,
+                  'authority': 'https://login.microsoftonline.com/$tenantId',
+                  'redirectUri': redirectUri,
+                },
+                'cache': {
+                  'cacheLocation': 'localStorage',
+                  'storeAuthStateInCookie': false,
+                },
+                'system': {
+                  'allowNativeBroker': false,
+                  'windowHashTimeout': 60000,
+                  'iframeHashTimeout': 6000,
+                  'loadFrameTimeout': 0,
+                },
+              }.jsify()
+              as JSObject;
 
       // Create MSAL instance using factory constructor
-      debugPrint('🔄 Creating MSAL instance...');
+      print('🔄 Creating MSAL instance...');
       final instance = MSALPublicClientApplication(config);
-      debugPrint('✅ MSAL instance created');
+      print('✅ MSAL instance created');
       _msalInstance = PublicClientApplication(instance);
 
       // CRITICAL: MSAL v3+ requires calling initialize() before use
-      debugPrint('🔄 Calling MSAL initialize...');
+      print('🔄 Calling MSAL initialize...');
       await _msalInstance!.initialize();
-      debugPrint('✅ MSAL initialized');
+      print('✅ MSAL initialized');
 
       _isInitialized = true;
-      debugPrint('✅ Outlook Web Auth initialized successfully');
+      print('✅ Outlook Web Auth initialized successfully');
     } catch (e, stackTrace) {
-      debugPrint('❌ Failed to initialize Outlook Web Auth: $e');
-      debugPrint('Stack trace: $stackTrace');
+      print('❌ Failed to initialize Outlook Web Auth: $e');
+      print('Stack trace: $stackTrace');
       rethrow;
     }
   }
@@ -162,52 +182,61 @@ class OutlookWebAuth {
     List<String>? scopes,
     bool useRedirect = false,
     bool forceConsent = false,
+    String? loginHint,
   }) async {
     if (!_isInitialized || _msalInstance == null) {
-      throw Exception('OutlookWebAuth not initialized. Call initialize() first.');
+      throw Exception(
+        'OutlookWebAuth not initialized. Call initialize() first.',
+      );
     }
 
     try {
-      final loginRequest = {
-        'scopes': scopes ?? [
-          'User.Read',
-          'Calendars.Read',
-          'offline_access',
-        ],
-        'prompt': forceConsent ? 'consent' : 'select_account',
-      }.jsify() as JSObject;
+      final loginRequest =
+          {
+                'scopes':
+                    scopes ?? ['User.Read', 'Calendars.Read', 'offline_access'],
+                'prompt': forceConsent ? 'consent' : 'select_account',
+                if (loginHint != null && loginHint.trim().isNotEmpty)
+                  'loginHint': loginHint.trim(),
+              }.jsify()
+              as JSObject;
 
       if (useRedirect) {
         // Use redirect flow
-        debugPrint('🔄 Starting Outlook login redirect...');
+        print('🔄 Starting Outlook login redirect...');
         await _msalInstance!.loginRedirect(loginRequest);
         // Note: This will redirect away from the app, return handled in handleRedirectPromise
         return null;
       } else {
         // Use popup flow
-        debugPrint('🔄 Starting Outlook login popup...');
+        print('🔄 Starting Outlook login popup...');
         final result = await _msalInstance!.loginPopup(loginRequest);
         final accessToken = result.accessToken;
 
         if (accessToken != null) {
-          debugPrint('✅ Outlook sign-in successful');
-          debugPrint('Token scopes: ${result.scopes?.toDart}');
-          debugPrint('Token from cache: ${result.fromCache}');
+          print('✅ Outlook sign-in successful');
+          print('Token scopes: ${result.scopes?.toDart}');
+          print('Token from cache: ${result.fromCache}');
           return accessToken;
         } else {
-          debugPrint('❌ No access token received from Outlook sign-in');
+          print('❌ No access token received from Outlook sign-in');
           return null;
         }
       }
     } catch (e) {
-      debugPrint('❌ Outlook sign-in error: $e');
+      print('❌ Outlook sign-in error: $e');
       rethrow;
     }
   }
 
-  Future<String?> getAccessToken({List<String>? scopes, bool forceRefresh = false}) async {
+  Future<String?> getAccessToken({
+    List<String>? scopes,
+    bool forceRefresh = false,
+  }) async {
     if (!_isInitialized || _msalInstance == null) {
-      throw Exception('OutlookWebAuth not initialized. Call initialize() first.');
+      throw Exception(
+        'OutlookWebAuth not initialized. Call initialize() first.',
+      );
     }
 
     try {
@@ -215,35 +244,38 @@ class OutlookWebAuth {
       final accounts = _msalInstance!.getAllAccounts();
 
       if (accounts.toDart.isEmpty) {
-        debugPrint('No accounts found, need to sign in first');
+        print('No accounts found, need to sign in first');
         return null;
       }
 
       // Use first account
       final account = accounts.toDart.first;
 
-      final tokenRequest = {
-        'scopes': scopes ?? [
-          'User.Read',
-          'Calendars.Read',
-          'offline_access',
-        ],
-        'account': account,
-        'forceRefresh': forceRefresh,
-      }.jsify() as JSObject;
+      final tokenRequest =
+          {
+                'scopes':
+                    scopes ?? ['User.Read', 'Calendars.Read', 'offline_access'],
+                'account': account,
+                'forceRefresh': forceRefresh,
+              }.jsify()
+              as JSObject;
 
       if (!forceRefresh) {
         // Try silent token acquisition first
         try {
-          final silentResult = await _msalInstance!.acquireTokenSilent(tokenRequest);
+          final silentResult = await _msalInstance!.acquireTokenSilent(
+            tokenRequest,
+          );
           final accessToken = silentResult.accessToken;
 
           if (accessToken != null) {
-            debugPrint('✅ Got Outlook token silently');
+            print('✅ Got Outlook token silently');
             return accessToken;
           }
         } catch (e) {
-          debugPrint('Silent token acquisition failed: $e, falling back to interactive');
+          print(
+            'Silent token acquisition failed: $e, falling back to interactive',
+          );
         }
       }
 
@@ -252,13 +284,94 @@ class OutlookWebAuth {
       final accessToken = popupResult.accessToken;
 
       if (accessToken != null) {
-        debugPrint('✅ Got Outlook token via popup');
+        print('✅ Got Outlook token via popup');
         return accessToken;
       }
 
       return null;
     } catch (e) {
-      debugPrint('❌ Error getting Outlook access token: $e');
+      print('❌ Error getting Outlook access token: $e');
+      return null;
+    }
+  }
+
+  List<OutlookWebAccount> listAccounts() {
+    if (!_isInitialized || _msalInstance == null) {
+      return const <OutlookWebAccount>[];
+    }
+
+    final accounts = _msalInstance!.getAllAccounts().toDart;
+    final results = <OutlookWebAccount>[];
+    for (final account in accounts) {
+      final jsAccount = account as MSALAccount;
+      final username = jsAccount.username?.trim();
+      if (username == null || username.isEmpty) {
+        continue;
+      }
+      results.add(
+        OutlookWebAccount(username: username, name: jsAccount.name?.trim()),
+      );
+    }
+    return results;
+  }
+
+  Future<String?> getAccessTokenForUsername({
+    required String username,
+    List<String>? scopes,
+    bool forceRefresh = false,
+  }) async {
+    if (!_isInitialized || _msalInstance == null) {
+      throw Exception(
+        'OutlookWebAuth not initialized. Call initialize() first.',
+      );
+    }
+
+    final normalizedUsername = username.trim().toLowerCase();
+    if (normalizedUsername.isEmpty) {
+      return null;
+    }
+
+    try {
+      final accounts = _msalInstance!.getAllAccounts().toDart;
+      Object? selectedAccount;
+      for (final account in accounts) {
+        final jsAccount = account as MSALAccount;
+        final accountUsername = jsAccount.username?.trim().toLowerCase();
+        if (accountUsername == normalizedUsername) {
+          selectedAccount = account;
+          break;
+        }
+      }
+
+      if (selectedAccount == null) {
+        return null;
+      }
+
+      final tokenRequest =
+          {
+                'scopes':
+                    scopes ?? ['User.Read', 'Calendars.Read', 'offline_access'],
+                'account': selectedAccount,
+                'forceRefresh': forceRefresh,
+              }.jsify()
+              as JSObject;
+
+      if (!forceRefresh) {
+        try {
+          final silentResult = await _msalInstance!.acquireTokenSilent(
+            tokenRequest,
+          );
+          final silentAccessToken = silentResult.accessToken;
+          if (silentAccessToken != null) {
+            return silentAccessToken;
+          }
+        } catch (_) {}
+      }
+
+      final popupResult = await _msalInstance!.acquireTokenPopup(tokenRequest);
+      return popupResult.accessToken;
+    } catch (e) {
+      print('❌ Error getting Outlook access token: $e');
       return null;
     }
   }
@@ -266,7 +379,7 @@ class OutlookWebAuth {
   /// Call this on app startup to handle redirect callback
   Future<String?> handleRedirectCallback() async {
     if (!_isInitialized || _msalInstance == null) {
-      debugPrint('⚠️ Cannot handle redirect - not initialized');
+      print('⚠️ Cannot handle redirect - not initialized');
       return null;
     }
 
@@ -276,28 +389,30 @@ class OutlookWebAuth {
         final currentUrl = web.window.location.href;
         final hasCode = currentUrl.contains('code=');
         final hasState = currentUrl.contains('state=');
-        debugPrint('🔍 Current URL has code: $hasCode, has state: $hasState');
+        print('🔍 Current URL has code: $hasCode, has state: $hasState');
         if (hasCode) {
-          debugPrint('🔍 URL contains OAuth redirect parameters');
+          print('🔍 URL contains OAuth redirect parameters');
         }
       }
-      
-      debugPrint('🔄 Calling MSAL handleRedirectPromise...');
+
+      print('🔄 Calling MSAL handleRedirectPromise...');
       final result = await _msalInstance!.handleRedirectPromise();
-      
+
       if (result != null) {
-        debugPrint('✅ Redirect callback handled successfully');
+        print('✅ Redirect callback handled successfully');
         final accessToken = result.accessToken;
         if (accessToken != null) {
           return accessToken;
         }
       } else {
-        debugPrint('ℹ️ No redirect callback pending (handleRedirectPromise returned null)');
+        print(
+          'ℹ️ No redirect callback pending (handleRedirectPromise returned null)',
+        );
       }
       return null;
     } catch (e, st) {
-      debugPrint('❌ Error handling redirect: $e');
-      debugPrint('Stack: $st');
+      print('❌ Error handling redirect: $e');
+      print('Stack: $st');
       return null;
     }
   }
@@ -311,16 +426,13 @@ class OutlookWebAuth {
 
       if (accounts.toDart.isNotEmpty) {
         final account = accounts.toDart.first;
-        final logoutRequest = {
-          'account': account,
-        }.jsify() as JSObject;
+        final logoutRequest = {'account': account}.jsify() as JSObject;
 
         await _msalInstance!.logoutPopup(logoutRequest);
-        debugPrint('✅ Outlook sign-out successful');
+        print('✅ Outlook sign-out successful');
       }
     } catch (e) {
-      debugPrint('❌ Outlook sign-out error: $e');
+      print('❌ Outlook sign-out error: $e');
     }
   }
 }
-

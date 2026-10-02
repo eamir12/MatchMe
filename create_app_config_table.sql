@@ -127,7 +127,8 @@ INSERT INTO app_config (config_key, config_value, config_type, category, descrip
 ('gps.kalman_process_noise_position', '0.0001', 'number', 'gps', 'Kalman filter position variance per second', false, 0.00001, 0.001),
 ('gps.kalman_process_noise_velocity', '0.001', 'number', 'gps', 'Kalman filter velocity variance per second', false, 0.0001, 0.01),
 ('gps.kalman_min_accuracy_meters', '5.0', 'number', 'gps', 'Kalman filter minimum accuracy to use', false, 1, 20),
-('gps.kalman_max_accuracy_meters', '200.0', 'number', 'gps', 'Kalman filter maximum accuracy to use', false, 50, 1000)
+('gps.kalman_max_accuracy_meters', '200.0', 'number', 'gps', 'Kalman filter maximum accuracy to use', false, 50, 1000),
+('gps.kalman_filter_skip_threshold_meters', '100.0', 'number', 'gps', 'Accuracy threshold above which the Kalman filter is skipped to avoid drift', false, 20, 500)
 ON CONFLICT (config_key) DO UPDATE SET
     config_value = EXCLUDED.config_value,
     config_type = EXCLUDED.config_type,
@@ -210,7 +211,20 @@ INSERT INTO app_config (config_key, config_value, config_type, category, descrip
 ('ui.translation_fetch_delay_ms', '1500', 'number', 'ui', 'Delay for stale-while-revalidate translation fetching (milliseconds)', false, 500, 5000),
 ('ui.home_initial_delay_ms', '200', 'number', 'ui', 'Initial delay for home provider loading (milliseconds)', false, 0, 1000),
 ('ui.home_refresh_delay_ms', '100', 'number', 'ui', 'Refresh delay for home provider (milliseconds)', false, 0, 500),
-('ui.home_revalidation_seconds', '2', 'duration_seconds', 'ui', 'Revalidation delay for home provider', false, 1, 10)
+('ui.home_revalidation_seconds', '300', 'duration_seconds', 'ui', 'Fallback dashboard stats revalidation interval; realtime updates use Supabase channels', false, 300, 3600)
+ON CONFLICT (config_key) DO UPDATE SET
+  config_value = EXCLUDED.config_value,
+  config_type = EXCLUDED.config_type,
+  category = EXCLUDED.category,
+  description = EXCLUDED.description,
+  is_user_configurable = EXCLUDED.is_user_configurable,
+  min_value = EXCLUDED.min_value,
+  max_value = EXCLUDED.max_value;
+
+-- Feature Visibility Settings
+INSERT INTO app_config (config_key, config_value, config_type, category, description, is_user_configurable, min_value, max_value) VALUES
+('subscription.enabled', 'true', 'boolean', 'subscription', 'Controls whether the subscription feature is shown in the app', false, null, null),
+('referral.enabled', 'true', 'boolean', 'referral', 'Controls whether the invite friends feature is shown in the app', false, null, null)
 ON CONFLICT (config_key) DO UPDATE SET
   config_value = EXCLUDED.config_value,
   config_type = EXCLUDED.config_type,
@@ -235,8 +249,8 @@ ON CONFLICT (config_key) DO UPDATE SET
 
 -- Profile & User Settings
 INSERT INTO app_config (config_key, config_value, config_type, category, description, is_user_configurable, min_value, max_value) VALUES
-('profile.match_radius_options_km', '[5, 10, 20, 100]', 'array', 'profile', 'Allowed match radius options in kilometers', true, null, null),
-('profile.match_radius_default_km', '20', 'number', 'profile', 'Default match radius for new users (kilometers)', true, 5, 100),
+('profile.match_radius_options_meters', '[5, 10, 20, 100]', 'array', 'profile', 'Allowed match radius options in meters', true, null, null),
+('profile.match_radius_default_meters', '50000', 'number', 'profile', 'Default match radius for new users (meters)', true, 500, 100000),
 ('profile.age_range_min', '18', 'number', 'profile', 'Minimum age allowed for users', false, 18, 21),
 ('profile.age_range_max', '100', 'number', 'profile', 'Maximum age allowed for users', false, 80, 120),
 ('profile.age_preference_default_min', '18', 'number', 'profile', 'Default minimum age preference for new users', true, 18, 100),
@@ -285,6 +299,28 @@ ON CONFLICT (config_key) DO UPDATE SET
     is_user_configurable = EXCLUDED.is_user_configurable,
     min_value = EXCLUDED.min_value,
     max_value = EXCLUDED.max_value;
+
+-- Cleanup: Remove unused/dead config keys that have no corresponding app code
+DELETE FROM app_config WHERE config_key IN (
+  'gps.web_sample_max_accuracy_meters',
+  'cache.visibility_duration_seconds',
+  'cache.user_details_duration_seconds',
+  'notification.permission_prompt_min_interval_seconds',
+  'profile.age_range_min',
+  'profile.age_range_max',
+  'profile.age_preference_default_min',
+  'profile.age_preference_default_max',
+  'translation.deepl_monthly_limit_chars',
+  'translation.language_detection_confidence',
+  'referral.reward_type',
+  'ads.internal.mobile.native_enabled',
+  'ads.external_enabled',
+  'ads.external.admob_enabled',
+  'ads.external.mediation_enabled',
+  'ads.external.personalized_ads_default',
+  'ads.external.show_consent_form',
+  'ads.external.min_user_age_for_personalization'
+);
 
 -- Comment explaining the schema
 COMMENT ON TABLE app_config IS 'Central configuration table for all app settings. Stores both system-wide configs and default values for user-configurable settings. User-specific overrides are stored in the users table.';

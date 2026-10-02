@@ -39,6 +39,11 @@ class Win32Window {
   // Show the current window. Returns true if the window was successfully shown.
   bool Show();
 
+  // When true, |Show| maximizes the window instead of showing it restored.
+  // Must be set before the first |Show| (the engine calls it once the first
+  // frame is ready, which is after |Create| returns).
+  void SetStartMaximized(bool value) { start_maximized_ = value; }
+
   // Release OS resources associated with window.
   void Destroy();
 
@@ -91,6 +96,9 @@ class Win32Window {
   static void UpdateTheme(HWND const window);
 
   bool quit_on_close_ = false;
+
+  // Whether |Show| should maximize rather than show restored.
+  bool start_maximized_ = false;
 
   // window handle for top level window.
   HWND window_handle_ = nullptr;

@@ -27,27 +27,33 @@ serve(async (req) => {
   
     // Initialize Supabase Client
     const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_ANON_KEY') || ''
-    const supabase = createClient(supabaseUrl, supabaseKey)
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+    const supabase = supabaseKey
+      ? createClient(supabaseUrl, supabaseKey)
+      : null
 
     // Log the visit for fingerprinting
     if (code) {
       console.log(`[INVITE] Received visit for code: ${code}. IP: ${req.headers.get("x-forwarded-for")?.split(',')[0]}, UA: ${req.headers.get("user-agent")}`)
       try {
-        const ip = req.headers.get("x-forwarded-for")?.split(',')[0] || "unknown"
-        const ua = req.headers.get("user-agent") || "unknown"
-        
-        const { error } = await supabase.from('referral_visits').insert({
-          referral_code: code,
-          ip_address: ip,
-          user_agent: ua,
-          claimed: false
-        })
-        
-        if (error) {
-           console.error('[INVITE] DB Error inserting visit:', error)
+        if (supabase == null) {
+          console.warn('[INVITE] SUPABASE_SERVICE_ROLE_KEY is missing; skipping referral visit logging.')
         } else {
-           console.log('[INVITE] Successfully logged visit to DB.')
+          const ip = req.headers.get("x-forwarded-for")?.split(',')[0] || "unknown"
+          const ua = req.headers.get("user-agent") || "unknown"
+          
+          const { error } = await supabase.from('referral_visits').insert({
+            referral_code: code,
+            ip_address: ip,
+            user_agent: ua,
+            claimed: false
+          })
+          
+          if (error) {
+             console.error('[INVITE] DB Error inserting visit:', error)
+          } else {
+             console.log('[INVITE] Successfully logged visit to DB.')
+          }
         }
       } catch (e) {
         console.error('[INVITE] Exception logging visit:', e)
@@ -84,7 +90,7 @@ serve(async (req) => {
     errorMessage = error instanceof Error ? error.message : String(error);
     httpStatus = 400;
     return new Response(
-      JSON.stringify({ error: error.message }),
+      JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
       { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
   } finally {

@@ -8,10 +8,13 @@ import 'package:matchme/providers/profile_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:matchme/widgets/signed_image.dart';
+import 'package:matchme/widgets/app_empty_state.dart';
+import 'package:matchme/widgets/event_attendance_summary.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/match_reason_formatter.dart';
 import 'package:matchme/utils/map_utils.dart';
+import 'package:matchme/utils/event_venue_utils.dart';
 import 'package:matchme/screens/matches/match_profile_screen.dart';
 import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
@@ -20,100 +23,145 @@ import 'package:matchme/services/local_db_service.dart';
 final supabase = Supabase.instance.client;
 
 // --- Event Matches Provider (with caching) ---
+// Returns the users the current user has matched with (any match type) who
+// are attending the event. Attendance is resolved server-side by the
+// get_event_matched_attendees RPC because RLS hides other users' attendance.
 final eventMatchesProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, EventModel>((ref, event) async {
+      final userId = supabase.auth.currentUser?.id;
+      if (userId == null) return [];
 
-  final userId = supabase.auth.currentUser?.id;
-  if (userId == null) return [];
+      final localDb = ref.read(localDbProvider);
 
-  final localDb = ref.read(localDbProvider);
+      try {
+        // Try cached attendees first
+        final cachedAttendees = await localDb.getEventAttendees(event.id);
+        if (cachedAttendees != null) {
+          if (kIsWeb) {
+            print(
+              '🔍 [WEB] eventMatchesProvider - Using cached attendees for event: ${event.id}',
+            );
+          }
+          return cachedAttendees;
+        }
 
-  try {
-    // Try cached attendees first
-    final cachedAttendees = await localDb.getEventAttendees(event.id);
-    if (cachedAttendees != null) {
-      if (kIsWeb) {
-        debugPrint('🔍 [WEB] eventMatchesProvider - Using cached attendees for event: ${event.id}');
+        if (kIsWeb) {
+          print(
+            '🔍 [WEB] eventMatchesProvider - Fetching fresh attendees for event: ${event.id}',
+          );
+        }
+
+        final response = await supabase.rpc(
+          'get_event_matched_attendees',
+          params: {'p_event_id': event.id},
+        );
+
+        final matches = (response as List)
+            .map((row) => Map<String, dynamic>.from(row as Map))
+            .toList();
+
+        // Remove duplicates by ensuring each match pair appears only once
+        final seenPairs = <String>{};
+        final uniqueMatches = <Map<String, dynamic>>[];
+
+        for (final match in matches) {
+          final user1Id = match['user1_id'] as String;
+          final user2Id = match['user2_id'] as String;
+
+          // Create a consistent key for the pair (always smaller ID first)
+          final pairKey = user1Id.compareTo(user2Id) < 0
+              ? '$user1Id-$user2Id'
+              : '$user2Id-$user1Id';
+
+          if (!seenPairs.contains(pairKey)) {
+            seenPairs.add(pairKey);
+            uniqueMatches.add(match);
+          }
+        }
+
+        // Cache the fetched attendees for future use
+        await localDb.saveEventAttendees(event.id, uniqueMatches);
+
+        return uniqueMatches;
+      } catch (e) {
+        print('Error fetching event attendees: $e');
+        rethrow;
       }
-      return cachedAttendees;
-    }
-
-    if (kIsWeb) {
-      debugPrint('🔍 [WEB] eventMatchesProvider - Fetching fresh attendees for event: ${event.id}');
-    }
-    // Check if current user is attending
-    final attendanceCheck = await supabase
-        .from('event_attendees')
-        .select('user_id')
-        .eq('event_id', event.id)
-        .eq('user_id', userId)
-        .maybeSingle();
-
-    if (attendanceCheck == null) return []; // Current user not attending
-
-    // Get existing matches for this event
-    final matchesResponse = await supabase
-        .from('matches')
-        .select('''
-          id,
-          user1_id,
-          user2_id,
-          matched_intent,
-          match_type,
-          event_id,
-          created_at,
-          events:event_id (event_name, event_link)
-        ''')
-        .eq('event_id', event.id)
-        .eq('match_type', 'event')
-        .or('user1_id.eq.$userId,user2_id.eq.$userId');
-
-    // Remove duplicates by ensuring each match pair appears only once
-    final seenPairs = <String>{};
-    final uniqueMatches = <Map<String, dynamic>>[];
-
-    for (final match in matchesResponse) {
-      final user1Id = match['user1_id'] as String;
-      final user2Id = match['user2_id'] as String;
-
-      // Create a consistent key for the pair (always smaller ID first)
-      final pairKey = user1Id.compareTo(user2Id) < 0 ? '$user1Id-$user2Id' : '$user2Id-$user1Id';
-
-      if (!seenPairs.contains(pairKey)) {
-        seenPairs.add(pairKey);
-        uniqueMatches.add(match);
-      }
-    }
-
-    // Cache the fetched attendees for future use
-    await localDb.saveEventAttendees(event.id, uniqueMatches);
-
-    return uniqueMatches;
-
-  } catch (e) {
-    debugPrint('Error fetching event attendees: $e');
-    return [];
-  }
-});
-
+    });
 
 class AttendeesScreen extends ConsumerWidget {
   final EventModel event;
   final bool showAppBar;
 
-  const AttendeesScreen({super.key, required this.event, this.showAppBar = true});
+  const AttendeesScreen({
+    super.key,
+    required this.event,
+    this.showAppBar = true,
+  });
 
   int? _calculateAge(DateTime? dob) {
     if (dob == null) return null;
     final now = DateTime.now();
     int age = now.year - dob.year;
-    if (now.month < dob.month || (now.month == dob.month && now.day < dob.day)) {
+    if (now.month < dob.month ||
+        (now.month == dob.month && now.day < dob.day)) {
       age--;
     }
     return age;
   }
 
-  Widget _buildEventDetailRow(BuildContext context, String label, String value) {
+  Future<void> _openEventLink(
+    BuildContext context,
+    LocalizationState l10n,
+    String rawUrl,
+  ) async {
+    final uri = Uri.tryParse(rawUrl.trim());
+    final scheme = uri?.scheme.toLowerCase();
+    if (uri == null ||
+        (scheme != 'http' && scheme != 'https') ||
+        uri.host.isEmpty) {
+      _showEventLinkOpenFailed(context, l10n, rawUrl);
+      return;
+    }
+
+    var launched = false;
+    try {
+      launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {}
+    if (!launched) {
+      try {
+        launched = await launchUrl(uri, mode: LaunchMode.platformDefault);
+      } catch (_) {}
+    }
+    if (!launched) _showEventLinkOpenFailed(context, l10n, rawUrl);
+  }
+
+  void _showEventLinkOpenFailed(
+    BuildContext context,
+    LocalizationState l10n,
+    String rawUrl,
+  ) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(l10n.getString('eventLinkOpenFailed')),
+        backgroundColor: Theme.of(context).colorScheme.error,
+        action: SnackBarAction(
+          label: l10n.getString('generalRetry'),
+          textColor: Theme.of(context).colorScheme.onError,
+          onPressed: () {
+            _openEventLink(context, l10n, rawUrl);
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEventDetailRow(
+    BuildContext context,
+    String label,
+    String value,
+  ) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -131,7 +179,9 @@ class AttendeesScreen extends ConsumerWidget {
             value,
             style: TextStyle(
               fontSize: 14,
-              color: Theme.of(context).colorScheme.onSurface.withValues(alpha:0.7),
+              color: Theme.of(
+                context,
+              ).colorScheme.onSurface.withValues(alpha: 0.7),
             ),
           ),
         ),
@@ -139,8 +189,12 @@ class AttendeesScreen extends ConsumerWidget {
     );
   }
 
-  Widget _buildLocationRow(BuildContext context, LocalizationState l10n, String label, String value) {
-    
+  Widget _buildLocationRow(
+    BuildContext context,
+    LocalizationState l10n,
+    String label,
+    String value,
+  ) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -158,7 +212,9 @@ class AttendeesScreen extends ConsumerWidget {
             value,
             style: TextStyle(
               fontSize: 14,
-              color: Theme.of(context).colorScheme.onSurface.withValues(alpha:0.7),
+              color: Theme.of(
+                context,
+              ).colorScheme.onSurface.withValues(alpha: 0.7),
             ),
           ),
         ),
@@ -193,16 +249,19 @@ class AttendeesScreen extends ConsumerWidget {
     }
   }
 
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final l10n = ref.watch(localizationProvider);
-    
+    final eventTitle = l10n.getString(
+      'eventMatchesTitle',
+      params: {'eventName': event.eventName},
+    );
+
     // We only need to watch the one provider that finds matches
     final matchesAsync = ref.watch(eventMatchesProvider(event));
-    
+
     return Scaffold(
-      appBar: showAppBar ? AppBar(title: Text('${event.eventName} ${l10n.getString('matches')}')) : null,
+      appBar: showAppBar ? AppBar(title: Text(eventTitle)) : null,
       body: Column(
         children: [
           if (!showAppBar) ...[
@@ -218,9 +277,9 @@ class AttendeesScreen extends ConsumerWidget {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      '${event.eventName} ${l10n.getString('matches')}',
+                      eventTitle,
                       style: Theme.of(context).textTheme.titleMedium,
-                      overflow: TextOverflow.ellipsis,
+                      overflow: TextOverflow.visible,
                     ),
                   ),
                 ],
@@ -234,7 +293,7 @@ class AttendeesScreen extends ConsumerWidget {
               width: double.infinity,
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Colors.white,
+                color: Theme.of(context).colorScheme.surface,
                 borderRadius: BorderRadius.circular(16),
                 border: Border.all(color: Colors.black.withValues(alpha: 0.05)),
                 boxShadow: [
@@ -255,29 +314,64 @@ class AttendeesScreen extends ConsumerWidget {
                       fontWeight: FontWeight.w700,
                       color: Theme.of(context).colorScheme.onSurface,
                     ),
-                    textAlign: event.eventName.isRtl() ? TextAlign.right : TextAlign.left,
-                    textDirection: event.eventName.isRtl() ? ui.TextDirection.rtl : ui.TextDirection.ltr,
+                    textAlign: event.eventName.isRtl()
+                        ? TextAlign.right
+                        : TextAlign.left,
+                    textDirection: event.eventName.isRtl()
+                        ? ui.TextDirection.rtl
+                        : ui.TextDirection.ltr,
                   ),
                   const SizedBox(height: 8),
-                  _buildLocationRow(context, l10n, l10n.getString('eventLocationLabel'), event.eventVenue?.trim().isNotEmpty == true
-                      ? event.eventVenue!.trim()
-                      : l10n.getString('eventVenueNotSpecified')),
+                  EventAttendanceSummary(
+                    attendeeCount: event.attendeeCount,
+                    l10n: l10n,
+                  ),
+                  const SizedBox(height: 8),
+                  _buildLocationRow(
+                    context,
+                    l10n,
+                    l10n.getString('eventLocationLabel'),
+                    event.eventVenue?.trim().isNotEmpty == true
+                        ? event.eventVenue!.trim()
+                        : l10n.getString('eventVenueNotSpecified'),
+                  ),
                   const SizedBox(height: 4),
-                  _buildEventDetailRow(context, l10n.getString('eventDateLabel'), _formatDateOnly(event.startTime, l10n)),
+                  _buildEventDetailRow(
+                    context,
+                    l10n.getString('eventDateLabel'),
+                    _formatDateOnly(event.startTime, l10n),
+                  ),
                   const SizedBox(height: 4),
-                  _buildEventDetailRow(context, l10n.getString('eventTimeLabel'), formatTimeOfDateTimeWithPrefs(context, ref, l10n, event.startTime)),
-                  if (event.eventLink != null && event.eventLink!.isNotEmpty) ...[
+                  _buildEventDetailRow(
+                    context,
+                    l10n.getString('eventTimeLabel'),
+                    formatTimeOfDateTimeWithPrefs(
+                      context,
+                      ref,
+                      l10n,
+                      event.startTime,
+                    ),
+                  ),
+                  if (event.eventLink?.trim().isNotEmpty == true) ...[
                     const SizedBox(height: 8),
-                    InkWell(
-                      onTap: () async {
-                        final Uri url = Uri.parse(event.eventLink!);
-                        if (await canLaunchUrl(url)) {
-                          await launchUrl(url, mode: LaunchMode.externalApplication);
-                        }
-                      },
+                    TextButton(
+                      onPressed: () =>
+                          _openEventLink(context, l10n, event.eventLink!),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 4,
+                        ),
+                        minimumSize: const Size(48, 48),
+                        tapTargetSize: MaterialTapTargetSize.padded,
+                      ),
                       child: Row(
                         children: [
-                          Icon(Icons.link, size: 14, color: Theme.of(context).colorScheme.primary),
+                          Icon(
+                            Icons.link,
+                            size: 14,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
                           const SizedBox(width: 4),
                           Flexible(
                             child: Text(
@@ -293,17 +387,23 @@ class AttendeesScreen extends ConsumerWidget {
                       ),
                     ),
                   ],
-                  if (event.eventVenue != null && event.eventVenue!.isNotEmpty) ...[
+                  if (event.eventVenue != null &&
+                      event.eventVenue!.isNotEmpty &&
+                      !isVirtualMeetingLocation(event.eventVenue)) ...[
                     const SizedBox(height: 8),
                     Align(
                       alignment: Alignment.centerRight,
                       child: InkWell(
                         onTap: () async {
-                          final success = await openGoogleMaps(event.eventVenue!);
+                          final success = await openGoogleMaps(
+                            event.eventVenue!,
+                          );
                           if (!success && context.mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
-                                content: Text(l10n.getString('errorCouldNotOpenMaps')),
+                                content: Text(
+                                  l10n.getString('errorCouldNotOpenMaps'),
+                                ),
                                 backgroundColor: Colors.orange,
                               ),
                             );
@@ -313,10 +413,15 @@ class AttendeesScreen extends ConsumerWidget {
                         child: Container(
                           padding: const EdgeInsets.all(8),
                           decoration: BoxDecoration(
-                            color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3),
+                            color: Theme.of(context)
+                                .colorScheme
+                                .primaryContainer
+                                .withValues(alpha: 0.3),
                             borderRadius: BorderRadius.circular(8),
                             border: Border.all(
-                              color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.primary.withValues(alpha: 0.5),
                               width: 1,
                             ),
                           ),
@@ -333,13 +438,29 @@ class AttendeesScreen extends ConsumerWidget {
               ),
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text(
+              l10n.getString('eventMatchedAttendeesOnly'),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
 
           // Matches list
           Expanded(
             child: matchesAsync.when(
               data: (matches) {
                 if (matches.isEmpty) {
-                  return Center(child: Text(l10n.getString('noMatchesFoundForThisEvent')));
+                  return SingleChildScrollView(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: AppEmptyState(
+                      icon: Icons.people_outline,
+                      title: l10n.getString('noMatchesFoundForThisEvent'),
+                      message: l10n.getString('eventMatchingTooltip'),
+                    ),
+                  );
                 }
                 return ListView.builder(
                   itemCount: matches.length,
@@ -348,47 +469,98 @@ class AttendeesScreen extends ConsumerWidget {
                     final String matchId = match['id'];
                     final String user1Id = match['user1_id'];
                     final String user2Id = match['user2_id'];
-                    final String matchedIntent = match['matched_intent'] ?? l10n.getString('attendingSharedEvent');
+                    final String matchedIntent =
+                        match['matched_intent'] ??
+                        l10n.getString('attendingSharedEvent');
 
                     // Determine the other user
                     final currentUserId = supabase.auth.currentUser?.id;
-                    final String otherUserId = (user1Id == currentUserId) ? user2Id : user1Id;
+                    final String otherUserId = (user1Id == currentUserId)
+                        ? user2Id
+                        : user1Id;
 
-                    final otherProfileAsync = ref.watch(userProfileProvider(otherUserId));
+                    final otherProfileAsync = ref.watch(
+                      userProfileProvider(otherUserId),
+                    );
 
                     return ListTile(
                       leading: otherProfileAsync.when(
                         data: (profile) {
-                          final photo = (profile?.photos.isNotEmpty == true) ? profile!.photos.first : null;
+                          final photo = (profile?.photos.isNotEmpty == true)
+                              ? profile!.photos.first
+                              : null;
                           return CircleAvatar(
                             radius: 22,
-                            backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                            backgroundColor: Theme.of(
+                              context,
+                            ).colorScheme.surfaceContainerHighest,
                             child: photo == null
-                                ? Icon(Icons.person, color: Theme.of(context).colorScheme.primary)
+                                ? Icon(
+                                    Icons.person,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.primary,
+                                  )
                                 : ClipOval(
                                     child: SignedImage(
                                       source: photo,
                                       width: 44,
                                       height: 44,
                                       fit: BoxFit.cover,
-                                      placeholder: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-                                      errorWidget: Icon(Icons.person, color: Theme.of(context).colorScheme.primary),
+                                      placeholder: const Center(
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      ),
+                                      errorWidget: Icon(
+                                        Icons.person,
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.primary,
+                                      ),
                                     ),
                                   ),
                           );
                         },
-                        loading: () => const CircleAvatar(radius: 22, child: CircularProgressIndicator(strokeWidth: 2)),
-                        error: (error, stack) => const CircleAvatar(radius: 22, child: Icon(Icons.person)),
+                        loading: () => const CircleAvatar(
+                          radius: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                        error: (error, stack) => const CircleAvatar(
+                          radius: 22,
+                          child: Icon(Icons.person),
+                        ),
                       ),
                       title: otherProfileAsync.when(
                         data: (profile) {
-                          final name = profile?.name.formatAsFirstNameLastInitial() ?? l10n.getString('generalUnknown');
+                          final name =
+                              profile?.name.formatAsFirstNameLastInitial() ??
+                              l10n.getString('generalUnknown');
                           final age = _calculateAge(profile?.dateOfBirth);
-                          if (age == null) return Text(name, style: const TextStyle(fontWeight: FontWeight.bold));
-                          return Text('$name, $age', style: const TextStyle(fontWeight: FontWeight.bold));
+                          if (age == null) {
+                            return Text(
+                              name,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            );
+                          }
+                          return Text(
+                            l10n.getString(
+                              'generalNameAge',
+                              params: {'name': name, 'age': age.toString()},
+                            ),
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          );
                         },
-                        loading: () => Text(l10n.getString('generalLoading'), style: const TextStyle(fontWeight: FontWeight.bold)),
-                        error: (error, stack) => Text(l10n.getString('generalUnknown'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                        loading: () => Text(
+                          l10n.getString('generalLoading'),
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        error: (error, stack) => Text(
+                          l10n.getString('generalUnknown'),
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
                       ),
                       subtitle: Text(
                         MatchReasonFormatter.formatMatchReasons(
@@ -398,15 +570,20 @@ class AttendeesScreen extends ConsumerWidget {
                         ),
                       ),
                       onTap: () {
+                        // Resolve the cached name so the profile shows it offline.
+                        final cachedName =
+                            otherProfileAsync.asData?.value?.name
+                                .formatAsFirstNameLastInitial() ??
+                            l10n.getString('generalUnknown');
                         // Navigate to existing MatchProfileScreen
                         Navigator.of(context, rootNavigator: true).push(
                           MaterialPageRoute(
                             builder: (context) => MatchProfileScreen(
                               matchId: matchId,
                               otherUserId: otherUserId,
-                              otherUserName: '',
+                              otherUserName: cachedName,
                               matchedIntent: matchedIntent,
-                              matchType: 'event',
+                              matchType: match['match_type'] ?? 'event',
                               eventId: event.id,
                               eventName: event.eventName,
                               eventLink: event.eventLink,
@@ -420,7 +597,13 @@ class AttendeesScreen extends ConsumerWidget {
                 );
               },
               loading: () => const Center(child: CircularProgressIndicator()),
-              error: (e, s) => Center(child: Text('${l10n.getString('generalError')}: $e')),
+              error: (e, s) => AppEmptyState(
+                icon: Icons.cloud_off,
+                title: l10n.getString('eventLoadErrorTitle'),
+                message: l10n.getString('eventLoadErrorMessage'),
+                actionLabel: l10n.getString('generalRetry'),
+                onAction: () => ref.invalidate(eventMatchesProvider(event)),
+              ),
             ),
           ),
         ],

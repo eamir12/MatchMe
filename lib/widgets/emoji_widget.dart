@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
-
+import 'package:extended_image/extended_image.dart';
+import 'package:matchme/utils/emoji_presentation_utils.dart';
 
 class EmojiWidget extends StatefulWidget {
   final String emoji;
   final double size;
+
   /// If true, try rendering the native glyph first (like WhatsApp).
   /// If the glyph is not available (common on some browsers), fall back to
   /// images (bundled assets or CDN). Defaults to true.
@@ -23,12 +25,17 @@ class EmojiWidget extends StatefulWidget {
 class _EmojiWidgetState extends State<EmojiWidget> {
   late final List<String> _candidates;
   int _idx = 0;
-  bool _useGlyph = true; // true => render native glyph Text; false => use images
+  bool _useGlyph =
+      true; // true => render native glyph Text; false => use images
 
   @override
   void initState() {
     super.initState();
-    final hex = widget.emoji.runes.map((r) => r.toRadixString(16)).join('-').toLowerCase();
+    final qualifiedInit = ensureEmojiPresentation(widget.emoji);
+    final hex = qualifiedInit.runes
+        .map((r) => r.toRadixString(16))
+        .join('-')
+        .toLowerCase();
     // Candidate order (prefer non-FE0F local when FE0F present to avoid dev-server HTML/index fallback):
     // 1) local non-FE0F (if applicable)
     // 2) local exact hex
@@ -45,17 +52,24 @@ class _EmojiWidgetState extends State<EmojiWidget> {
       list.add('/twemoji/$noFe0f.png');
       list.add('/twemoji/$hex.png');
       // then CDN
-      list.add('https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/$noFe0f.png');
-      list.add('https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/$hex.png');
+      list.add(
+        'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/$noFe0f.png',
+      );
+      list.add(
+        'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/$hex.png',
+      );
     } else {
       // no FE0F in hex — try bundled asset then local and CDN, then fe0f variants
       list.add('asset:assets/twemoji/$hex.png');
       list.add('/twemoji/$hex.png');
-      list.add('https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/$hex.png');
+      list.add(
+        'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/$hex.png',
+      );
       list.add('asset:assets/twemoji/$hex-fe0f.png');
       list.add('/twemoji/$hex-fe0f.png');
-      list.add('https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/$hex-fe0f.png');
-
+      list.add(
+        'https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/$hex-fe0f.png',
+      );
     }
 
     _candidates = list;
@@ -75,13 +89,14 @@ class _EmojiWidgetState extends State<EmojiWidget> {
     }
   }
 
-
   /// Heuristic: decide whether the native emoji glyph is rendered by the
   /// engine/font stack or whether it falls back to a replacement/box glyph.
   /// We compare the laid-out width of the emoji to the REPLACEMENT CHAR width.
   Future<bool> _emojiGlyphAvailable(String emoji, double size) async {
     try {
-      final style = TextStyle(fontSize: size);
+      final style = withEmojiFallback(
+        TextStyle(fontSize: size, fontWeight: FontWeight.normal),
+      );
       final tpEmoji = TextPainter(
         text: TextSpan(text: emoji, style: style),
         textDirection: TextDirection.ltr,
@@ -99,16 +114,23 @@ class _EmojiWidgetState extends State<EmojiWidget> {
       // tolerant threshold (pixels)
       return diff > 0.5;
     } catch (e) {
-      debugPrint('EmojiWidget: glyph detection error: $e');
       return false;
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    // Qualify text-default emoji so ⛱ renders color even from bare input.
+    final qualified = ensureEmojiPresentation(widget.emoji);
     // If we're currently using glyphs, show the native emoji text (WhatsApp-style)
+    // through the bundled Twemoji COLR font first for consistent modern look.
     if (_useGlyph) {
-      return Text(widget.emoji, style: TextStyle(fontSize: widget.size));
+      return Text(
+        qualified,
+        style: withEmojiFallback(
+          TextStyle(fontSize: widget.size, fontWeight: FontWeight.normal),
+        ),
+      );
     }
 
     final url = _candidates[_idx];
@@ -123,41 +145,68 @@ class _EmojiWidgetState extends State<EmojiWidget> {
         fit: BoxFit.contain,
         key: ValueKey(url),
         errorBuilder: (context, error, stackTrace) {
-          debugPrint('EmojiWidget: failed to load asset $assetPath : $error');
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
             if (_idx < _candidates.length - 1) setState(() => _idx++);
           });
           // If asset fails, and preferGlyphs was requested, fall back to glyph rendering
-          if (widget.preferGlyphs) return Text(widget.emoji, style: TextStyle(fontSize: widget.size));
+          if (widget.preferGlyphs) {
+            return Text(
+              qualified,
+              style: withEmojiFallback(
+                TextStyle(
+                  fontSize: widget.size,
+                  fontWeight: FontWeight.normal,
+                ),
+              ),
+            );
+          }
           return SizedBox(width: widget.size, height: widget.size);
         },
       );
     }
 
     // Attempt the candidate url; on error, advance to next candidate.
-    return Image.network(
+    return ExtendedImage.network(
       url,
       width: widget.size,
       height: widget.size,
       fit: BoxFit.contain,
+      cache: true,
       key: ValueKey(url),
-      errorBuilder: (context, error, stackTrace) {
-        debugPrint('EmojiWidget: failed to load $url : $error');
-        // Schedule trying the next candidate *after* the current frame to avoid setState() during build
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
-          if (_idx < _candidates.length - 1) {
-            setState(() { _idx++; });
-          }
-        });
-        // If image fails and preferGlyphs is true, render glyph as fallback
-        if (widget.preferGlyphs) return Text(widget.emoji, style: TextStyle(fontSize: widget.size));
-        return SizedBox(width: widget.size, height: widget.size);
-      },
-      loadingBuilder: (context, child, progress) {
-        if (progress == null) return child;
-        return SizedBox(width: widget.size, height: widget.size);
+      loadStateChanged: (state) {
+        switch (state.extendedImageLoadState) {
+          case LoadState.loading:
+            return SizedBox(width: widget.size, height: widget.size);
+          case LoadState.completed:
+            return ExtendedRawImage(
+              image: state.extendedImageInfo?.image,
+              width: widget.size,
+              height: widget.size,
+              fit: BoxFit.contain,
+            );
+          case LoadState.failed:
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted) return;
+              if (_idx < _candidates.length - 1) {
+                setState(() {
+                  _idx++;
+                });
+              }
+            });
+            if (widget.preferGlyphs) {
+              return Text(
+                qualified,
+                style: withEmojiFallback(
+                  TextStyle(
+                    fontSize: widget.size,
+                    fontWeight: FontWeight.normal,
+                  ),
+                ),
+              );
+            }
+            return SizedBox(width: widget.size, height: widget.size);
+        }
       },
     );
   }

@@ -9,7 +9,8 @@ class ReportDialogContent extends ConsumerStatefulWidget {
   const ReportDialogContent({super.key, required this.otherUserName});
 
   @override
-  ConsumerState<ReportDialogContent> createState() => _ReportDialogContentState();
+  ConsumerState<ReportDialogContent> createState() =>
+      _ReportDialogContentState();
 }
 
 class _ReportDialogContentState extends ConsumerState<ReportDialogContent> {
@@ -27,7 +28,20 @@ class _ReportDialogContentState extends ConsumerState<ReportDialogContent> {
     final l10n = ref.watch(localizationProvider); // Get l10n
 
     return AlertDialog(
-      title: Text('${l10n.getString('reportTitle')} ${widget.otherUserName}'),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      contentPadding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+      scrollable: true,
+      actionsAlignment: MainAxisAlignment.end,
+      actionsOverflowAlignment: OverflowBarAlignment.end,
+      actionsOverflowButtonSpacing: 8,
+      actionsOverflowDirection: VerticalDirection.down,
+      title: Text(
+        l10n.getString(
+          'reportTitleWithName',
+          params: {'name': widget.otherUserName},
+        ),
+      ),
       content: Form(
         key: _formKey,
         child: Column(
@@ -37,7 +51,9 @@ class _ReportDialogContentState extends ConsumerState<ReportDialogContent> {
             const SizedBox(height: 16),
             TextFormField(
               controller: _reportReasonController,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontFeatures: const []),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyMedium?.copyWith(fontFeatures: const []),
               decoration: InputDecoration(
                 labelText: l10n.getString('reportReasonRequired'), // Use l10n
                 border: const OutlineInputBorder(),
@@ -62,7 +78,7 @@ class _ReportDialogContentState extends ConsumerState<ReportDialogContent> {
         TextButton(
           onPressed: () {
             if (_formKey.currentState!.validate()) {
-               Navigator.pop(context, _reportReasonController.text.trim());
+              Navigator.pop(context, _reportReasonController.text.trim());
             }
           },
           style: TextButton.styleFrom(foregroundColor: Colors.red),
@@ -74,7 +90,10 @@ class _ReportDialogContentState extends ConsumerState<ReportDialogContent> {
 }
 
 // Update the helper function to use the new widget
-Future<String?> showReportDialog(BuildContext context, String otherUserName) async {
+Future<String?> showReportDialog(
+  BuildContext context,
+  String otherUserName,
+) async {
   return await showDialog<String>(
     context: context,
     builder: (context) {

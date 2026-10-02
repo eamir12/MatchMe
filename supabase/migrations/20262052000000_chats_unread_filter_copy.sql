@@ -1,0 +1,20 @@
+INSERT INTO public.translations (locale, key, value) VALUES
+  ('en', 'chatsNoUnreadResults', 'No unread conversations'),
+  ('en', 'chatsNoUnreadResultsMessage', 'You’re all caught up. Try another filter or browse Matches.'),
+  ('en', 'chatsResultsCount', '{count} conversations'),
+  ('en', 'chatsUnreadMessages', '{count} unread messages'),
+  ('en', 'chatsUnreadOnly', 'Unread only'),
+  ('en', 'chatsUnreadOnlyWithCount', 'Unread only ({count})'),
+  ('es', 'chatsNoUnreadResults', 'No hay conversaciones sin leer'),
+  ('es', 'chatsNoUnreadResultsMessage', 'Estás al día. Prueba otro filtro o explora las coincidencias.'),
+  ('es', 'chatsResultsCount', '{count} conversaciones'),
+  ('es', 'chatsUnreadMessages', '{count} mensajes sin leer'),
+  ('es', 'chatsUnreadOnly', 'Solo no leídos'),
+  ('es', 'chatsUnreadOnlyWithCount', 'Solo no leídos ({count})'),
+  ('he', 'chatsNoUnreadResults', 'אין שיחות שלא נקראו'),
+  ('he', 'chatsNoUnreadResultsMessage', 'כולכם מעודכנים. נסו מסנן אחר או עיינו בהתאמות.'),
+  ('he', 'chatsResultsCount', '{count} שיחות'),
+  ('he', 'chatsUnreadMessages', '{count} הודעות שלא נקראו'),
+  ('he', 'chatsUnreadOnly', 'לא נקראו בלבד'),
+  ('he', 'chatsUnreadOnlyWithCount', 'לא נקראו בלבד ({count})')
+ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;

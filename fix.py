@@ -1,0 +1,1 @@
+window open('lib/screens/profile/profict_wizard_screen.datx', encoded='utf-8') as f: content = f.read_Text();content = content.replace(\"trimedSinglesNode ? (\\" : null, \"), \"null \");window.open('lib/screens/profile/profict_wizard_screen.datx', 'w, encoded='utf-8') as f: f.write_Text(content)

@@ -16,6 +16,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.READ_CALENDAR" />
@@ -44,6 +45,9 @@
         android:name=".MatchMeApplication"
         android:icon="@mipmap/ic_launcher"
         android:supportsRtl="true"
+        android:allowBackup="false"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:enableOnBackInvokedCallback="true">
 
         <service
@@ -66,7 +70,9 @@
             android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
                 <action android:name="android.intent.action.USER_UNLOCKED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 
@@ -132,19 +138,66 @@
                     android:scheme="com.example.matchme"
                     android:host="login-callback" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="com.example.matchme"
+                    android:host="email-change-confirm" />
+            </intent-filter>
         </activity>
 
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
 
+        <!--
+            Impeller is the default renderer on Android in recent Flutter
+            versions and produced faster first-frame times on the moto g54 5G
+            in our cold-start benchmarks (3.8s vs 4.0s for Skia). The earlier
+            GrallocTestAlloc warnings on color formats 56/59 are non-fatal
+            (the driver reports them but the buffer allocations fall back
+            gracefully) and the previous EnableImpeller=false opt-out is now
+            deprecated upstream. We let Impeller stay on by default; revisit
+            if upstream Impeller/Vulkan regresses on a future device.
+        -->
+
+        <!-- Google Mobile Ads Configuration -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="ca-app-pub-1071857314988867~7605526456" />
+
+        <!-- FCM: small icon must be white silhouette on transparent (not launcher) -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_matchme" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_color"
+            android:resource="@color/notification_accent" />
+
         <!-- Flutter Local Notifications Configuration -->
         <meta-data
             android:name="com.dexterous.flutterlocalnotifications.default_icon"
-            android:resource="@mipmap/ic_launcher" />
+            android:resource="@drawable/ic_stat_matchme" />
         <meta-data
             android:name="com.dexterous.flutterlocalnotifications.default_icon_background_color"
-            android:resource="@color/ic_launcher_background" />
+            android:resource="@color/notification_accent" />
+
+        <!-- MSAL BrowserTabActivity for Microsoft authentication -->
+        <activity
+            android:name="com.microsoft.identity.client.BrowserTabActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="msauth"
+                    android:host="com.example.matchme"
+                    android:pathPrefix="/" />
+            </intent-filter>
+        </activity>
     </application>
     <queries>
         <intent>

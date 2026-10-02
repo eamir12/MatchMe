@@ -2,6 +2,8 @@
 // Service for handling user verification via photo upload
 
 import 'package:flutter/foundation.dart';
+import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/services/public_reference_data_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/services/storage_helper.dart';
 
@@ -14,46 +16,50 @@ class VerificationService {
     String? gestureCode,
     String? gesturePrompt,
   }) async {
-    debugPrint(
-      '🔄 VERIFICATION: Starting verification photo submission for user $userId',
-    );
+    print('🔄 VERIFICATION: Starting verification photo submission');
 
     try {
       // Upload photo to verification bucket
       var fileName = '$userId/verification.jpg';
-      debugPrint('📁 VERIFICATION: Using filename: $fileName');
+      print('📁 VERIFICATION: Using filename: $fileName');
 
-      // Validate file size (max 5MB)
-      const maxSize = 5 * 1024 * 1024; // 5MB
+      // Validate file size
+      final maxSize = await (() async {
+        try {
+          return await appConfigService.getInt(
+            'profile.max_file_size_bytes',
+            defaultValue: 5242880,
+          );
+        } catch (e) {
+          return 5242880;
+        }
+      })();
       if (photoBytes.length > maxSize) {
-        debugPrint(
+        final maxMb = (maxSize / (1024 * 1024)).toStringAsFixed(0);
+        print(
           '❌ VERIFICATION: File too large: ${photoBytes.length} bytes (max: $maxSize)',
         );
-        throw Exception('File too large. Maximum size is 5MB.');
+        throw Exception('File too large. Maximum size is ${maxMb}MB.');
       }
-      debugPrint(
+      print(
         '✅ VERIFICATION: File size validation passed: ${photoBytes.length} bytes',
       );
 
       // Upload bytes using uploadBinary to verification-photos bucket
-      debugPrint(
+      print(
         '📤 VERIFICATION: Attempting upload to verification-photos bucket...',
       );
       try {
         // First try to delete any existing verification photo for this user
-        debugPrint(
-          '🗑️ VERIFICATION: Removing any existing verification photo...',
-        );
+        print('🗑️ VERIFICATION: Removing any existing verification photo...');
         try {
           await _supabase.storage.from('verification-photos').remove([
             fileName,
           ]);
-          debugPrint(
-            '✅ VERIFICATION: Existing photo removed (or didn\'t exist)',
-          );
+          print('✅ VERIFICATION: Existing photo removed (or didn\'t exist)');
         } catch (deleteError) {
           // Ignore delete errors - file might not exist
-          debugPrint(
+          print(
             'ℹ️ VERIFICATION: No existing photo to remove (this is normal for first upload)',
           );
         }
@@ -62,30 +68,28 @@ class VerificationService {
         await _supabase.storage
             .from('verification-photos')
             .uploadBinary(fileName, photoBytes);
-        debugPrint(
+        print(
           '✅ VERIFICATION: Upload to verification-photos bucket successful',
         );
       } catch (uploadError) {
-        debugPrint(
+        print(
           '❌ VERIFICATION: Upload to verification-photos bucket failed: $uploadError',
         );
-        debugPrint('🔍 VERIFICATION: Error type: ${uploadError.runtimeType}');
-        debugPrint(
-          '🔍 VERIFICATION: Error toString: ${uploadError.toString()}',
-        );
+        print('🔍 VERIFICATION: Error type: ${uploadError.runtimeType}');
+        print('🔍 VERIFICATION: Error toString: ${uploadError.toString()}');
 
         // Check if it's a StorageException and get more details
         if (uploadError is StorageException) {
-          debugPrint('🔍 VERIFICATION: StorageException details:');
-          debugPrint('   - Message: ${uploadError.message}');
-          debugPrint('   - Status Code: ${uploadError.statusCode}');
-          debugPrint('   - Error: ${uploadError.error}');
+          print('🔍 VERIFICATION: StorageException details:');
+          print('   - Message: ${uploadError.message}');
+          print('   - Status Code: ${uploadError.statusCode}');
+          print('   - Error: ${uploadError.error}');
         }
 
         rethrow; // Re-throw to be caught by outer try-catch
       }
 
-      debugPrint('🤖 VERIFICATION: Triggering AI face comparison...');
+      print('🤖 VERIFICATION: Triggering AI face comparison...');
       await _compareVerificationPhotos(
         userId,
         verificationPhotoPath: fileName,
@@ -93,15 +97,15 @@ class VerificationService {
         gesturePrompt: gesturePrompt,
       );
 
-      debugPrint(
+      print(
         '🎉 VERIFICATION: Verification photo submission completed successfully',
       );
       return fileName;
     } catch (e) {
-      debugPrint('❌ VERIFICATION: Failed to submit verification photo: $e');
-      debugPrint('🔍 VERIFICATION: Error type: ${e.runtimeType}');
-      debugPrint('🔍 VERIFICATION: Error toString: ${e.toString()}');
-      debugPrint('🔍 VERIFICATION: Stack trace: ${StackTrace.current}');
+      print('❌ VERIFICATION: Failed to submit verification photo: $e');
+      print('🔍 VERIFICATION: Error type: ${e.runtimeType}');
+      print('🔍 VERIFICATION: Error toString: ${e.toString()}');
+      print('🔍 VERIFICATION: Stack trace: ${StackTrace.current}');
       throw Exception('Failed to submit verification photo: $e');
     }
   }
@@ -112,10 +116,10 @@ class VerificationService {
     String? gestureCode,
     String? gesturePrompt,
   }) async {
-    debugPrint('🤖 VERIFICATION: Starting AI comparison for user $userId');
+    print('🤖 VERIFICATION: Starting AI comparison');
 
     try {
-      debugPrint(
+      print(
         '📡 VERIFICATION: Invoking compare-verification-photos edge function...',
       );
       final body = <String, dynamic>{
@@ -133,23 +137,23 @@ class VerificationService {
         body: body,
       );
 
-      debugPrint(
+      print(
         '📡 VERIFICATION: Edge function response status: ${response.status}',
       );
 
       if (response.status != 200) {
-        debugPrint(
+        print(
           '❌ VERIFICATION: Edge function returned non-200 status: ${response.status}',
         );
-        debugPrint('🔍 VERIFICATION: Response data: ${response.data}');
+        print('🔍 VERIFICATION: Response data: ${response.data}');
         throw Exception('AI comparison failed: ${response.status}');
       }
 
-      debugPrint('🎉 VERIFICATION: AI comparison processing completed');
+      print('🎉 VERIFICATION: AI comparison processing completed');
     } catch (e) {
-      debugPrint('❌ VERIFICATION: Error in AI comparison: $e');
-      debugPrint('🔍 VERIFICATION: Error type: ${e.runtimeType}');
-      debugPrint('🔍 VERIFICATION: Stack trace: ${StackTrace.current}');
+      print('❌ VERIFICATION: Error in AI comparison: $e');
+      print('🔍 VERIFICATION: Error type: ${e.runtimeType}');
+      print('🔍 VERIFICATION: Stack trace: ${StackTrace.current}');
       rethrow;
     }
   }
@@ -157,18 +161,17 @@ class VerificationService {
   /// Get verification status for a user
   Future<Map<String, dynamic>?> getVerificationStatus(String userId) async {
     try {
-      final response =
-          await _supabase
-              .from('users')
-              .select(
-                'is_verified, verification_status, verification_submitted_at, verification_reviewed_at, verification_similarity_score, verification_auto_rejected, verification_ai_analysis',
-              )
-              .eq('id', userId)
-              .maybeSingle();
+      final response = await _supabase
+          .from('users')
+          .select(
+            'is_verified, verification_status, verification_submitted_at, verification_reviewed_at, verification_similarity_score, verification_auto_rejected, verification_ai_analysis, verification_reference_generated_at, verification_photo_retention_until',
+          )
+          .eq('id', userId)
+          .maybeSingle();
 
       return response;
     } catch (e) {
-      debugPrint('Error getting verification status: $e');
+      print('Error getting verification status: $e');
       return null;
     }
   }
@@ -179,7 +182,7 @@ class VerificationService {
       final status = await getVerificationStatus(userId);
       return status?['is_verified'] == true;
     } catch (e) {
-      debugPrint('Error checking verification status: $e');
+      print('Error checking verification status: $e');
       return false;
     }
   }
@@ -192,7 +195,7 @@ class VerificationService {
         'verification-photos',
       );
     } catch (e) {
-      debugPrint('Error getting verification photo URL: $e');
+      print('Error getting verification photo URL: $e');
       return null;
     }
   }
@@ -210,7 +213,7 @@ class VerificationService {
 
       return List<Map<String, dynamic>>.from(response);
     } catch (e) {
-      debugPrint('Error getting pending verifications: $e');
+      print('Error getting pending verifications: $e');
       return [];
     }
   }
@@ -244,11 +247,11 @@ class VerificationService {
       if (normalized == null || normalized.isEmpty) return;
 
       await _supabase.storage.from('verification-photos').remove([normalized]);
-      debugPrint(
+      print(
         '✅ VERIFICATION: Deleted verification photo from verification-photos bucket: $normalized',
       );
     } catch (e) {
-      debugPrint('Error deleting verification photo: $e');
+      print('Error deleting verification photo: $e');
     }
   }
 
@@ -257,35 +260,26 @@ class VerificationService {
   /// when no DB translation is available (caller should fall back to built-in string).
   Future<String?> getPrivacyNotice(String locale) async {
     try {
-      // Try locale-specific entry first
-      final res = await _supabase
-          .from('translations')
-          .select('value')
-          .eq('key', 'verificationPrivacyNotice')
-          .eq('locale', locale)
-          .maybeSingle();
-
-      if (res != null && res['value'] != null) {
-        final v = res['value'];
-        if (v is String && v.isNotEmpty) return v;
-      }
-
-      // Fallback to English
-      if (locale != 'en') {
-        final resEn = await _supabase
-            .from('translations')
-            .select('value')
-            .eq('key', 'verificationPrivacyNotice')
-            .eq('locale', 'en')
-            .maybeSingle();
-        if (resEn != null && resEn['value'] != null) {
-          final v = resEn['value'];
-          if (v is String && v.isNotEmpty) return v;
-        }
-      }
+      return await publicReferenceDataService.fetchTranslationValue(
+        'verificationPrivacyNotice',
+        locale,
+      );
     } catch (e) {
-      debugPrint('⚠️ VERIFICATION: Unable to fetch privacy notice from translations table: $e');
+      print(
+        '⚠️ VERIFICATION: Unable to fetch privacy notice from translations table: $e',
+      );
     }
     return null;
+  }
+
+  /// Request manual human review for a rejected verification photo
+  Future<void> requestManualReview() async {
+    try {
+      await _supabase.rpc('request_verification_manual_review');
+      print('✅ VERIFICATION: Requested manual review successfully');
+    } catch (e) {
+      print('❌ VERIFICATION: Failed to request manual review: $e');
+      rethrow;
+    }
   }
 }

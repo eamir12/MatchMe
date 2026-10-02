@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:matchme/providers/auth_provider.dart';
 import 'package:matchme/services/payment_service.dart';
 import 'package:matchme/services/subscription_service.dart';
 import 'package:matchme/models/subscription_tier.dart';
+import 'package:matchme/models/subscription_queue_entry.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -20,12 +23,102 @@ final subscriptionServiceProvider = Provider<SubscriptionService>((ref) {
 });
 
 /// Provider to fetch subscription tiers (metadata from Supabase)
-final subscriptionTiersProvider = FutureProvider<List<SubscriptionTier>>((ref) async {
+/// Cache-first (memory + Hive): returns cached snapshot instantly on UI
+/// startup, refreshes in background.
+final subscriptionTiersProvider = FutureProvider<List<SubscriptionTier>>((
+  ref,
+) async {
   final service = ref.read(subscriptionServiceProvider);
+  final cached = await service.loadCachedTiersFast();
+  if (cached.isNotEmpty) {
+    if (!service.isTiersMemoryFresh()) {
+      unawaited(() async {
+        try {
+          final fresh = await service.refreshTiersInBackground();
+          if (fresh == null || fresh.isEmpty) return;
+          var same = fresh.length == cached.length;
+          if (same) {
+            for (var i = 0; i < fresh.length; i++) {
+              if (fresh[i].id != cached[i].id) {
+                same = false;
+                break;
+              }
+            }
+          }
+          if (!same) {
+            try {
+              ref.invalidateSelf();
+            } catch (_) {}
+          }
+        } catch (_) {}
+      }());
+    }
+    return cached;
+  }
   return service.fetchTiers();
 });
 
-final subscriptionNowProvider = StreamProvider.autoDispose<DateTime>((ref) async* {
+/// Watches the subscription_tiers table and invalidates [subscriptionTiersProvider]
+/// on any INSERT / UPDATE / DELETE so the paywall reflects admin changes instantly.
+final subscriptionTiersRealtimeProvider =
+    StreamProvider<List<Map<String, dynamic>>>((ref) {
+      final hasSession = ref.watch(
+        authStateProvider.select((auth) => auth.asData?.value.session != null),
+      );
+      if (!hasSession) {
+        return const Stream.empty();
+      }
+      return supabase
+          .from('subscription_tiers')
+          .stream(primaryKey: const ['id'])
+          .map((rows) {
+            developer.log(
+              'Subscription tiers table changed, invalidating provider',
+              name: 'PaymentProvider',
+            );
+            ref.invalidate(subscriptionTiersProvider);
+            return rows;
+          })
+          .handleError((e) {
+            developer.log(
+              'subscriptionTiersRealtimeProvider error: $e',
+              name: 'PaymentProvider',
+            );
+          });
+    });
+
+/// Watches the subscription_plans table and invalidates [subscriptionTiersProvider]
+/// on any INSERT / UPDATE / DELETE so plan-level changes (price, duration) apply instantly.
+final subscriptionPlansRealtimeProvider =
+    StreamProvider<List<Map<String, dynamic>>>((ref) {
+      final hasSession = ref.watch(
+        authStateProvider.select((auth) => auth.asData?.value.session != null),
+      );
+      if (!hasSession) {
+        return const Stream.empty();
+      }
+      return supabase
+          .from('subscription_plans')
+          .stream(primaryKey: const ['id'])
+          .map((rows) {
+            developer.log(
+              'Subscription plans table changed, invalidating tiers provider',
+              name: 'PaymentProvider',
+            );
+            ref.invalidate(subscriptionTiersProvider);
+            return rows;
+          })
+          .handleError((e) {
+            developer.log(
+              'subscriptionPlansRealtimeProvider error: $e',
+              name: 'PaymentProvider',
+            );
+          });
+    });
+
+final subscriptionNowProvider = StreamProvider.autoDispose<DateTime>((
+  ref,
+) async* {
   yield DateTime.now();
   yield* Stream.periodic(const Duration(minutes: 1), (_) => DateTime.now());
 });
@@ -46,7 +139,10 @@ DateTime? _asDateTime(dynamic value) {
   return null;
 }
 
-DateTime? _extractSubscriptionExpiryUtc(CustomerInfo info, {String? preferredEntitlementId}) {
+DateTime? _extractSubscriptionExpiryUtc(
+  CustomerInfo info, {
+  String? preferredEntitlementId,
+}) {
   final entitlementId = (preferredEntitlementId ?? '').trim();
   if (entitlementId.isNotEmpty && entitlementId != 'free') {
     final ent = info.entitlements.all[entitlementId];
@@ -79,24 +175,203 @@ DateTime? _extractSubscriptionExpiryUtc(CustomerInfo info, {String? preferredEnt
   return exp?.toUtc();
 }
 
-final subscriptionExpiryUtcProvider = Provider<DateTime?>((ref) {
+/// Represents the effective current subscription as the UI should see it.
+///
+/// When the user profile already reflects an active (non-free, future)
+/// subscription, that is preferred. Otherwise, the most recent active or
+/// started queue entry is used. This avoids a window where the profile is
+/// stale (e.g. before the normalization cron has run or before the client
+/// has refetched the profile) and the UI displays the user as "free" with
+/// no time left while the queued subscription is actually live.
+class EffectiveSubscription {
+  final String tier;
+  final DateTime expiresAt;
+  final SubscriptionQueueEntry? queueEntry;
+
+  const EffectiveSubscription({
+    required this.tier,
+    required this.expiresAt,
+    this.queueEntry,
+  });
+}
+
+final effectiveCurrentSubscriptionProvider = Provider<EffectiveSubscription?>((
+  ref,
+) {
   final userId = Supabase.instance.client.auth.currentUser?.id;
+
+  String? profileTier;
+  DateTime? profileExpires;
   if (userId != null) {
-    final profile = ref.watch(userProfileProvider(userId)).asData?.value;
-    final exp = profile?.subscriptionExpiresAt;
-    if (exp != null) return exp.toUtc();
+    // Use .select(...) to watch only the two fields this provider actually
+    // needs. Watching the full userProfileProvider causes this provider (and
+    // the entire subscriptionExpiryUtcProvider → subscriptionTimeRemainingProvider
+    // chain) to rebuild on unrelated profile changes (photos, name, etc.),
+    // which triggers a Riverpod reentrancy assertion (paused subscription
+    // count mismatch) when a TickerProvider resumes its subscriptions in the
+    // middle of the cascade. See home_providers.dart's
+    // TotalUnreadChatCountNotifier for a similar workaround.
+    //
+    // .select(...) on a StreamProvider unwraps the AsyncValue, so the
+    // callback receives the raw value (or null while loading) and the
+    // result is a plain non-AsyncValue record.
+    final profileSlice = ref.watch(
+      userProfileProvider(userId).select((state) {
+        final value = state.asData?.value;
+        if (value == null) return null;
+        return (value.subscriptionTier, value.subscriptionExpiresAt);
+      }),
+    );
+    if (profileSlice != null) {
+      profileTier = profileSlice.$1.trim().toLowerCase();
+      profileExpires = profileSlice.$2?.toUtc();
+    }
   }
+
+  final nowUtc = DateTime.now().toUtc();
+  if (profileTier != null &&
+      profileTier != 'free' &&
+      profileExpires != null &&
+      profileExpires.isAfter(nowUtc)) {
+    return EffectiveSubscription(tier: profileTier, expiresAt: profileExpires);
+  }
+
+  final queueHistory = ref
+      .watch(subscriptionQueueHistoryProvider)
+      .asData
+      ?.value;
+  if (queueHistory != null && queueHistory.isNotEmpty) {
+    // Pick the earliest active entry that is still valid, or fall back to
+    // a started-but-not-yet-normalized pending entry. We don't restrict to
+    // status='active' only because there is a small window between
+    // starts_at and the next normalization run.
+    SubscriptionQueueEntry? best;
+    for (final entry in queueHistory) {
+      if (entry.expiresAt.toUtc().isBefore(nowUtc)) continue;
+      final isActiveOrStarted =
+          entry.isActive ||
+          (entry.isPending && entry.hasStarted && !entry.hasExpired);
+      if (!isActiveOrStarted) continue;
+      if (best == null || entry.expiresAt.isBefore(best.expiresAt)) {
+        best = entry;
+      }
+    }
+    if (best != null) {
+      return EffectiveSubscription(
+        tier: best.tier.trim().toLowerCase(),
+        expiresAt: best.expiresAt.toUtc(),
+        queueEntry: best,
+      );
+    }
+  }
+
   return null;
+});
+
+final subscriptionExpiryUtcProvider = Provider<DateTime?>((ref) {
+  // Delegate entirely to the effective sub. It already prefers a live
+  // (non-free, future-expiring) profile entry and otherwise falls back to
+  // the active/started queue entry, so we don't need a duplicate
+  // profile-only check that would short-circuit the fallback whenever the
+  // profile has a stale (expired) expires_at.
+  return ref.watch(effectiveCurrentSubscriptionProvider)?.expiresAt;
 });
 
 final subscriptionTimeRemainingProvider = Provider<Duration?>((ref) {
   final expiresAt = ref.watch(subscriptionExpiryUtcProvider);
   if (expiresAt == null) return null;
-  final now = ref.watch(subscriptionNowProvider).asData?.value ?? DateTime.now();
+  final now =
+      ref.watch(subscriptionNowProvider).asData?.value ?? DateTime.now();
   final remaining = expiresAt.difference(now.toUtc());
   if (remaining.isNegative) return Duration.zero;
   return remaining;
 });
+
+/// Local-first provider for subscription queue history.
+///
+/// Reads the cached list from local storage immediately, then syncs with
+/// Supabase in the background. Subsequent local cache updates (from new
+/// purchases or background refreshes) are streamed through.
+final subscriptionQueueHistoryProvider =
+    StreamProvider.autoDispose<List<SubscriptionQueueEntry>>((ref) async* {
+      final userId = Supabase.instance.client.auth.currentUser?.id;
+      if (userId == null || userId.isEmpty) {
+        yield const <SubscriptionQueueEntry>[];
+        return;
+      }
+
+      final localDb = ref.watch(localDbProvider);
+
+      StreamSubscription<List<Map<String, dynamic>>?>? sub;
+      final controller = StreamController<List<SubscriptionQueueEntry>>();
+
+      List<SubscriptionQueueEntry> toEntries(List<Map<String, dynamic>>? raw) {
+        if (raw == null) return const <SubscriptionQueueEntry>[];
+        final list = raw
+            .map((m) {
+              try {
+                return SubscriptionQueueEntry.fromMap(m);
+              } catch (_) {
+                return null;
+              }
+            })
+            .whereType<SubscriptionQueueEntry>()
+            .toList();
+        list.sort((a, b) => a.startsAt.compareTo(b.startsAt));
+        return list;
+      }
+
+      unawaited(() async {
+        try {
+          final cached = await localDb.getSubscriptionQueueHistory(userId);
+          if (!controller.isClosed) {
+            controller.add(toEntries(cached));
+          }
+
+          if (cached == null || cached.isEmpty) {
+            try {
+              final service = ref.read(subscriptionServiceProvider);
+              final fresh = await service.fetchFullQueueHistory(userId);
+              fresh.sort((a, b) => a.startsAt.compareTo(b.startsAt));
+              if (!controller.isClosed) controller.add(fresh);
+            } catch (e) {
+              print(
+                '⚠️ [PaymentProvider] subscriptionQueueHistoryProvider sync failed: $e',
+              );
+            }
+          }
+        } catch (e) {
+          print(
+            '⚠️ [PaymentProvider] subscriptionQueueHistoryProvider local read failed: $e',
+          );
+        }
+      }());
+
+      try {
+        final watchStream = localDb.watchSubscriptionQueueHistory(userId);
+        sub = watchStream.listen(
+          (raw) {
+            if (!controller.isClosed) controller.add(toEntries(raw));
+          },
+          onError: (Object e) {
+            print(
+              '⚠️ [PaymentProvider] subscriptionQueueHistoryProvider watch error: $e',
+            );
+          },
+        );
+      } catch (e) {
+        print(
+          '⚠️ [PaymentProvider] subscriptionQueueHistoryProvider watch subscribe failed: $e',
+        );
+      }
+
+      ref.onDispose(() {
+        unawaited(sub?.cancel());
+        if (!controller.isClosed) controller.close();
+      });
+
+      yield* controller.stream;
+    });
 
 /// State class for subscription status
 class SubscriptionState {
@@ -169,31 +444,35 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
           params: {'p_user_id': userId},
         );
       } catch (_) {
-        final profile = ref.read(userProfileProvider(userId)).asData?.value;
-        final currentTier = (profile?.subscriptionTier ?? 'free').toString();
-        final currentExpiryUtc = profile?.subscriptionExpiresAt?.toUtc();
-        final nowUtc = DateTime.now().toUtc();
-
-        if (currentTier != 'free' &&
-            currentExpiryUtc != null &&
-            !nowUtc.isBefore(currentExpiryUtc)) {
-          await _updateSubscriptionDirect(
-            userId,
-            tier: 'free',
-            expiresAtUtc: null,
+        // Both RPCs failed — instead of writing directly to users table,
+        // call force_normalize_subscription which delegates to the server's
+        // normalization logic and never trusts client-side clock/state.
+        try {
+          final result = await Supabase.instance.client.rpc(
+            'force_normalize_subscription',
+            params: {'p_user_id': userId},
           );
+          if (result is Map && result['normalized'] == true) {
+            await ref
+                .read(profileSyncProvider)
+                .syncProfile(userId, source: 'payment-normalize-force');
+          }
+        } catch (_) {
+          // Server normalization is also failing — the cron job will handle this.
+          // Logging is suppressed as the cron runs every 5 minutes.
         }
       }
     }
-
-    await ref.read(profileSyncProvider).syncProfile(userId);
   }
 
   @override
   SubscriptionState build() {
-    _normalizeTimer ??= Timer.periodic(const Duration(minutes: 1), (_) {
-      unawaited(_normalizeSubscription());
-    });
+    // Disable periodic normalization on web - it causes unnecessary watchMatches calls
+    if (!kIsWeb) {
+      _normalizeTimer ??= Timer.periodic(const Duration(minutes: 1), (_) {
+        unawaited(_normalizeSubscription());
+      });
+    }
     ref.onDispose(() {
       _normalizeTimer?.cancel();
       _normalizeTimer = null;
@@ -216,7 +495,7 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
 
       await refreshStatus();
       await _normalizeSubscription();
-      
+
       // Listen for updates (only for mobile - web doesn't support this)
       if (!_paymentService.isWebMode) {
         _paymentService.addCustomerInfoUpdateListener((info) {
@@ -224,7 +503,7 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
         });
       }
     } catch (e) {
-      debugPrint('Error initializing subscription provider: $e');
+      print('Error initializing subscription provider: $e');
       state = state.copyWith(isLoading: false);
     }
   }
@@ -236,7 +515,9 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
     } else if (_paymentService.isWebMode) {
       // Web mode: RevenueCat doesn't provide CustomerInfo, so we rely on Supabase
       // The subscription state will be updated from the profile provider
-      debugPrint('💰 [PaymentProvider] Web mode: No CustomerInfo, relying on Supabase for subscription state');
+      print(
+        '💰 [PaymentProvider] Web mode: No CustomerInfo, relying on Supabase for subscription state',
+      );
       state = state.copyWith(isLoading: false);
     } else {
       state = state.copyWith(isLoading: false);
@@ -244,11 +525,13 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
   }
 
   void _updateFromCustomerInfo(CustomerInfo info) {
-    debugPrint('💰 [PaymentProvider] _updateFromCustomerInfo called. Entitlements: ${info.entitlements.all.keys}');
-    
+    print(
+      '💰 [PaymentProvider] _updateFromCustomerInfo called. Entitlements: ${info.entitlements.all.keys}',
+    );
+
     // Determine tier based on active entitlements (highest to lowest)
     String newTier = 'free';
-    
+
     if (info.entitlements.all['platinum']?.isActive ?? false) {
       newTier = 'platinum';
     } else if (info.entitlements.all['gold']?.isActive ?? false) {
@@ -259,35 +542,42 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
       // Legacy or generic fallback
       newTier = 'plus';
     } else {
-       // Check active subscriptions (Product IDs) if no Entitlements are found
-       // This handles misconfigured RevenueCat setups where Entitlements aren't linked.
-       final activeSubs = info.activeSubscriptions;
-       if (activeSubs.isNotEmpty) {
-         debugPrint('💰 [PaymentProvider] No active entitlements, checking active subscriptions: $activeSubs');
-         // Simple heuristic: check if product ID contains tier name
-         // You should adjust these strings to match your actual RevenueCat Product IDs
-         if (activeSubs.any((s) => s.contains('platinum'))) {
-           newTier = 'platinum';
-         } else if (activeSubs.any((s) => s.contains('gold'))) {
-           newTier = 'gold';
-         } else if (activeSubs.any((s) => s.contains('plus'))) {
-           newTier = 'plus';
-         }
-       }
+      // Check active subscriptions (Product IDs) if no Entitlements are found
+      // This handles misconfigured RevenueCat setups where Entitlements aren't linked.
+      final activeSubs = info.activeSubscriptions;
+      if (activeSubs.isNotEmpty) {
+        print(
+          '💰 [PaymentProvider] No active entitlements, checking active subscriptions: $activeSubs',
+        );
+        // Simple heuristic: check if product ID contains tier name
+        // You should adjust these strings to match your actual RevenueCat Product IDs
+        if (activeSubs.any((s) => s.contains('platinum'))) {
+          newTier = 'platinum';
+        } else if (activeSubs.any((s) => s.contains('gold'))) {
+          newTier = 'gold';
+        } else if (activeSubs.any((s) => s.contains('plus'))) {
+          newTier = 'plus';
+        }
+      }
     }
 
     // Protection against race conditions:
     // If we recently manually set a tier (e.g. optimistic update after purchase),
     // and RevenueCat returns 'free' (likely due to webhook latency or missing entitlements),
     // ignore this update for a short grace period.
-    if (_lastManualUpdate != null && 
-        newTier == 'free' && 
-        DateTime.now().difference(_lastManualUpdate!) < const Duration(seconds: 45)) {
-      debugPrint('💰 [PaymentProvider] Ignoring "free" update from RevenueCat due to recent manual update (grace period active).');
+    if (_lastManualUpdate != null &&
+        newTier == 'free' &&
+        DateTime.now().difference(_lastManualUpdate!) <
+            const Duration(seconds: 45)) {
+      print(
+        '💰 [PaymentProvider] Ignoring "free" update from RevenueCat due to recent manual update (grace period active).',
+      );
       return;
     }
-    
-    debugPrint('💰 [PaymentProvider] Determined new tier: $newTier (was: ${state.activeTier})');
+
+    print(
+      '💰 [PaymentProvider] Determined new tier: $newTier (was: ${state.activeTier})',
+    );
 
     state = state.copyWith(
       isPremium: newTier != 'free',
@@ -296,19 +586,31 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
       isLoading: false,
     );
 
-    final expiryUtc = _extractSubscriptionExpiryUtc(info, preferredEntitlementId: newTier);
-    _syncRevenueCatSubscriptionToDatabase(tier: newTier, expiresAtUtc: expiryUtc);
+    final expiryUtc = _extractSubscriptionExpiryUtc(
+      info,
+      preferredEntitlementId: newTier,
+    );
+    _syncRevenueCatSubscriptionToDatabase(
+      tier: newTier,
+      expiresAtUtc: expiryUtc,
+    );
   }
 
   /// Manually set the tier (used for testing or non-RevenueCat flows)
   Future<void> setTierManually(
     String tierId, {
     String? planDuration,
+    Duration extraDuration = Duration.zero,
     Map<String, dynamic> purchaseMetadata = const {},
   }) async {
-    debugPrint('💰 [PaymentProvider] Manually setting tier to: $tierId');
-    
+    print('💰 [PaymentProvider] Manually setting tier to: $tierId');
+
     _lastManualUpdate = DateTime.now();
+    final safeExtraDuration = extraDuration.isNegative
+        ? Duration.zero
+        : extraDuration;
+    final totalDuration =
+        _expiresInForPlanDuration(planDuration) + safeExtraDuration;
 
     if (state.customerInfo != null) {
       state = state.copyWith(
@@ -316,7 +618,13 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
         activeTier: tierId,
         isLoading: false,
       );
-      final expiryUtc = _extractSubscriptionExpiryUtc(state.customerInfo!, preferredEntitlementId: tierId);
+      final revenueCatExpiryUtc = _extractSubscriptionExpiryUtc(
+        state.customerInfo!,
+        preferredEntitlementId: tierId,
+      );
+      final expiryUtc = revenueCatExpiryUtc == null
+          ? DateTime.now().toUtc().add(totalDuration)
+          : revenueCatExpiryUtc.add(safeExtraDuration);
       await _syncRevenueCatSubscriptionToDatabase(
         tier: tierId,
         expiresAtUtc: expiryUtc,
@@ -325,8 +633,7 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
     }
 
     final userId = Supabase.instance.client.auth.currentUser?.id;
-    final duration = _expiresInForPlanDuration(planDuration);
-    final durationSeconds = duration.inSeconds;
+    final durationSeconds = totalDuration.inSeconds;
 
     if (userId == null || userId.isEmpty) {
       state = state.copyWith(
@@ -375,34 +682,37 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
       // But we can peek at the box implementation in LocalDbService:
       // "_getProfileBox" is private.
       // However, we can use the stream to get the first element? No, that's async.
-      
+
       // Let's rely on the fact that we can call saveLocalProfile if we had the full profile.
       // We don't have the full profile here.
       // BUT, ProfileSyncService DOES.
-      
+
       // Better approach:
       // We can create a partial update helper in LocalDbService or just accept that we might overwrite if we are not careful.
       // Actually, let's just use a dedicated provider/service method if available.
-      
+
       // Since we can't easily do it without risking data loss (overwriting with empty fields),
       // let's try to update via the ProfileProvider's notifier if it exists?
       // userProfileProvider is a StreamProvider (implied from MainNavigationScreen usage).
-      
+
       // Alternative: Just trust the ProfileSync to happen fast enough?
       // The user says it DOESN'T happen.
-      
+
       // So we MUST force a local update.
       // Let's use reflection/hack or just modify LocalDbService to allow patching tier.
-      
+
       // I'll assume we can't modify LocalDbService easily right now (it's big).
       // But wait, I can just use Supabase.instance.client.auth.currentUser?.userMetadata?
       // No, that's auth metadata.
-      
+
       // Let's try to fetch the current profile from Supabase first? No, that defeats the purpose.
-      
+
       // Wait, I can just use `ref.read(userProfileProvider(userId)).value`.
       // It returns `UserProfile?`.
-      final currentProfile = ref.read(userProfileProvider(userId)).asData?.value;
+      final currentProfile = ref
+          .read(userProfileProvider(userId))
+          .asData
+          ?.value;
       if (currentProfile != null) {
         final updatedProfile = currentProfile.copyWith(
           subscriptionTier: tier,
@@ -412,13 +722,13 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
         // UserProfile has toMap() or similar?
         // UserProfile.toMap() exists.
         await localDb.saveLocalProfile(userId, updatedProfile.toMap());
-        debugPrint('💰 [PaymentProvider] Optimistic local DB update applied: $tier');
+        print('💰 [PaymentProvider] Optimistic local DB update applied: $tier');
       }
     } catch (e) {
-      debugPrint('⚠️ [PaymentProvider] Failed to apply optimistic local update: $e');
+      print('⚠️ [PaymentProvider] Failed to apply optimistic local update: $e');
     }
-    
-    debugPrint('💰 [PaymentProvider] Syncing subscription $tier to Supabase for user $userId');
+
+    print('💰 [PaymentProvider] Syncing subscription $tier to Supabase');
     try {
       try {
         await Supabase.instance.client.rpc(
@@ -428,17 +738,19 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
             'p_expires_at': expiresAtUtc?.toUtc().toIso8601String(),
           },
         );
-        debugPrint('💰 [PaymentProvider] Supabase update complete via RPC.');
+        print('💰 [PaymentProvider] Supabase update complete via RPC.');
       } catch (rpcError) {
-        debugPrint('⚠️ [PaymentProvider] RPC update failed (likely function missing), falling back to direct update: $rpcError');
+        print(
+          '⚠️ [PaymentProvider] RPC update failed (likely function missing), falling back to direct update: $rpcError',
+        );
 
         try {
           await Supabase.instance.client.auth.updateUser(
             UserAttributes(data: {'subscription_tier': tier}),
           );
-          debugPrint('💰 [PaymentProvider] User metadata update complete.');
+          print('💰 [PaymentProvider] User metadata update complete.');
         } catch (metaError) {
-          debugPrint('⚠️ [PaymentProvider] User metadata update failed: $metaError');
+          print('⚠️ [PaymentProvider] User metadata update failed: $metaError');
         }
 
         // Fallback 2: Direct table update
@@ -447,14 +759,18 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
           tier: tier,
           expiresAtUtc: expiresAtUtc,
         );
-        debugPrint('💰 [PaymentProvider] Supabase update complete via direct update.');
+        print(
+          '💰 [PaymentProvider] Supabase update complete via direct update.',
+        );
       }
 
-      debugPrint('💰 [PaymentProvider] Triggering profile sync...');
-      await ref.read(profileSyncProvider).syncProfile(userId);
-      debugPrint('💰 [PaymentProvider] Profile sync requested.');
+      print('💰 [PaymentProvider] Triggering profile sync...');
+      await ref
+          .read(profileSyncProvider)
+          .syncProfile(userId, source: 'payment-revenuecat-sync');
+      print('💰 [PaymentProvider] Profile sync requested.');
     } catch (e) {
-      debugPrint('⚠️ [PaymentProvider] Error syncing subscription tier to DB: $e');
+      print('⚠️ [PaymentProvider] Error syncing subscription tier to DB: $e');
     }
   }
 
@@ -468,15 +784,18 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
     try {
       await Supabase.instance.client.rpc('clear_user_subscription');
     } catch (_) {
-      await _updateSubscriptionDirect(
-        userId,
-        tier: 'free',
-        expiresAtUtc: null,
-      );
+      await _updateSubscriptionDirect(userId, tier: 'free', expiresAtUtc: null);
     }
 
-    await ref.read(profileSyncProvider).syncProfile(userId);
-    state = state.copyWith(isPremium: false, activeTier: 'free', isLoading: false);
+    await ref
+        .read(profileSyncProvider)
+        .syncProfile(userId, source: 'payment-clear-subscription');
+    await _refreshSubscriptionQueueCache(userId);
+    state = state.copyWith(
+      isPremium: false,
+      activeTier: 'free',
+      isLoading: false,
+    );
   }
 
   Future<Map<String, dynamic>> _applyManualSubscriptionPurchaseToDatabase({
@@ -505,7 +824,8 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
           .single();
 
       result = {
-        'subscription_tier': (userRow['subscription_tier'] ?? 'free').toString(),
+        'subscription_tier': (userRow['subscription_tier'] ?? 'free')
+            .toString(),
         'subscription_expires_at': userRow['subscription_expires_at'],
       };
     } catch (_) {}
@@ -522,7 +842,9 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
         );
         if (rpcResult is Map) {
           result = Map<String, dynamic>.from(rpcResult);
-        } else if (rpcResult is List && rpcResult.isNotEmpty && rpcResult.first is Map) {
+        } else if (rpcResult is List &&
+            rpcResult.isNotEmpty &&
+            rpcResult.first is Map) {
           result = Map<String, dynamic>.from(rpcResult.first as Map);
         }
       } catch (_) {}
@@ -539,7 +861,9 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
       String newTier = tierId;
       DateTime newExpiryUtc = nowUtc.add(duration);
 
-      if (currentTier != 'free' && currentExpiryUtc != null && nowUtc.isBefore(currentExpiryUtc)) {
+      if (currentTier != 'free' &&
+          currentExpiryUtc != null &&
+          nowUtc.isBefore(currentExpiryUtc)) {
         if (currentTier == tierId) {
           newTier = currentTier;
           newExpiryUtc = currentExpiryUtc.add(duration);
@@ -562,7 +886,9 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
     }
 
     final tier = (result['subscription_tier'] ?? tierId).toString();
-    final expiresAtUtc = DateTime.tryParse((result['subscription_expires_at'] ?? '').toString())?.toUtc();
+    final expiresAtUtc = DateTime.tryParse(
+      (result['subscription_expires_at'] ?? '').toString(),
+    )?.toUtc();
 
     await _optimisticallyUpdateLocalSubscription(
       userId,
@@ -570,7 +896,10 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
       expiresAtUtc: expiresAtUtc,
     );
 
-    await ref.read(profileSyncProvider).syncProfile(userId);
+    await ref
+        .read(profileSyncProvider)
+        .syncProfile(userId, source: 'payment-manual-purchase');
+    await _refreshSubscriptionQueueCache(userId);
     return result;
   }
 
@@ -594,12 +923,18 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
       triedSignatures.add(signature);
 
       try {
-        await Supabase.instance.client.from('users').update(payload).eq('id', userId);
+        await Supabase.instance.client
+            .from('users')
+            .update(payload)
+            .eq('id', userId);
         return;
       } catch (e) {
         if (e is PostgrestException) {
           final msg = e.message;
-          final missingColumnRegex = RegExp(r'column\s+"?(\w+)"?\s+does not exist', caseSensitive: false);
+          final missingColumnRegex = RegExp(
+            r'column\s+"?(\w+)"?\s+does not exist',
+            caseSensitive: false,
+          );
           final match = missingColumnRegex.firstMatch(msg);
           final missing = match?.group(1);
           if (missing != null && payload.containsKey(missing)) {
@@ -620,7 +955,10 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
     if (userId.isEmpty) return;
     try {
       final localDb = await LocalDbService.instance;
-      final currentProfile = ref.read(userProfileProvider(userId)).asData?.value;
+      final currentProfile = ref
+          .read(userProfileProvider(userId))
+          .asData
+          ?.value;
       if (currentProfile == null) return;
       final updated = currentProfile.copyWith(
         subscriptionTier: tier,
@@ -630,13 +968,41 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
     } catch (_) {}
   }
 
+  /// Refresh the local subscription queue history cache from Supabase so the
+  /// Billing screen (and any other consumer) sees new entries immediately.
+  Future<void> _refreshSubscriptionQueueCache(String userId) async {
+    if (userId.isEmpty) return;
+    try {
+      final service = ref.read(subscriptionServiceProvider);
+      await service.fetchFullQueueHistory(userId);
+    } catch (e) {
+      print(
+        '⚠️ [PaymentProvider] Failed to refresh subscription queue cache: $e',
+      );
+    }
+  }
+
   Future<void> showPaywall() async {
     final success = await _paymentService.showPaywall();
     if (success) {
       await refreshStatus();
     }
   }
+
+  /// Public hook to refresh the cached subscription queue history. Callers
+  /// (e.g. pull-to-refresh on the home screen) can use this to pick up
+  /// server-side normalization changes that may have promoted a queued
+  /// entry to active without going through a fresh purchase.
+  Future<void> refreshQueueHistory() async {
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId == null || userId.isEmpty) return;
+    await _normalizeSubscription();
+    await _refreshSubscriptionQueueCache(userId);
+  }
 }
 
 /// Provider that exposes the subscription state
-final subscriptionProvider = NotifierProvider<SubscriptionNotifier, SubscriptionState>(SubscriptionNotifier.new);
+final subscriptionProvider =
+    NotifierProvider<SubscriptionNotifier, SubscriptionState>(
+      SubscriptionNotifier.new,
+    );

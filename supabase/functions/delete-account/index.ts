@@ -4,7 +4,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
 
 // Helper function to decode JWT token and extract user ID
-function decodeJWT(token: string): { userId: string } | null {
+function decodeJWT(token: string): { userId: string; aal: string } | null {
   try {
     const parts = token.split('.');
     if (parts.length !== 3) {
@@ -19,7 +19,10 @@ function decodeJWT(token: string): { userId: string } | null {
     console.log('Decoded JWT payload keys:', Object.keys(decodedPayload));
     console.log('User ID (sub):', decodedPayload.sub);
     
-    return { userId: decodedPayload.sub };
+    return {
+      userId: decodedPayload.sub,
+      aal: typeof decodedPayload.aal === 'string' ? decodedPayload.aal : 'aal1',
+    };
   } catch (error) {
     console.log('JWT decoding error:', error);
     return null;
@@ -31,28 +34,153 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-async function deleteAllProfilePhotos(supabase: ReturnType<typeof createClient>, userId: string) {
-  const bucket = supabase.storage.from('profile-photos');
+// Storage buckets that may hold objects under the user's folder
+const USER_STORAGE_BUCKETS = [
+  'profile-photos',
+  'verification-photos',
+  'event-uploads',
+  'profile-edit-attachments',
+  'sponsored-ad-images',
+];
+
+// Recursively delete everything under `folder` (e.g. "{userId}") in a bucket
+async function deleteFolderContents(
+  supabase: ReturnType<typeof createClient>,
+  bucketName: string,
+  folder: string,
+) {
   let deleted = 0;
+  const { data, error } = await supabase.storage.from(bucketName).list(folder, {
+    limit: 1000,
+    offset: 0,
+    sortBy: { column: 'name', order: 'asc' },
+  });
+  if (error) throw error;
+  if (!data || data.length === 0) return deleted;
 
-  for (;;) {
-    const { data, error } = await bucket.list(userId, { limit: 1000, offset: 0 });
-    if (error) throw error;
-    if (!data || data.length === 0) break;
-
-    const paths = data
-      .map((o) => (o?.name ? `${userId}/${o.name}` : ''))
-      .filter((p) => p.length > 0);
-
-    if (paths.length === 0) break;
-
-    const { error: removeError } = await bucket.remove(paths);
-    if (removeError) throw removeError;
-
-    deleted += paths.length;
+  const filePaths: string[] = [];
+  const subfolders: string[] = [];
+  for (const obj of data) {
+    const path = obj?.name ? `${folder}/${obj.name}` : '';
+    if (!path) continue;
+    // Storage list returns folders without file metadata (null metadata or
+    // size 0 with no mimetype); everything else is a file to remove.
+    const meta = obj.metadata as { size?: number; mimetype?: string } | null;
+    const isFolder = meta === null
+      || (typeof meta === 'object' && meta.size === 0 && !meta.mimetype);
+    if (isFolder) subfolders.push(path);
+    else filePaths.push(path);
   }
 
+  if (filePaths.length > 0) {
+    const { error: removeError } = await supabase.storage.from(bucketName).remove(filePaths);
+    if (removeError) throw removeError;
+    deleted += filePaths.length;
+  }
+
+  for (const sub of subfolders) {
+    deleted += await deleteFolderContents(supabase, bucketName, sub);
+  }
+
+  return deleted;
+}
+
+async function deleteAllUserStorage(supabase: ReturnType<typeof createClient>, userId: string) {
+  let deleted = 0;
+  for (const bucket of USER_STORAGE_BUCKETS) {
+    try {
+      deleted += await deleteFolderContents(supabase, bucket, userId);
+    } catch (error) {
+      console.error(`Failed to delete folder ${userId} in bucket ${bucket}:`, error);
+    }
+  }
   return { deleted };
+}
+
+async function userHasVerifiedMfaFactor(
+  supabase: ReturnType<typeof createClient>,
+  userId: string,
+  fallbackUser: unknown,
+) {
+  try {
+    const adminMfa = (supabase.auth.admin as Record<string, unknown>)['mfa'] as Record<string, unknown> | undefined;
+    const listFactors = adminMfa?.['listFactors'];
+    if (typeof listFactors === 'function') {
+      const response = await listFactors({ userId });
+      const data = (response as { data?: { totp?: Array<{ status?: string }>; all?: Array<{ status?: string }> } }).data;
+      const factors = [...(data?.totp ?? []), ...(data?.all ?? [])];
+      if (factors.length > 0) {
+        return factors.some((factor) => (factor?.status ?? '').toLowerCase() === 'verified');
+      }
+    }
+  } catch (error) {
+    console.error('Admin MFA factor lookup failed:', error);
+  }
+
+  const userFactors = (fallbackUser as { factors?: Array<{ status?: string }> } | null)?.factors ?? [];
+  return userFactors.some((factor) => (factor?.status ?? '').toLowerCase() === 'verified');
+}
+
+// Build a PostgREST filter matching ANY of the given columns against userId:
+//   or=(col1.eq.UID,col2.eq.UID)
+function orMatcher(userId: string, ...columns: string[]): string {
+  const inner = columns.map((c) => `${c}.eq.${userId}`).join(',');
+  return `or=${encodeURIComponent(inner)}`;
+}
+
+// DELETE from a table via REST; returns true on success (2xx).
+async function restDelete(
+  restApiUrl: string,
+  table: string,
+  filter: string,
+  headers: Record<string, string>,
+): Promise<boolean> {
+  const url = `${restApiUrl}/${table}?${filter}`;
+  try {
+    const res = await fetch(url, { method: 'DELETE', headers });
+    if (res.status === 404) {
+      console.log(`SKIP ${table} (table does not exist)`);
+      return false;
+    }
+    if (!res.ok) {
+      console.error(`Failed to delete ${table} (${filter}): ${res.status} ${await res.text()}`);
+      return false;
+    }
+    console.log(`Deleted ${table} (${filter})`);
+    return true;
+  } catch (error) {
+    console.error(`Error deleting ${table} (${filter}):`, error);
+    return false;
+  }
+}
+
+// Null out a column referencing the deleted user so FK constraints don't block.
+async function restNullOut(
+  restApiUrl: string,
+  table: string,
+  filter: string,
+  column: string,
+  headers: Record<string, string>,
+) {
+  const url = `${restApiUrl}/${table}?${filter}`;
+  try {
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ [column]: null }),
+    });
+    if (res.status === 404) {
+      console.log(`SKIP ${table} (table does not exist)`);
+      return;
+    }
+    if (!res.ok) {
+      console.error(`Failed to null ${table}.${column} (${filter}): ${res.status} ${await res.text()}`);
+      return;
+    }
+    console.log(`Nulled ${table}.${column} (${filter})`);
+  } catch (error) {
+    console.error(`Error nulling ${table}.${column} (${filter}):`, error);
+  }
 }
 
 serve(async (req) => {
@@ -100,6 +228,7 @@ serve(async (req) => {
     }
 
     const userId = decoded.userId;
+    const aal = decoded.aal;
     userIdForLog = userId;
     console.log('User ID extracted:', userId);
 
@@ -145,106 +274,164 @@ serve(async (req) => {
         status: 200, // Return 200 instead of 404 so client treats it as success
       });
     }
-    console.log('Deleting account for user:', userId);
-
-    // Delete user data using direct REST API calls to bypass RLS
-    try {
-      try {
-        console.log('Deleting profile photos from storage...');
-        const { deleted } = await deleteAllProfilePhotos(supabase, userId);
-        console.log('Profile photos deleted:', deleted);
-      } catch (storageError) {
-        console.error('Failed to delete profile photos from storage:', storageError);
-      }
-
-      // Delete in correct order to avoid foreign key constraints
-
-      // 1. Delete chat messages (references matches)
-      console.log('Deleting chat messages...');
-      const chatResponse = await fetch(`${restApiUrl}/chat_messages?sender_id=eq.${userId}`, {
-        method: 'DELETE',
-        headers
-      });
-      if (!chatResponse.ok) {
-        console.error('Failed to delete chat messages:', chatResponse.status, await chatResponse.text());
-      } else {
-        console.log('Chat messages deleted successfully');
-      }
-
-      // 2. Delete matches where user is involved (user_a_id or user_b_id)
-      console.log('Deleting matches...');
-      const matchesAResponse = await fetch(`${restApiUrl}/matches?user_a_id=eq.${userId}`, {
-        method: 'DELETE',
-        headers
-      });
-      if (!matchesAResponse.ok) {
-        console.error('Failed to delete matches (user_a):', matchesAResponse.status, await matchesAResponse.text());
-      } else {
-        console.log('Matches (user_a) deleted successfully');
-      }
-
-      const matchesBResponse = await fetch(`${restApiUrl}/matches?user_b_id=eq.${userId}`, {
-        method: 'DELETE',
-        headers
-      });
-      if (!matchesBResponse.ok) {
-        console.error('Failed to delete matches (user_b):', matchesBResponse.status, await matchesBResponse.text());
-      } else {
-        console.log('Matches (user_b) deleted successfully');
-      }
-
-      // 3. Delete user locations
-      console.log('Deleting user locations...');
-      const locationsResponse = await fetch(`${restApiUrl}/user_locations?user_id=eq.${userId}`, {
-        method: 'DELETE',
-        headers
-      });
-      if (!locationsResponse.ok) {
-        console.error('Failed to delete user locations:', locationsResponse.status, await locationsResponse.text());
-      } else {
-        console.log('User locations deleted successfully');
-      }
-
-      // 4. Skip events for now - need to check the table structure
-      console.log('Skipping events deletion - need to verify table structure');
-
-      // 5. Delete user_profiles (references users.id)
-      console.log('Deleting user profiles...');
-      const profilesResponse = await fetch(`${restApiUrl}/user_profiles?user_id=eq.${userId}`, {
-        method: 'DELETE',
-        headers
-      });
-      if (!profilesResponse.ok) {
-        console.error('Failed to delete user profiles:', profilesResponse.status, await profilesResponse.text());
-      } else {
-        console.log('User profiles deleted successfully');
-      }
-
-      // 6. Delete from users table
-      console.log('Deleting user record...');
-      const usersResponse = await fetch(`${restApiUrl}/users?id=eq.${userId}`, {
-        method: 'DELETE',
-        headers
-      });
-      if (!usersResponse.ok) {
-        console.error('Failed to delete user record:', usersResponse.status, await usersResponse.text());
-      } else {
-        console.log('User record deleted successfully');
-      }
-
-    } catch (apiError) {
-      console.error('REST API deletion error:', apiError);
-      httpStatus = 500;
+    const hasVerifiedMfaFactor = await userHasVerifiedMfaFactor(supabase, userId, userData.user);
+    if (hasVerifiedMfaFactor && aal !== 'aal2') {
+      httpStatus = 403;
       return new Response(JSON.stringify({
-        error: 'Failed to delete user data via REST API',
-        details: apiError.message
+        error: 'MFA verification required',
+        code: 'mfa_required',
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 500,
+        status: 403,
       });
     }
 
-    // 7. Finally, delete the user from Supabase Auth using admin API
+    console.log('Deleting account for user:', userId);
+
+    // ---- Delete user data using direct REST API calls to bypass RLS ----
+    // Order matters: children before parents (FK constraints). Every step is
+    // individually resilient: missing tables / columns are logged, not fatal.
+
+    // Storage: profile photos, verification photos, event uploads, attachments
+    try {
+      console.log('Deleting user storage objects...');
+      const { deleted } = await deleteAllUserStorage(supabase, userId);
+      console.log('Storage objects deleted:', deleted);
+    } catch (storageError) {
+      console.error('Failed to delete storage objects:', storageError);
+    }
+
+    // 1. Chat data (messages first - they reference matches)
+    await restDelete(restApiUrl, 'chat_messages', orMatcher(userId, 'sender_id', 'recipient_id'), headers);
+    await restDelete(restApiUrl, 'message_reactions', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'matches', orMatcher(userId, 'user1_id', 'user2_id'), headers);
+    await restDelete(restApiUrl, 'chats', orMatcher(userId, 'user_id', 'other_user_id'), headers);
+    await restDelete(restApiUrl, 'chat_rooms', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'unmatched_pairs', orMatcher(userId, 'user1_id', 'user2_id'), headers);
+    await restDelete(restApiUrl, 'unmatched_pairs', `created_by=eq.${userId}`, headers);
+
+    // 2. Ratings
+    await restDelete(restApiUrl, 'match_ratings', orMatcher(userId, 'rater_id', 'ratee_id'), headers);
+    await restDelete(restApiUrl, 'match_rating_prompts', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'pending_rating_prompts', orMatcher(userId, 'user_id', 'other_user_id'), headers);
+
+    // 3. Events (after matches, since matches may reference event_id)
+    //    Remove the user's attendance everywhere first. Then delete events
+    //    the user created ONLY if no other user attends them; events other
+    //    users still attend are KEPT (owner column set to null).
+    await restDelete(restApiUrl, 'event_attendees', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'event_participants', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'event_parse_results', `user_id=eq.${userId}`, headers);
+
+    // Find the events owner column (name varies between environments)
+    let eventsOwnerCol: string | null = null;
+    for (const col of ['created_by', 'owner_id', 'user_id']) {
+      try {
+        const res = await fetch(`${restApiUrl}/events?${col}=eq.${userId}&select=id`, { headers });
+        if (res.ok) { eventsOwnerCol = col; break; }
+      } catch (error) {
+        console.error(`Error probing events.${col}:`, error);
+      }
+    }
+
+    if (eventsOwnerCol) {
+      let eventIds: string[] = [];
+      try {
+        const res = await fetch(
+          `${restApiUrl}/events?${eventsOwnerCol}=eq.${userId}&select=id&limit=1000`,
+          { headers },
+        );
+        if (res.ok) {
+          const rows = await res.json() as Array<{ id: string }>;
+          eventIds = rows.map((r) => r.id);
+        }
+      } catch (error) {
+        console.error('Error listing user events:', error);
+      }
+
+      for (const eventId of eventIds) {
+        let attendeeCount = 0;
+        try {
+          const countHeaders = { ...headers, Prefer: 'count=exact' };
+          const res = await fetch(
+            `${restApiUrl}/event_attendees?event_id=eq.${eventId}&select=id`,
+            { headers: countHeaders },
+          );
+          attendeeCount = Number(res.headers.get('content-range')?.split('/')[1] ?? 0);
+        } catch (error) {
+          console.error(`Error counting attendees for event ${eventId}:`, error);
+        }
+        if (attendeeCount === 0) {
+          await restDelete(restApiUrl, 'events', `id=eq.${eventId}`, headers);
+        } else {
+          console.log(`Keeping event ${eventId} (${attendeeCount} other attendee(s))`);
+        }
+      }
+
+      // Null the owner on every remaining event owned by the user
+      await restNullOut(restApiUrl, 'events', `${eventsOwnerCol}=eq.${userId}`, eventsOwnerCol, headers);
+    } else {
+      console.log('Could not determine events owner column; leaving events untouched');
+    }
+    await restDelete(restApiUrl, 'event_attendees', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'event_participants', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'event_parse_results', `user_id=eq.${userId}`, headers);
+
+    // 4. Referrals / promotions
+    await restDelete(restApiUrl, 'referrals', orMatcher(userId, 'referrer_id', 'referee_id'), headers);
+    await restDelete(restApiUrl, 'promo_code_usages', `user_id=eq.${userId}`, headers);
+
+    // 5. Profile / preferences
+    await restDelete(restApiUrl, 'user_locations', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'offline_location_history', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'user_profiles', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'user_interests', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'user_intents', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'user_blocks', orMatcher(userId, 'user_id', 'blocked_user_id'), headers);
+    await restDelete(restApiUrl, 'user_reports', orMatcher(userId, 'user_id', 'reported_user_id'), headers);
+    await restDelete(restApiUrl, 'user_invisibility_rules', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'user_visibility_schedules', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'invisibility_rules', `user_id=eq.${userId}`, headers);
+
+    // 6. Session / activity / notifications
+    await restDelete(restApiUrl, 'user_activity', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'user_session', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'notification_queue', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'user_subscription_queue', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'admin_broadcast_deliveries', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'profile_edit_requests', `user_id=eq.${userId}`, headers);
+
+    // 7. Ads
+    await restDelete(restApiUrl, 'ad_impressions', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'ad_clicks', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'ad_reports', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'ad_revenue_events', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'ad_consent', `user_id=eq.${userId}`, headers);
+
+    // 8. End-to-end encryption keys
+    await restDelete(restApiUrl, 'user_chat_keys', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'user_chat_key_wrappers', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'user_chat_crk_wrappers', `user_id=eq.${userId}`, headers);
+
+    // 9. Location sharing signals
+    await restDelete(restApiUrl, 'location_share_signals', `sharer_id=eq.${userId}`, headers);
+
+    // 10. Logs / fraud signals
+    await restDelete(restApiUrl, 'edge_function_invocations', `user_id=eq.${userId}`, headers);
+    await restDelete(restApiUrl, 'signup_fraud_signals', `user_id=eq.${userId}`, headers);
+
+    // 11. Null out references TO this user from rows owned by admins/other users
+    //     (these FK to auth.users without cascade, so they must be cleared
+    //     before the auth user is deleted at the end)
+    await restNullOut(restApiUrl, 'admin_broadcasts', `created_by=eq.${userId}`, 'created_by', headers);
+    await restNullOut(restApiUrl, 'profile_edit_requests', `reviewed_by=eq.${userId}`, 'reviewed_by', headers);
+    await restNullOut(restApiUrl, 'users', `verification_reviewer_id=eq.${userId}`, 'verification_reviewer_id', headers);
+
+    // 12. Delete the public users row (children with ON DELETE CASCADE go with it)
+    await restDelete(restApiUrl, 'users', `id=eq.${userId}`, headers);
+
+    // 13. Finally, delete the user from Supabase Auth using admin API
+    //     (also removes identities, sessions, MFA factors, passkeys)
     console.log('Deleting user from Supabase Auth...');
     const { error: authDeleteError } = await supabase.auth.admin.deleteUser(userId);
 
@@ -280,7 +467,7 @@ serve(async (req) => {
     errorType = error instanceof Error ? error.name : "Error";
     errorMessage = error instanceof Error ? error.message : String(error);
     httpStatus = 500;
-    return new Response(JSON.stringify({ error: error.message }), {
+    return new Response(JSON.stringify({ error: errorMessage }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 500,
     });

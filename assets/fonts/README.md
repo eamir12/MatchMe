@@ -7,9 +7,19 @@ Recommended files (place into this folder):
 - NotoSansHebrew-Bold.ttf
 - NotoSansArabic-Regular.ttf
 - NotoSansArabic-Bold.ttf
-- NotoSansTC-Regular.ttf
-- NotoSansTC-Bold.ttf
-- NotoColorEmoji.ttf
+- NotoSansSymbols-Regular.ttf
+- NotoSansSymbols2-Regular.ttf
+- NotoSerif-Regular.ttf
+- NotoSerif-Bold.ttf
+
+Deliberately NOT bundled:
+- NotoColorEmoji.ttf — every target platform has a system emoji font
+  (Segoe UI Emoji, Noto Color Emoji, Apple Color Emoji) and chat emoji render
+  from assets/twemoji/ images. Bundling it cost ~10 MB per build.
+- NotoSansTC-Regular/Bold.ttf — CJK glyphs come from the platform system font.
+  Bundling them cost ~13.6 MB per build. Re-add only if a CJK language ever
+  has to render on a platform without a system CJK font, and add the family
+  back to pubspec.yaml at the same time (a file alone is never bundled).
 
 You can run the helper script from the repo root to attempt automatic download:
 

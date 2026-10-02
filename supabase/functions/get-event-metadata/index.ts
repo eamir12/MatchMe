@@ -3,6 +3,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { DOMParser } from "https://deno.land/x/deno_dom@v0.1.36-alpha/deno-dom-wasm.ts"
 import { createClient } from "npm:@supabase/supabase-js@2.28.0";
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
+import { buildGeminiUrl, resolveTextModels } from "../_shared/gemini_config.ts";
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -15,8 +16,17 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
-// Helper to fetch localized translation from the translations table
+// Helper to fetch localized translation from the translations table.
+// MatchMe ships en / es / he only; anything else resolves to English.
+function normalizeSupportedLocale(raw: unknown): string {
+  const s = String(raw ?? '').trim().toLowerCase();
+  if (s.startsWith('he')) return 'he';
+  if (s.startsWith('es')) return 'es';
+  return 'en';
+}
+
 async function getTranslation(key: string, locale: string = 'en'): Promise<string> {
+  locale = normalizeSupportedLocale(locale);
   try {
     const result = await svc
       .from('translations')
@@ -222,10 +232,68 @@ function isBlockedEventUrl(url: string): boolean {
   return false;
 }
 
+function normalizeJoinabilityClassification(input: unknown): 'public' | 'private' | 'uncertain' {
+  if (typeof input !== 'string') return 'uncertain';
+  const value = input.trim().toLowerCase();
+  if (value === 'public' || value === 'private' || value === 'uncertain') {
+    return value;
+  }
+  return 'uncertain';
+}
+
+function normalizeConfidence(input: unknown): 'high' | 'medium' | 'low' {
+  if (typeof input !== 'string') return 'low';
+  const value = input.trim().toLowerCase();
+  if (value === 'high' || value === 'medium' || value === 'low') {
+    return value;
+  }
+  return 'low';
+}
+
+function buildJoinabilityLogSummary(eventData: Record<string, unknown>) {
+  const title = sanitizeEventText(eventData['title'], 180);
+  const location = sanitizeEventText(eventData['location'], 220);
+  const description = sanitizeEventText(eventData['description'], 1200);
+  const url = sanitizeEventText(eventData['url'], 600);
+  return {
+    provider: typeof eventData['provider'] === 'string' ? eventData['provider'] : null,
+    appLocale: typeof eventData['appLocale'] === 'string' ? eventData['appLocale'] : null,
+    hasTitle: !!title,
+    titleLength: title?.length ?? 0,
+    hasLocation: !!location,
+    locationLength: location?.length ?? 0,
+    hasDescription: !!description,
+    descriptionLength: description?.length ?? 0,
+    hasUrl: !!url,
+    urlHost: typeof eventData['urlHost'] === 'string' ? eventData['urlHost'] : null,
+    isAllDay: eventData['isAllDay'] === true,
+    startTime: typeof eventData['startTime'] === 'string' ? eventData['startTime'] : null,
+    endTime: typeof eventData['endTime'] === 'string' ? eventData['endTime'] : null,
+    durationMinutes: typeof eventData['durationMinutes'] === 'number' ? eventData['durationMinutes'] : null,
+  };
+}
+
+function buildJoinabilityEvidenceText(eventData: Record<string, unknown>): string {
+  const rows = [
+    `App locale: ${typeof eventData['appLocale'] === 'string' ? eventData['appLocale'] : 'unknown'}`,
+    `Provider: ${typeof eventData['provider'] === 'string' ? eventData['provider'] : 'unknown'}`,
+    `Title: ${sanitizeEventText(eventData['title'], 180) ?? 'N/A'}`,
+    `Location: ${sanitizeEventText(eventData['location'], 220) ?? 'N/A'}`,
+    `Description: ${sanitizeEventText(eventData['description'], 1200) ?? 'N/A'}`,
+    `URL: ${sanitizeEventText(eventData['url'], 600) ?? 'N/A'}`,
+    `URL host: ${sanitizeEventText(eventData['urlHost'], 120) ?? 'N/A'}`,
+    `All day: ${eventData['isAllDay'] === true ? 'yes' : 'no'}`,
+    `Start time: ${typeof eventData['startTime'] === 'string' ? eventData['startTime'] : 'N/A'}`,
+    `End time: ${typeof eventData['endTime'] === 'string' ? eventData['endTime'] : 'N/A'}`,
+    `Duration minutes: ${typeof eventData['durationMinutes'] === 'number' ? eventData['durationMinutes'] : 'N/A'}`,
+  ];
+  return rows.join('\n');
+}
+
 // Helper to call the Google AI API
 async function callGemini(text: string, apiKey: string) {
-  const GEMINI_URL_PRIMARY = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
-  const GEMINI_URL_BACKUP = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const textModels = await resolveTextModels(apiKey);
+  const geminiUrls = textModels.map(m => buildGeminiUrl(m, apiKey));
   
   const prompt = `
     You are an expert public-event parser. Extract ONLY public, joinable event information from the given text.
@@ -271,29 +339,98 @@ async function callGemini(text: string, apiKey: string) {
     }
   };
 
-  try {
-    console.log("Calling Gemini Primary URL...");
-    const res = await fetch(GEMINI_URL_PRIMARY, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    
-    if (!res.ok) throw new Error(`Gemini Primary API failed: ${res.status} ${await res.text()}`);
-    const data = await res.json();
-    return { parsed: JSON.parse(data.candidates[0].content.parts[0].text), model: 'gemini-3-flash-preview' };
-  } catch (error) {
-    console.log("Primary URL failed, switching to backup...", error.message);
-    const res = await fetch(GEMINI_URL_BACKUP, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    
-    if (!res.ok) throw new Error(`Gemini Backup API failed: ${res.status} ${await res.text()}`);
-    const data = await res.json();
-    return { parsed: JSON.parse(data.candidates[0].content.parts[0].text), model: 'gemini-2.5-flash' };
+  for (let i = 0; i < geminiUrls.length; i++) {
+    const modelName = textModels[i];
+    try {
+      console.log(`Calling Gemini (${modelName}) for event metadata...`);
+      const res = await fetch(geminiUrls[i], {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        console.warn(`${modelName} failed (${res.status}), trying next...`);
+        continue;
+      }
+      const data = await res.json();
+      return { parsed: JSON.parse(data.candidates[0].content.parts[0].text), model: modelName };
+    } catch (error) {
+      console.warn(`${modelName} error: ${error.message}, trying next...`);
+    }
   }
+  throw new Error(`Gemini API failed: All ${textModels.length} models exhausted`);
+}
+
+async function callGeminiForJoinability(eventData: Record<string, unknown>, apiKey: string) {
+  const textModels = await resolveTextModels(apiKey);
+  const geminiUrls = textModels.map(m => buildGeminiUrl(m, apiKey));
+  const evidenceText = buildJoinabilityEvidenceText(eventData);
+
+  const prompt = `
+    You classify calendar events for a social app.
+    Determine whether the event is:
+    - "public": a real public event that other app users could reasonably attend or join
+    - "private": a personal, internal, invitation-only, or otherwise non-joinable event
+    - "uncertain": there is not enough evidence to safely decide
+
+    Return ONLY valid JSON with these keys:
+    {
+      "classification": "public" | "private" | "uncertain",
+      "confidence": "high" | "medium" | "low",
+      "reason": string
+    }
+
+    Rules:
+    - Work for ALL languages and writing systems.
+    - Do not rely on English-only wording. The event may be written in English, Hebrew, Spanish, Arabic, French, German, Portuguese, Russian, Japanese, Chinese, or mixed languages.
+    - Use every field provided: title, location, description, URL, provider, locale, all-day flag, start/end time, duration, and URL host.
+    - Treat concerts, festivals, exhibitions, public classes, meetups, conferences, sports events, public parties, public screenings, and public ticketed events as "public".
+    - Treat doctor visits, therapy, work meetings, internal team meetings, 1:1 calls, family plans, reminders, reservations, travel, private calendar holds, and personal errands as "private".
+    - A physical venue alone does not guarantee a public event. Consider whether the title, description, link, timing, and other metadata indicate that other app users could realistically attend.
+    - An event can still be public without a ticket URL if the metadata clearly describes a public gathering.
+    - If metadata is incomplete or mixed, return "uncertain".
+    - Prefer privacy: if the event might be private, do not classify it as public.
+    - A generic calendar link, video meeting link, or lack of public context is not enough on its own to make the event public.
+    - The "reason" must be short and must not include personal data.
+    - Base the answer on the event itself, not on the app locale.
+
+    Event metadata as JSON:
+    ${JSON.stringify(eventData)}
+
+    Event metadata as text:
+    ${evidenceText}
+  `;
+
+  const body = {
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      "responseMimeType": "application/json",
+    }
+  };
+
+  for (let i = 0; i < geminiUrls.length; i++) {
+    const modelName = textModels[i];
+    try {
+      console.log(`Joinability: calling Gemini (${modelName})`, JSON.stringify(buildJoinabilityLogSummary(eventData)));
+      const res = await fetch(geminiUrls[i], {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        console.warn(`Joinability: ${modelName} failed (${res.status}), trying next...`);
+        continue;
+      }
+      console.log(`Joinability: ${modelName} responded successfully`);
+      const data = await res.json();
+      return { parsed: JSON.parse(data.candidates[0].content.parts[0].text), model: modelName };
+    } catch (error) {
+      console.warn(`Joinability: ${modelName} error: ${error.message}, trying next...`);
+    }
+  }
+  throw new Error(`Gemini Joinability API failed: All ${textModels.length} models exhausted`);
 }
 
 // --- Main Function ---
@@ -311,6 +448,7 @@ serve(async (req) => {
   let errorMessage: string | null = null;
   let aiUsed = false;
   let aiModel: string | null = null;
+  let aiTask: string | null = null;
 
   const jsonResponse = (body: Record<string, unknown>, status = 200) => {
     httpStatus = status;
@@ -322,12 +460,85 @@ serve(async (req) => {
   };
 
   try {
-    const { url } = await req.json();
+    const body = await req.json();
+    const url =
+      typeof body?.url === 'string'
+        ? body.url.trim()
+        : '';
+    const eventValidation =
+      body?.eventValidation && typeof body.eventValidation === 'object'
+        ? body.eventValidation as Record<string, unknown>
+        : null;
+
+    if (eventValidation != null) {
+      const API_KEY = Deno.env.get('GOOGLE_AI_API_KEY');
+      if (!API_KEY) throw new Error('API key not set in Supabase secrets');
+
+      const payload = {
+        title: sanitizeEventText(eventValidation['title'], 180),
+        location: sanitizeEventText(eventValidation['location'], 220),
+        description: sanitizeEventText(eventValidation['description'], 1200),
+        url: sanitizeEventText(eventValidation['url'], 600),
+        provider:
+          typeof eventValidation['provider'] === 'string'
+            ? eventValidation['provider']
+            : null,
+        appLocale:
+          typeof eventValidation['appLocale'] === 'string'
+            ? sanitizeEventText(eventValidation['appLocale'], 32)
+            : null,
+        isAllDay: eventValidation['isAllDay'] === true,
+        startTime:
+          typeof eventValidation['startTime'] === 'string'
+            ? eventValidation['startTime']
+            : null,
+        endTime:
+          typeof eventValidation['endTime'] === 'string'
+            ? eventValidation['endTime']
+            : null,
+        durationMinutes:
+          typeof eventValidation['durationMinutes'] === 'number' &&
+          Number.isFinite(eventValidation['durationMinutes'])
+            ? Math.max(0, Math.round(eventValidation['durationMinutes']))
+            : null,
+        urlHost:
+          typeof eventValidation['urlHost'] === 'string'
+            ? sanitizeEventText(eventValidation['urlHost'], 120)
+            : null,
+      };
+
+      console.log("Joinability: request received", JSON.stringify(buildJoinabilityLogSummary(payload)));
+
+      const geminiResult = await callGeminiForJoinability(payload, API_KEY);
+      aiUsed = true;
+      aiModel = geminiResult.model;
+      aiTask = 'event_joinability';
+
+      const parsed = geminiResult.parsed ?? {};
+      const classification = normalizeJoinabilityClassification(parsed.classification);
+      const confidence = normalizeConfidence(parsed.confidence);
+      const reason = sanitizeEventText(parsed.reason, 240);
+      console.log(
+        "Joinability: classification result",
+        JSON.stringify({
+          classification,
+          confidence,
+          reason,
+          model: aiModel,
+        }),
+      );
+      return jsonResponse({
+        classification,
+        confidence,
+        reason,
+      });
+    }
+
     if (!url) throw new Error('No URL provided');
     console.log("Parsing URL:", url);
 
     if (isBlockedEventUrl(url)) {
-      const errorMessage = await getTranslation('eventExtractionNotEventContent', 'en');
+      errorMessage = await getTranslation('eventExtractionNotEventContent', 'en');
       return jsonResponse({ 
         error: errorMessage,
         errorKey: 'eventExtractionNotEventContent',
@@ -361,6 +572,7 @@ serve(async (req) => {
     const geminiResult = await callGemini(pageText.substring(0, 8000), API_KEY);
     aiUsed = true;
     aiModel = geminiResult.model;
+    aiTask = 'event_metadata';
     const parsedData = geminiResult.parsed;
     console.log("Gemini returned:", parsedData);
 
@@ -369,13 +581,13 @@ serve(async (req) => {
     const sanitizedDateString = sanitizeEventText(parsedData?.dateString, 240);
     
     // Validate if content is event-related
-    const eventValidation = isEventRelated(parsedData);
-    if (!eventValidation.valid) {
-      console.log('Content is not event-related. Reason:', eventValidation.reason);
-      const errorMessage = await getTranslation(eventValidation.reason || 'eventExtractionNotEventContent', 'en');
+    const eventContentValidation = isEventRelated(parsedData);
+    if (!eventContentValidation.valid) {
+      console.log('Content is not event-related. Reason:', eventContentValidation.reason);
+      errorMessage = await getTranslation(eventContentValidation.reason || 'eventExtractionNotEventContent', 'en');
       return jsonResponse({ 
         error: errorMessage,
-        errorKey: eventValidation.reason,
+        errorKey: eventContentValidation.reason,
         isEventContent: false
       }, 400);
     }
@@ -387,7 +599,7 @@ serve(async (req) => {
       looksPersonalTitle(sanitizedTitle) ||
       looksPersonalLocation(sanitizedLocation)
     ) {
-      const errorMessage = await getTranslation('eventExtractionNotEventContent', 'en');
+      errorMessage = await getTranslation('eventExtractionNotEventContent', 'en');
       return jsonResponse({ 
         error: errorMessage,
         errorKey: 'eventExtractionNotEventContent',
@@ -468,10 +680,11 @@ serve(async (req) => {
     return jsonResponse(result);
 
   } catch (e) {
-    console.error("Function Error:", e.message);
+    const errMsg = e instanceof Error ? e.message : String(e);
+    console.error("Function Error:", errMsg);
     errorType = e instanceof Error ? e.name : "Error";
-    errorMessage = e instanceof Error ? e.message : String(e);
-    return jsonResponse({ error: e.message }, 500);
+    errorMessage = errMsg;
+    return jsonResponse({ error: errMsg }, 500);
   } finally {
     const elapsedMs = Date.now() - startedAtMs;
     await logEdgeFunctionInvocation({
@@ -485,7 +698,7 @@ serve(async (req) => {
       aiUsed,
       aiProvider: aiUsed ? "google_gemini" : null,
       aiModel,
-      aiTask: aiUsed ? "event_metadata" : null,
+      aiTask,
       meta: { method: req.method },
     });
   }

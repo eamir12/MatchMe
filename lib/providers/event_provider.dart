@@ -1,11 +1,15 @@
 // lib/providers/event_provider.dart
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/services/offline_cache_manager.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:matchme/models/event_model.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:matchme/utils/offline_utils.dart';
 
 part 'event_provider.g.dart';
 
@@ -23,8 +27,8 @@ class PendingEventTabRouteNotifier extends Notifier<EventModel?> {
 
 final pendingEventTabRouteProvider =
     NotifierProvider<PendingEventTabRouteNotifier, EventModel?>(() {
-  return PendingEventTabRouteNotifier();
-});
+      return PendingEventTabRouteNotifier();
+    });
 
 class PendingAddEventShareNotifier extends Notifier<Map<String, dynamic>?> {
   @override
@@ -37,8 +41,8 @@ class PendingAddEventShareNotifier extends Notifier<Map<String, dynamic>?> {
 
 final pendingAddEventShareProvider =
     NotifierProvider<PendingAddEventShareNotifier, Map<String, dynamic>?>(() {
-  return PendingAddEventShareNotifier();
-});
+      return PendingAddEventShareNotifier();
+    });
 
 // --- Event Management Notifier ---
 @riverpod
@@ -47,6 +51,31 @@ class EventManager extends _$EventManager {
   bool _showPastEvents = false;
 
   bool get showPastEvents => _showPastEvents;
+
+  List<EventModel> _filterVisibleEvents(List<EventModel> events) {
+    if (_showPastEvents) {
+      return events;
+    }
+
+    final now = DateTime.now();
+    return events.where((event) => !event.endTime.isBefore(now)).toList();
+  }
+
+  Future<List<EventModel>?> _loadCachedVisibleEvents(
+    String userId,
+    LocalDbService localDb,
+  ) async {
+    final cachedEvents = await localDb.getCachedUserEvents(userId);
+    if (cachedEvents == null) {
+      return null;
+    }
+
+    final allEvents = <EventModel>[];
+    for (final eventData in cachedEvents) {
+      allEvents.add(EventModel.fromJson(eventData));
+    }
+    return _filterVisibleEvents(allEvents);
+  }
 
   /// Update the toggle and persist for the current user if available
   void setShowPastEvents(bool v) async {
@@ -84,7 +113,7 @@ class EventManager extends _$EventManager {
     return const AsyncValue.loading();
   }
 
-  Future<void> fetchUserEvents() async {
+  Future<void> fetchUserEvents({bool forceRemote = false}) async {
     final userId = supabase.auth.currentUser?.id;
     if (userId == null) {
       if (ref.mounted) {
@@ -95,33 +124,42 @@ class EventManager extends _$EventManager {
 
     final localDb = ref.read(localDbProvider);
 
-    // First try to get cached events
+    if (offlineCacheManager.shouldUseCachedData()) {
+      final cachedVisibleEvents = await _loadCachedVisibleEvents(
+        userId,
+        localDb,
+      );
+      if (!ref.mounted) return;
+      state = AsyncValue.data(cachedVisibleEvents ?? const <EventModel>[]);
+      return;
+    }
+
+    if (forceRemote) {
+      await _fetchEventsFromServer(userId, localDb);
+      return;
+    }
+
     final cachedEvents = await localDb.getCachedUserEvents(userId);
 
     // Check if provider is still mounted after async operation
     if (!ref.mounted) return;
 
     if (cachedEvents != null) {
-      // Use cached data immediately, but honor current "show past events" toggle
-      final allEvents = cachedEvents.map((eventData) => EventModel.fromJson(eventData)).toList();
-      final now = DateTime.now();
-      final filteredEvents = _showPastEvents
-          ? allEvents
-          : allEvents.where((event) {
-              return !event.endTime.isBefore(now);
-            }).toList();
-
-      state = AsyncValue.data(filteredEvents);
-
-      // Refresh from server in background
+      final allEvents = <EventModel>[];
+      for (final eventData in cachedEvents) {
+        allEvents.add(EventModel.fromJson(eventData));
+      }
+      state = AsyncValue.data(_filterVisibleEvents(allEvents));
       _refreshEventsFromServer(userId, localDb);
     } else {
-      // No cache, fetch from server
       await _fetchEventsFromServer(userId, localDb);
     }
   }
 
-  Future<void> _refreshEventsFromServer(String userId, LocalDbService localDb) async {
+  Future<void> _refreshEventsFromServer(
+    String userId,
+    LocalDbService localDb,
+  ) async {
     try {
       await _fetchEventsFromServer(userId, localDb, updateState: true);
     } catch (_) {
@@ -129,13 +167,15 @@ class EventManager extends _$EventManager {
     }
   }
 
-  Future<void> _fetchEventsFromServer(String userId, LocalDbService localDb, {bool updateState = true}) async {
+  Future<void> _fetchEventsFromServer(
+    String userId,
+    LocalDbService localDb, {
+    bool updateState = true,
+  }) async {
     try {
       // Query events the current user is attending
       // Join events with event_attendees to get user's personal notes and attendee count
-      var query = supabase
-          .from('event_attendees')
-          .select('''
+      var query = supabase.from('event_attendees').select('''
             notes,
             events!inner(
               id,
@@ -143,7 +183,12 @@ class EventManager extends _$EventManager {
               event_venue,
               start_time,
               end_time,
-              event_link
+              event_link,
+              external_calendar_id,
+              external_event_id,
+              external_provider,
+              is_all_day,
+              description
             )
           ''');
 
@@ -174,28 +219,25 @@ class EventManager extends _$EventManager {
       for (final row in sortedResponse) {
         final eventData = row['events'] as Map<String, dynamic>;
 
-        // Get attendee count for this event
-        int attendeeCount = 1;
+        int? attendeeCount;
         try {
           final countResponse = await supabase.rpc(
             'count_event_attendees',
-            params: {'event_id_param': eventData['id']}
+            params: {'event_id_param': eventData['id']},
           );
 
-          if (countResponse is int) {
-            attendeeCount = countResponse;
-          } else if (countResponse is Map<String, dynamic> && countResponse.containsKey('count')) {
+          if (countResponse is num) {
+            attendeeCount = countResponse.toInt();
+          } else if (countResponse is Map<String, dynamic> &&
+              countResponse.containsKey('count')) {
             final countValue = countResponse['count'];
-            if (countValue is int) {
-              attendeeCount = countValue;
+            if (countValue is num) {
+              attendeeCount = countValue.toInt();
             } else if (countValue is String) {
-              attendeeCount = int.tryParse(countValue) ?? 1;
+              attendeeCount = int.tryParse(countValue);
             }
           }
-        } catch (_) {
-          // RPC failed, keep default of 1
-          attendeeCount = 1;
-        }
+        } catch (_) {}
 
         // Check if provider is still mounted after each RPC call
         if (!ref.mounted) return;
@@ -220,10 +262,17 @@ class EventManager extends _$EventManager {
         state = AsyncValue.data(events);
       }
     } catch (e, s) {
-      // Check if provider is still mounted before updating state
       if (!ref.mounted) return;
 
-      if (updateState) {
+      final cachedVisibleEvents = await _loadCachedVisibleEvents(
+        userId,
+        localDb,
+      );
+      if (!ref.mounted) return;
+
+      if (cachedVisibleEvents != null) {
+        state = AsyncValue.data(cachedVisibleEvents);
+      } else if (updateState) {
         state = AsyncValue.error(e, s);
       }
     }
@@ -235,87 +284,57 @@ class EventManager extends _$EventManager {
   }
 
   Future<EventSaveResult> addEventWithResult(EventModel event) async {
+    var eventLinkedSuccessfully = false;
+
+    if (shouldSkipSupabaseCalls()) {
+      return const EventSaveResult(
+        success: false,
+        errorKey: 'eventAddFailedOffline',
+        diagnosticCode: 'offline_supabase_paused',
+      );
+    }
+
     try {
       final userId = supabase.auth.currentUser?.id;
       if (userId == null) {
-        return const EventSaveResult(success: false, errorKey: 'eventAddFailedAuth');
+        print(
+          '[EVENT_IMPORT] addEventWithResult aborted: no authenticated user',
+        );
+        return const EventSaveResult(
+          success: false,
+          errorKey: 'eventAddFailedAuth',
+          diagnosticCode: 'auth_missing_user',
+        );
       }
 
-      final sanitize = _sanitizeEventForPublicSaveWithReason(
+      print(
+        '[EVENT_IMPORT] addEventWithResult start user=$userId title="${event.eventName}" start=${event.startTime.toIso8601String()} venue="${event.eventVenue ?? ''}" provider="${event.externalProvider ?? ''}"',
+      );
+
+      final sanitize = await _sanitizeEventForPublicSaveWithReason(
         event,
         requirePublicJoinable: true,
       );
       final safeEvent = sanitize.event;
       if (safeEvent == null) {
-        return EventSaveResult(success: false, errorKey: sanitize.errorKey ?? 'eventAddFailedUnknown');
+        print(
+          '[EVENT_IMPORT] addEventWithResult rejected during sanitization title="${event.eventName}" reason=${sanitize.errorKey ?? 'eventAddFailedUnknown'}',
+        );
+        return EventSaveResult(
+          success: false,
+          errorKey: sanitize.errorKey ?? 'eventAddFailedUnknown',
+          diagnosticCode: sanitize.errorKey,
+        );
       }
 
-      // Step 1: Check if event already exists using multiple strategies
-      // Note: We prioritize name+venue+time matching over URL matching because
-      // different ticketing vendors use completely different URLs for the same event
-      String? existingEventId;
-
-      // Strategy 1: Check by normalized name + venue + start_time (works across vendors)
-      {
-        final normalizedVenue = _normalizeVenue(safeEvent.eventVenue);
-        final normalizedName = _normalizeEventName(safeEvent.eventName);
-
-        // Get potential matches by start_time (we'll filter by venue in code)
-        var potentialMatchesQuery = supabase
-            .from('events')
-            .select('id, event_name, event_venue')
-            .eq('start_time', safeEvent.startTime.toIso8601String());
-
-        // For null/empty venues, only match other null/empty venues
-        if (normalizedVenue.isEmpty) {
-          potentialMatchesQuery = potentialMatchesQuery.or('event_venue.is.null,event_venue.eq.');
-        }
-
-        final potentialMatches = await potentialMatchesQuery;
-
-        // Check each potential match for name and venue similarity
-        for (final match in (potentialMatches as List<dynamic>).cast<Map<String, dynamic>>()) {
-          final existingNormalizedName = _normalizeEventName(match['event_name'] as String);
-          final existingNormalizedVenue = _normalizeVenue(match['event_venue'] as String?);
-
-          // Both name AND venue must match (within tolerance)
-          final namesMatch = _areEventNamesMatching(normalizedName, existingNormalizedName);
-          final venuesMatch = normalizedVenue == existingNormalizedVenue ||
-              (normalizedVenue.isNotEmpty &&
-               existingNormalizedVenue.isNotEmpty &&
-               (normalizedVenue.contains(existingNormalizedVenue) ||
-                existingNormalizedVenue.contains(normalizedVenue)));
-
-          if (namesMatch && venuesMatch) {
-            existingEventId = match['id'] as String;
-            break;
-          }
-        }
-      }
-
-      // Strategy 2: Check by normalized event_link (same vendor scenario)
-      // Only used as fallback since different vendors have different URLs
-      if (existingEventId == null && safeEvent.eventLink != null && safeEvent.eventLink!.isNotEmpty) {
-        final normalizedLink = _normalizeEventLink(safeEvent.eventLink!);
-        final linkMatch = await supabase
-            .from('events')
-            .select('id, event_link')
-            .ilike('event_link', '%${normalizedLink.split('?').first}%')
-            .eq('start_time', safeEvent.startTime.toIso8601String())
-            .maybeSingle();
-
-        if (linkMatch != null) {
-          // Verify the existing link matches when normalized
-          final existingNormalizedLink = _normalizeEventLink(linkMatch['event_link'] ?? '');
-          if (existingNormalizedLink == normalizedLink) {
-            existingEventId = linkMatch['id'] as String;
-          }
-        }
-      }
+      final existingEventId = await _findExistingEventIdForImport(safeEvent);
 
       String eventId;
 
       if (existingEventId != null) {
+        print(
+          '[EVENT_IMPORT] addEventWithResult matched existing event eventId=$existingEventId title="${safeEvent.eventName}"',
+        );
         // Event exists - just link the user to it
         eventId = existingEventId;
 
@@ -329,36 +348,107 @@ class EventManager extends _$EventManager {
         } catch (e) {
           if (e is PostgrestException && e.code == '23505') {
             // Duplicate key, user already attending
-            return const EventSaveResult(success: true);
+            print(
+              '[EVENT_IMPORT] addEventWithResult user already attending eventId=$eventId user=$userId',
+            );
+            return const EventSaveResult(
+              success: true,
+              diagnosticCode: 'attendance_duplicate',
+            );
           }
           rethrow;
         }
+        eventLinkedSuccessfully = true;
+        print(
+          '[EVENT_IMPORT] addEventWithResult linked attendee to existing event eventId=$eventId user=$userId',
+        );
       } else {
-        // Event doesn't exist - create it
-        final newEvent = await supabase
-            .from('events')
-            .insert(safeEvent.toJsonForSave())
-            .select('id')
-            .single();
+        try {
+          final newEvent = await supabase
+              .from('events')
+              .insert(safeEvent.toJsonForSave())
+              .select('id')
+              .single();
 
-        eventId = newEvent['id'] as String;
+          eventId = newEvent['id'] as String;
+          print(
+            '[EVENT_IMPORT] addEventWithResult created new event eventId=$eventId title="${safeEvent.eventName}"',
+          );
+        } catch (e) {
+          if (e is PostgrestException && _isUniqueConstraintFailure(e)) {
+            print(
+              '[EVENT_IMPORT] addEventWithResult create conflicted with existing event, retrying lookup title="${safeEvent.eventName}"',
+            );
+            final recoveredEventId = await _findExistingEventIdForImport(
+              safeEvent,
+            );
+            if (recoveredEventId == null) {
+              rethrow;
+            }
+            eventId = recoveredEventId;
+            print(
+              '[EVENT_IMPORT] addEventWithResult recovered existing event after conflict eventId=$eventId title="${safeEvent.eventName}"',
+            );
+          } else {
+            rethrow;
+          }
+        }
 
-        // Add creator as first attendee
         await supabase.from('event_attendees').insert({
           'event_id': eventId,
           'user_id': userId,
           'notes': safeEvent.notes,
         });
+        eventLinkedSuccessfully = true;
+        print(
+          '[EVENT_IMPORT] addEventWithResult linked creator as attendee eventId=$eventId user=$userId',
+        );
       }
 
-      await fetchUserEvents(); // Refresh the list
+      try {
+        await fetchUserEvents();
+        print(
+          '[EVENT_IMPORT] addEventWithResult refreshed event list successfully',
+        );
+      } catch (e, st) {
+        print(
+          '[EVENT_IMPORT] addEventWithResult refresh failed after save: $e',
+        );
+        print('$st');
+      }
 
-      // Create matches for event-based connections
-      await createEventMatches(eventId, safeEvent.eventName, safeEvent.eventVenue, safeEvent.startTime);
+      try {
+        await createEventMatches(
+          eventId,
+          safeEvent.eventName,
+          safeEvent.eventVenue,
+          safeEvent.startTime,
+        );
+        print(
+          '[EVENT_IMPORT] addEventWithResult post-save matching step completed for eventId=$eventId',
+        );
+      } catch (e, st) {
+        print(
+          '[EVENT_IMPORT] addEventWithResult post-save matching failed for eventId=$eventId: $e',
+        );
+        print('$st');
+      }
 
-      return const EventSaveResult(success: true);
-    } catch (e) {
-      return const EventSaveResult(success: false, errorKey: 'eventAddFailedUnknown');
+      print(
+        '[EVENT_IMPORT] addEventWithResult completed successfully eventId=$eventId',
+      );
+      return const EventSaveResult(success: true, diagnosticCode: 'success');
+    } catch (e, st) {
+      print(
+        '[EVENT_IMPORT] addEventWithResult failed after ${eventLinkedSuccessfully ? 'saving event attendance' : 'before save completed'}: $e',
+      );
+      print('$st');
+      if (e is PostgrestException) {
+        print(
+          '[EVENT_IMPORT] PostgrestException details code=${e.code} message=${e.message} details=${e.details} hint=${e.hint}',
+        );
+      }
+      return _mapEventSaveFailure(e);
     }
   }
 
@@ -367,7 +457,10 @@ class EventManager extends _$EventManager {
       final userId = supabase.auth.currentUser?.id;
       if (userId == null) return false;
 
-      final safeEvent = _sanitizeEventForPublicSave(event, requirePublicJoinable: true);
+      final safeEvent = await _sanitizeEventForPublicSave(
+        event,
+        requirePublicJoinable: true,
+      );
       if (safeEvent == null) return false;
 
       // Update the event itself (all attendees will see changes)
@@ -390,7 +483,7 @@ class EventManager extends _$EventManager {
     }
   }
 
-  Future<bool> deleteEvent(String eventId) async {
+  Future<bool> leaveEvent(String eventId) async {
     try {
       final userId = supabase.auth.currentUser?.id;
       if (userId == null) return false;
@@ -418,7 +511,14 @@ class EventManager extends _$EventManager {
     }
   }
 
-  Future<void> createEventMatches(String eventId, String eventName, String? eventVenue, DateTime startTime) async {
+  Future<bool> deleteEvent(String eventId) => leaveEvent(eventId);
+
+  Future<void> createEventMatches(
+    String eventId,
+    String eventName,
+    String? eventVenue,
+    DateTime startTime,
+  ) async {
     // Event matching is now handled entirely by the backend
     // The database trigger automatically calls perform_event_matching when users join events
     // No frontend logic needed here
@@ -453,7 +553,14 @@ class EventManager extends _$EventManager {
 
     // Remove common words
     final wordsToRemove = [
-      'the', 'at', 'in', 'on', 'live', 'music', 'venue', 'club'
+      'the',
+      'at',
+      'in',
+      'on',
+      'live',
+      'music',
+      'venue',
+      'club',
     ];
     for (final word in wordsToRemove) {
       normalized = normalized.replaceAll(RegExp(r'\b' + word + r'\b'), '');
@@ -476,7 +583,9 @@ class EventManager extends _$EventManager {
     try {
       final uri = Uri.parse(link.trim());
       // Rebuild URL without query parameters and fragment
-      var normalized = uri.replace(queryParameters: {}, fragment: '').toString();
+      var normalized = uri
+          .replace(queryParameters: {}, fragment: '')
+          .toString();
       // Remove trailing slash
       normalized = normalized.replaceAll(RegExp(r'/+$'), '');
       return normalized.toLowerCase();
@@ -500,29 +609,59 @@ class EventManager extends _$EventManager {
     // Remove common suffix patterns (opening acts, special guests, ticket types, etc.)
     final suffixPatterns = [
       // Opening acts / special guests
-      RegExp(r'\s+w/\s+.+$', caseSensitive: false),           // " w/ Artist"
-      RegExp(r'\s+with\s+.+$', caseSensitive: false),        // " with Artist"
-      RegExp(r'\s+feat\.?\s+.+$', caseSensitive: false),     // " feat. Artist" or " feat Artist"
-      RegExp(r'\s+featuring\s+.+$', caseSensitive: false),   // " featuring Artist"
-      RegExp(r'\s+plus\s+.+$', caseSensitive: false),        // " plus Artist"
-      RegExp(r'\s+\+\s+.+$', caseSensitive: false),          // " + Artist"
-      RegExp(r'\s+and\s+.+$', caseSensitive: false),         // " and Artist"
-      RegExp(r'\s+&\s+.+$', caseSensitive: false),           // " & Artist"
+      RegExp(r'\s+w/\s+.+$', caseSensitive: false), // " w/ Artist"
+      RegExp(r'\s+with\s+.+$', caseSensitive: false), // " with Artist"
+      RegExp(
+        r'\s+feat\.?\s+.+$',
+        caseSensitive: false,
+      ), // " feat. Artist" or " feat Artist"
+      RegExp(
+        r'\s+featuring\s+.+$',
+        caseSensitive: false,
+      ), // " featuring Artist"
+      RegExp(r'\s+plus\s+.+$', caseSensitive: false), // " plus Artist"
+      RegExp(r'\s+\+\s+.+$', caseSensitive: false), // " + Artist"
+      RegExp(r'\s+and\s+.+$', caseSensitive: false), // " and Artist"
+      RegExp(r'\s+&\s+.+$', caseSensitive: false), // " & Artist"
       // Ticket types and entry types
-      RegExp(r'\s*[-–—]\s*(vip|general admission|ga|early entry|presale|presales?).*$', caseSensitive: false),
-      RegExp(r'\s*\((vip|general admission|ga|early entry|presale|presales?).*\).*$', caseSensitive: false),
-      RegExp(r'\s+(vip|general admission|ga|early entry|presale|presales?)\s+(tickets|passes|entry).*$', caseSensitive: false),
-      RegExp(r'\s+(tickets|passes)\s*:?\s*(vip|general admission|ga|early entry).*$', caseSensitive: false),
+      RegExp(
+        r'\s*[-–—]\s*(vip|general admission|ga|early entry|presale|presales?).*$',
+        caseSensitive: false,
+      ),
+      RegExp(
+        r'\s*\((vip|general admission|ga|early entry|presale|presales?).*\).*$',
+        caseSensitive: false,
+      ),
+      RegExp(
+        r'\s+(vip|general admission|ga|early entry|presale|presales?)\s+(tickets|passes|entry).*$',
+        caseSensitive: false,
+      ),
+      RegExp(
+        r'\s+(tickets|passes)\s*:?\s*(vip|general admission|ga|early entry).*$',
+        caseSensitive: false,
+      ),
       // Seating/sections
-      RegExp(r'\s*[-–—]\s*(floor|balcony|mezzanine|orchestra|section|row|seat).*$', caseSensitive: false),
-      RegExp(r'\s*\((floor|balcony|mezzanine|orchestra|section)\s*.*\).*$', caseSensitive: false),
+      RegExp(
+        r'\s*[-–—]\s*(floor|balcony|mezzanine|orchestra|section|row|seat).*$',
+        caseSensitive: false,
+      ),
+      RegExp(
+        r'\s*\((floor|balcony|mezzanine|orchestra|section)\s*.*\).*$',
+        caseSensitive: false,
+      ),
       // Age restrictions
-      RegExp(r'\s*[-–—]?\s*\d+\+.*$', caseSensitive: false),  // "18+", "21+"
-      RegExp(r'\s*\(\d+\+\).*$', caseSensitive: false),       // "(18+)"
+      RegExp(r'\s*[-–—]?\s*\d+\+.*$', caseSensitive: false), // "18+", "21+"
+      RegExp(r'\s*\(\d+\+\).*$', caseSensitive: false), // "(18+)"
       // Dates in name (when already have start_time)
-      RegExp(r'\s*[-–—]?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}.*$', caseSensitive: false),
+      RegExp(
+        r'\s*[-–—]?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}.*$',
+        caseSensitive: false,
+      ),
       // Generic ticket/layout qualifiers
-      RegExp(r'\s*[-–—]\s*(admission|tickets?|pass|entry|show|doors?).*$', caseSensitive: false),
+      RegExp(
+        r'\s*[-–—]\s*(admission|tickets?|pass|entry|show|doors?).*$',
+        caseSensitive: false,
+      ),
     ];
 
     for (final pattern in suffixPatterns) {
@@ -531,8 +670,8 @@ class EventManager extends _$EventManager {
 
     // Remove common punctuation and normalize whitespace
     normalized = normalized
-        .replaceAll(RegExp(r'[^\w\s]'), ' ')  // Replace special chars with space
-        .replaceAll(RegExp(r'\s+'), ' ')      // Collapse multiple spaces
+        .replaceAll(RegExp(r'[^\w\s]'), ' ') // Replace special chars with space
+        .replaceAll(RegExp(r'\s+'), ' ') // Collapse multiple spaces
         .trim();
 
     return normalized;
@@ -553,48 +692,72 @@ class EventManager extends _$EventManager {
     }
   }
 
-  EventModel? _sanitizeEventForPublicSave(EventModel event, {required bool requirePublicJoinable}) {
-    return _sanitizeEventForPublicSaveWithReason(event, requirePublicJoinable: requirePublicJoinable).event;
+  Future<EventModel?> _sanitizeEventForPublicSave(
+    EventModel event, {
+    required bool requirePublicJoinable,
+  }) async {
+    return (await _sanitizeEventForPublicSaveWithReason(
+      event,
+      requirePublicJoinable: requirePublicJoinable,
+    )).event;
   }
 
-  _SanitizedEventResult _sanitizeEventForPublicSaveWithReason(EventModel event, {required bool requirePublicJoinable}) {
+  Future<_SanitizedEventResult> _sanitizeEventForPublicSaveWithReason(
+    EventModel event, {
+    required bool requirePublicJoinable,
+  }) async {
     final name = _sanitizeEventText(event.eventName);
-    final venue = event.eventVenue == null ? null : _sanitizeEventText(event.eventVenue!);
-    final link = event.eventLink == null ? null : _sanitizeEventLink(event.eventLink!);
+    final venue = event.eventVenue == null
+        ? null
+        : _sanitizeEventText(event.eventVenue!);
+    final link = event.eventLink == null
+        ? null
+        : _sanitizeEventLink(event.eventLink!);
+    final description = event.description == null
+        ? null
+        : _sanitizeEventDescription(event.description!);
 
-    if (name.isEmpty) return const _SanitizedEventResult(null, 'eventAddRejectedMissingTitle');
-    if (_containsPii(name) || (venue != null && _containsPii(venue)) || (link != null && _containsPii(link))) {
+    if (name.isEmpty) {
+      return const _SanitizedEventResult(null, 'eventAddRejectedMissingTitle');
+    }
+    if (_containsPii(name) ||
+        (venue != null && _containsPii(venue)) ||
+        (link != null && _containsPii(link)) ||
+        (description != null && _containsPii(description))) {
       return const _SanitizedEventResult(null, 'eventAddRejectedContainsPII');
     }
 
-    final lowerTitle = name.toLowerCase();
-    final lowerLocation = (venue ?? '').toLowerCase();
-    if (_looksPersonalTitle(lowerTitle) || _looksPersonalLocation(lowerLocation)) {
-      return const _SanitizedEventResult(null, 'eventAddRejectedPersonalOrPrivate');
-    }
-
     if (requirePublicJoinable) {
-      final linkOk = link != null && link.isNotEmpty && _isPublicEventUrl(link);
-      final venueOk = venue != null && venue.trim().isNotEmpty && !_looksPersonalLocation(lowerLocation);
-
-      if (!linkOk && !venueOk) {
-        return const _SanitizedEventResult(null, 'eventAddRejectedNotJoinable');
-      }
-      if (!linkOk && !_looksPublicEventTitle(lowerTitle)) {
-        return const _SanitizedEventResult(null, 'eventAddRejectedNotPublicEvent');
+      final validation = await _validatePublicJoinability(
+        eventName: name,
+        eventVenue: venue,
+        eventLink: link,
+        description: description,
+        externalProvider: event.externalProvider,
+        isAllDay: event.isAllDay,
+        startTime: event.startTime,
+        endTime: event.endTime,
+      );
+      if (!validation.allowed) {
+        return _SanitizedEventResult(null, validation.errorKey);
       }
     }
 
     return _SanitizedEventResult(
       EventModel(
-      id: event.id,
-      eventName: name,
-      eventVenue: venue?.trim().isEmpty == true ? null : venue,
-      startTime: event.startTime,
-      endTime: event.endTime,
-      eventLink: link?.trim().isEmpty == true ? null : link,
-      notes: event.notes,
-      attendeeCount: event.attendeeCount,
+        id: event.id,
+        eventName: name,
+        eventVenue: venue?.trim().isEmpty == true ? null : venue,
+        startTime: event.startTime,
+        endTime: event.endTime,
+        eventLink: link?.trim().isEmpty == true ? null : link,
+        notes: event.notes,
+        attendeeCount: event.attendeeCount,
+        externalCalendarId: event.externalCalendarId,
+        externalEventId: event.externalEventId,
+        externalProvider: event.externalProvider,
+        isAllDay: event.isAllDay,
+        description: description,
       ),
       null,
     );
@@ -602,7 +765,10 @@ class EventManager extends _$EventManager {
 
   String _sanitizeEventText(String input) {
     var s = input.trim();
-    s = s.replaceAll(RegExp(r'[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}', caseSensitive: false), '');
+    s = s.replaceAll(
+      RegExp(r'[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}', caseSensitive: false),
+      '',
+    );
     s = s.replaceAll(RegExp(r'(\+?\d[\d\s().-]{6,}\d)'), '');
     s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
     if (s.length > 180) s = s.substring(0, 180).trim();
@@ -610,7 +776,18 @@ class EventManager extends _$EventManager {
   }
 
   String _sanitizeEventLink(String input) {
-    final raw = input.trim();
+    var raw = input.trim();
+    if (raw.length >= 2) {
+      final first = raw[0];
+      final last = raw[raw.length - 1];
+      final hasMatchingWrapper =
+          (first == '`' && last == '`') ||
+          (first == '"' && last == '"') ||
+          (first == "'" && last == "'");
+      if (hasMatchingWrapper) {
+        raw = raw.substring(1, raw.length - 1).trim();
+      }
+    }
     Uri? uri;
     try {
       uri = Uri.parse(raw);
@@ -623,34 +800,26 @@ class EventManager extends _$EventManager {
     return normalized;
   }
 
+  String? _sanitizeEventDescription(String input) {
+    var s = input.trim();
+    if (s.isEmpty) return null;
+    s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (s.length > 2000) s = s.substring(0, 2000).trim();
+    return s.isEmpty ? null : s;
+  }
+
   bool _containsPii(String input) {
     if (input.isEmpty) return false;
-    if (RegExp(r'[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}', caseSensitive: false).hasMatch(input)) {
+    if (RegExp(
+      r'[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}',
+      caseSensitive: false,
+    ).hasMatch(input)) {
       return true;
     }
     if (RegExp(r'(\+?\d[\d\s().-]{6,}\d)').hasMatch(input)) {
       return true;
     }
     return false;
-  }
-
-  bool _looksPersonalTitle(String lowerTitle) {
-    return RegExp(
-      r'\b(birthday|anniversary|dentist|doctor|therapy|appointment|1:1|one[-\s]?on[-\s]?one|meeting|sync|call|interview|school|pickup|drop[-\s]?off|flight|reservation|invoice|receipt|dinner|lunch|brunch|coffee|drinks?|date\s*night|hangout|hang\s*out|catch\s*up|catchup)\b',
-      caseSensitive: false,
-    ).hasMatch(lowerTitle);
-  }
-
-  bool _looksPublicEventTitle(String lowerTitle) {
-    return RegExp(
-      r'\b(concert|festival|show|gig|party|club\s*night|open\s*mic|exhibition|gallery|museum|theatre|theater|screening|premiere|tournament|match|league|conference|summit|meetup|workshop|class|seminar|lecture|talk|networking|fundraiser|charity|rave|dj\s*set)\b',
-      caseSensitive: false,
-    ).hasMatch(lowerTitle);
-  }
-
-  bool _looksPersonalLocation(String lowerLocation) {
-    return RegExp(r'\b(home|my place|house|apartment|apt\.?|unit\s+\d+)\b', caseSensitive: false)
-        .hasMatch(lowerLocation);
   }
 
   bool _isPublicEventUrl(String url) {
@@ -679,13 +848,327 @@ class EventManager extends _$EventManager {
     if (host.endsWith('.zoom.us')) return false;
     return true;
   }
+
+  Future<_JoinabilityValidationResult> _validatePublicJoinability({
+    required String eventName,
+    required String? eventVenue,
+    required String? eventLink,
+    required String? description,
+    required String? externalProvider,
+    required bool isAllDay,
+    required DateTime startTime,
+    required DateTime endTime,
+  }) async {
+    final hasPublicUrl =
+        eventLink != null &&
+        eventLink.isNotEmpty &&
+        _isPublicEventUrl(eventLink);
+    if (hasPublicUrl) {
+      return const _JoinabilityValidationResult(allowed: true, errorKey: null);
+    }
+
+    final classification = await _classifyEventJoinabilityWithAi(
+      eventName: eventName,
+      eventVenue: eventVenue,
+      eventLink: eventLink,
+      description: description,
+      externalProvider: externalProvider,
+      isAllDay: isAllDay,
+      startTime: startTime,
+      endTime: endTime,
+    );
+
+    return switch (classification) {
+      _AiJoinabilityClassification.publicEvent =>
+        const _JoinabilityValidationResult(allowed: true, errorKey: null),
+      _AiJoinabilityClassification.privateEvent =>
+        const _JoinabilityValidationResult(
+          allowed: false,
+          errorKey: 'eventAddRejectedPrivateEvent',
+        ),
+      _AiJoinabilityClassification.uncertain =>
+        const _JoinabilityValidationResult(
+          allowed: false,
+          errorKey: 'eventAddRejectedCouldNotVerifyPublic',
+        ),
+      _AiJoinabilityClassification.unavailable =>
+        const _JoinabilityValidationResult(
+          allowed: false,
+          errorKey: 'eventAddRejectedCouldNotVerifyPublic',
+        ),
+    };
+  }
+
+  Future<_AiJoinabilityClassification> _classifyEventJoinabilityWithAi({
+    required String eventName,
+    required String? eventVenue,
+    required String? eventLink,
+    required String? description,
+    required String? externalProvider,
+    required bool isAllDay,
+    required DateTime startTime,
+    required DateTime endTime,
+  }) async {
+    try {
+      final locale = ref
+          .read(localizationProvider)
+          .currentLocale
+          .toLanguageTag();
+      final durationMinutes = endTime.difference(startTime).inMinutes;
+      final response = await supabase.functions.invoke(
+        'get-event-metadata',
+        body: {
+          'eventValidation': {
+            'title': eventName,
+            'location': eventVenue,
+            'description': description,
+            'url': eventLink,
+            'provider': externalProvider,
+            'appLocale': locale,
+            'isAllDay': isAllDay,
+            'startTime': startTime.toIso8601String(),
+            'endTime': endTime.toIso8601String(),
+            'durationMinutes': durationMinutes < 0 ? 0 : durationMinutes,
+            'urlHost': _eventUrlHost(eventLink),
+          },
+        },
+      );
+
+      if (response.status != 200) {
+        return _AiJoinabilityClassification.unavailable;
+      }
+
+      dynamic data = response.data;
+      if (data is String && data.trim().isNotEmpty) {
+        try {
+          data = jsonDecode(data);
+        } catch (_) {}
+      }
+
+      if (data is! Map) {
+        return _AiJoinabilityClassification.unavailable;
+      }
+
+      final classification = (data['classification'] as String?)
+          ?.trim()
+          .toLowerCase();
+      return switch (classification) {
+        'public' => _AiJoinabilityClassification.publicEvent,
+        'private' => _AiJoinabilityClassification.privateEvent,
+        'uncertain' => _AiJoinabilityClassification.uncertain,
+        _ => _AiJoinabilityClassification.unavailable,
+      };
+    } catch (_) {
+      return _AiJoinabilityClassification.unavailable;
+    }
+  }
+
+  String? _eventUrlHost(String? rawUrl) {
+    final value = rawUrl?.trim();
+    if (value == null || value.isEmpty) return null;
+    try {
+      final uri = Uri.parse(value);
+      final host = uri.host.trim().toLowerCase();
+      return host.isEmpty ? null : host;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  EventSaveResult _mapEventSaveFailure(Object error) {
+    if (error is AuthException) {
+      return const EventSaveResult(
+        success: false,
+        errorKey: 'eventAddFailedAuth',
+        diagnosticCode: 'auth_exception',
+      );
+    }
+
+    if (error is PostgrestException) {
+      final detailsText = [
+        error.message,
+        error.details,
+        error.hint,
+      ].whereType<String>().join(' ').toLowerCase();
+
+      if (error.code == '42501' ||
+          detailsText.contains('row-level security') ||
+          detailsText.contains('permission denied') ||
+          detailsText.contains('not allowed')) {
+        return const EventSaveResult(
+          success: false,
+          errorKey: 'eventAddFailedPermission',
+          diagnosticCode: 'db_permission_denied',
+        );
+      }
+
+      if (error.code == '23505' ||
+          detailsText.contains('duplicate key') ||
+          detailsText.contains('unique constraint')) {
+        return const EventSaveResult(
+          success: false,
+          errorKey: 'eventAddFailedDuplicate',
+          diagnosticCode: 'db_duplicate',
+        );
+      }
+
+      if (error.code == '23503') {
+        return const EventSaveResult(
+          success: false,
+          errorKey: 'eventAddFailedMissingDependency',
+          diagnosticCode: 'db_foreign_key',
+        );
+      }
+
+      if (error.code == '23502' ||
+          error.code == '23514' ||
+          error.code == '22P02') {
+        return const EventSaveResult(
+          success: false,
+          errorKey: 'eventAddFailedInvalidData',
+          diagnosticCode: 'db_invalid_data',
+        );
+      }
+
+      if (detailsText.contains('start_time') &&
+          detailsText.contains('must not be in the past')) {
+        return const EventSaveResult(
+          success: false,
+          errorKey: 'eventAddFailedPastEvent',
+          diagnosticCode: 'db_past_event',
+        );
+      }
+
+      if (error.code == 'PGRST301' ||
+          detailsText.contains('jwt') ||
+          detailsText.contains('not authenticated')) {
+        return const EventSaveResult(
+          success: false,
+          errorKey: 'eventAddFailedAuth',
+          diagnosticCode: 'db_auth',
+        );
+      }
+
+      return EventSaveResult(
+        success: false,
+        errorKey: 'eventAddFailedDatabase',
+        diagnosticCode: error.code ?? 'db_unknown',
+      );
+    }
+
+    if (error is TimeoutException) {
+      return const EventSaveResult(
+        success: false,
+        errorKey: 'eventAddFailedNetwork',
+        diagnosticCode: 'timeout',
+      );
+    }
+
+    final message = error.toString().toLowerCase();
+    if (message.contains('socketexception') ||
+        message.contains('failed host lookup') ||
+        message.contains('network') ||
+        message.contains('connection')) {
+      return const EventSaveResult(
+        success: false,
+        errorKey: 'eventAddFailedNetwork',
+        diagnosticCode: 'network_error',
+      );
+    }
+
+    return const EventSaveResult(
+      success: false,
+      errorKey: 'eventAddFailedUnknown',
+      diagnosticCode: 'unknown',
+    );
+  }
+
+  Future<String?> _findExistingEventIdForImport(EventModel safeEvent) async {
+    final normalizedVenue = _normalizeVenue(safeEvent.eventVenue);
+    final normalizedName = _normalizeEventName(safeEvent.eventName);
+
+    var potentialMatchesQuery = supabase
+        .from('events')
+        .select('id, event_name, event_venue')
+        .eq('start_time', safeEvent.startTime.toIso8601String());
+
+    if (normalizedVenue.isEmpty) {
+      potentialMatchesQuery = potentialMatchesQuery.or(
+        'event_venue.is.null,event_venue.eq.',
+      );
+    }
+
+    final potentialMatches = await potentialMatchesQuery;
+
+    for (final match
+        in (potentialMatches as List<dynamic>).cast<Map<String, dynamic>>()) {
+      final existingNormalizedName = _normalizeEventName(
+        match['event_name'] as String,
+      );
+      final existingNormalizedVenue = _normalizeVenue(
+        match['event_venue'] as String?,
+      );
+
+      final namesMatch = _areEventNamesMatching(
+        normalizedName,
+        existingNormalizedName,
+      );
+      final venuesMatch =
+          normalizedVenue == existingNormalizedVenue ||
+          (normalizedVenue.isNotEmpty &&
+              existingNormalizedVenue.isNotEmpty &&
+              (normalizedVenue.contains(existingNormalizedVenue) ||
+                  existingNormalizedVenue.contains(normalizedVenue)));
+
+      if (namesMatch && venuesMatch) {
+        return match['id'] as String;
+      }
+    }
+
+    if (safeEvent.eventLink != null && safeEvent.eventLink!.isNotEmpty) {
+      final normalizedLink = _normalizeEventLink(safeEvent.eventLink!);
+      final linkMatch = await supabase
+          .from('events')
+          .select('id, event_link')
+          .ilike('event_link', '%${normalizedLink.split('?').first}%')
+          .eq('start_time', safeEvent.startTime.toIso8601String())
+          .maybeSingle();
+
+      if (linkMatch != null) {
+        final existingNormalizedLink = _normalizeEventLink(
+          linkMatch['event_link'] ?? '',
+        );
+        if (existingNormalizedLink == normalizedLink) {
+          return linkMatch['id'] as String;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  bool _isUniqueConstraintFailure(PostgrestException error) {
+    final detailsText = [
+      error.message,
+      error.details,
+      error.hint,
+    ].whereType<String>().join(' ').toLowerCase();
+    return error.code == '23505' ||
+        detailsText.contains('duplicate key') ||
+        detailsText.contains('unique constraint');
+  }
 }
 
 class EventSaveResult {
   final bool success;
   final String? errorKey;
+  final String? diagnosticCode;
 
-  const EventSaveResult({required this.success, this.errorKey});
+  const EventSaveResult({
+    required this.success,
+    this.errorKey,
+    this.diagnosticCode,
+  });
 }
 
 class _SanitizedEventResult {
@@ -693,4 +1176,21 @@ class _SanitizedEventResult {
   final String? errorKey;
 
   const _SanitizedEventResult(this.event, this.errorKey);
+}
+
+class _JoinabilityValidationResult {
+  final bool allowed;
+  final String? errorKey;
+
+  const _JoinabilityValidationResult({
+    required this.allowed,
+    required this.errorKey,
+  });
+}
+
+enum _AiJoinabilityClassification {
+  publicEvent,
+  privateEvent,
+  uncertain,
+  unavailable,
 }

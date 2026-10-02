@@ -184,13 +184,22 @@ class TextFormatter {
 
   static String _capitalizeDaysOfWeek(String text) {
     const daysOfWeek = [
-      'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'
+      'monday',
+      'tuesday',
+      'wednesday',
+      'thursday',
+      'friday',
+      'saturday',
+      'sunday',
     ];
 
     String result = text;
     for (final day in daysOfWeek) {
       final capitalized = day[0].toUpperCase() + day.substring(1);
-      result = result.replaceAll(RegExp(r'\b$day\b', caseSensitive: false), capitalized);
+      result = result.replaceAll(
+        RegExp(r'\b$day\b', caseSensitive: false),
+        capitalized,
+      );
     }
 
     return result;
@@ -198,14 +207,27 @@ class TextFormatter {
 
   static String _capitalizeMonths(String text) {
     const months = [
-      'january', 'february', 'march', 'april', 'may', 'june',
-      'july', 'august', 'september', 'october', 'november', 'december'
+      'january',
+      'february',
+      'march',
+      'april',
+      'may',
+      'june',
+      'july',
+      'august',
+      'september',
+      'october',
+      'november',
+      'december',
     ];
 
     String result = text;
     for (final month in months) {
       final capitalized = month[0].toUpperCase() + month.substring(1);
-      result = result.replaceAll(RegExp(r'\b$month\b', caseSensitive: false), capitalized);
+      result = result.replaceAll(
+        RegExp(r'\b$month\b', caseSensitive: false),
+        capitalized,
+      );
     }
 
     return result;
@@ -241,7 +263,8 @@ class TextFormatter {
     if (word.length <= 1) return false;
 
     // Words that are already properly capitalized
-    if (word[0].toUpperCase() == word[0] && word.substring(1).toLowerCase() == word.substring(1)) {
+    if (word[0].toUpperCase() == word[0] &&
+        word.substring(1).toLowerCase() == word.substring(1)) {
       return true;
     }
 

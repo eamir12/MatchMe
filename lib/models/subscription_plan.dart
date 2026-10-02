@@ -24,8 +24,21 @@ class SubscriptionPlan {
       duration: map['duration'] as String,
       priceDisplay: map['price_display'] as String,
       savingsText: map['savings_text'] as String?,
-      revenueCatPackageIdentifier: map['revenue_cat_package_identifier'] as String?,
+      revenueCatPackageIdentifier:
+          map['revenue_cat_package_identifier'] as String?,
       sortOrder: map['sort_order'] as int? ?? 0,
     );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'tier_id': tierId,
+      'duration': duration,
+      'price_display': priceDisplay,
+      'savings_text': savingsText,
+      'revenue_cat_package_identifier': revenueCatPackageIdentifier,
+      'sort_order': sortOrder,
+    };
   }
 }

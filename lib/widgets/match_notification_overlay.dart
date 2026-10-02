@@ -14,14 +14,31 @@ import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/widgets/signed_image.dart';
 import 'package:matchme/web_imports.dart' as html;
 
+/// The overlay carries two banner kinds — a new match, and "the other
+/// participant extended this match" — so the in-app gate has to be satisfied
+/// for whichever kind is actually showing.
+bool _inAppEnabled(NotificationPreferencesState notifs) {
+  return notifs.isMethodEnabled(
+        NotificationType.newMatch,
+        NotificationMethod.inApp,
+      ) ||
+      notifs.isMethodEnabled(
+        NotificationType.matchExtended,
+        NotificationMethod.inApp,
+      );
+}
+
 class MatchNotificationOverlay extends ConsumerStatefulWidget {
   const MatchNotificationOverlay({super.key});
 
   @override
-  ConsumerState<MatchNotificationOverlay> createState() => _MatchNotificationOverlayState();
+  ConsumerState<MatchNotificationOverlay> createState() =>
+      _MatchNotificationOverlayState();
 }
 
-class _MatchNotificationOverlayState extends ConsumerState<MatchNotificationOverlay> with SingleTickerProviderStateMixin {
+class _MatchNotificationOverlayState
+    extends ConsumerState<MatchNotificationOverlay>
+    with SingleTickerProviderStateMixin {
   MatchNotification? _currentNotification;
   AnimationController? _animationController;
   Animation<Offset>? _slideAnimation;
@@ -33,13 +50,13 @@ class _MatchNotificationOverlayState extends ConsumerState<MatchNotificationOver
       duration: const Duration(milliseconds: 500),
       vsync: this,
     );
-    _slideAnimation = Tween<Offset>(
-      begin: const Offset(0, -1),
-      end: Offset.zero,
-    ).animate(CurvedAnimation(
-      parent: _animationController!,
-      curve: Curves.easeOutBack,
-    ));
+    _slideAnimation =
+        Tween<Offset>(begin: const Offset(0, -1), end: Offset.zero).animate(
+          CurvedAnimation(
+            parent: _animationController!,
+            curve: Curves.easeOutBack,
+          ),
+        );
   }
 
   @override
@@ -51,14 +68,22 @@ class _MatchNotificationOverlayState extends ConsumerState<MatchNotificationOver
   void _showNotification(MatchNotification notification) async {
     final notifs = ref.read(userPreferencesProvider).notifications;
     if (notifs.isPausedNow) return;
-    if (!notifs.isMethodEnabled(NotificationType.newMatch, NotificationMethod.inApp)) return;
+    if (!notifs.isMethodEnabled(
+      NotificationType.newMatch,
+      NotificationMethod.inApp,
+    )) {
+      return;
+    }
 
     setState(() {
       _currentNotification = notification;
     });
-    
+
     // Play haptic feedback
-    final allowVibrate = notifs.isMethodEnabled(NotificationType.newMatch, NotificationMethod.vibrate);
+    final allowVibrate = notifs.isMethodEnabled(
+      NotificationType.newMatch,
+      NotificationMethod.vibrate,
+    );
     if (allowVibrate) {
       if (kIsWeb) {
         html.safeVibrate(20);
@@ -66,14 +91,19 @@ class _MatchNotificationOverlayState extends ConsumerState<MatchNotificationOver
         HapticFeedback.mediumImpact();
       }
     }
-    
-    // Animate in
-    _animationController?.forward();
+
+    final reduceMotion =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    if (reduceMotion) {
+      _animationController?.value = 1;
+    } else {
+      _animationController?.forward();
+    }
 
     // Auto-dismiss after configured duration
     final dismissDuration = await appConfigService.getDuration(
       'notification.match_auto_dismiss_seconds',
-      defaultValue: const Duration(seconds: 5)
+      defaultValue: const Duration(seconds: 5),
     );
     Future.delayed(dismissDuration, () {
       _dismissNotification();
@@ -81,6 +111,16 @@ class _MatchNotificationOverlayState extends ConsumerState<MatchNotificationOver
   }
 
   void _dismissNotification() {
+    final reduceMotion =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    if (reduceMotion) {
+      if (mounted) {
+        setState(() {
+          _currentNotification = null;
+        });
+      }
+      return;
+    }
     _animationController?.reverse().then((_) {
       if (mounted) {
         setState(() {
@@ -92,18 +132,23 @@ class _MatchNotificationOverlayState extends ConsumerState<MatchNotificationOver
 
   void _viewMatch() {
     if (_currentNotification == null) return;
-    
+
     final match = _currentNotification!.match;
     final l10n = ref.read(localizationProvider);
-    final cachedProfile = ref.read(userProfileProvider(match.otherUserId)).asData?.value;
-    final otherName = cachedProfile?.name.formatAsFirstNameLastInitial() ?? l10n.getString('newMatchPlaceholderName');
-    
+    final cachedProfile = ref
+        .read(userProfileProvider(match.otherUserId))
+        .asData
+        ?.value;
+    final otherName =
+        cachedProfile?.name.formatAsFirstNameLastInitial() ??
+        l10n.getString('newMatchPlaceholderName');
+
     // Mark as viewed
     ref.read(matchNotificationProvider.notifier).markAsViewed(match.id);
-    
+
     // Dismiss notification
     _dismissNotification();
-    
+
     // Navigate to match profile
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -112,10 +157,24 @@ class _MatchNotificationOverlayState extends ConsumerState<MatchNotificationOver
           otherUserId: match.otherUserId,
           otherUserName: otherName,
           matchedIntent: match.matchedIntent,
+          matchType: match.matchType,
           eventId: match.eventId,
           eventName: match.eventName,
           eventLink: match.eventLink,
           createdAt: match.createdAt,
+          // Pass cached location/rematch fields so the profile (incl. the
+          // minimap and name) renders offline without a fresh DB fetch.
+          matchOccurrence: match.matchOccurrence,
+          user1Latitude: match.user1Latitude,
+          user1Longitude: match.user1Longitude,
+          user2Latitude: match.user2Latitude,
+          user2Longitude: match.user2Longitude,
+          mapCenterLat: match.mapCenterLat,
+          mapCenterLng: match.mapCenterLng,
+          mapZoom: match.mapZoom,
+          previousLocations: match.previousLocations,
+          allMatchLocationsOverride: match.allMatchLocations,
+          isRetroactive: match.isRetroactive,
         ),
       ),
     );
@@ -126,15 +185,21 @@ class _MatchNotificationOverlayState extends ConsumerState<MatchNotificationOver
     final notifs = ref.watch(userPreferencesProvider).notifications;
 
     // Listen for new notifications
-    ref.listen<MatchNotificationState>(matchNotificationProvider, (previous, next) {
+    ref.listen<MatchNotificationState>(matchNotificationProvider, (
+      previous,
+      next,
+    ) {
       final currentNotifs = ref.read(userPreferencesProvider).notifications;
       if (currentNotifs.isPausedNow) return;
-      if (!currentNotifs.isMethodEnabled(NotificationType.newMatch, NotificationMethod.inApp)) return;
+      if (!_inAppEnabled(currentNotifs)) {
+        return;
+      }
       // Check if there's a new unviewed notification
       final newNotification = next.notifications.firstOrNull;
-      if (newNotification != null && 
-          !newNotification.viewed && 
-          (previous?.notifications.firstOrNull?.match.id != newNotification.match.id)) {
+      if (newNotification != null &&
+          !newNotification.viewed &&
+          (previous?.notifications.firstOrNull?.match.id !=
+              newNotification.match.id)) {
         _showNotification(newNotification);
       }
     });
@@ -142,7 +207,7 @@ class _MatchNotificationOverlayState extends ConsumerState<MatchNotificationOver
     if (notifs.isPausedNow) {
       return const SizedBox.shrink();
     }
-    if (!notifs.isMethodEnabled(NotificationType.newMatch, NotificationMethod.inApp)) {
+    if (!_inAppEnabled(notifs)) {
       return const SizedBox.shrink();
     }
 
@@ -160,130 +225,200 @@ class _MatchNotificationOverlayState extends ConsumerState<MatchNotificationOver
       (intent) => intent.key == match.matchedIntent,
       orElse: () => AppIntent(id: 0, key: '', translationKey: '', sortOrder: 0),
     );
-    final matchedIntentDisplay = l10n.getString(matchedIntentObj.translationKey);
+    final matchedIntentDisplay =
+        matchedIntentObj.translationKey.isNotEmpty &&
+            l10n.containsKey(matchedIntentObj.translationKey)
+        ? l10n.getString(matchedIntentObj.translationKey)
+        : matchedIntentObj.translationKey
+              .replaceAll('_', ' ')
+              .split(' ')
+              .map(
+                (w) => w.isNotEmpty
+                    ? '${w[0].toUpperCase()}${w.substring(1)}'
+                    : '',
+              )
+              .join(' ');
 
-    return SlideTransition(
-      position: _slideAnimation!,
-      child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Material(
-            elevation: 8,
-            borderRadius: BorderRadius.circular(16),
-            child: Container(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [Theme.of(context).colorScheme.primary, Theme.of(context).colorScheme.secondary],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
+    return Semantics(
+      liveRegion: true,
+      child: SlideTransition(
+        position: _slideAnimation!,
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Material(
+              elevation: 8,
+              borderRadius: BorderRadius.circular(16),
+              child: Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      Theme.of(context).colorScheme.primary,
+                      Theme.of(context).colorScheme.secondary,
+                    ],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(16),
                 ),
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Row(
-                  children: [
-                    // User photo
-                    profileAsync.when(
-                      data: (profile) {
-                        final photoUrl = (profile?.photos.isNotEmpty == true) ? profile!.photos[0] : null;
-                        return CircleAvatar(
-                          radius: 30,
-                          backgroundColor: Theme.of(context).colorScheme.surface,
-                          child: photoUrl != null
-                              ? ClipOval(
-                                  child: SignedImage(
-                                    source: photoUrl,
-                                    width: 60,
-                                    height: 60,
-                                    fit: BoxFit.cover,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Row(
+                    children: [
+                      // User photo
+                      profileAsync.when(
+                        data: (profile) {
+                          final photoUrl = (profile?.photos.isNotEmpty == true)
+                              ? profile!.photos[0]
+                              : null;
+                          return CircleAvatar(
+                            radius: 30,
+                            backgroundColor: Theme.of(
+                              context,
+                            ).colorScheme.surface,
+                            child: photoUrl != null
+                                ? ClipOval(
+                                    child: SignedImage(
+                                      source: photoUrl,
+                                      width: 60,
+                                      height: 60,
+                                      fit: BoxFit.cover,
+                                    ),
+                                  )
+                                : Icon(
+                                    Icons.person,
+                                    size: 30,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.primary,
                                   ),
-                                )
-                              : Icon(Icons.person, size: 30, color: Theme.of(context).colorScheme.primary),
-                        );
-                      },
-                      loading: () => CircleAvatar(
-                        radius: 30,
-                        backgroundColor: Theme.of(context).colorScheme.surface,
-                        child: const CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                      error: (_, _) => CircleAvatar(
-                        radius: 30,
-                        backgroundColor: Theme.of(context).colorScheme.surface,
-                        child: Icon(Icons.person, size: 30, color: Theme.of(context).colorScheme.primary),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    // Match info
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          // Use gender-aware translation for the title if the other user's gender is known
-                          Text(
-                            () {
-                              final profileSync = profileAsync.asData?.value;
-                              final title = l10n.getString('newMatchTitle', gender: profileSync?.gender);
-                              return '🎉 $title';
-                            }(),
-                            style: TextStyle(
-                              color: Theme.of(context).colorScheme.onPrimary,
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                            ),
+                          );
+                        },
+                        loading: () => CircleAvatar(
+                          radius: 30,
+                          backgroundColor: Theme.of(
+                            context,
+                          ).colorScheme.surface,
+                          child: const CircularProgressIndicator(
+                            strokeWidth: 2,
                           ),
-                          const SizedBox(height: 4),
-                          profileAsync.when(
-                            data: (profile) => Text(
-                              profile?.name.formatAsFirstNameLastInitial() ?? l10n.getString('generalUnknown'),
+                        ),
+                        error: (_, _) => CircleAvatar(
+                          radius: 30,
+                          backgroundColor: Theme.of(
+                            context,
+                          ).colorScheme.surface,
+                          child: Icon(
+                            Icons.person,
+                            size: 30,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      // Match info
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // Use gender-aware translation for the title if the other user's gender is known
+                            Text(
+                              () {
+                                final profileSync = profileAsync.asData?.value;
+                                final isExtension =
+                                    _currentNotification?.isExtension ?? false;
+                                final title = l10n.getString(
+                                  isExtension
+                                      ? 'matchExtendedBannerTitle'
+                                      : 'newMatchTitle',
+                                  gender: profileSync?.gender,
+                                );
+                                return '${isExtension ? '⏱️' : '🎉'} $title';
+                              }(),
                               style: TextStyle(
                                 color: Theme.of(context).colorScheme.onPrimary,
-                                fontSize: 14,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
                               ),
                             ),
-                            loading: () => Text(
-                              l10n.getString('generalLoading'),
-                              style: TextStyle(color: Theme.of(context).colorScheme.onPrimary, fontSize: 14),
+                            const SizedBox(height: 4),
+                            profileAsync.when(
+                              data: (profile) => Text(
+                                profile?.name.formatAsFirstNameLastInitial() ??
+                                    l10n.getString('generalUnknown'),
+                                style: TextStyle(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onPrimary,
+                                  fontSize: 14,
+                                ),
+                              ),
+                              loading: () => Text(
+                                l10n.getString('generalLoading'),
+                                style: TextStyle(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onPrimary,
+                                  fontSize: 14,
+                                ),
+                              ),
+                              error: (_, _) => Text(
+                                l10n.getString('generalUnknown'),
+                                style: TextStyle(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onPrimary,
+                                  fontSize: 14,
+                                ),
+                              ),
                             ),
-                            error: (_, _) => Text(
-                              l10n.getString('generalUnknown'),
-                              style: TextStyle(color: Theme.of(context).colorScheme.onPrimary, fontSize: 14),
+                            const SizedBox(height: 2),
+                            Text(
+                              match.matchType == 'event' &&
+                                      match.eventName != null
+                                  ? '${l10n.getString('matchedAt')} ${match.eventName}'
+                                  : '${l10n.getString('matchedOn')} $matchedIntentDisplay',
+                              style: TextStyle(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onPrimary.withValues(alpha: 0.9),
+                                fontSize: 12,
+                              ),
                             ),
+                          ],
+                        ),
+                      ),
+                      // Actions
+                      Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            icon: Icon(
+                              Icons.visibility,
+                              color: Theme.of(context).colorScheme.onPrimary,
+                            ),
+                            onPressed: _viewMatch,
+                            tooltip: l10n.getString('viewMatch'),
                           ),
-                          const SizedBox(height: 2),
-                          Text(
-                            match.matchType == 'event' && match.eventName != null
-                                ? '${l10n.getString('matchedAt')} ${match.eventName}'
-                                : '${l10n.getString('matchedOn')} $matchedIntentDisplay',
-                            style: TextStyle(
-                              color: Theme.of(context).colorScheme.onPrimary.withValues(alpha:0.9),
-                              fontSize: 12,
+                          IconButton(
+                            icon: Icon(
+                              Icons.close,
+                              color: Theme.of(context).colorScheme.onPrimary,
+                              size: 20,
                             ),
+                            onPressed: () {
+                              ref
+                                  .read(matchNotificationProvider.notifier)
+                                  .markAsViewed(match.id);
+                              _dismissNotification();
+                            },
+                            tooltip: l10n.getString('generalClose'),
                           ),
                         ],
                       ),
-                    ),
-                    // Actions
-                    Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: Icon(Icons.visibility, color: Theme.of(context).colorScheme.onPrimary),
-                          onPressed: _viewMatch,
-                          tooltip: l10n.getString('viewMatch'),
-                        ),
-                        IconButton(
-                          icon: Icon(Icons.close, color: Theme.of(context).colorScheme.onPrimary, size: 20),
-                          onPressed: () {
-                            ref.read(matchNotificationProvider.notifier).markAsViewed(match.id);
-                            _dismissNotification();
-                          },
-                          tooltip: l10n.getString('generalClose'),
-                        ),
-                      ],
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),

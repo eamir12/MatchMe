@@ -1,25 +1,174 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:developer' as developer;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
 import 'package:matchme/models/match_model.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/home_providers.dart';
+import 'package:matchme/providers/match_rating_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/new_options_provider.dart';
 import 'package:matchme/screens/matches/match_profile_screen.dart';
-import 'package:matchme/services/local_db_service.dart';
-import 'package:matchme/services/match_rating_service.dart';
+import 'package:matchme/widgets/pinned_partner_chip.dart';
 import 'package:matchme/services/storage_helper.dart';
+import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/services/match_extension_service.dart';
+import 'package:matchme/services/global_sync_manager.dart';
+import 'package:matchme/theme/semantic_colors.dart';
+import 'package:matchme/utils/match_score_utils.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/widgets/signed_image.dart';
+import 'package:matchme/widgets/verified_badge.dart';
+import 'package:matchme/widgets/new_user_badge.dart';
+import 'package:matchme/widgets/match_profile_navigation_cue.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:ui' as ui;
 
 final supabase = Supabase.instance.client;
 final Map<String, DateTime> _lastMatchBoxProfileSyncAt = <String, DateTime>{};
+final DateTime _matchBoxSyncProcessStartedAt = DateTime.now();
+
+/// Wrapper that flashes/blinks its child when [enabled] is true (<=15m remaining).
+class _FlashingCountdown extends StatefulWidget {
+  final Widget child;
+  final bool enabled;
+  const _FlashingCountdown({required this.child, required this.enabled});
+
+  @override
+  State<_FlashingCountdown> createState() => _FlashingCountdownState();
+}
+
+class _FlashingCountdownState extends State<_FlashingCountdown> {
+  Timer? _timer;
+  bool _visible = true;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.enabled) _start();
+  }
+
+  @override
+  void didUpdateWidget(covariant _FlashingCountdown oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.enabled != oldWidget.enabled) {
+      if (widget.enabled) {
+        _visible = true;
+        _start();
+      } else {
+        _timer?.cancel();
+        _timer = null;
+        if (_visible != true && mounted) setState(() => _visible = true);
+      }
+    }
+  }
+
+  void _start() {
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(milliseconds: 600), (_) {
+      if (!mounted) return;
+      setState(() => _visible = !_visible);
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.enabled) return widget.child;
+    return AnimatedOpacity(
+      opacity: _visible ? 1.0 : 0.25,
+      duration: const Duration(milliseconds: 300),
+      child: widget.child,
+    );
+  }
+}
+
+/// Live countdown row - ONLY this small widget rebuilds every second.
+/// Parent MatchBox watches expiry bool via select (rebuilds once on expiry flip),
+/// so photos/names don't flicker on every tick. Keeps yellow<=24h, red<=1h, flash<=15m.
+class _LiveCountdownRow extends ConsumerWidget {
+  final MatchModel match;
+  final bool hasChatStarted;
+  final LocalizationState l10n;
+  const _LiveCountdownRow({
+    required this.match,
+    required this.hasChatStarted,
+    required this.l10n,
+  });
+
+  Color _color(Duration remaining, BuildContext context) {
+    if (remaining <= Duration.zero) {
+      return Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6);
+    }
+    if (remaining <= const Duration(minutes: 60)) {
+      return Theme.of(context).colorScheme.error;
+    }
+    if (remaining <= const Duration(hours: 24)) {
+      return Theme.of(context).colorScheme.tertiary;
+    }
+    return Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6);
+  }
+
+  String _hintText(LocalizationState l10n, String duration) {
+    final hint = l10n.getString(
+      'matchExpiryHint',
+      params: {'duration': duration},
+    );
+    if (hint != 'matchExpiryHint' &&
+        hint.isNotEmpty &&
+        hint.contains(duration)) {
+      return hint;
+    }
+    // Fallback to old concise style if translation missing
+    return '${l10n.getString('subscriptionTimeLeft')}: $duration';
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (hasChatStarted) return const SizedBox.shrink();
+    final now =
+        ref.watch(matchExpiryNowProvider).asData?.value ?? DateTime.now();
+    final remaining = match.remainingFrom(now);
+    if (remaining <= Duration.zero) return const SizedBox.shrink();
+    final color = _color(remaining, context);
+    final reduceMotion =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    final shouldFlash =
+        !reduceMotion && remaining <= const Duration(minutes: 15);
+    final duration = formatCountdownHmsWithPrefs(context, ref, remaining);
+    final hint = _hintText(l10n, duration);
+    return _FlashingCountdown(
+      enabled: shouldFlash,
+      child: Semantics(
+        label: hint,
+        excludeSemantics: true,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.timer_outlined, size: 12, color: color),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                hint,
+                style: TextStyle(fontSize: 11, color: color),
+                textAlign: TextAlign.start,
+                overflow: TextOverflow.visible,
+                maxLines: 2,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 /// A shared match box widget that displays a single match with full width.
 /// Used by both the home screen (Recent matches) and matches screen.
@@ -27,63 +176,218 @@ class MatchBox extends ConsumerStatefulWidget {
   final MatchModel match;
   final bool showDivider;
 
-  const MatchBox({
-    super.key,
-    required this.match,
-    this.showDivider = true,
-  });
+  const MatchBox({super.key, required this.match, this.showDivider = true});
 
   @override
   ConsumerState<MatchBox> createState() => _MatchBoxState();
 }
 
 class _MatchBoxState extends ConsumerState<MatchBox> {
-  final _ratingService = MatchRatingService();
-  late Future<double?> _otherUserOverallRatingFuture;
+  bool _isExtending = false;
+
+  String _formatExtensionDuration(LocalizationState l10n, int seconds) {
+    if (seconds >= 3600 && seconds % 3600 == 0) {
+      final hours = (seconds / 3600).round();
+      final key = hours == 1
+          ? 'matchExtensionDurationHours'
+          : 'matchExtensionDurationHoursPlural';
+      return l10n.getString(key, params: {'count': '$hours'});
+    }
+    final minutes = (seconds / 60).ceil();
+    final key = minutes == 1
+        ? 'matchExtensionDurationMinutes'
+        : 'matchExtensionDurationMinutesPlural';
+    return l10n.getString(key, params: {'count': '$minutes'});
+  }
+
+  /// Text for the green extension badge:
+  /// both extended -> "Both of you have extended this match.",
+  /// current user extended -> "Extended by you",
+  /// other user extended -> "Extended by {name}" (fallback: "Extended").
+  String _buildExtensionBadgeText(
+    LocalizationState l10n,
+    AsyncValue<UserProfile?> otherProfileAsync,
+  ) {
+    if (widget.match.chatStartExtensionCount >= 2) {
+      return l10n.getString('matchExtendBothExtended');
+    }
+    if (widget.match.hasExtended) {
+      return l10n.getString('matchExtendedByYou');
+    }
+    final otherName = otherProfileAsync.asData?.value?.name
+        .formatAsFirstNameLastInitial();
+    if (otherName != null && otherName.trim().isNotEmpty) {
+      return l10n.getString(
+        'matchExtendedByOther',
+        params: {'name': otherName},
+      );
+    }
+    return l10n.getString('matchExtendedBadge');
+  }
+
+  Future<void> _handleExtend(LocalizationState l10n) async {
+    if (_isExtending) return;
+    final otherProfile = ref
+        .read(userProfileProvider(widget.match.otherUserId))
+        .asData
+        ?.value;
+    final otherName =
+        otherProfile?.name.formatAsFirstNameLastInitial() ??
+        l10n.getString('generalUnknown');
+    final extensionSeconds = await appConfigService.getInt(
+      'matches.chat_start_extension_seconds',
+      defaultValue:
+          widget.match.chatStartWindowSeconds ??
+          const Duration(hours: 24).inSeconds,
+    );
+    final durationLabel = _formatExtensionDuration(l10n, extensionSeconds);
+    final confirmBody = l10n.getString(
+      'matchExtendConfirmBodyBoth',
+      params: {'duration': durationLabel, 'name': otherName},
+    );
+    final fallbackBody = l10n.getString(
+      'matchExtendConfirmBody',
+      params: {'duration': durationLabel},
+    );
+    final body =
+        confirmBody != 'matchExtendConfirmBodyBoth' &&
+            confirmBody.trim().isNotEmpty
+        ? confirmBody
+        : fallbackBody;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l10n.getString('matchExtendConfirmTitle')),
+        content: Text(body),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(l10n.getString('matchExtendCancel')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(l10n.getString('matchExtendConfirm')),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _isExtending = true);
+    try {
+      final result = await MatchExtensionService.instance.extendMatch(
+        widget.match.id,
+      );
+      if (!mounted) return;
+      final newExpiresAt = result['expires_at'] != null
+          ? DateTime.tryParse(result['expires_at'].toString())
+          : null;
+      final Duration remaining = newExpiresAt != null
+          ? newExpiresAt.difference(DateTime.now().toUtc())
+          : widget.match.remainingFrom(DateTime.now()).inSeconds > 0
+          ? widget.match.remainingFrom(DateTime.now()) +
+                Duration(seconds: extensionSeconds)
+          : Duration(seconds: extensionSeconds);
+      final remainingLabel = formatCountdownHmsWithPrefs(
+        context,
+        ref,
+        remaining,
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            l10n.getString(
+              'matchExtendSuccess',
+              params: {'duration': durationLabel, 'remaining': remainingLabel},
+            ),
+          ),
+          backgroundColor: Colors.green.shade700,
+        ),
+      );
+      // Refresh from server so local cache includes the new extension
+      final currentUserId = supabase.auth.currentUser?.id;
+      if (currentUserId != null && currentUserId.isNotEmpty) {
+        try {
+          await ref
+              .read(globalSyncManagerProvider)
+              .syncMatchesNow(currentUserId);
+        } catch (_) {}
+        ref.invalidate(recentMatchesProvider(currentUserId));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      final msg = e.toString().toLowerCase();
+      String key = 'matchExtendError';
+      if (msg.contains('already_extended')) {
+        key = 'matchExtendAlreadyExtended';
+      } else if (msg.contains('chat_already_started')) {
+        key = 'matchExtendChatStarted';
+      } else if (msg.contains('match_expired')) {
+        key = 'matchExtendExpired';
+      } else if (msg.contains('max_extensions_reached')) {
+        key = 'matchExtendMaxReached';
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(l10n.getString(key)),
+          backgroundColor: Colors.red.shade700,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isExtending = false);
+    }
+  }
 
   @override
   void initState() {
     super.initState();
-    _otherUserOverallRatingFuture = _getOtherUserOverallRating();
+    _scheduleOtherProfileSync();
   }
 
-  @override
-  void didUpdateWidget(covariant MatchBox oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.match.otherUserId != widget.match.otherUserId) {
-      _otherUserOverallRatingFuture = _getOtherUserOverallRating();
-    }
-  }
-
-  Future<double?> _getOtherUserOverallRating() async {
-    final otherUserId = widget.match.otherUserId.trim();
-    if (otherUserId.isEmpty) return null;
-    final summary = await _ratingService.getUserRatingSummary(otherUserId);
-    return summary.overallAvg;
-  }
-
-  void _syncOtherProfile() {
+  void _scheduleOtherProfileSync() {
     final otherUserId = widget.match.otherUserId.trim();
     if (otherUserId.isEmpty) return;
     final now = DateTime.now();
-    final last = _lastMatchBoxProfileSyncAt[otherUserId];
-    if (last != null && now.difference(last) < const Duration(seconds: 15)) return;
+    final lastSyncedAt = _lastMatchBoxProfileSyncAt[otherUserId];
+    if (lastSyncedAt != null &&
+        now.difference(lastSyncedAt) < const Duration(minutes: 3)) {
+      return;
+    }
     _lastMatchBoxProfileSyncAt[otherUserId] = now;
-    ref.read(profileSyncProvider).syncProfile(otherUserId);
+
+    final processAge = now.difference(_matchBoxSyncProcessStartedAt);
+    final baseDelayMs = processAge < const Duration(seconds: 12) ? 2200 : 500;
+    final spreadDelayMs = otherUserId.hashCode.abs() % 600;
+    Future.delayed(Duration(milliseconds: baseDelayMs + spreadDelayMs), () {
+      if (!mounted) return;
+      ref
+          .read(profileSyncProvider)
+          .syncProfile(otherUserId, source: 'match-box-mounted');
+    });
   }
 
   @override
   Widget build(BuildContext context) {
+    final currentUserId = supabase.auth.currentUser?.id;
+    if (currentUserId == null) return const SizedBox.shrink();
+
     final l10n = ref.watch(localizationProvider);
     final textDir = Directionality.of(context);
-    _syncOtherProfile();
-    ref.listen<AsyncValue<UserProfile?>>(userProfileProvider(widget.match.otherUserId), (previous, next) {
+    ref.listen<
+      AsyncValue<UserProfile?>
+    >(userProfileProvider(widget.match.otherUserId), (previous, next) {
       final prevPhotos = previous?.asData?.value?.photos ?? const <String>[];
       final nextPhotos = next.asData?.value?.photos ?? const <String>[];
       if (listEquals(prevPhotos, nextPhotos)) return;
-      developer.log('🏠 MatchBox profile change: otherUserId=${widget.match.otherUserId}, prev=${prevPhotos.length}, next=${nextPhotos.length}', name: 'MatchMeTrace');
+      developer.log(
+        '🏠 MatchBox profile change: otherUserId=${widget.match.otherUserId}, prev=${prevPhotos.length}, next=${nextPhotos.length}',
+        name: 'MatchMeTrace',
+      );
       if (nextPhotos.isNotEmpty) {
-        developer.log('🏠 MatchBox new first photo: ${nextPhotos.first}', name: 'MatchMeTrace');
+        developer.log(
+          '🏠 MatchBox new first photo: ${nextPhotos.first}',
+          name: 'MatchMeTrace',
+        );
       }
       final allPhotos = <String>{...prevPhotos, ...nextPhotos};
       for (final path in allPhotos) {
@@ -91,45 +395,56 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
         StorageHelper.evictImageCache(path);
       }
     });
-    final otherProfileAsync = ref.watch(userProfileProvider(widget.match.otherUserId));
-    final currentProfileAsync = ref.watch(
-      userProfileProvider(supabase.auth.currentUser!.id),
+    final otherProfileAsync = ref.watch(
+      userProfileProvider(widget.match.otherUserId),
     );
-    final now = ref.watch(matchExpiryNowProvider).asData?.value ?? DateTime.now();
-    final localDb = ref.watch(localDbProvider);
+    final currentProfileAsync = ref.watch(userProfileProvider(currentUserId));
 
-    final chatStartWindow = Duration(
-      seconds: widget.match.chatStartWindowSeconds ?? const Duration(hours: 24).inSeconds,
+    // Determine whether a chat has been started for this match by reading
+    // the same source the "Recent Chats" list uses (`userChatIdsProvider`).
+    // Previously this was derived from the per-match messages box, which can
+    // hold stale rows from a prior session (e.g. a chat that was opened and
+    // then deleted, or a sync that left orphaned messages). On one device the
+    // messages box would be non-empty (`hasChatStarted = true`, countdown
+    // hidden) while on another it would be empty (`hasChatStarted = false`,
+    // countdown shown), causing the same user to see different UI on Android
+    // vs Chrome. Using the chats set keeps the countdown in lock-step with
+    // the "Recent Chats" empty/non-empty state on every device.
+    final chatIdsAsync = ref.watch(userChatIdsProvider(currentUserId));
+    final hasChatStarted =
+        chatIdsAsync.asData?.value.contains(widget.match.id) ?? false;
+
+    // Hide expired without chat. Use select on bool so parent rebuilds ONLY when
+    // expiry flips false->true, not every second (prevents visible flicker).
+    // Per-second ticking lives in _LiveCountdown below.
+    final isExpired = ref.watch(
+      matchExpiryNowProvider.select((asyncNow) {
+        final now = asyncNow.asData?.value;
+        if (now == null) return false;
+        return widget.match.remainingFrom(now) <= Duration.zero;
+      }),
     );
+    if (chatIdsAsync.hasValue && !hasChatStarted && isExpired) {
+      return const SizedBox.shrink();
+    }
 
-    return StreamBuilder<List<Map<String, dynamic>>>(
-      stream: localDb.watchMessages(widget.match.id),
-      builder: (context, snapshot) {
-        final hasChatStarted = snapshot.data?.isNotEmpty == true;
-        final remaining = _remainingBeforeExpiry(
-          now,
-          widget.match.createdAt,
-          chatStartWindow: chatStartWindow,
-        );
-
-        return Column(
-          textDirection: textDir,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _buildMatchContent(
-              context,
-              ref,
-              l10n,
-              textDir,
-              otherProfileAsync,
-              currentProfileAsync,
-              hasChatStarted: hasChatStarted,
-              remainingBeforeExpiry: remaining,
-            ),
-            if (widget.showDivider) const Divider(height: 1),
-          ],
-        );
-      },
+    return Column(
+      key: ValueKey('matchbox_${widget.match.id}'),
+      textDirection: textDir,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _buildMatchContent(
+          context,
+          ref,
+          l10n,
+          textDir,
+          otherProfileAsync,
+          currentProfileAsync,
+          hasChatStarted: hasChatStarted,
+          isExpired: isExpired,
+        ),
+        if (widget.showDivider) const Divider(height: 1),
+      ],
     );
   }
 
@@ -139,64 +454,102 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     LocalizationState l10n,
     ui.TextDirection textDir,
     AsyncValue<UserProfile?> otherProfileAsync,
-    AsyncValue<UserProfile?> currentProfileAsync,
-    {required bool hasChatStarted,
-    required Duration remainingBeforeExpiry,}
-  ) {
-    final matchDate = widget.match.createdAt.toLocal();
-    final timeStr = formatTimeOfDateTimeWithPrefs(context, ref, l10n, matchDate);
+    AsyncValue<UserProfile?> currentProfileAsync, {
+    required bool hasChatStarted,
+    required bool isExpired,
+  }) {
+    final semanticName =
+        otherProfileAsync.asData?.value?.name.formatAsFirstNameLastInitial() ??
+        l10n.getString('generalUnknown');
 
-    return InkWell(
-      onTap: () {
-        final otherName = otherProfileAsync.asData?.value?.name.formatAsFirstNameLastInitial() ??
-            l10n.getString('generalUnknown');
-        Navigator.push(
+    return Semantics(
+      container: true,
+      button: true,
+      label: '$semanticName. ${l10n.getString('viewMatch')}',
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        hoverColor: Theme.of(
           context,
-          MaterialPageRoute(
-            builder: (context) => MatchProfileScreen(
-              matchId: widget.match.id,
-              otherUserId: widget.match.otherUserId,
-              otherUserName: otherName,
-              matchedIntent: widget.match.matchedIntent,
-              matchType: widget.match.matchType,
-              eventId: widget.match.eventId,
-              eventName: widget.match.eventName,
-              eventLink: widget.match.eventLink,
-              createdAt: widget.match.createdAt,
+        ).colorScheme.primary.withValues(alpha: 0.04),
+        focusColor: Theme.of(
+          context,
+        ).colorScheme.primary.withValues(alpha: 0.08),
+        onTap: () {
+          final otherName =
+              otherProfileAsync.asData?.value?.name
+                  .formatAsFirstNameLastInitial() ??
+              l10n.getString('generalUnknown');
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => MatchProfileScreen(
+                matchId: widget.match.id,
+                otherUserId: widget.match.otherUserId,
+                otherUserName: otherName,
+                matchedIntent: widget.match.matchedIntent,
+                matchType: widget.match.matchType,
+                eventId: widget.match.eventId,
+                eventName: widget.match.eventName,
+                eventLink: widget.match.eventLink,
+                createdAt: widget.match.createdAt,
+                matchOccurrence: widget.match.matchOccurrence,
+                user1Latitude: widget.match.user1Latitude,
+                user1Longitude: widget.match.user1Longitude,
+                user2Latitude: widget.match.user2Latitude,
+                user2Longitude: widget.match.user2Longitude,
+                mapCenterLat: widget.match.mapCenterLat,
+                mapCenterLng: widget.match.mapCenterLng,
+                mapZoom: widget.match.mapZoom,
+                previousLocations: widget.match.previousLocations,
+                allMatchLocationsOverride: widget.match.allMatchLocations,
+                isRetroactive: widget.match.isRetroactive,
+              ),
             ),
+          );
+        },
+        child: Padding(
+          padding: const EdgeInsetsDirectional.symmetric(
+            horizontal: 16,
+            vertical: 10,
           ),
-        );
-      },
-      child: Padding(
-        padding: const EdgeInsetsDirectional.symmetric(horizontal: 16, vertical: 10),
-        child: Column(
-          textDirection: textDir,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildProfilePhoto(otherProfileAsync, context),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _buildContentColumn(context, ref, l10n, textDir, otherProfileAsync),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            _buildDetailsSection(
-              context,
-              ref,
-              l10n,
-              textDir,
-              otherProfileAsync,
-              currentProfileAsync,
-              matchDate,
-              timeStr,
-              hasChatStarted: hasChatStarted,
-              remainingBeforeExpiry: remainingBeforeExpiry,
-            ),
-          ],
+          child: Column(
+            textDirection: textDir,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildProfilePhoto(otherProfileAsync, context),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _buildContentColumn(
+                      context,
+                      ref,
+                      l10n,
+                      textDir,
+                      otherProfileAsync,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  MatchProfileNavigationCue(
+                    textDirection: textDir,
+                    label: l10n.getString('viewMatch'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              _buildDetailsSection(
+                context,
+                ref,
+                l10n,
+                textDir,
+                otherProfileAsync,
+                currentProfileAsync,
+                hasChatStarted: hasChatStarted,
+                isExpired: isExpired,
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -221,7 +574,8 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
             Expanded(
               child: otherProfileAsync.when(
                 data: (profile) {
-                  final name = profile?.name.formatAsFirstNameLastInitial() ??
+                  final name =
+                      profile?.name.formatAsFirstNameLastInitial() ??
                       l10n.getString('generalUnknown');
                   return Text(
                     name,
@@ -234,10 +588,7 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
                 },
                 loading: () => const Text(
                   '...',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                 ),
                 error: (e, s) => Text(
                   l10n.getString('generalError'),
@@ -248,29 +599,13 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
                 ),
               ),
             ),
-            FutureBuilder<double?>(
-              future: _otherUserOverallRatingFuture,
-              builder: (context, snapshot) {
-                final rating = snapshot.data;
-                if (rating == null) return const SizedBox.shrink();
-                return Padding(
-                  padding: const EdgeInsetsDirectional.only(start: 8.0),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.star, size: 16, color: Colors.amber.shade700),
-                      const SizedBox(width: 4),
-                      Text(
-                        _formatScore(rating, decimals: 1),
-                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
+            // Watch rating summary via provider so it auto-refreshes when
+            // invalidated (e.g. after the user returns from rating a match).
+            _RatingSummaryWidget(otherUserId: widget.match.otherUserId),
           ],
         ),
+        _buildBadgeRow(otherProfileAsync, l10n, textDir),
+        PinnedPartnerChip(otherUserId: widget.match.otherUserId),
         const SizedBox(height: 3),
         // Row 2: Age and Gender info
         otherProfileAsync.when(
@@ -284,14 +619,18 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
               infoParts.add('${l10n.getString('profileAgeLabel')}: $age');
             }
             if (gender != null && gender.isNotEmpty) {
-              infoParts.add('${l10n.getString('profileGender')}: ${_getGenderLabel(gender, ref, l10n)}');
+              infoParts.add(
+                '${l10n.getString('profileGender')}: ${_getGenderLabel(gender, ref, l10n)}',
+              );
             }
             if (infoParts.isEmpty) return const SizedBox.shrink();
             return Text(
               infoParts.join('  •  '),
               style: TextStyle(
                 fontSize: 12,
-                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.7),
+                color: Theme.of(
+                  context,
+                ).colorScheme.onSurface.withValues(alpha: 0.7),
               ),
               textAlign: TextAlign.start,
             );
@@ -303,9 +642,83 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     );
   }
 
-  String _formatScore(double value, {int decimals = 1}) {
-    final s = value.toStringAsFixed(decimals);
-    return s.replaceFirst(RegExp(r'\.?0+$'), '');
+  /// Badges row shown under the name — same pills as the Profile screen:
+  /// [VerifiedBadge] with text ("Verified") + [NewUserBadge] with text
+  /// ("New here!"), on the same row. Hidden when neither applies.
+  Widget _buildBadgeRow(
+    AsyncValue<UserProfile?> otherProfileAsync,
+    LocalizationState l10n,
+    ui.TextDirection textDir,
+  ) {
+    final profile = otherProfileAsync.asData?.value;
+    if (profile == null) return const SizedBox.shrink();
+    final isVerified = profile.isVerified;
+    bool isNewUser = false;
+    if (profile.createdAt != null) {
+      isNewUser = DateTime.now().difference(profile.createdAt!).inDays < 7;
+    }
+    if (!isVerified && !isNewUser) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Wrap(
+        textDirection: textDir,
+        spacing: 8,
+        runSpacing: 6,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          if (isVerified)
+            VerifiedBadge(
+              size: 14,
+              showText: true,
+              text: _verifiedBadgeText(l10n, profile.gender),
+            ),
+          if (isNewUser)
+            NewUserBadge(
+              size: 14,
+              showText: true,
+              text: _newUserBadgeText(l10n, profile.gender),
+              gender: profile.gender,
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _verifiedBadgeText(LocalizationState l10n, String? gender) {
+    final normalized = (gender ?? '').trim().toLowerCase();
+    final key = normalized == 'female'
+        ? 'profileVerifiedBadgeFemale'
+        : (normalized == 'non_binary' || normalized == 'nonbinary')
+            ? 'profileVerifiedBadgeNeutral'
+            : 'profileVerifiedBadge';
+    final translated = l10n.getString(key);
+    if (translated == key ||
+        translated == '[$key]' ||
+        translated == '$key...' ||
+        translated.startsWith(key)) {
+      return 'Verified';
+    }
+    if (translated.trim().isEmpty) return 'Verified';
+    return translated;
+  }
+
+  String _newUserBadgeText(LocalizationState l10n, String? gender) {
+    final normalized = (gender ?? '').trim().toLowerCase();
+    final key = normalized == 'female'
+        ? 'profileNewUserBadgeFemale'
+        : (normalized == 'non_binary' || normalized == 'nonbinary')
+            ? 'profileNewUserBadgeNeutral'
+            : 'profileNewUserBadge';
+    final translated = l10n.getString(key);
+    if (translated == key ||
+        translated == '[$key]' ||
+        translated == '$key...' ||
+        translated.startsWith(key)) {
+      return 'New here!';
+    }
+    if (translated.trim().isEmpty) return 'New here!';
+    return translated;
   }
 
   Widget _buildDetailsSection(
@@ -314,91 +727,117 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     LocalizationState l10n,
     ui.TextDirection textDir,
     AsyncValue<UserProfile?> otherProfileAsync,
-    AsyncValue<UserProfile?> currentProfileAsync,
-    DateTime matchDate,
-    String timeStr,
-    {required bool hasChatStarted,
-    required Duration remainingBeforeExpiry,}
-  ) {
-    final isAtOrUnderOneHour =
-        !hasChatStarted &&
-        remainingBeforeExpiry > Duration.zero &&
-        remainingBeforeExpiry <= const Duration(minutes: 60);
-    final countdownColor = isAtOrUnderOneHour
-        ? Colors.red.shade600
-        : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6);
-
+    AsyncValue<UserProfile?> currentProfileAsync, {
+    required bool hasChatStarted,
+    required bool isExpired,
+  }) {
+    final successColor =
+        Theme.of(context).extension<SemanticColors>()?.success ??
+        Theme.of(context).colorScheme.primary;
     return Column(
       textDirection: textDir,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (widget.match.matchType == 'proximity')
+        _buildReasonLine(context, ref, l10n),
+        _buildSharedInterestsLine(l10n, otherProfileAsync, currentProfileAsync),
+        // Rematch banner AFTER Shared Interests row
+        if (widget.match.isRematch) ...[
+          const SizedBox(height: 4),
+          _buildRematchIndicator(context, l10n, otherProfileAsync),
+        ],
+        if (widget.match.isRetroactive) ...[
+          const SizedBox(height: 4),
           Row(
             children: [
               Icon(
-                Icons.location_on,
-                size: 12,
-                color: Colors.blue.shade600,
+                Icons.wifi_off_rounded,
+                size: 14,
+                color: Colors.teal.shade700,
               ),
-              const SizedBox(width: 2),
+              const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  l10n.getString('matchedByProximityLabel'),
+                  l10n.getString('retroBanner'),
                   style: TextStyle(
-                    fontSize: 10,
-                    color: Colors.blue.shade600,
-                    fontWeight: FontWeight.w500,
+                    fontSize: 12,
+                    color: Colors.teal.shade700,
+                    fontWeight: FontWeight.w600,
                   ),
-                  textAlign: TextAlign.start,
                 ),
               ),
             ],
           ),
-        Text(
-          _computeMatchReason(
-            widget.match,
-            otherProfileAsync.asData?.value,
-            currentProfileAsync.asData?.value,
-            l10n,
-          ),
-          style: TextStyle(
-            fontSize: 11,
-            color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
-          ),
-          textAlign: TextAlign.start,
-        ),
+        ],
         const SizedBox(height: 3),
-        Text(
-          () {
-            final label = l10n.getString('matchedAt') != 'matchedAt' && l10n.getString('matchedAt').isNotEmpty ? l10n.getString('matchedAt') : 'Matched at';
-            final dateText = DateFormat('MMMM d, yyyy', l10n.currentLocale.languageCode).format(matchDate);
-            final connector = l10n.getString('at') != 'at' && l10n.getString('at').isNotEmpty ? l10n.getString('at') : 'at';
-            return '$label: $dateText, $connector $timeStr';
-          }(),
-          style: TextStyle(
-            fontSize: 11,
-            color: Colors.grey[500],
+        // Timer + Extend on SAME row. Countdown ticks via child, Extend static.
+        // Parent rebuilds only on expiry flip (isExpired via select), no flicker.
+        if (!hasChatStarted && !isExpired) ...[
+          const SizedBox(height: 3),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(
+                child: _LiveCountdownRow(
+                  match: widget.match,
+                  hasChatStarted: hasChatStarted,
+                  l10n: l10n,
+                ),
+              ),
+              if (!widget.match.hasExtended) ...[
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: _isExtending ? null : () => _handleExtend(l10n),
+                  icon: _isExtending
+                      ? const SizedBox(
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(strokeWidth: 1.8),
+                        )
+                      : Icon(
+                          Icons.more_time_rounded,
+                          size: 14,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                  label: Text(
+                    l10n.getString('matchExtendButton'),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    minimumSize: const Size(0, 48),
+                    side: BorderSide(
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.primary.withValues(alpha: 0.5),
+                    ),
+                  ),
+                ),
+              ],
+            ],
           ),
-          textAlign: TextAlign.start,
-        ),
-        if (!hasChatStarted && remainingBeforeExpiry > Duration.zero) ...[
+        ],
+        // Extension badge (green) below timer+extend row when someone extended
+        if (!hasChatStarted && widget.match.chatStartExtensionCount > 0) ...[
           const SizedBox(height: 3),
           Row(
             children: [
-              Icon(
-                Icons.timer_outlined,
-                size: 12,
-                color: countdownColor,
-              ),
+              Icon(Icons.hourglass_top_rounded, size: 11, color: successColor),
               const SizedBox(width: 4),
-              Expanded(
+              Flexible(
                 child: Text(
-                  '${l10n.getString('subscriptionTimeLeft')}: ${formatCountdownHmsWithPrefs(context, ref, remainingBeforeExpiry)}',
+                  _buildExtensionBadgeText(l10n, otherProfileAsync),
                   style: TextStyle(
                     fontSize: 11,
-                    color: countdownColor,
+                    color: successColor,
+                    fontWeight: FontWeight.w600,
                   ),
-                  textAlign: TextAlign.start,
                 ),
               ),
             ],
@@ -408,7 +847,237 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     );
   }
 
-  Widget _buildProfilePhoto(AsyncValue<UserProfile?> otherProfileAsync, BuildContext context) {
+  /// Single line combining the match reason (proximity / event) with the
+  /// matched intent(s), e.g. "Matched by proximity • Intent: romantic" or
+  /// "Event: Concert • Intent: romantic, friendship".
+  Widget _buildReasonLine(
+    BuildContext context,
+    WidgetRef ref,
+    LocalizationState l10n,
+  ) {
+    final parts = <String>[];
+    final isProximity =
+        widget.match.matchType == 'proximity' ||
+        widget.match.matchType == 'manual_test';
+    if (isProximity) {
+      parts.add(l10n.getString('matchedByProximityLabel'));
+    } else if (widget.match.matchType == 'event' &&
+        (widget.match.eventName?.isNotEmpty ?? false)) {
+      parts.add('${l10n.getString('eventLabel')}: ${widget.match.eventName}');
+    }
+    final intentsText = _localizedIntentList(
+      widget.match.matchedIntent,
+      ref,
+      l10n,
+    );
+    if (intentsText.isNotEmpty) {
+      parts.add('${l10n.getString('intentLabel')}: $intentsText');
+    }
+    if (parts.isEmpty) return const SizedBox.shrink();
+
+    return Row(
+      children: [
+        if (isProximity) ...[
+          Icon(
+            Icons.location_on,
+            size: 12,
+            color: Theme.of(context).colorScheme.primary,
+          ),
+          const SizedBox(width: 2),
+        ],
+        Expanded(
+          child: Text(
+            parts.join(' • '),
+            style: TextStyle(
+              fontSize: 11,
+              color: Theme.of(
+                context,
+              ).colorScheme.onSurface.withValues(alpha: 0.6),
+            ),
+            textAlign: TextAlign.start,
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// "Shared interests: N" line, colored by the optimistic score ramp.
+  /// Hidden until both profiles have loaded.
+  Widget _buildSharedInterestsLine(
+    LocalizationState l10n,
+    AsyncValue<UserProfile?> otherProfileAsync,
+    AsyncValue<UserProfile?> currentProfileAsync,
+  ) {
+    final otherProfile = otherProfileAsync.asData?.value;
+    final currentProfile = currentProfileAsync.asData?.value;
+    if (otherProfile == null || currentProfile == null) {
+      return const SizedBox.shrink();
+    }
+    final count = computeSharedInterestCount(
+      currentProfile: currentProfile,
+      otherProfile: otherProfile,
+      matchedIntent: widget.match.matchedIntent,
+    );
+    final scoreColor = sharedInterestColor(count);
+    return Padding(
+      padding: const EdgeInsets.only(top: 3),
+      child: Row(
+        children: [
+          Icon(Icons.favorite_rounded, size: 11, color: scoreColor),
+          const SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              l10n.getString(
+                'sharedInterestsCount',
+                params: {'count': '$count'},
+              ),
+              style: TextStyle(
+                fontSize: 11,
+                color: scoreColor,
+                fontWeight: FontWeight.w600,
+              ),
+              textAlign: TextAlign.start,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRematchIndicator(
+    BuildContext context,
+    LocalizationState l10n,
+    AsyncValue<UserProfile?> otherProfileAsync,
+  ) {
+    final occ = widget.match.matchOccurrence;
+    final otherName =
+        otherProfileAsync.asData?.value?.name
+            .formatAsFirstNameLastInitial()
+            .trim() ??
+        '';
+    String text;
+    // Prefer banner with name: "Rematch! This is your 2nd time matching with {name}"
+    if (occ == 2) {
+      if (otherName.isNotEmpty) {
+        text = l10n.getString('rematchBanner2', params: {'name': otherName});
+        if (text == 'rematchBanner2' ||
+            text.isEmpty ||
+            !text.contains(otherName)) {
+          // Fallback to old key or generic banner with name
+          final fallback = l10n.getString(
+            'rematchBanner',
+            params: {'count': '2', 'name': otherName},
+          );
+          text = (fallback != 'rematchBanner' && fallback.contains(otherName))
+              ? fallback
+              : text;
+        }
+      } else {
+        text = '';
+      }
+      if (text.isEmpty || text == 'rematchBanner2') {
+        text = l10n.getString('rematchIndicator2');
+        if (text == 'rematchIndicator2' || text.isEmpty) {
+          text = l10n.getString('rematchIndicator', params: {'count': '2'});
+        }
+      }
+    } else if (occ == 3) {
+      if (otherName.isNotEmpty) {
+        text = l10n.getString('rematchBanner3', params: {'name': otherName});
+        if (text == 'rematchBanner3' ||
+            text.isEmpty ||
+            !text.contains(otherName)) {
+          final fallback = l10n.getString(
+            'rematchBanner',
+            params: {'count': '3', 'name': otherName},
+          );
+          text = (fallback != 'rematchBanner' && fallback.contains(otherName))
+              ? fallback
+              : text;
+        }
+      } else {
+        text = '';
+      }
+      if (text.isEmpty || text == 'rematchBanner3') {
+        text = l10n.getString('rematchIndicator3');
+        if (text == 'rematchIndicator3' || text.isEmpty) {
+          text = l10n.getString('rematchIndicator', params: {'count': '3'});
+        }
+      }
+    } else {
+      if (otherName.isNotEmpty) {
+        text = l10n.getString(
+          'rematchBanner',
+          params: {'count': '$occ', 'name': otherName},
+        );
+        if (text == 'rematchBanner' ||
+            text.isEmpty ||
+            !text.contains(otherName)) {
+          text = l10n.getString('rematchIndicator', params: {'count': '$occ'});
+        }
+      } else {
+        text = l10n.getString('rematchIndicator', params: {'count': '$occ'});
+      }
+      if (text == 'rematchIndicator' ||
+          text == 'rematchIndicator...' ||
+          text.isEmpty) {
+        text = l10n.getString('rematchIndicator', params: {'count': '$occ'});
+      }
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.tertiary.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: Theme.of(context).colorScheme.tertiary.withValues(alpha: 0.25),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.repeat_rounded,
+            size: 12,
+            color: Theme.of(context).colorScheme.tertiary,
+          ),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              text,
+              style: TextStyle(
+                fontSize: 11,
+                color: Theme.of(context).colorScheme.tertiary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Localized, comma-separated list of the intents in [matchedIntent].
+  String _localizedIntentList(
+    String matchedIntent,
+    WidgetRef ref,
+    LocalizationState l10n,
+  ) {
+    if (matchedIntent.isEmpty) return '';
+    final localized = <String>[];
+    for (final s in matchedIntent.split(',')) {
+      final trimmed = s.trim();
+      if (trimmed.isNotEmpty) {
+        localized.add(_getIntentTranslation(trimmed, ref, l10n));
+      }
+    }
+    return localized.join(', ');
+  }
+
+  Widget _buildProfilePhoto(
+    AsyncValue<UserProfile?> otherProfileAsync,
+    BuildContext context,
+  ) {
     return otherProfileAsync.when(
       data: (profile) {
         if (profile?.photos.isNotEmpty == true) {
@@ -421,34 +1090,64 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
               placeholder: Container(
                 width: 40,
                 height: 40,
-                color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.08),
-                child: Icon(Icons.person, size: 24, color: Theme.of(context).colorScheme.primary),
+                color: Theme.of(
+                  context,
+                ).colorScheme.primary.withValues(alpha: 0.08),
+                child: Icon(
+                  Icons.person,
+                  size: 24,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
               ),
               errorWidget: Container(
                 width: 40,
                 height: 40,
-                color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.08),
-                child: Icon(Icons.person, size: 24, color: Theme.of(context).colorScheme.primary),
+                color: Theme.of(
+                  context,
+                ).colorScheme.primary.withValues(alpha: 0.08),
+                child: Icon(
+                  Icons.person,
+                  size: 24,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
               ),
             ),
           );
         } else {
           return CircleAvatar(
             radius: 20,
-            backgroundColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.08),
-            child: Icon(Icons.person, size: 24, color: Theme.of(context).colorScheme.primary),
+            backgroundColor: Theme.of(
+              context,
+            ).colorScheme.primary.withValues(alpha: 0.08),
+            child: Icon(
+              Icons.person,
+              size: 24,
+              color: Theme.of(context).colorScheme.primary,
+            ),
           );
         }
       },
       loading: () => CircleAvatar(
         radius: 20,
-        backgroundColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.08),
-        child: Icon(Icons.person, size: 24, color: Theme.of(context).colorScheme.primary),
+        backgroundColor: Theme.of(
+          context,
+        ).colorScheme.primary.withValues(alpha: 0.08),
+        child: Icon(
+          Icons.person,
+          size: 24,
+          color: Theme.of(context).colorScheme.primary,
+        ),
       ),
       error: (e, s) => CircleAvatar(
         radius: 20,
-        backgroundColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.08),
-        child: Icon(Icons.person, size: 24, color: Theme.of(context).colorScheme.primary),
+        backgroundColor: Theme.of(
+          context,
+        ).colorScheme.primary.withValues(alpha: 0.08),
+        child: Icon(
+          Icons.person,
+          size: 24,
+          color: Theme.of(context).colorScheme.primary,
+        ),
       ),
     );
   }
@@ -457,8 +1156,7 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     final today = DateTime.now();
     int age = today.year - birthDate.year;
     final monthDiff = today.month - birthDate.month;
-    if (monthDiff < 0 ||
-        (monthDiff == 0 && today.day < birthDate.day)) {
+    if (monthDiff < 0 || (monthDiff == 0 && today.day < birthDate.day)) {
       age--;
     }
     return age;
@@ -483,8 +1181,8 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     if (found.isNotEmpty) {
       final displayKey = found['displayKey'] ?? '';
       try {
-        final keyToUse = displayKey.toLowerCase().startsWith('gender_') 
-            ? displayKey.toLowerCase() 
+        final keyToUse = displayKey.toLowerCase().startsWith('gender_')
+            ? displayKey.toLowerCase()
             : 'gender_${displayKey.toLowerCase()}';
         final localized = l10n.getString(keyToUse);
         if (localized != keyToUse && localized.isNotEmpty) {
@@ -495,8 +1193,8 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
 
     // Try to translate the storedKey directly as a translation key
     try {
-      final keyToUse = genderKey.toLowerCase().startsWith('gender_') 
-          ? genderKey.toLowerCase() 
+      final keyToUse = genderKey.toLowerCase().startsWith('gender_')
+          ? genderKey.toLowerCase()
           : 'gender_${genderKey.toLowerCase()}';
       final directTranslation = l10n.getString(keyToUse);
       if (directTranslation != keyToUse && directTranslation.isNotEmpty) {
@@ -512,73 +1210,41 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
         .join(' ');
   }
 
-  // Helper to compute intersection of two lists
-  List<String> _intersectLists(List<String> a, List<String> b) {
-    final setA = a.toSet();
-    final setB = b.toSet();
-    return setA.intersection(setB).toList();
-  }
-
-  // Helper to compute match reason based on profiles
-  String _computeMatchReason(
-    MatchModel match,
-    UserProfile? otherProfile,
-    UserProfile? currentProfile,
+  /// Helper to get the localized translation for an intent key.
+  /// Looks up the AppIntent by key and uses its translationKey.
+  String _getIntentTranslation(
+    String intentKey,
+    WidgetRef ref,
     LocalizationState l10n,
   ) {
-    String sharedIntentsText = '';
+    try {
+      final allIntents = ref.read(allIntentsProvider).asData?.value ?? [];
+      final intent = allIntents.firstWhere(
+        (i) => i.key == intentKey,
+        orElse: () =>
+            AppIntent(id: 0, key: '', translationKey: '', sortOrder: 0),
+      );
 
-    // Try to compute shared intents from profiles or matchedIntent
-    if (otherProfile != null && currentProfile != null) {
-      // Compute shared main intents (the keys that have overlapping sub-intents)
-      final sharedIntentKeys = <String>[];
-      for (final intentKey in otherProfile.subIntents.keys) {
-        if (currentProfile.subIntents.containsKey(intentKey)) {
-          final otherSubs = otherProfile.subIntents[intentKey] ?? [];
-          final currentSubs = currentProfile.subIntents[intentKey] ?? [];
-          final intersected = _intersectLists(otherSubs, currentSubs);
-          if (intersected.isNotEmpty) {
-            sharedIntentKeys.add(intentKey);
-          }
-        }
+      if (intent.translationKey.isNotEmpty) {
+        return l10n.getString(intent.translationKey);
       }
-
-      if (sharedIntentKeys.isNotEmpty) {
-        final localizedIntents = sharedIntentKeys.map((key) => l10n.getString(key)).join(', ');
-        sharedIntentsText = '${l10n.getString('intentLabel')}: $localizedIntents';
-      }
+    } catch (_) {
+      // If lookup fails, fall back to bare key
     }
 
-    // Fallback to matchedIntent if no detailed shared found
-    if (sharedIntentsText.isEmpty && match.matchedIntent.isNotEmpty) {
-      final parsedIntents = match.matchedIntent.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
-      final localizedIntents = parsedIntents.map((key) => l10n.getString(key)).join(', ');
-      sharedIntentsText = '${l10n.getString('intentLabel')}: $localizedIntents';
-    }
-
-    // If event match, include event info
-    if (match.matchType == 'event' && match.eventName != null) {
-      final eventText = '${l10n.getString('eventLabel')}: ${match.eventName}';
-      if (sharedIntentsText.isNotEmpty) {
-        return '$eventText\n$sharedIntentsText';
-      } else {
-        return eventText;
-      }
-    }
-
-    // For non-event matches
-    if (sharedIntentsText.isNotEmpty) {
-      return sharedIntentsText;
-    }
-
-    // If profiles not loaded and no matchedIntent, show loading
-    if (otherProfile == null || currentProfile == null) {
-      return l10n.getString('loadingLabel');
-    }
-
-    return l10n.getString('matchedByProximityLabel');
+    // Fallback: use the key directly if it has a translation
+    if (l10n.containsKey(intentKey)) return l10n.getString(intentKey);
+    return intentKey
+        .replaceAll('_', ' ')
+        .split(' ')
+        .map(
+          (w) => w.isNotEmpty ? '${w[0].toUpperCase()}${w.substring(1)}' : '',
+        )
+        .join(' ');
   }
 
+  // Keep for backward-compat; prefer MatchModel.remainingFrom which includes extensions.
+  // ignore: unused_element
   Duration _remainingBeforeExpiry(
     DateTime now,
     DateTime createdAt, {
@@ -589,20 +1255,81 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
   }
 }
 
+class _RatingSummaryWidget extends ConsumerWidget {
+  final String otherUserId;
+
+  const _RatingSummaryWidget({required this.otherUserId});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l10n = ref.watch(localizationProvider);
+    final summaryAsync = ref.watch(userRatingSummaryProvider(otherUserId));
+    return summaryAsync.when(
+      data: (summary) {
+        final rating = summary.overallAvg;
+        if (rating == null) return const SizedBox.shrink();
+        final ratingText = _formatScore(rating, decimals: 1);
+        final countText = l10n.getString(
+          'ratingRatedBy',
+          params: {'count': summary.ratedByCount.toString()},
+        );
+        return Semantics(
+          label: '$ratingText. $countText',
+          child: Padding(
+            padding: const EdgeInsetsDirectional.only(start: 8.0),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.star, size: 16, color: Colors.amber.shade700),
+                const SizedBox(width: 4),
+                Text(
+                  ratingText,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (summary.ratedByCount > 0) ...[
+                  const SizedBox(width: 3),
+                  Text(
+                    '(${summary.ratedByCount})',
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
+      loading: () => const SizedBox.shrink(),
+      error: (e, s) => const SizedBox.shrink(),
+    );
+  }
+
+  String _formatScore(double value, {int decimals = 1}) {
+    final s = value.toStringAsFixed(decimals);
+    return s.replaceFirst(RegExp(r'\.?0+$'), '');
+  }
+}
+
 /// A container for multiple matches that displays them as a full-width list.
 /// Used by both the home screen and matches screen.
 class MatchBoxList extends ConsumerWidget {
   final List<MatchModel> matches;
-  final String title;
+  final String? title;
   final VoidCallback? onSeeAll;
   final bool showTitle;
+  final Widget? inlineContent;
+  final int inlineContentAfterIndex;
 
   const MatchBoxList({
     super.key,
     required this.matches,
-    this.title = 'Recent Matches',
+    this.title,
     this.onSeeAll,
     this.showTitle = true,
+    this.inlineContent,
+    this.inlineContentAfterIndex = -1,
   });
 
   @override
@@ -626,9 +1353,15 @@ class MatchBoxList extends ConsumerWidget {
               children: [
                 Expanded(
                   child: Text(
-                    title,
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold) ??
-                        const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    title ?? l10n.getString('recentMatches'),
+                    style:
+                        Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ) ??
+                        const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
                     textAlign: TextAlign.start,
                   ),
                 ),
@@ -652,9 +1385,14 @@ class MatchBoxList extends ConsumerWidget {
                 final index = entry.key;
                 final match = entry.value;
                 final isLast = index == matches.length - 1;
-                return MatchBox(
-                  match: match,
-                  showDivider: !isLast,
+                return Column(
+                  children: [
+                    MatchBox(match: match, showDivider: !isLast),
+                    if (inlineContent != null &&
+                        index == inlineContentAfterIndex &&
+                        index < matches.length - 1)
+                      inlineContent!,
+                  ],
                 );
               }),
             ],

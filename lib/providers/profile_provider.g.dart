@@ -68,7 +68,7 @@ final class ProfileEditNotifierProvider
 }
 
 String _$profileEditNotifierHash() =>
-    r'b9dc35a0b250cb047ea27def34e8a0a0cb1dd05e';
+    r'075a9a4db5cda397bdeb032b0469524a17331eab';
 
 /// ---------------------------------------------------------------------------
 /// profileEditProvider + ProfileEditNotifier
@@ -115,7 +115,7 @@ abstract class _$ProfileEditNotifier
   AsyncValue<UserProfile?> build(String userId);
   @$mustCallSuper
   @override
-  void runBuild() {
+  WhenComplete runBuild() {
     final ref =
         this.ref as $Ref<AsyncValue<UserProfile?>, AsyncValue<UserProfile?>>;
     final element =
@@ -126,6 +126,6 @@ abstract class _$ProfileEditNotifier
               Object?,
               Object?
             >;
-    element.handleCreate(ref, () => build(_$args));
+    return element.handleCreate(ref, () => build(_$args));
   }
 }

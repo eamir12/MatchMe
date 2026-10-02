@@ -1,114 +1,38 @@
 workflows:
   ios_unsigned_for_sideloadly:
-    name: iOS Unsigned IPA for Sideloadly (No Paid Apple Account)
-    max_build_duration: 120
+    name: iOS Unsigned IPA (Sideloadly)
     instance_type: mac_mini_m2
     environment:
       flutter: stable
       xcode: latest
       cocoapods: default
-      vars:
-        BUNDLE_ID: com.eranamir.matchme
-    cache:
-      cache_paths:
-        - $FLUTTER_ROOT/.pub-cache
-        - ~/.pub-cache
-        - ~/Library/Caches/CocoaPods
-        - ios/Pods
     scripts:
-      - name: Install Codemagic CLI tools
-        script: pip3 install --upgrade codemagic-cli-tools
-      - name: Set bundle identifier
+      - name: Pre-clean workspace
         script: |
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" ios/Runner/Info.plist
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-          p = Path("ios/Runner.xcodeproj/project.pbxproj")
-          s = p.read_text()
-          bundle_id = os.environ["BUNDLE_ID"]
-          s = s.replace("PRODUCT_BUNDLE_IDENTIFIER = com.example.matchme;", f"PRODUCT_BUNDLE_IDENTIFIER = {bundle_id};")
-          p.write_text(s)
-          PY
-      - name: Get Flutter packages
-        script: flutter pub get
-      - name: Clean Flutter build outputs
-        script: flutter clean
-      - name: Install CocoaPods dependencies
+          rm -rf build Payload Runner-unsigned.ipa
+          rm -rf ~/Library/Developer/Xcode/DerivedData/*
+      - name: Flutter clean/get
+        script: |
+          flutter clean
+          flutter pub get
+      - name: Verify iOS fullscreen keys
+        script: |
+          /usr/libexec/PlistBuddy -c "Print :UILaunchStoryboardName" ios/Runner/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :UISupportedInterfaceOrientations" ios/Runner/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :UIApplicationSceneManifest" ios/Runner/Info.plist
+      - name: Install CocoaPods
         script: |
           cd ios
           pod install --repo-update
           cd ..
-      - name: Build iOS app without code signing
-        script: flutter build ipa --release --no-codesign
-      - name: Export IPA artifact for Sideloadly
+      - name: Build iOS without codesign
         script: |
-          rm -f Runner-unsigned.ipa
-          IPA_PATH=$(find build/ios/ipa -maxdepth 1 -name "*.ipa" | head -n 1)
-          test -n "$IPA_PATH"
-          cp "$IPA_PATH" Runner-unsigned.ipa
-      - name: Verify IPA structure
+          flutter build ios --no-codesign
+      - name: Create unsigned IPA
         script: |
-          unzip -l Runner-unsigned.ipa | grep -q "Payload/Runner.app/"
-          unzip -l Runner-unsigned.ipa | grep -q "Payload/Runner.app/Info.plist"
-          unzip -p Runner-unsigned.ipa Payload/Runner.app/Info.plist > /tmp/Runner-Info.plist
-          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" /tmp/Runner-Info.plist
+          mkdir -p Payload
+          cp -R build/ios/iphoneos/Runner.app Payload/
+          zip -r -y Runner-unsigned.ipa Payload
     artifacts:
       - Runner-unsigned.ipa
-      - /tmp/xcodebuild_logs/*.log
-
-  ios_sideload_signed:
-    name: iOS Signed IPA for Sideloading
-    max_build_duration: 120
-    instance_type: mac_mini_m2
-    environment:
-      flutter: stable
-      xcode: latest
-      cocoapods: default
-      ios_signing:
-        distribution_type: development
-        bundle_identifier: com.example.matchme
-      vars:
-        BUNDLE_ID: com.example.matchme
-        XCODE_SCHEME: Runner
-    cache:
-      cache_paths:
-        - $FLUTTER_ROOT/.pub-cache
-        - ~/.pub-cache
-        - ~/Library/Caches/CocoaPods
-        - ios/Pods
-    scripts:
-      - name: Install Codemagic CLI tools
-        script: pip3 install --upgrade codemagic-cli-tools
-      - name: Set bundle identifier
-        script: |
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" ios/Runner/Info.plist
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-          p = Path("ios/Runner.xcodeproj/project.pbxproj")
-          s = p.read_text()
-          bundle_id = os.environ["BUNDLE_ID"]
-          s = s.replace("PRODUCT_BUNDLE_IDENTIFIER = com.example.matchme;", f"PRODUCT_BUNDLE_IDENTIFIER = {bundle_id};")
-          p.write_text(s)
-          PY
-      - name: Get Flutter packages
-        script: flutter pub get
-      - name: Install CocoaPods dependencies
-        script: |
-          cd ios
-          pod install --repo-update
-          cd ..
-      - name: Set up iOS code signing
-        script: xcode-project use-profiles
-      - name: Build signed IPA
-        script: flutter build ipa --release --export-options-plist=/Users/builder/export_options.plist
-      - name: Verify IPA is signed
-        script: |
-          IPA_PATH=$(find build/ios/ipa -maxdepth 1 -name "*.ipa" | head -n 1)
-          test -n "$IPA_PATH"
-          unzip -l "$IPA_PATH" | grep -q "Payload/Runner.app/embedded.mobileprovision"
-          unzip -l "$IPA_PATH" | grep -q "Payload/Runner.app/_CodeSignature/CodeResources"
-    artifacts:
-      - build/ios/ipa/*.ipa
-      - /tmp/xcodebuild_logs/*.log
+      - build/ios/iphoneos/Runner.app

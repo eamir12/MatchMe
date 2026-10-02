@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
+import { buildGeminiUrl, resolveVisionModels } from "../_shared/gemini_config.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -14,6 +15,315 @@ interface FaceComparisonResult {
   reasoning?: string;
   gestureValid?: boolean;
   error?: string;
+}
+
+interface VerificationDecision {
+  status: "approved" | "pending" | "rejected";
+  autoRejected: boolean;
+  reviewedAt: string | null;
+  isVerified: boolean;
+  reason: string;
+}
+
+interface VerificationRetentionPolicy {
+  retentionUntil: string;
+  retentionDays: number;
+  policy: "approved_reference_window" | "pending_manual_review_window" | "rejected_review_window";
+}
+
+interface VerificationReferenceArtifact {
+  version: number;
+  kind: string;
+  generatedAt: string;
+  source: string;
+  hash: {
+    algorithm: string;
+    value: string;
+  };
+  byteLength: number;
+  identityDescriptor: IdentityDescriptor | null;
+  descriptorStatus: "ready" | "unavailable";
+}
+
+interface IdentityDescriptor {
+  version: number;
+  model: string;
+  generatedAt: string;
+  faceVisible: boolean;
+  quality: number;
+  featureLabels: string[];
+  featureVector: number[];
+  reasoning: string;
+}
+
+function determineVerificationDecision(
+  comparisonResult: FaceComparisonResult,
+  auditResult: { authentic: boolean; reasoning: string } | null,
+): VerificationDecision {
+  if (auditResult && !auditResult.authentic) {
+    return {
+      status: "rejected",
+      autoRejected: true,
+      reviewedAt: new Date().toISOString(),
+      isVerified: false,
+      reason: "authenticity_audit_failed",
+    };
+  }
+
+  const similarity = Number.isFinite(comparisonResult.similarity)
+    ? Math.max(0, Math.min(100, comparisonResult.similarity))
+    : 0;
+  const confidence = Number.isFinite(comparisonResult.confidence)
+    ? Math.max(0, Math.min(100, comparisonResult.confidence))
+    : 0;
+  const reasoning = (comparisonResult.reasoning || "").toLowerCase();
+  const hasGestureFailure =
+    reasoning.includes("gesture") &&
+    (
+      reasoning.includes("not") ||
+      reasoning.includes("missing") ||
+      reasoning.includes("unclear") ||
+      reasoning.includes("incorrect")
+    );
+  const hasClearFaceFailure =
+    reasoning.includes("no clear face") ||
+    reasoning.includes("face not clearly visible") ||
+    reasoning.includes("obscured") ||
+    reasoning.includes("multiple faces");
+
+  if (hasGestureFailure || hasClearFaceFailure) {
+    return {
+      status: "rejected",
+      autoRejected: true,
+      reviewedAt: new Date().toISOString(),
+      isVerified: false,
+      reason: hasGestureFailure ? "gesture_requirement_failed" : "face_visibility_failed",
+    };
+  }
+
+  if (comparisonResult.isMatch === true && similarity >= 82 && confidence >= 75) {
+    return {
+      status: "approved",
+      autoRejected: false,
+      reviewedAt: new Date().toISOString(),
+      isVerified: true,
+      reason: "high_confidence_match",
+    };
+  }
+
+  return {
+    status: "rejected",
+    autoRejected: true,
+    reviewedAt: new Date().toISOString(),
+    isVerified: false,
+    reason: comparisonResult.isMatch === false
+      ? "clear_face_mismatch"
+      : "borderline_similarity_mismatch",
+  };
+}
+
+function addDays(days: number): string {
+  const target = new Date();
+  target.setUTCDate(target.getUTCDate() + days);
+  return target.toISOString();
+}
+
+function getVerificationRetentionPolicy(
+  status: VerificationDecision["status"],
+): VerificationRetentionPolicy {
+  if (status === "approved") {
+    return {
+      retentionUntil: addDays(30),
+      retentionDays: 30,
+      policy: "approved_reference_window",
+    };
+  }
+
+  if (status === "rejected") {
+    return {
+      retentionUntil: addDays(7),
+      retentionDays: 7,
+      policy: "rejected_review_window",
+    };
+  }
+
+  return {
+    retentionUntil: addDays(14),
+    retentionDays: 14,
+    policy: "pending_manual_review_window",
+  };
+}
+
+function toHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function buildVerificationReferenceArtifact(
+  verificationPhotoBuffer: ArrayBuffer,
+  identityDescriptor: IdentityDescriptor | null,
+): Promise<VerificationReferenceArtifact> {
+  const generatedAt = new Date().toISOString();
+  const digest = await crypto.subtle.digest("SHA-256", verificationPhotoBuffer);
+  return {
+    version: 1,
+    kind: "verification_reference_artifact",
+    generatedAt,
+    source: "verification_selfie",
+    hash: {
+      algorithm: "sha256",
+      value: toHex(new Uint8Array(digest)),
+    },
+    byteLength: verificationPhotoBuffer.byteLength,
+    identityDescriptor,
+    descriptorStatus: identityDescriptor ? "ready" : "unavailable",
+  };
+}
+
+async function generateIdentityDescriptorWithGemini(
+  verificationPhotoBuffer: ArrayBuffer,
+): Promise<{ descriptor: IdentityDescriptor | null; modelUsed: string | null }> {
+  const API_KEY = Deno.env.get("GOOGLE_AI_API_KEY");
+  if (!API_KEY) {
+    throw new Error("GOOGLE_AI_API_KEY environment variable not set");
+  }
+
+  const verificationBase64 = arrayBufferToBase64(verificationPhotoBuffer);
+  const prompt = `
+Return ONLY valid JSON with this exact structure:
+{
+  "faceVisible": boolean,
+  "quality": number,
+  "featureVector": [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number],
+  "reasoning": string
+}
+
+You are generating a privacy-preserving identity descriptor for one person's face from a verification selfie.
+
+Rules:
+- Use ONLY stable facial geometry and proportion cues visible in the image.
+- Do NOT include age, race, ethnicity, gender, clothing, hairstyle, makeup, background, or expression-specific details.
+- If there is not exactly one clear face, set "faceVisible" to false, "quality" to 0, and all 16 numbers in "featureVector" to 0.
+- "quality" must be a number from 0 to 1 reflecting how suitable the face is for identity matching.
+- Every number in "featureVector" must be a normalized float from 0 to 1.
+- Keep "reasoning" brief and neutral.
+
+The 16 featureVector dimensions, in order, must be:
+1. face_length_width_ratio
+2. forehead_width_ratio
+3. cheekbone_width_ratio
+4. jaw_width_ratio
+5. chin_height_ratio
+6. eye_spacing_ratio
+7. eye_size_ratio
+8. eye_tilt
+9. brow_height_ratio
+10. brow_thickness
+11. nose_length_ratio
+12. nose_width_ratio
+13. mouth_width_ratio
+14. upper_lip_fullness
+15. lower_lip_fullness
+16. philtrum_length_ratio
+`;
+
+  const body = {
+    contents: [{
+      parts: [
+        { text: prompt },
+        {
+          inline_data: {
+            mime_type: "image/jpeg",
+            data: verificationBase64,
+          },
+        },
+      ],
+    }],
+    generationConfig: {
+      responseMimeType: "application/json",
+      temperature: 0,
+    },
+  };
+
+  for (const modelName of await resolveVisionModels(API_KEY)) {
+    try {
+      const response = await fetch(
+        buildGeminiUrl(modelName, API_KEY),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.warn("⚠️ Identity descriptor model failed:", modelName, errorText);
+        continue;
+      }
+
+      const data = await response.json();
+      const content = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (typeof content !== "string" || content.trim().length === 0) {
+        continue;
+      }
+
+      const parsed = JSON.parse(content.trim()) as {
+        faceVisible?: boolean;
+        quality?: number;
+        featureVector?: unknown;
+        reasoning?: string;
+      };
+      const vector = Array.isArray(parsed.featureVector)
+        ? parsed.featureVector
+          .map((value) => typeof value === "number" ? value : Number(value))
+          .map((value) => Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0)
+        : [];
+
+      if (vector.length !== 16) {
+        continue;
+      }
+
+      const descriptor: IdentityDescriptor = {
+        version: 1,
+        model: modelName,
+        generatedAt: new Date().toISOString(),
+        faceVisible: parsed.faceVisible === true,
+        quality: typeof parsed.quality === "number"
+          ? Math.max(0, Math.min(1, parsed.quality))
+          : 0,
+        featureLabels: [
+          "face_length_width_ratio",
+          "forehead_width_ratio",
+          "cheekbone_width_ratio",
+          "jaw_width_ratio",
+          "chin_height_ratio",
+          "eye_spacing_ratio",
+          "eye_size_ratio",
+          "eye_tilt",
+          "brow_height_ratio",
+          "brow_thickness",
+          "nose_length_ratio",
+          "nose_width_ratio",
+          "mouth_width_ratio",
+          "upper_lip_fullness",
+          "lower_lip_fullness",
+          "philtrum_length_ratio",
+        ],
+        featureVector: vector,
+        reasoning: parsed.reasoning || "identity_descriptor_generated",
+      };
+
+      if (!descriptor.faceVisible) {
+        return { descriptor: null, modelUsed: modelName };
+      }
+
+      return { descriptor, modelUsed: modelName };
+    } catch (error) {
+      console.warn("⚠️ Identity descriptor generation failed:", modelName, error);
+    }
+  }
+
+  return { descriptor: null, modelUsed: null };
 }
 
 function summarizeKey(value: string) {
@@ -186,7 +496,7 @@ serve(async (req) => {
     console.log("👤 EDGE FUNCTION: Fetching user data for userId:", userId);
     const { data: userData, error: userError } = await supabase
       .from("users")
-      .select("photos, verification_photo_path")
+      .select("verification_photo_path")
       .eq("id", userId)
       .single();
 
@@ -200,13 +510,22 @@ serve(async (req) => {
       throw new Error("User not found");
     }
 
+    // photos is now on user_profiles
+    const { data: profileData } = await supabase
+      .from("user_profiles")
+      .select("photos")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    const photos = (profileData as any)?.photos as string[] | null;
+
     console.log("✅ EDGE FUNCTION: User data retrieved:", {
-      hasPhotos: !!userData.photos,
-      photosCount: userData.photos?.length || 0,
+      hasPhotos: !!photos,
+      photosCount: photos?.length || 0,
       hasVerificationPhoto: !!userData.verification_photo_path
     });
 
-    if (!userData.photos || userData.photos.length === 0) {
+    if (!photos || photos.length === 0) {
       console.log("❌ EDGE FUNCTION: User has no profile photos");
       throw new Error("User has no profile photos");
     }
@@ -217,7 +536,7 @@ serve(async (req) => {
     }
 
     // Get the main profile photo (first one)
-    const profilePhotoPath = userData.photos[0];
+    const profilePhotoPath = photos[0];
     const verificationPhotoPath = userData.verification_photo_path;
 
     console.log("📸 EDGE FUNCTION: Photo paths:", {
@@ -276,6 +595,11 @@ serve(async (req) => {
 
     if (auditResult && !auditResult.authentic) {
       console.log("❌ Verification photo failed authenticity audit - rejecting");
+      const verificationReferenceArtifact = await buildVerificationReferenceArtifact(
+        verificationPhotoBuffer,
+        null,
+      );
+      const retentionPolicy = getVerificationRetentionPolicy("rejected");
       const aiAnalysisData = {
         similarity: 0,
         confidence: 0,
@@ -284,6 +608,7 @@ serve(async (req) => {
         comparedAt: new Date().toISOString(),
         service: "gemini_ai",
         authenticityAudit: { authentic: false, reasoning: auditResult.reasoning },
+        retentionPolicy,
       };
       await supabaseInternal.rpc("edge_update_verification", {
         p_user_id: userId,
@@ -292,6 +617,13 @@ serve(async (req) => {
           verification_auto_rejected: true,
           verification_similarity_score: 0,
           verification_ai_analysis: aiAnalysisData,
+          verification_reference_artifact: {
+            ...verificationReferenceArtifact,
+            retentionPolicy: retentionPolicy.policy,
+          },
+          verification_reference_generated_at:
+            verificationReferenceArtifact.generatedAt,
+          verification_photo_retention_until: retentionPolicy.retentionUntil,
           verification_reviewed_at: new Date().toISOString(),
           is_verified: false,
         },
@@ -316,13 +648,25 @@ serve(async (req) => {
       );
     }
 
-    // PRIMARY: Gemini AI for face comparison (using gemini-3.0-flash model)
+    const { descriptor: verificationIdentityDescriptor, modelUsed: descriptorModelUsed } =
+      await generateIdentityDescriptorWithGemini(verificationPhotoBuffer);
+    if (descriptorModelUsed) {
+      aiUsed = true;
+      aiModel = descriptorModelUsed;
+    }
+    const verificationReferenceArtifact = await buildVerificationReferenceArtifact(
+      verificationPhotoBuffer,
+      verificationIdentityDescriptor,
+    );
+
+    // PRIMARY: Gemini AI for face comparison (live chain from _shared/gemini_config.ts)
     // To switch back to Vision API: change compareFacesWithGemini to compareFacesWithVision
-    console.log("🤖 Starting face comparison with Gemini AI (gemini-3.0-flash)...");
+    const visionModels = await resolveVisionModels(Deno.env.get("GOOGLE_AI_API_KEY") ?? "");
+    console.log(`🤖 Starting face comparison with Gemini AI (${visionModels[0]})...`);
     let comparisonResult;
     try {
       aiUsed = true;
-      aiModel = "gemini-3-flash-preview";
+      aiModel = visionModels[0];
       comparisonResult = await compareFacesWithGemini(
         profilePhotoBuffer,
         verificationPhotoBuffer,
@@ -340,6 +684,8 @@ serve(async (req) => {
     }
 
     // Store the results in the database (include authenticity audit if run)
+    const decision = determineVerificationDecision(comparisonResult, auditResult);
+    const retentionPolicy = getVerificationRetentionPolicy(decision.status);
     const aiAnalysisData = {
       similarity: comparisonResult.similarity,
       confidence: comparisonResult.confidence,
@@ -347,7 +693,11 @@ serve(async (req) => {
       reasoning: comparisonResult.reasoning || "No reasoning provided",
       comparedAt: new Date().toISOString(),
       service: "gemini_ai",
-      note: "Using Gemini AI (gemini-3.0-flash) for face comparison",
+      note: `Using Gemini AI (${visionModels[0]}) for face comparison`,
+      decision: decision.status,
+      decisionReason: decision.reason,
+      retentionPolicy,
+      verificationReferenceReady: verificationIdentityDescriptor !== null,
       gestureCode: gestureCode || null,
       gesturePrompt: gesturePrompt || null,
       ...(auditResult && { authenticityAudit: { authentic: auditResult.authentic, reasoning: auditResult.reasoning } }),
@@ -358,27 +708,20 @@ serve(async (req) => {
     console.log("🔍 Reasoning value:", comparisonResult.reasoning);
     console.log("🔍 Reasoning type:", typeof comparisonResult.reasoning);
 
-    const nowIso = new Date().toISOString();
     const updatePayload: Record<string, unknown> = {
       verification_similarity_score: comparisonResult.similarity / 100, // Convert to 0-1 scale
       verification_ai_analysis: aiAnalysisData,
-    };
-
-    if (comparisonResult.isMatch === false) {
-      updatePayload.verification_status = "rejected";
-      updatePayload.verification_auto_rejected = true;
-      updatePayload.verification_reviewed_at = nowIso;
-      updatePayload.is_verified = false;
-    } else if (comparisonResult.isMatch === true) {
-      updatePayload.verification_status = "approved";
-      updatePayload.is_verified = true;
-      updatePayload.verification_auto_rejected = false;
-      updatePayload.verification_reviewed_at = nowIso;
-    } else {
-      updatePayload.verification_status = "rejected";
-      updatePayload.verification_auto_rejected = true;
-      updatePayload.verification_reviewed_at = nowIso;
-      updatePayload.is_verified = false;
+      verification_status: decision.status,
+      verification_auto_rejected: decision.autoRejected,
+      verification_reference_artifact: {
+        ...verificationReferenceArtifact,
+        retentionPolicy: retentionPolicy.policy,
+      },
+      verification_reference_generated_at:
+        verificationReferenceArtifact.generatedAt,
+      verification_photo_retention_until: retentionPolicy.retentionUntil,
+      verification_reviewed_at: decision.reviewedAt,
+      is_verified: decision.isVerified,
     }
 
     const { error: updateError } = await supabaseInternal
@@ -390,18 +733,6 @@ serve(async (req) => {
     }
 
     console.log("✅ Database update successful for user:", userId);
-
-    if (updatePayload["verification_status"] === "approved") {
-      try {
-        await supabase.storage.from("verification-photos").remove([verificationPhotoPath]);
-        await supabaseInternal.rpc("edge_update_verification", {
-          p_user_id: userId,
-          p_patch: { verification_photo_path: null },
-        });
-      } catch (e) {
-        console.error("⚠️ Failed to delete verification photo after auto-approve:", e);
-      }
-    }
 
     // Verify the data was stored correctly
     const { data: verifyData, error: verifyError } = await supabase
@@ -427,9 +758,11 @@ serve(async (req) => {
       similarity: comparisonResult.similarity,
       confidence: comparisonResult.confidence,
       isMatch: comparisonResult.isMatch,
+      verificationStatus: decision.status,
+      decisionReason: decision.reason,
       reasoning: comparisonResult.reasoning,
       userId,
-      note: "Using Gemini AI (gemini-3.0-flash) for face comparison",
+      note: `Using Gemini AI (${visionModels[0]}) for face comparison`,
     };
 
     console.log("✅ EDGE FUNCTION: Returning success response:", responseData);
@@ -443,6 +776,8 @@ serve(async (req) => {
           isMatch: comparisonResult.isMatch,
           similarity: comparisonResult.similarity,
           confidence: comparisonResult.confidence,
+          verificationStatus: decision.status,
+          decisionReason: decision.reason,
         },
       },
     );
@@ -471,6 +806,9 @@ serve(async (req) => {
               verification_ai_analysis: {
                 service: "edge_function",
                 comparedAt: new Date().toISOString(),
+                decision: "rejected",
+                decisionReason: "comparison_error",
+                reasoning: "A temporary processing error occurred. Please try submitting your verification photo again.",
                 error: error instanceof Error ? error.message : String(error),
               },
             },
@@ -560,8 +898,8 @@ async function auditPhotoAuthenticity(
     throw new Error("GOOGLE_AI_API_KEY environment variable not set");
   }
   const verificationBase64 = arrayBufferToBase64(verificationPhotoBuffer);
-  const GEMINI_URL_PRIMARY = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
-  const GEMINI_URL_BACKUP = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${API_KEY}`;
+  const auditModels = await resolveVisionModels(API_KEY);
+  const geminiUrls = auditModels.map(m => buildGeminiUrl(m, API_KEY));
 
   const prompt = `You are a security auditor for a verification photo. Analyze this image and determine if it appears AUTHENTIC (live selfie from a real person) or TAMPERED/FAKE.
 
@@ -595,20 +933,21 @@ Return ONLY a JSON object with this exact structure (no markdown, no extra text)
 
   let response: Response;
   try {
-    response = await fetch(GEMINI_URL_PRIMARY, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      response = await fetch(GEMINI_URL_BACKUP, {
+    for (let i = 0; i < geminiUrls.length; i++) {
+      response = await fetch(geminiUrls[i], {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      if (response.ok) break;
+      console.warn(`Authenticity audit model ${auditModels[i]} failed with status ${response.status}, trying next...`);
     }
   } catch (e) {
     throw new Error(`Gemini authenticity audit request failed: ${e}`);
+  }
+
+  if (!response || !response.ok) {
+    throw new Error(`All ${geminiUrls.length} Gemini models failed for authenticity audit`);
   }
 
   const data = await response.json();
@@ -688,41 +1027,37 @@ async function compareFacesGoogle(
 
     console.log("✅ Google Vision API responses received");
 
+    // Check if faces were detected
+    const profileFace = profileData.responses?.[0]?.faceAnnotations?.[0];
+    const verificationFace = verificationData.responses?.[0]?.faceAnnotations?.[0];
+
+    if (!profileFace || !verificationFace) {
+      console.log("❌ No faces detected in one or both images");
+      return { similarity: 0, confidence: 0, isMatch: false };
+    }
+
+    // Simple similarity based on face detection confidence and basic features
+    const profileConfidence = profileFace.detectionConfidence || 0;
+    const verificationConfidence = verificationFace.detectionConfidence || 0;
+
+    const confidenceDiff = Math.abs(profileConfidence - verificationConfidence);
+    const similarity = Math.max(0, 100 - (confidenceDiff * 100));
+
+    console.log(`🎯 Google Vision similarity: ${similarity.toFixed(2)}% (basic calculation)`);
+    console.log(`📊 Face confidences - Profile: ${profileConfidence.toFixed(2)}, Verification: ${verificationConfidence.toFixed(2)}`);
+
+    return {
+      similarity: Math.round(similarity * 100) / 100,
+      confidence: Math.min(profileConfidence, verificationConfidence),
+      isMatch: similarity >= 70,
+    };
   } catch (error) {
     console.error("❌ Error in Google Vision API call:", error);
     return { similarity: 0, confidence: 0, isMatch: false };
   }
-
-  // Check if faces were detected
-  const profileFace = profileData.responses?.[0]?.faceAnnotations?.[0];
-  const verificationFace = verificationData.responses?.[0]?.faceAnnotations?.[0];
-
-  if (!profileFace || !verificationFace) {
-    console.log("❌ No faces detected in one or both images");
-    return { similarity: 0, confidence: 0, isMatch: false };
-  }
-
-  // Simple similarity based on face detection confidence and basic features
-  // This is a basic implementation - for better accuracy, you'd need more sophisticated comparison
-  const profileConfidence = profileFace.detectionConfidence || 0;
-  const verificationConfidence = verificationFace.detectionConfidence || 0;
-
-  // Very basic similarity calculation (just for demo)
-  // In production, you'd compare facial landmarks, angles, etc.
-  const confidenceDiff = Math.abs(profileConfidence - verificationConfidence);
-  const similarity = Math.max(0, 100 - (confidenceDiff * 100));
-
-  console.log(`🎯 Google Vision similarity: ${similarity.toFixed(2)}% (basic calculation)`);
-  console.log(`📊 Face confidences - Profile: ${profileConfidence.toFixed(2)}, Verification: ${verificationConfidence.toFixed(2)}`);
-
-  return {
-    similarity: Math.round(similarity * 100) / 100,
-    confidence: Math.min(profileConfidence, verificationConfidence),
-    isMatch: similarity >= 70, // Lower threshold since this is basic
-  };
 }
 
-// Gemini AI Face Comparison (Primary method - using gemini-3.0-flash)
+// Gemini AI Face Comparison (Primary method - live chain via resolveVisionModels)
 async function compareFacesWithGemini(
   profilePhotoBuffer: ArrayBuffer,
   verificationPhotoBuffer: ArrayBuffer,
@@ -739,8 +1074,8 @@ async function compareFacesWithGemini(
   const profileBase64 = arrayBufferToBase64(profilePhotoBuffer);
   const verificationBase64 = arrayBufferToBase64(verificationPhotoBuffer);
 
-  const GEMINI_URL_PRIMARY = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${API_KEY}`;
-  const GEMINI_URL_BACKUP = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
+  const faceModels = await resolveVisionModels(API_KEY);
+  const geminiUrls = faceModels.map(m => buildGeminiUrl(m, API_KEY));
 
   const gestureInstruction = gestureRequirementText
     ? `
@@ -837,32 +1172,29 @@ async function compareFacesWithGemini(
 
   try {
     let response;
-    try {
-      console.log("📡 Calling Gemini API (Primary) for face comparison...");
-      response = await fetch(GEMINI_URL_PRIMARY, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
+    for (let i = 0; i < geminiUrls.length; i++) {
+      const modelName = faceModels[i];
+      try {
+        console.log(`📡 Calling Gemini API (${modelName}) for face comparison...`);
+        response = await fetch(geminiUrls[i], {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Primary API error: ${response.status} - ${errorText}`);
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.warn(`⚠️ ${modelName} failed (${response.status}), trying next...`);
+          continue;
+        }
+        break;
+      } catch (modelError) {
+        console.warn(`⚠️ ${modelName} error: ${modelError}, trying next...`);
       }
-    } catch (primaryError) {
-      console.warn("⚠️ Primary Gemini failed, switching to backup...", primaryError);
-      console.log("📡 Calling Gemini API (Backup) for face comparison...");
-      response = await fetch(GEMINI_URL_BACKUP, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
+    }
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error("❌ Backup Gemini API error:", response.status, errorText);
-        throw new Error(`Gemini API error (Primary & Backup failed): ${response.status} - ${errorText}`);
-      }
+    if (!response || !response.ok) {
+      throw new Error(`Gemini API error: All ${faceModels.length} models failed`);
     }
 
     const data = await response.json();
@@ -945,6 +1277,7 @@ async function compareFacesBasic(
   return {
     similarity: Math.round(fallbackSimilarity * 100) / 100,
     confidence: Math.round(fallbackConfidence * 100) / 100,
-    isMatch: false, // Require manual review when AI fails
+    isMatch: false,
+    reasoning: "Automated verification could not be completed at this time. Please try again with good lighting and framing.",
   };
 }

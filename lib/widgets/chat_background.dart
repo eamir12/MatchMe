@@ -25,17 +25,20 @@ class _ChatBackgroundPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Draw base color (slightly darker in light mode so white bubbles stand out more)
+    // Modern light canvas like WhatsApp/Telegram: warm cream, lighter than
+    // before so white incoming bubbles pop. Dark stays blue-black.
     final basePaint = Paint()
       ..style = PaintingStyle.fill
-      ..color = isDark ? const Color(0xFF111111) : const Color(0xFFE0E6E5);
+      ..color = isDark ? const Color(0xFF0B141A) : const Color(0xFFEFEAE2);
 
     canvas.drawRect(Offset.zero & size, basePaint);
 
-    // Draw a slightly more visible dotted/tiled pattern over the base for clearer texture
+    // Fainter dots so the lighter canvas stays clean.
     final dotPaint = Paint()
       ..style = PaintingStyle.fill
-      ..color = isDark ? Colors.white.withValues(alpha: 0.03) : Colors.black.withValues(alpha: 0.045);
+      ..color = isDark
+          ? Colors.white.withValues(alpha: 0.03)
+          : Colors.black.withValues(alpha: 0.032);
 
     const double step = 40.0;
     const double radius = 1.6;
@@ -51,7 +54,9 @@ class _ChatBackgroundPainter extends CustomPainter {
     final linePaint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 0.3
-      ..color = isDark ? Colors.white.withValues(alpha: 0.01) : Colors.black.withValues(alpha: 0.01);
+      ..color = isDark
+          ? Colors.white.withValues(alpha: 0.01)
+          : Colors.black.withValues(alpha: 0.01);
 
     const double diagGap = 120.0;
     for (double start = -size.height; start < size.width; start += diagGap) {
@@ -62,5 +67,6 @@ class _ChatBackgroundPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _ChatBackgroundPainter oldDelegate) => oldDelegate.isDark != isDark;
+  bool shouldRepaint(covariant _ChatBackgroundPainter oldDelegate) =>
+      oldDelegate.isDark != isDark;
 }

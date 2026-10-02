@@ -3,10 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:matchme/services/location_service.dart';
 import 'package:matchme/services/web_location_service.dart';
+import 'package:matchme/utils/location_deduplicator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
-import 'package:flutter/foundation.dart';
 
 class CurrentLocationNotifier extends Notifier<Position?> {
   @override
@@ -57,13 +57,38 @@ class CurrentLocationNotifier extends Notifier<Position?> {
       // Don't attempt to fetch position while offline
       final isOnline = ref.read(connectivityProvider).value ?? false;
       if (!isOnline) {
-        debugPrint('🟠 CurrentLocationNotifier: offline - skipping fetchCurrentLocation');
+        print(
+          '🟠 CurrentLocationNotifier: offline - skipping fetchCurrentLocation',
+        );
         return;
       }
 
       final locationService = ref.read(locationServiceProvider);
       if (locationService is WebLocationService) {
-        final position = await locationService.getCurrentPosition();
+        Position? position = await locationService.getCurrentPosition();
+
+        // Fallback 1: Geolocator last known position (browser cache)
+        if (position == null) {
+          try {
+            position = await Geolocator.getLastKnownPosition();
+          } catch (_) {}
+        }
+
+        // Fallback 2: direct Geolocator getCurrentPosition (bypasses web
+        // service's failure cache and dedup windows for a truly fresh attempt)
+        if (position == null) {
+          try {
+            position = await LocationDeduplicator.getPosition(
+              label: 'currentLocationProvider',
+              fetcher: () => Geolocator.getCurrentPosition(
+                locationSettings: const LocationSettings(
+                  accuracy: LocationAccuracy.best,
+                ),
+              ).timeout(const Duration(seconds: 15)),
+            );
+          } catch (_) {}
+        }
+
         if (position != null) {
           await _processNewPosition(position);
         }
@@ -82,11 +107,20 @@ class CurrentLocationNotifier extends Notifier<Position?> {
         }
 
         try {
-          // Use best accuracy for optimal GPS precision on mobile devices
-          final current = await Geolocator.getCurrentPosition(
-            locationSettings: const LocationSettings(accuracy: LocationAccuracy.best),
-          ).timeout(const Duration(seconds: 15));
-          await _processNewPosition(current);
+          // Use deduplicator to prevent concurrent getCurrentPosition calls
+          // when NearbyMapScreen, visibility changes, and location sharing
+          // all request position simultaneously.
+          final current = await LocationDeduplicator.getPosition(
+            label: 'currentLocationProvider',
+            fetcher: () => Geolocator.getCurrentPosition(
+              locationSettings: const LocationSettings(
+                accuracy: LocationAccuracy.best,
+              ),
+            ).timeout(const Duration(seconds: 15)),
+          );
+          if (current != null) {
+            await _processNewPosition(current);
+          }
         } catch (_) {
           // Ignore current position failures; stream may still update later.
         }
@@ -128,6 +162,7 @@ class CurrentLocationNotifier extends Notifier<Position?> {
   }
 }
 
-final currentLocationProvider = NotifierProvider<CurrentLocationNotifier, Position?>(() {
-  return CurrentLocationNotifier();
-});
+final currentLocationProvider =
+    NotifierProvider<CurrentLocationNotifier, Position?>(() {
+      return CurrentLocationNotifier();
+    });

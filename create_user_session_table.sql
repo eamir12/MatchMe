@@ -77,6 +77,7 @@ CREATE OR REPLACE FUNCTION upsert_user_session(
   p_expires_at TIMESTAMPTZ DEFAULT NULL,
   p_is_persistent BOOLEAN DEFAULT FALSE,
   p_auth_method TEXT DEFAULT NULL,
+  p_mfa_verified BOOLEAN DEFAULT FALSE,
   p_metadata JSONB DEFAULT '{}'::jsonb
 )
 RETURNS UUID
@@ -98,12 +99,12 @@ BEGIN
   INSERT INTO user_session (
     id, user_id, client_id, token_hash, refresh_token_hash,
     platform, device_id, device_model, user_agent, ip, country,
-    created_at, last_active_at, expires_at, is_persistent, auth_method, metadata
+    created_at, last_active_at, expires_at, is_persistent, auth_method, mfa_verified, metadata
   )
   VALUES (
     v_id, p_user_id, p_client_id, p_token_hash, p_refresh_token_hash,
     p_platform, p_device_id, p_device_model, p_user_agent, p_ip, p_country,
-    NOW(), NOW(), p_expires_at, p_is_persistent, p_auth_method, p_metadata
+    NOW(), NOW(), p_expires_at, p_is_persistent, p_auth_method, COALESCE(p_mfa_verified, FALSE), p_metadata
   )
   ON CONFLICT (id)
   DO UPDATE SET
@@ -121,6 +122,7 @@ BEGIN
     revoked = EXCLUDED.revoked,
     is_persistent = EXCLUDED.is_persistent,
     auth_method = EXCLUDED.auth_method,
+    mfa_verified = COALESCE(EXCLUDED.mfa_verified, FALSE),
     metadata = COALESCE(EXCLUDED.metadata, '{}'::jsonb)
   ;
 
@@ -128,7 +130,7 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION upsert_user_session(UUID, TEXT, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, INET, TEXT, TIMESTAMPTZ, BOOLEAN, TEXT, JSONB) TO authenticated;
+GRANT EXECUTE ON FUNCTION upsert_user_session(UUID, TEXT, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, INET, TEXT, TIMESTAMPTZ, BOOLEAN, TEXT, BOOLEAN, JSONB) TO authenticated;
 
 
 -- Function to revoke a session

@@ -88,7 +88,7 @@ serve(async (req) => {
     errorMessage = error instanceof Error ? error.message : String(error);
     httpStatus = 400;
     return new Response(
-      JSON.stringify({ error: error.message }),
+      JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
       { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
   } finally {

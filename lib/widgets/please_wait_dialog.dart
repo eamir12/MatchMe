@@ -1,16 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../main.dart' show navigatorKey;
 import '../providers/locale_provider.dart';
 
 class PleaseWaitDialog extends ConsumerWidget {
-  const PleaseWaitDialog({super.key});
+  final String? messageOverride;
+
+  const PleaseWaitDialog({super.key, this.messageOverride});
 
   static int _activeCount = 0;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final localization = ref.watch(localizationProvider);
-    final message = localization.getString('pleaseWait');
+    final message = messageOverride ?? localization.getString('pleaseWait');
 
     return AlertDialog(
       content: ConstrainedBox(
@@ -28,7 +31,7 @@ class PleaseWaitDialog extends ConsumerWidget {
               child: Text(
                 message,
                 maxLines: 2,
-                overflow: TextOverflow.ellipsis,
+                overflow: TextOverflow.visible,
               ),
             ),
           ],
@@ -37,24 +40,26 @@ class PleaseWaitDialog extends ConsumerWidget {
     );
   }
 
-  static void show(BuildContext context) {
+  static void show(BuildContext context, {String? message}) {
     _activeCount += 1;
     showDialog(
       context: context,
       useRootNavigator: true,
       barrierDismissible: false,
-      builder: (_) => const PleaseWaitDialog(),
+      builder: (_) => PleaseWaitDialog(messageOverride: message),
     ).whenComplete(() {
       if (_activeCount > 0) _activeCount -= 1;
     });
   }
 
-  static void hide(BuildContext context) {
+  static void hide([BuildContext? context]) {
     if (_activeCount <= 0) return;
-    if (!context.mounted) return;
-    _activeCount -= 1;
     try {
-      Navigator.of(context, rootNavigator: true).pop();
+      if (navigatorKey.currentContext != null) {
+        Navigator.of(navigatorKey.currentContext!, rootNavigator: true).pop();
+      } else if (context != null) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
     } catch (_) {}
   }
 }

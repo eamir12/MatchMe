@@ -15,7 +15,8 @@ class LocationRule {
   final String name;
   final double latitude;
   final double longitude;
-  final double radiusMeters; // Default 50m, minimum enforced 5m. Web GPS accuracy is typically 50-100m.
+  final double
+  radiusMeters; // Default 50m, minimum enforced 5m. Web GPS accuracy is typically 50-100m.
   final bool enabled;
 
   LocationRule({
@@ -176,11 +177,7 @@ class DayOfWeekRule {
     enabled: json['enabled'] ?? true,
   );
 
-  DayOfWeekRule copyWith({
-    String? id,
-    List<int>? daysOfWeek,
-    bool? enabled,
-  }) {
+  DayOfWeekRule copyWith({String? id, List<int>? daysOfWeek, bool? enabled}) {
     return DayOfWeekRule(
       id: id ?? this.id,
       daysOfWeek: daysOfWeek ?? this.daysOfWeek,
@@ -189,7 +186,15 @@ class DayOfWeekRule {
   }
 
   List<String> getDayNames() {
-    const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    const dayNames = [
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday',
+    ];
     return daysOfWeek.map((day) => dayNames[day - 1]).toList();
   }
 }
@@ -214,12 +219,13 @@ class DateTimeRangeRule {
     'enabled': enabled,
   };
 
-  factory DateTimeRangeRule.fromJson(Map<String, dynamic> json) => DateTimeRangeRule(
-    id: json['id'],
-    startDateTime: DateTime.parse(json['startDateTime']),
-    endDateTime: DateTime.parse(json['endDateTime']),
-    enabled: json['enabled'] ?? true,
-  );
+  factory DateTimeRangeRule.fromJson(Map<String, dynamic> json) =>
+      DateTimeRangeRule(
+        id: json['id'],
+        startDateTime: DateTime.parse(json['startDateTime']),
+        endDateTime: DateTime.parse(json['endDateTime']),
+        enabled: json['enabled'] ?? true,
+      );
 
   DateTimeRangeRule copyWith({
     String? id,
@@ -261,13 +267,14 @@ class DayTimeRangeRule {
     'enabled': enabled,
   };
 
-  factory DayTimeRangeRule.fromJson(Map<String, dynamic> json) => DayTimeRangeRule(
-    id: json['id'],
-    daysOfWeek: List<int>.from(json['daysOfWeek']),
-    startTime: _parseTimeOfDay(json['startTime']),
-    endTime: _parseTimeOfDay(json['endTime']),
-    enabled: json['enabled'] ?? true,
-  );
+  factory DayTimeRangeRule.fromJson(Map<String, dynamic> json) =>
+      DayTimeRangeRule(
+        id: json['id'],
+        daysOfWeek: List<int>.from(json['daysOfWeek']),
+        startTime: _parseTimeOfDay(json['startTime']),
+        endTime: _parseTimeOfDay(json['endTime']),
+        enabled: json['enabled'] ?? true,
+      );
 
   DayTimeRangeRule copyWith({
     String? id,
@@ -291,7 +298,15 @@ class DayTimeRangeRule {
   }
 
   List<String> getDayNames() {
-    const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    const dayNames = [
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday',
+    ];
     return daysOfWeek.map((day) => dayNames[day - 1]).toList();
   }
 }
@@ -325,27 +340,40 @@ class InvisibilityRules {
     'isLoaded': isLoaded,
   };
 
-  factory InvisibilityRules.fromJson(Map<String, dynamic> json) => InvisibilityRules(
-    locationRules: (json['locationRules'] as List<dynamic>?)
-        ?.map((r) => LocationRule.fromJson(r))
-        .toList() ?? [],
-    dateRangeRules: (json['dateRangeRules'] as List<dynamic>?)
-        ?.map((r) => DateRangeRule.fromJson(r))
-        .toList() ?? [],
-    timeRangeRules: (json['timeRangeRules'] as List<dynamic>?)
-        ?.map((r) => TimeRangeRule.fromJson(r))
-        .toList() ?? [],
-    dayOfWeekRules: (json['dayOfWeekRules'] as List<dynamic>?)
-        ?.map((r) => DayOfWeekRule.fromJson(r))
-        .toList() ?? [],
-    dateTimeRangeRules: (json['dateTimeRangeRules'] as List<dynamic>?)
-        ?.map((r) => DateTimeRangeRule.fromJson(r))
-        .toList() ?? [],
-    dayTimeRangeRules: (json['dayTimeRangeRules'] as List<dynamic>?)
-        ?.map((r) => DayTimeRangeRule.fromJson(r))
-        .toList() ?? [],
-    isLoaded: json['isLoaded'] ?? false,
-  );
+  factory InvisibilityRules.fromJson(Map<String, dynamic> json) =>
+      InvisibilityRules(
+        locationRules:
+            (json['locationRules'] as List<dynamic>?)
+                ?.map((r) => LocationRule.fromJson(r))
+                .toList() ??
+            [],
+        dateRangeRules:
+            (json['dateRangeRules'] as List<dynamic>?)
+                ?.map((r) => DateRangeRule.fromJson(r))
+                .toList() ??
+            [],
+        timeRangeRules:
+            (json['timeRangeRules'] as List<dynamic>?)
+                ?.map((r) => TimeRangeRule.fromJson(r))
+                .toList() ??
+            [],
+        dayOfWeekRules:
+            (json['dayOfWeekRules'] as List<dynamic>?)
+                ?.map((r) => DayOfWeekRule.fromJson(r))
+                .toList() ??
+            [],
+        dateTimeRangeRules:
+            (json['dateTimeRangeRules'] as List<dynamic>?)
+                ?.map((r) => DateTimeRangeRule.fromJson(r))
+                .toList() ??
+            [],
+        dayTimeRangeRules:
+            (json['dayTimeRangeRules'] as List<dynamic>?)
+                ?.map((r) => DayTimeRangeRule.fromJson(r))
+                .toList() ??
+            [],
+        isLoaded: json['isLoaded'] ?? false,
+      );
 
   InvisibilityRules copyWith({
     List<LocationRule>? locationRules,
@@ -382,7 +410,9 @@ class InvisibilityRules {
           rule.latitude,
           rule.longitude,
         );
-        final effectiveRadius = rule.radiusMeters < 5.0 ? 5.0 : rule.radiusMeters; // Minimum 5m radius to account for minor location changes
+        final effectiveRadius = rule.radiusMeters < 5.0
+            ? 5.0
+            : rule.radiusMeters; // Minimum 5m radius to account for minor location changes
         if (distance <= effectiveRadius) {
           return true;
         }
@@ -434,7 +464,8 @@ class InvisibilityRules {
     // Check date time range rules
     for (final rule in dateTimeRangeRules) {
       if (!rule.enabled) continue;
-      if (currentDateTime.isAfter(rule.startDateTime) && currentDateTime.isBefore(rule.endDateTime)) {
+      if (currentDateTime.isAfter(rule.startDateTime) &&
+          currentDateTime.isBefore(rule.endDateTime)) {
         return true;
       }
     }
@@ -458,19 +489,28 @@ class InvisibilityRules {
     final double dLat = _degreesToRadians(lat2 - lat1);
     final double dLon = _degreesToRadians(lon2 - lon1);
 
-    final double a = sin(dLat / 2) * sin(dLat / 2) +
-        cos(_degreesToRadians(lat1)) * cos(_degreesToRadians(lat2)) *
-        sin(dLon / 2) * sin(dLon / 2);
+    final double a =
+        sin(dLat / 2) * sin(dLat / 2) +
+        cos(_degreesToRadians(lat1)) *
+            cos(_degreesToRadians(lat2)) *
+            sin(dLon / 2) *
+            sin(dLon / 2);
     final double c = 2 * atan2(sqrt(a), sqrt(1 - a));
 
     return earthRadius * c;
   }
 
-  double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+  double _calculateDistance(
+    double lat1,
+    double lon1,
+    double lat2,
+    double lon2,
+  ) {
     return calculateDistance(lat1, lon1, lat2, lon2);
   }
 
-  double _degreesToRadians(double degrees) => degrees * (3.141592653589793 / 180);
+  double _degreesToRadians(double degrees) =>
+      degrees * (3.141592653589793 / 180);
 
   bool _isTimeInRange(TimeOfDay current, TimeOfDay start, TimeOfDay end) {
     final currentMinutes = current.hour * 60 + current.minute;

@@ -1,0 +1,21 @@
+-- Migration withdrawn 28 September 2026.
+--
+-- The "verified badge explanation" copy has been removed from the product.
+-- It appeared in three places:
+--   * lib/widgets/verification_scope_note.dart  (widget deleted)
+--   * lib/widgets/verified_badge.dart           (Tooltip + Semantics hint removed)
+--   * lib/screens/profile/profile_screen.dart
+--   * lib/screens/profile/verification_screen.dart
+--   * lib/screens/settings/settings_screen.dart
+--
+-- The English fallback was removed from _defaultTranslations in
+-- lib/providers/locale_provider.dart, so this migration no longer has anything
+-- to insert. It is intentionally left empty rather than deleted, so that the
+-- migration history keeps its original ordering and no already-applied
+-- migration record disappears.
+--
+-- If this migration was previously applied, the three existing rows remain in
+-- the `translations` table. They are harmless dead data — nothing reads the key
+-- any more — but if you want them gone, run:
+--
+--   DELETE FROM public.translations WHERE key = 'verifiedBadgeExplanation';

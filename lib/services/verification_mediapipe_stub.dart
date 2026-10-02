@@ -8,9 +8,12 @@ void openMediaPipeVerificationCapture({
   required String gestureCode,
   required void Function(Uint8List?) onPhoto,
   String? gestureLabel,
+  String? gestureDescription,
+  String? localeCode,
   Map<String, String>? captureStrings,
   Uint8List? inputImageBytes,
   BuildContext? context,
+  void Function()? onClose,
 }) {
   onPhoto(null);
 }

@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
+import { buildGeminiUrl, resolveTextModels } from "../_shared/gemini_config.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -94,8 +95,8 @@ Bio:
 ${JSON.stringify(bio)}
 `;
 
-    const geminiUrlPrimary = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${API_KEY}`;
-    const geminiUrlBackup = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
+    const textModels = await resolveTextModels(API_KEY);
+    const geminiUrls = textModels.map(m => ({ model: m, url: buildGeminiUrl(m, API_KEY) }));
 
     const requestBody = JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
@@ -115,12 +116,12 @@ ${JSON.stringify(bio)}
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 9000);
-      const currentGeminiUrl = attempt === 0 ? geminiUrlPrimary : geminiUrlBackup;
+      const target = geminiUrls[Math.min(attempt, geminiUrls.length - 1)];
       aiUsed = true;
-      aiModel = attempt === 0 ? "gemini-3-flash-preview" : "gemini-2.5-flash";
+      aiModel = target.model;
       try {
-        console.log(`[moderate-bio:${requestId}] Sending request to ${attempt === 0 ? 'Primary' : 'Backup'}`);
-        const resp = await fetch(currentGeminiUrl, {
+        console.log(`[moderate-bio:${requestId}] Sending request to ${target.model}`);
+        const resp = await fetch(target.url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: requestBody,

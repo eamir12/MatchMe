@@ -14,103 +14,154 @@ dependencies:
     sdk: flutter
 
   # --- RIVERPOD 3 & STATE MANAGEMENT ---
-  flutter_riverpod: ^3.1.0
-  connectivity_plus: ^7.0.0
+  flutter_riverpod: ^3.3.2
+  connectivity_plus: ^7.3.1
 
   # --- SUPABASE & BACKEND ---
-  supabase_flutter: ^2.12.0
+  supabase_flutter: ^2.17.1
   http: ^1.6.0
+  web_socket_channel: ^3.0.1
 
   # --- PUSH NOTIFICATIONS ---
-  firebase_core: ^4.4.0
-  firebase_messaging: ^16.1.1
-  firebase_analytics: ^12.0.0
+  firebase_core: ^4.13.0
+  firebase_messaging: ^16.5.0
 
   # --- LOCATION & BACKGROUND ---
   geolocator: ^14.0.2
-  geocoding: ^4.0.0
-  battery_plus: ^7.0.0
+  geocoding: ^5.0.0
+  battery_plus: ^7.1.1
 
   # --- UI & UTILITIES ---
   intl: ^0.20.2
-  shared_preferences: ^2.3.5
+  shared_preferences: ^2.5.5
   image_picker: ^1.2.0
-  camera: ^0.12.0
-  file_picker: ^10.3.8
-  extended_image: ^10.0.1
+  camera: ^0.12.0+2
+  file_picker: ^11.0.3
+  extended_image: ^10.1.0
   image: ^4.8.0
-  uuid: ^4.5.1
+  uuid: ^4.6.0
   collection: ^1.19.1
-  syncfusion_flutter_datepicker: ^33.1.44
+  characters: ^1.3.0
+  syncfusion_flutter_datepicker: ^34.2.3
   url_launcher: ^6.3.0
-  riverpod_annotation: ^4.0.0
-  emoji_picker_flutter: ^4.4.0  # Added for WhatsApp-style categorized emoji picker
+  flutter_svg: ^2.3.0
+  riverpod_annotation: ^4.0.3
+  emoji_picker_flutter: ^4.5.3  # Added for WhatsApp-style categorized emoji picker
+  cached_network_image: ^3.4.1  # For caching sponsored ad images
+  cupertino_icons: ^1.0.8
 
   # --- Locale Detection ---
-  device_info_plus: ^12.3.0
+  device_info_plus: ^12.4.0
   crypto: ^3.0.2
 
-  flutter_map: ^8.2.2
-  latlong2: ^0.9.1
-  proj4dart: ^2.1.0
+  flutter_map: ^8.3.1
+  latlong2: ^0.10.1
+  proj4dart: ^3.0.0
  
+  # --- Encryption & Secure Storage ---
+  cryptography: ^2.7.0
+  flutter_secure_storage: ^9.2.0
+
   # --- Local Database (Hive) ---
   hive: ^2.2.3
   hive_flutter: ^1.1.0
 
   # --- Local Notifications ---
-  flutter_local_notifications: ^21.0.0
+  flutter_local_notifications: ^22.3.0
+  confetti: ^0.8.0
+  flutter_timezone: ^5.1.0
+  timezone: ^0.11.0
 
   auto_size_text: ^3.0.0
-  permission_handler: ^12.0.1
+  app_links: ^7.2.1
+  permission_handler: ^12.0.3
+
+  # --- VOICE GUIDANCE (on-device text-to-speech for wizard/verification coaching) ---
+  flutter_tts: ^4.2.0
   quick_actions: ^1.1.0
+  visibility_detector: ^0.4.0+2
   web: ^1.1.1
-  device_calendar_plus: ^0.3.0
+  device_calendar_plus: ^0.8.0
   googleapis: ^16.0.0
   google_sign_in: ^7.2.0
-  google_sign_in_web: ^1.1.0
   extension_google_sign_in_as_googleapis_auth: ^3.0.0
   aad_oauth: ^1.0.1
+  msal_auth: ^3.5.2
   flutter_dotenv: ^6.0.0
+  passkeys: ^2.22.1
   
   # --- PAYMENTS ---
-  purchases_flutter: ^9.12.0
-  purchases_ui_flutter: ^9.12.0
-  share_plus: ^12.0.1
+  purchases_flutter: ^10.9.0
+  purchases_ui_flutter: ^10.9.0
+  share_plus: ^12.0.2
+
+  # --- GOOGLE MOBILE ADS ---
+  google_mobile_ads: ^9.1.0
 
   # --- WebView (MediaPipe gesture capture on mobile/desktop) ---
   webview_flutter: ^4.10.0
-  webview_flutter_android: ^4.0.0
-  webview_flutter_wkwebview: ^3.14.0
+  webview_flutter_android: ^4.14.0
+  webview_flutter_wkwebview: ^3.26.0
+
+  # --- Desktop window control (pull the app window back to the front after the
+  #     system-browser OAuth round trip; see utils/desktop_window_focus.dart) ---
+  window_manager: ^0.5.2
+  webview_windows: ^0.4.0
 
 dev_dependencies:
+  flutter_test:
+    sdk: flutter
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.4
 
   # --- Build runner & Riverpod 3 Generators ---
-  build_runner: ^2.10.4
-  riverpod_generator: ^4.0.0+1
+  build_runner: ^2.15.1
+  riverpod_generator: ^4.0.4
+
+  # --- Testing Libraries ---
+  mockito: ^5.3.0
+  mocktail: ^1.0.0
+
 
   # Riverpod annotations used by generators
   # riverpod_annotation: ^3.0.3
 
-# dependency_overrides:
-  #   freezed_annotation: ^3.0.0
+dependency_overrides:
+  passkeys_android:
+    path: third_party/passkeys_android
+  realtime_client:
+    path: third_party/realtime_client
+  # MatchMe fork: Windows C++ patched to never InvokeMethod from background
+  # threads (MediaEnded / SpeakComplete waiters) which the engine rejects with
+  # shell.cc "non-platform thread" errors (upstream dlutton/flutter_tts#629).
+  # Dart on Windows uses estimated durations, not completion callbacks.
+  flutter_tts:
+    path: third_party/flutter_tts
+  # MatchMe fork: upstream CMakeLists uses DEPENDS with the TARGET form of
+  # add_custom_command, which new CMake rejects (CMP0175 warning). Fixed here.
+  webview_windows:
+    path: third_party/webview_windows
+  # freezed_annotation: ^3.0.0
 
 flutter:
   uses-material-design: true
 
   assets:
     - assets/.env
+    - assets/msal_config.json
     - assets/images/
     - assets/images/providers/
     - assets/twemoji/
     - assets/verification_capture/
+    # Legal documents, one directory per language. Each language directory must
+    # be listed individually: a directory asset entry does not pick up files in
+    # its subdirectories, so `docs/legal/` on its own would bundle nothing and
+    # the legal screen would show "could not be loaded" in production.
+    - docs/legal/en/
+    - docs/legal/es/
+    - docs/legal/he/
 
   fonts:
-    - family: "Noto Color Emoji"
-      fonts:
-        - asset: assets/fonts/NotoColorEmoji.ttf
     - family: "Noto Sans"
       fonts:
         - asset: assets/fonts/NotoSans-Regular.ttf
@@ -126,11 +177,6 @@ flutter:
         - asset: assets/fonts/NotoSansArabic-Regular.ttf
         - asset: assets/fonts/NotoSansArabic-Bold.ttf
           weight: 700
-    - family: "Noto Sans TC"
-      fonts:
-        - asset: assets/fonts/NotoSansTC-Regular.ttf
-        - asset: assets/fonts/NotoSansTC-Bold.ttf
-          weight: 700
     - family: "Noto Sans Symbols"
       fonts:
         - asset: assets/fonts/NotoSansSymbols-Regular.ttf
@@ -142,6 +188,13 @@ flutter:
         - asset: assets/fonts/NotoSerif-Regular.ttf
         - asset: assets/fonts/NotoSerif-Bold.ttf
           weight: 700
+    # Bundled color emoji (Twemoji COLR v0.7.0, CC-BY-4.0 + Apache-2.0).
+    # Bundled-to-bundled fallback works on Android where bundled->system
+    # does not (flutter/flutter#175653), so this guarantees color ⛱️ etc.
+    # on the sender device, not just the receiver.
+    - family: "Twemoji Mozilla"
+      fonts:
+        - asset: assets/fonts/TwemojiMozilla.ttf
 
 flutter_launcher_icons:
   android: true

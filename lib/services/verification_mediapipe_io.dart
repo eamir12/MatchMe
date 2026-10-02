@@ -1,15 +1,60 @@
 // Mobile/desktop: MediaPipe gesture capture via WebView (same flow as web).
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/services/verification_mediapipe_windows.dart'
+    as windows_capture;
+import 'package:matchme/services/voice_guidance_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
+
+/// webview_flutter covers Android/iOS/macOS. Windows uses WebView2
+/// (see verification_mediapipe_windows.dart) with the same live capture page.
+/// Only Linux has no WebView and falls back to a file picker.
+bool _isLiveCaptureSupported() {
+  try {
+    return Platform.isAndroid ||
+        Platform.isIOS ||
+        Platform.isMacOS ||
+        Platform.isWindows;
+  } catch (_) {
+    return false;
+  }
+}
+
+/// Linux fallback (no WebView available): let the user pick an existing photo.
+/// The backend AI verification still checks the gesture.
+Future<void> _pickPhotoFromFilesFallback(
+  void Function(Uint8List?) onPhoto,
+  void Function()? onClose,
+) async {
+  try {
+    print(
+      'Verification capture: WebView not supported on ${Platform.operatingSystem}, using file picker fallback',
+    );
+    final file = await ImagePicker().pickImage(source: ImageSource.gallery);
+    if (file == null) {
+      onPhoto(null);
+      onClose?.call();
+      return;
+    }
+    final bytes = await file.readAsBytes();
+    onPhoto(bytes);
+  } catch (e) {
+    print('Verification capture file fallback failed: $e');
+    onPhoto(null);
+    onClose?.call();
+  }
+}
 
 /// Opens the MediaPipe gesture capture page in a full-screen WebView. When the user
 /// captures a photo, [onPhoto] is called with the JPEG bytes. [context] is required
@@ -18,49 +63,86 @@ void openMediaPipeVerificationCapture({
   required String gestureCode,
   required void Function(Uint8List?) onPhoto,
   String? gestureLabel,
+  String? gestureDescription,
+  String? localeCode,
   Map<String, String>? captureStrings,
   Uint8List? inputImageBytes,
   BuildContext? context,
+  // Called when the capture route is closed without delivering a photo
+  // (user backed out). Omit to keep the legacy fire-and-forget behaviour.
+  void Function()? onClose,
 }) {
+  try {
+    if (Platform.isWindows) {
+      windows_capture.openWindowsMediaPipeVerificationCapture(
+        gestureCode: gestureCode,
+        onPhoto: onPhoto,
+        gestureLabel: gestureLabel,
+        gestureDescription: gestureDescription,
+        localeCode: localeCode,
+        captureStrings: captureStrings,
+        inputImageBytes: inputImageBytes,
+        context: context,
+        onClose: onClose,
+      );
+      return;
+    }
+  } catch (_) {}
+  if (!_isLiveCaptureSupported()) {
+    unawaited(_pickPhotoFromFilesFallback(onPhoto, onClose));
+    return;
+  }
   final ctx = context;
   if (ctx == null || !ctx.mounted) {
     onPhoto(null);
     return;
   }
 
-  Navigator.of(ctx).push<void>(
-    MaterialPageRoute<void>(
-      builder: (context) => _MediaPipeCapturePage(
-        gestureCode: gestureCode,
-        gestureLabel: gestureLabel,
-        captureStrings: captureStrings,
-        inputImageBytes: inputImageBytes,
-        onPhoto: onPhoto,
-      ),
-    ),
-  ).then((_) {
-    // If route was popped without sending a photo, ensure we don't leave callback dangling
-    // (onPhoto is only called when we receive base64 from the WebView)
-  });
+  Navigator.of(ctx)
+      .push<void>(
+        MaterialPageRoute<void>(
+          builder: (context) => _MediaPipeCapturePage(
+            gestureCode: gestureCode,
+            gestureLabel: gestureLabel,
+            gestureDescription: gestureDescription,
+            localeCode: localeCode,
+            captureStrings: captureStrings,
+            inputImageBytes: inputImageBytes,
+            onPhoto: onPhoto,
+            onClose: onClose,
+          ),
+        ),
+      )
+      .then((_) {
+        // If route was popped without sending a photo, ensure we don't leave callback dangling
+        // (onPhoto is only called when we receive base64 from the WebView)
+      });
 }
 
 class _MediaPipeCapturePage extends ConsumerStatefulWidget {
   const _MediaPipeCapturePage({
     required this.gestureCode,
     required this.gestureLabel,
+    required this.gestureDescription,
+    required this.localeCode,
     required this.captureStrings,
     required this.inputImageBytes,
     required this.onPhoto,
+    this.onClose,
   });
 
   final String gestureCode;
   final String? gestureLabel;
+  final String? gestureDescription;
+  final String? localeCode;
   final Map<String, String>? captureStrings;
   final Uint8List? inputImageBytes;
   final void Function(Uint8List?) onPhoto;
+  final void Function()? onClose;
 
   @override
-  ConsumerState<_MediaPipeCapturePage> createState() => _MediaPipeCapturePageState();
+  ConsumerState<_MediaPipeCapturePage> createState() =>
+      _MediaPipeCapturePageState();
 }
 
 class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
@@ -69,63 +151,268 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
   String? _loadError;
   bool _cameraPermissionDenied = false;
 
-  void _onPhotoReceived(Uint8List? bytes) {
-    if (_sent) return;
+  /// Bottom system-bar inset in logical px, measured by Flutter. Ground truth
+  /// for the in-page card position: 0 when the WebView already ends above
+  /// opaque bars (card hugs the bottom), bar height when underlapping.
+  /// CSS env() can't know this and double-counts on resized WebViews.
+  double? _bottomInsetPx() {
+    try {
+      return MediaQuery.paddingOf(context).bottom;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _isWaitingForSpeech = false;
+
+  /// Primary-selfie (FACE_ONLY) instruction gate: the capture page holds
+  /// auto-capture until the spoken instructions finish. This flag tracks
+  /// whether the host has finished speaking and signalled the page.
+  bool _faceOnlyInstructionsSignaled = false;
+  bool _faceOnlyInstructionsSpoken = false;
+
+  bool get _isFaceOnlyCapture => widget.gestureCode == 'FACE_ONLY';
+
+  /// Speaks the primary-selfie instructions aloud, then lifts the page's
+  /// auto-capture gate. Falls back to signalling after a timeout so a TTS
+  /// failure can never block capture forever.
+  Future<void> _speakPrimarySelfieInstructionsAndSignalReady() async {
+    if (!_isFaceOnlyCapture) return;
+    final label = (widget.gestureLabel ?? '').trim();
+    final description = (widget.gestureDescription ?? '').trim();
+    final fallbackInstruction =
+        widget.captureStrings?['verificationCaptureInstruction'] ?? '';
+    final text = [label, description]
+        .where((s) => s.isNotEmpty)
+        .join('. ');
+    final toSpeak = text.isNotEmpty ? text : fallbackInstruction.trim();
+    try {
+      if (toSpeak.isNotEmpty) {
+        await VoiceGuidanceService.instance
+            .speakAndWait(toSpeak, timeout: const Duration(seconds: 30));
+      }
+    } catch (_) {}
+    _faceOnlyInstructionsSpoken = true;
+    await _signalFaceOnlyReadyToPage();
+  }
+
+  Future<void> _signalFaceOnlyReadyToPage() async {
+    if (_faceOnlyInstructionsSignaled) return;
+    final controller = _controller;
+    if (controller == null) {
+      // WebView not ready yet — retry once it is (called again after
+      // _initController sets the controller).
+      return;
+    }
+    try {
+      await controller.runJavaScript(
+        'window.setFaceOnlyInstructionsReady && window.setFaceOnlyInstructionsReady()',
+      );
+      _faceOnlyInstructionsSignaled = true;
+    } catch (_) {}
+  }
+
+  Future<void> _onPhotoReceived(Uint8List? bytes) async {
+    if (_sent || _isWaitingForSpeech) return;
+
+    if (bytes == null) {
+      _sent = true;
+      _controller = null;
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
+      widget.onPhoto(null);
+      return;
+    }
+
+    _isWaitingForSpeech = true;
+
+    // Only advance automatically once the image is captured and the current
+    // explanation sentence has finished being spoken. If explanations are
+    // muted or guidance is disabled, this completes immediately.
+    if (VoiceGuidanceService.instance.isSpeaking) {
+      await VoiceGuidanceService.instance.waitUntilCurrentSpeechFinished();
+    }
+
+    if (!mounted || _sent) return;
     _sent = true;
-    if (!mounted) return;
-    Navigator.of(context).pop();
+
+    // Fix for PigeonProxyApiRegistrar memory leak: dispose controller before popping
+    _controller = null;
+
+    if (mounted) {
+      Navigator.of(context).pop();
+    }
     widget.onPhoto(bytes);
   }
 
+  void _onLogReceived(JavaScriptMessage message) {
+    // Structured diagnostics from the capture page (ready/metrics/stuck/
+    // warn/error) plus 'voice' live-coaching events. Surfaced in release logs
+    // so support can tell which gate is stuck on a specific device instead of
+    // guessing.
+    try {
+      final decoded = jsonDecode(message.message);
+      if (decoded is Map<String, dynamic>) {
+        final type = decoded['type']?.toString() ?? 'log';
+        if (type == 'voice') {
+          // If a photo was captured and we are waiting for the current sentence
+          // to finish, ignore any further coaching lines.
+          if (_isWaitingForSpeech || _sent) return;
+
+          // Live capture coaching: the capture page reached a new gate and
+          // asked for its localized status line to be spoken.
+          final data = decoded['data'];
+          final key = data is Map ? data['key']?.toString() : null;
+          if (key != null && key.isNotEmpty) {
+            unawaited(VoiceGuidanceService.instance.speakKey(key));
+          }
+          return;
+        }
+        if (type == 'error' || type == 'stuck') {
+          debugPrint('VERIFICATION CAPTURE [$type]: ${message.message}');
+        } else if (kDebugMode) {
+          debugPrint('VERIFICATION CAPTURE [$type]: ${message.message}');
+        }
+        return;
+      }
+    } catch (_) {
+      // Fall through to plain logging.
+    }
+    debugPrint('VERIFICATION CAPTURE [log]: ${message.message}');
+  }
+
+  Future<void> _handleWebViewPermissionRequest(
+    WebViewPermissionRequest request,
+  ) async {
+    // Android WebView denies camera access unless the host app responds to the
+    // embedded page's permission request.
+    final needsCamera = request.types.contains(
+      WebViewPermissionResourceType.camera,
+    );
+    final needsMicrophone = request.types.contains(
+      WebViewPermissionResourceType.microphone,
+    );
+
+    var cameraGranted = !needsCamera;
+    if (needsCamera) {
+      var cameraStatus = await Permission.camera.status;
+      if (!cameraStatus.isGranted && !cameraStatus.isLimited) {
+        cameraStatus = await Permission.camera.request();
+      }
+      // Some OEMs report `limited` for foreground camera access; that still
+      // allows capture, so it must not be treated as denied.
+      cameraGranted = cameraStatus.isGranted || cameraStatus.isLimited;
+    }
+
+    var microphoneGranted = !needsMicrophone;
+    if (needsMicrophone) {
+      var microphoneStatus = await Permission.microphone.status;
+      if (!microphoneStatus.isGranted && !microphoneStatus.isLimited) {
+        microphoneStatus = await Permission.microphone.request();
+      }
+      microphoneGranted =
+          microphoneStatus.isGranted || microphoneStatus.isLimited;
+    }
+
+    if (cameraGranted && microphoneGranted) {
+      print(
+        'Granting WebView permission request: ${request.types.map((type) => type.name).join(', ')}',
+      );
+      await request.grant();
+      return;
+    }
+
+    await request.deny();
+    if (!mounted) return;
+
+    final l10n = ref.read(localizationProvider);
+    setState(() {
+      _cameraPermissionDenied = needsCamera && !cameraGranted;
+      _loadError = l10n.getString('verificationCaptureCameraPermissionDenied');
+    });
+  }
+
   Future<void> _initController() async {
+    if (!_isLiveCaptureSupported()) {
+      print(
+        'Verification capture: WebView not supported on ${Platform.operatingSystem}, showing error UI',
+      );
+      if (mounted) {
+        final l10n = ref.read(localizationProvider);
+        setState(() {
+          _loadError = l10n
+              .getString('verificationCaptureWrapperFailedToLoad')
+              .replaceAll('{error}', 'WebView not supported on this platform');
+        });
+      }
+      return;
+    }
     // Skip native camera permission check on iOS - let WebView handle its own camera permission
     // On iOS, the WebView has its own permission system and will prompt for camera access
     // The native permission check can fail incorrectly due to permission_handler limitations
     if (Platform.isIOS) {
-      debugPrint('iOS detected - letting WebView handle camera permission');
+      print('iOS detected - letting WebView handle camera permission');
     } else {
       // For Android, check native camera permission first
       var cameraStatus = await Permission.camera.status;
-      debugPrint('Camera permission status: $cameraStatus');
-      debugPrint('Camera status isGranted: ${cameraStatus.isGranted}');
-      debugPrint('Camera status isDenied: ${cameraStatus.isDenied}');
-      debugPrint('Camera status isPermanentlyDenied: ${cameraStatus.isPermanentlyDenied}');
-      debugPrint('Camera status isRestricted: ${cameraStatus.isRestricted}');
-      debugPrint('Camera status isLimited: ${cameraStatus.isLimited}');
-      
-      if (!cameraStatus.isGranted) {
+      print('Camera permission status: $cameraStatus');
+      print('Camera status isGranted: ${cameraStatus.isGranted}');
+      print('Camera status isDenied: ${cameraStatus.isDenied}');
+      print(
+        'Camera status isPermanentlyDenied: ${cameraStatus.isPermanentlyDenied}',
+      );
+      print('Camera status isRestricted: ${cameraStatus.isRestricted}');
+      print('Camera status isLimited: ${cameraStatus.isLimited}');
+
+      if (!cameraStatus.isGranted && !cameraStatus.isLimited) {
         if (cameraStatus.isPermanentlyDenied || cameraStatus.isRestricted) {
-          debugPrint('Camera permission permanently denied/restricted - showing settings');
+          print(
+            'Camera permission permanently denied/restricted - showing settings',
+          );
         } else {
-          debugPrint('Requesting camera permission...');
+          print('Requesting camera permission...');
           cameraStatus = await Permission.camera.request();
-          debugPrint('After request, camera status: $cameraStatus');
+          print('After request, camera status: $cameraStatus');
         }
       }
-      if (!cameraStatus.isGranted) {
+      if (!cameraStatus.isGranted && !cameraStatus.isLimited) {
         final l10n = ref.read(localizationProvider);
         if (mounted) {
-          setState(
-            () {
-              _cameraPermissionDenied = true;
-              _loadError = l10n.getString('verificationCaptureCameraPermissionDenied');
-            },
-          );
+          setState(() {
+            _cameraPermissionDenied = true;
+            _loadError = l10n.getString(
+              'verificationCaptureCameraPermissionDenied',
+            );
+          });
         }
-        debugPrint('Camera permission denied, showing error UI');
+        print('Camera permission denied, showing error UI');
         return;
       }
     }
-    
-    debugPrint('Loading WebView...');
-    
+
+    print('Loading WebView...');
+
     try {
-      final html = await rootBundle.loadString('assets/verification_capture/index.html');
-      debugPrint('Loaded HTML successfully, length: ${html.length}');
-      
+      final html = await rootBundle.loadString(
+        'assets/verification_capture/index.html',
+      );
+      print('Loaded HTML successfully, length: ${html.length}');
+
       final htmlWithParams = html
           .replaceFirst('__GESTURE_CODE_JSON__', jsonEncode(widget.gestureCode))
-          .replaceFirst('__GESTURE_LABEL_JSON__', jsonEncode(widget.gestureLabel ?? ''))
+          .replaceFirst(
+            '__GESTURE_LABEL_JSON__',
+            jsonEncode(widget.gestureLabel ?? ''),
+          )
+          .replaceFirst(
+            '__GESTURE_DESCRIPTION_JSON__',
+            jsonEncode(widget.gestureDescription ?? ''),
+          )
+          .replaceFirst(
+            '__LOCALE_CODE_JSON__',
+            jsonEncode(widget.localeCode ?? 'en'),
+          )
           .replaceFirst(
             '__CAPTURE_STRINGS_JSON__',
             jsonEncode(widget.captureStrings ?? <String, String>{}),
@@ -133,82 +420,126 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
           .replaceFirst(
             '__INPUT_IMAGE_BASE64_JSON__',
             jsonEncode(
-              widget.inputImageBytes == null ? '' : base64Encode(widget.inputImageBytes!),
+              widget.inputImageBytes == null
+                  ? ''
+                  : base64Encode(widget.inputImageBytes!),
             ),
-          );
-      debugPrint('HTML with params prepared');
-      
+          )
+          .replaceFirst('__CAPTURE_DEBUG_JSON__', jsonEncode(kDebugMode))
+          .replaceFirst('__BOTTOM_INSET_JSON__', jsonEncode(_bottomInsetPx()));
+      print('HTML with params prepared');
+
       if (!mounted) return;
-      
+
       PlatformWebViewControllerCreationParams params =
           const PlatformWebViewControllerCreationParams();
       if (WebViewPlatform.instance is WebKitWebViewPlatform) {
-        params = WebKitWebViewControllerCreationParams.fromPlatformWebViewControllerCreationParams(
-          params,
-          allowsInlineMediaPlayback: true,
-          mediaTypesRequiringUserAction: const <PlaybackMediaTypes>{},
-        );
+        params =
+            WebKitWebViewControllerCreationParams.fromPlatformWebViewControllerCreationParams(
+              params,
+              allowsInlineMediaPlayback: true,
+              mediaTypesRequiringUserAction: const <PlaybackMediaTypes>{},
+            );
       } else if (WebViewPlatform.instance is AndroidWebViewPlatform) {
-        params = AndroidWebViewControllerCreationParams.fromPlatformWebViewControllerCreationParams(
-          params,
-        );
+        params =
+            AndroidWebViewControllerCreationParams.fromPlatformWebViewControllerCreationParams(
+              params,
+            );
       }
-      
-      debugPrint('Creating WebView controller with platform: ${WebViewPlatform.instance}');
-      
+
+      print(
+        'Creating WebView controller with platform: ${WebViewPlatform.instance}',
+      );
+
+      if (kDebugMode && Platform.isAndroid) {
+        // Allows chrome://inspect debugging of the capture page on test devices.
+        try {
+          await AndroidWebViewController.enableDebugging(true);
+        } catch (e) {
+          debugPrint('Could not enable WebView debugging: $e');
+        }
+      }
+
       final c = WebViewController.fromPlatformCreationParams(
         params,
-        onPermissionRequest: (request) => request.grant(),
-      )
+        onPermissionRequest: (WebViewPermissionRequest request) {
+          unawaited(_handleWebViewPermissionRequest(request));
+        },
+      );
+
+      if (Platform.isAndroid) {
+        // Autoplay of the camera preview must not require a tap inside the
+        // WebView; the host screen was already opened via a user gesture.
+        try {
+          await (c.platform as AndroidWebViewController)
+              .setMediaPlaybackRequiresUserGesture(false);
+        } catch (e) {
+          debugPrint('Could not set media playback gesture requirement: $e');
+        }
+      }
+
+      c
         ..setJavaScriptMode(JavaScriptMode.unrestricted)
+        ..setBackgroundColor(Colors.black)
         ..addJavaScriptChannel(
           'PhotoCapture',
           onMessageReceived: (JavaScriptMessage message) {
             try {
               final bytes = Uint8List.fromList(base64Decode(message.message));
-              debugPrint('Received photo from WebView, length: ${bytes.length}');
+              print('Received photo from WebView, length: ${bytes.length}');
               _onPhotoReceived(bytes);
             } catch (e) {
-              debugPrint('Error decoding photo from WebView: $e');
+              print('Error decoding photo from WebView: $e');
               _onPhotoReceived(null);
             }
           },
         )
-        ..loadHtmlString(
-          htmlWithParams,
-          baseUrl: 'https://cdn.jsdelivr.net/',
+        ..addJavaScriptChannel(
+          'ValidationLog',
+          onMessageReceived: _onLogReceived,
         )
         ..setNavigationDelegate(
           NavigationDelegate(
             onPageStarted: (String url) {
-              debugPrint('WebView page started: $url');
+              print('WebView page started: $url');
             },
-            onPageFinished: (String url) {
-              debugPrint('WebView page finished: $url');
+            onPageFinished: (String url) async {
+              print('WebView page finished: $url');
+              // Fix for Android WebView camera permission race condition
+              await Future<void>.delayed(const Duration(milliseconds: 1000));
             },
             onWebResourceError: (WebResourceError error) {
-              debugPrint('WebView resource error: $error');
+              print('WebView resource error: $error');
             },
             onNavigationRequest: (NavigationRequest request) {
+              // Top-level navigations stay locked down, but MediaPipe model
+              // fetches (WASM + .task files) must be reachable.
               if (request.url.startsWith('https://cdn.jsdelivr.net') ||
-                  request.url.startsWith('https://unpkg.com')) {
+                  request.url.startsWith('https://unpkg.com') ||
+                  request.url.startsWith('https://storage.googleapis.com')) {
                 return NavigationDecision.navigate;
               }
-              debugPrint('Blocking navigation to: ${request.url}');
+              print('Blocking navigation to: ${request.url}');
               return NavigationDecision.prevent;
             },
           ),
-        );
-      
-      debugPrint('WebView controller created');
-      
+        )
+        ..loadHtmlString(htmlWithParams, baseUrl: 'https://cdn.jsdelivr.net/');
+
+      print('WebView controller created');
+
       if (!mounted) return;
       setState(() {
         _controller = c;
       });
-      debugPrint('WebView controller set in state');
+      print('WebView controller set in state');
+      // If the instructions already finished speaking while the WebView was
+      // loading, lift the auto-capture gate now.
+      if (_isFaceOnlyCapture && _faceOnlyInstructionsSpoken) {
+        unawaited(_signalFaceOnlyReadyToPage());
+      }
     } catch (e) {
-      debugPrint('Error initializing WebView controller: $e');
+      print('Error initializing WebView controller: $e');
       if (mounted) {
         setState(() => _loadError = e.toString());
       }
@@ -216,10 +547,40 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
   }
 
   @override
+  void dispose() {
+    // Route closed without delivering a photo (user backed out): silence any
+    // guidance still speaking and notify listeners that only care about
+    // cancellation. Photo delivery sets _sent first, so a successful capture
+    // never triggers onClose.
+    if (!_sent) {
+      unawaited(VoiceGuidanceService.instance.stop());
+      try {
+        widget.onClose?.call();
+      } catch (_) {}
+    }
+    super.dispose();
+  }
+
+  @override
   void initState() {
     super.initState();
-    _initController().catchError((e) {
-      if (mounted) setState(() => _loadError = e.toString());
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // Critical fix for Android WebView race condition: wait for platform view to be fully attached
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      if (!mounted) return;
+      // Primary selfie: speak the instructions now (while the camera/models
+      // load) so the user hears what to do; the page holds auto-capture
+      // until speaking finishes. A fallback timer guarantees the gate
+      // lifts even if TTS never completes.
+      if (_isFaceOnlyCapture) {
+        unawaited(_speakPrimarySelfieInstructionsAndSignalReady());
+        Timer(const Duration(seconds: 12), () {
+          if (mounted) unawaited(_signalFaceOnlyReadyToPage());
+        });
+      }
+      _initController().catchError((e) {
+        if (mounted) setState(() => _loadError = e.toString());
+      });
     });
   }
 
@@ -228,6 +589,7 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
     if (_loadError != null) {
       final l10n = ref.watch(localizationProvider);
       return Scaffold(
+        backgroundColor: Colors.black,
         appBar: AppBar(title: Text(l10n.getString('verification'))),
         body: Center(
           child: Padding(
@@ -253,13 +615,46 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
       );
     }
     if (_controller == null) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
+      return Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          backgroundColor: Colors.black,
+          foregroundColor: Colors.white,
+          title: Text(ref.watch(localizationProvider).getString('verification')),
+        ),
+        body: const Center(child: CircularProgressIndicator()),
       );
     }
     return Scaffold(
-      body: SafeArea(
-        child: WebViewWidget(controller: _controller!),
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          Positioned.fill(child: WebViewWidget(controller: _controller!)),
+          // Back button so the user can leave and do verification later.
+          // Popping without a photo triggers onClose via dispose().
+          // Directional: sits on the leading edge (right in RTL/Hebrew).
+          Positioned.directional(
+            textDirection: Directionality.of(context),
+            top: 0,
+            start: 0,
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Material(
+                  color: Colors.black54,
+                  shape: const CircleBorder(),
+                  child: IconButton(
+                    tooltip: MaterialLocalizations.of(
+                      context,
+                    ).backButtonTooltip,
+                    icon: const Icon(Icons.arrow_back, color: Colors.white),
+                    onPressed: () => Navigator.of(context).maybePop(),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

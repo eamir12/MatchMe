@@ -12,6 +12,25 @@ firebase.initializeApp({
 
 const messaging = firebase.messaging();
 
+// v4: + silent edit/delete retraction closes the stale grouped card.
+// skipWaiting + claim so rebooted/offline browsers pick up the fix without
+// waiting for the old worker to release its clients.
+const SW_VERSION = 'v4-notif-fix';
+try {
+  self.addEventListener('install', (event) => {
+    try {
+      self.skipWaiting();
+    } catch (_) {}
+  });
+  self.addEventListener('activate', (event) => {
+    event.waitUntil((async () => {
+      try {
+        await self.clients.claim();
+      } catch (_) {}
+    })());
+  });
+} catch (_) {}
+
 const _chatMessageHistory = new Map(); // matchId -> [{ id: string, text: string }]
 let _currentUserId = '';
 
@@ -66,7 +85,7 @@ messaging.onBackgroundMessage(async (payload) => {
   const title = (payload && payload.notification && payload.notification.title) ? payload.notification.title : 'MatchMe';
   const body = (payload && payload.notification && payload.notification.body) ? payload.notification.body : '';
   const data = (payload && payload.data) ? payload.data : {};
-  const dataType = (data.type || data.notification_type || data.notificationType || '').toString().trim();
+  const dataType = (data.type || data.kind || data.notification_type || data.notificationType || '').toString().trim();
   const isAdminBroadcast = dataType === 'admin_broadcast';
 
   try {
@@ -83,9 +102,42 @@ messaging.onBackgroundMessage(async (payload) => {
   const senderId = (data.senderId || data.sender_id || '').toString().trim();
   const recipientId = (data.recipientId || data.recipient_id || '').toString().trim();
   const broadcastId = (data.broadcast_id || data.broadcastId || '').toString().trim();
+  const rawKind = (data.kind || data.type || data.notification_type || '').toString().trim().toLowerCase();
+  const isExpiry = rawKind === 'match_expiry' || rawKind === 'pinned_expiry';
+  const isMatch = rawKind === 'match' || rawKind === 'new_match';
+  const isRetraction = rawKind === 'message_edited' || rawKind === 'message_deleted';
+  // Retraction tick: close the stale grouped card instead of posting.
+  // The next real message re-posts with correct text via its own tag.
+  if (isRetraction) {
+    try {
+      const matchTag = (data.matchId || data.match_id || '').toString().trim();
+      const tags = matchTag ? [`match_${matchTag}`] : [];
+      for (const t of tags) {
+        try {
+          const existing = await self.registration.getNotifications({ tag: t });
+          for (const n of (existing || [])) {
+            try { n.close(); } catch (_) {}
+          }
+        } catch (_) {}
+      }
+      // Drop the retracted text from this worker's history so a rebuild
+      // never resurrects it.
+      if (matchTag && _chatMessageHistory.has(matchTag)) {
+        _chatMessageHistory.delete(matchTag);
+      }
+    } catch (_) {}
+    return;
+  }
+  // Distinct tags so chat history, match banners, and expiry warnings never
+  // clobber each other when the browser is minimized/closed/offline.
+  // Chat keeps `match_<id>` for 5-message history merging.
   const tag = isAdminBroadcast
     ? (broadcastId ? `admin_broadcast_${broadcastId}` : 'admin_broadcast')
-    : (matchId ? `match_${matchId}` : (data.tag || data.collapseKey || data.collapse_key || '').toString().trim());
+    : isExpiry
+      ? `${rawKind}_${matchId || broadcastId || 'warn'}`
+      : isMatch
+        ? (matchId ? `new_match_${matchId}` : 'new_match')
+        : (matchId ? `match_${matchId}` : (data.tag || data.collapseKey || data.collapse_key || '').toString().trim());
 
   if (_currentUserId) {
     if (recipientId && recipientId !== _currentUserId) {

@@ -6,13 +6,17 @@
 // tree, read text, and verify that the values of widget properties are correct.
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:matchme_admin/main.dart';
 
 void main() {
   testWidgets('Admin app builds', (WidgetTester tester) async {
-    await tester.pumpWidget(const AdminApp());
+    // AdminApp is a ConsumerWidget (Riverpod), so it needs a ProviderScope
+    // ancestor. Without one it throws "No ProviderScope found" before it can
+    // ever build its MaterialApp.
+    await tester.pumpWidget(const ProviderScope(child: AdminApp()));
     await tester.pump();
 
     expect(find.byType(MaterialApp), findsOneWidget);

@@ -2,22 +2,54 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'location_service.dart';
 import 'package:matchme/services/local_db_service.dart';
+import 'package:matchme/services/pinned_location_gate.dart';
 import 'package:matchme/utils/permission_manager.dart';
+import 'package:matchme/services/user_activity_service.dart';
+import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/utils/offline_utils.dart';
+import 'package:matchme/services/offline_trail_service.dart';
 
 final supabase = Supabase.instance.client;
-
-String _ts() => DateTime.now().toIso8601String();
 
 class MobileLocationService implements LocationService {
   Timer? _positionUpdateTimer;
   bool _isServiceRunning = false;
   bool _isStarting = false;
+  bool _isSending = false;
+  bool _isVisible = true;
   void Function(dynamic)? _locationUpdateCallback;
   int _currentIntervalSeconds = 0;
+  int _consecutiveGpsTimeouts = 0;
+  DateTime? _lastGpsErrorLogAt;
+  // Pinned home-base: while a pin is active there is no GPS timer at all.
+  // Presence is kept by a slow, silent heartbeat instead (no GPS access, no
+  // per-tick wakeups or logs). _heartbeatMode tracks which mode is running
+  // so unpin transitions restart GPS even when the interval is unchanged.
+  Timer? _heartbeatTimer;
+  bool _heartbeatMode = false;
+
+  // Live map stream: a continuous getPositionStream owned by a foreground UI
+  // surface (Nearby map). While it runs, the GPS chip is already producing
+  // fixes, so the interval timer stops issuing its own one-shot requests and
+  // just transmits the latest streamed fix at the configured interval. The
+  // stream itself never transmits — that stays on the timer's cadence.
+  StreamSubscription<Position>? _liveStreamSub;
+  Position? _latestLiveFix;
+  DateTime? _latestLiveFixAt;
+  DateTime? _lastLiveIngestAt;
+  DateTime? _lastLiveErrorLogAt;
+  static const Duration _liveFixStaleness = Duration(seconds: 90);
+
+  /// Slow heartbeat cadence while pinned. Well inside the server's online
+  /// window, negligible battery cost, zero GPS access.
+  static const Duration _pinnedHeartbeatInterval = Duration(seconds: 60);
+
+  MobileLocationService();
 
   @override
   void setSmartThrottlingEnabled(bool enabled) {
@@ -25,60 +57,85 @@ class MobileLocationService implements LocationService {
     // No-op for mobile implementation.
   }
 
-  Future<bool> _isUserVisible(String userId) async {
-    try {
-      final response = await supabase.from('users').select('user_visibility_setting, system_visibility_status').eq('id', userId).maybeSingle();
-      if (response == null || response['user_visibility_setting'] == null) return true; // default to visible if unknown
-      final userSetting = response['user_visibility_setting'] == true;
-      final systemVisibility = response['system_visibility_status'] as String? ?? 'visible';
-      return userSetting && systemVisibility == 'visible';
-    } catch (_) {
-      // On error, be conservative and assume visible to avoid stopping unexpectedly.
-      return true;
-    }
-  }
-
   Future<void> _fetchAndSendLocation(Position position) async {
-    debugPrint('[${_ts()}] 📍 Mobile location service: _fetchAndSendLocation called with position: ${position.latitude}, ${position.longitude}');
+    print(
+      '[${DateTime.now().toIso8601String()}] 📍 [MobileLoc] _fetchAndSendLocation entered',
+    );
     final user = supabase.auth.currentUser;
+    print(
+      '[${DateTime.now().toIso8601String()}] 📍 [MobileLoc] user=${user?.id ?? 'null'}',
+    );
     if (user == null) {
-      debugPrint('[${_ts()}] 📍 Mobile location service: No user, stopping location stream');
+      print(
+        '[${DateTime.now().toIso8601String()}] ❌ [MobileLoc] No user, stopping stream',
+      );
       stopLocationStream();
+      return;
+    }
+
+    // Unreachable in practice (the GPS timer never runs while pinned and
+    // the pin check below guards the rest), kept as a silent backstop.
+    if (await PinnedLocationGate.isActive()) {
       return;
     }
 
     final health = await getCurrentConnectivityHealth();
+    print(
+      '[${DateTime.now().toIso8601String()}] 📍 [MobileLoc] online=${health.isOnline}',
+    );
     if (!health.isOnline) {
-      debugPrint('[${_ts()}] 📍 Mobile location service: Device is offline - skipping location handling');
-      // We don't necessarily stop the stream here, as connectivity might come back,
-      // but we definitely don't want to process this location or try to send it.
-      // However, visibility_provider should handle stopping the stream if offline.
+      // Offline: keep the place locally for retroactive matching (if opted in),
+      // then return without touching Supabase. GPS itself works without internet.
+      try {
+        await OfflineTrailService.instance.recordOfflinePosition(
+          user.id,
+          position,
+        );
+      } catch (_) {}
       return;
     }
 
-    // Before using or transmitting the location, verify that the user is currently visible.
-    final visible = await _isUserVisible(user.id);
-    if (!visible) {
-      debugPrint('[${_ts()}] 📍 Mobile location service: User is not visible - skipping location handling and stopping stream');
+    // Online-count heartbeat. Must run even when the user is invisible: the
+    // online count counts all logged-in users regardless of visibility, and
+    // once GPS is stopped for an invisible user there is no other recurring
+    // client heartbeat. Sending it before the visibility gate also covers the
+    // race where visibility flips off while a position is already in flight —
+    // the last position would otherwise stop the stream without ever pinging.
+    final skipCalls = shouldSkipSupabaseCalls();
+    final canReachSupabase = skipCalls
+        ? (await getCurrentConnectivityHealth()).isOnline
+        : true;
+    print(
+      '[${DateTime.now().toIso8601String()}] 📍 [MobileLoc] skipCalls=$skipCalls canReachSupabase=$canReachSupabase',
+    );
+    if (canReachSupabase) {
+      try {
+        await UserActivityService.instance.pingIfDue(
+          user.id,
+          source: 'location-update',
+        );
+        print(
+          '[${DateTime.now().toIso8601String()}] 📍 [MobileLoc] pingIfDue success',
+        );
+      } catch (e) {
+        print(
+          '[${DateTime.now().toIso8601String()}] ❌ [MobileLoc] pingIfDue failed: $e',
+        );
+      }
+    }
+
+    if (!_isVisible) {
       // Stop the stream as a safety measure
+      print(
+        '[${DateTime.now().toIso8601String()}] ❌ [MobileLoc] User not visible, stopping stream',
+      );
       stopLocationStream();
       return;
-    }
-
-    // Update user activity (only if visible)
-    try {
-      debugPrint('[${_ts()}] 📍 Mobile location service: Updating user activity for ${user.id}');
-      await supabase.rpc('update_user_activity', params: {'p_user_id': user.id});
-      debugPrint('[${_ts()}] 📍 Mobile location service: User activity updated successfully');
-    } catch (e) {
-      debugPrint('[${_ts()}] 📍 Mobile location service: Error updating user activity: $e');
-      // Ignore activity update errors
     }
 
     // Location updates are handled by the background service
     // Match engine is now handled server-side autonomously
     // No client-side triggering needed - matches are created by Supabase functions
-    debugPrint('[${_ts()}] 📍 Mobile location service: Location updated - server-side matching will be triggered automatically');
 
     try {
       final localDb = LocalDbService();
@@ -90,11 +147,136 @@ class MobileLocationService implements LocationService {
         heading: position.heading,
         timestamp: position.timestamp,
       );
+      print(
+        '[${DateTime.now().toIso8601String()}] 📍 [MobileLoc] saved to local DB',
+      );
 
       // Also sync directly to Supabase (mobile platform workaround)
-      await _syncLocationToSupabase(user.id, position.latitude, position.longitude, position.speed, position.heading);
+      // Fall back to direct connectivity check so location keeps uploading
+      // even when OfflineCacheManager says Supabase is unavailable.
+      if (canReachSupabase) {
+        print(
+          '[${DateTime.now().toIso8601String()}] 📍 [MobileLoc] calling _syncLocationToSupabase',
+        );
+        await _syncLocationToSupabase(
+          user.id,
+          position.latitude,
+          position.longitude,
+          position.speed,
+          position.heading,
+        );
+        print(
+          '[${DateTime.now().toIso8601String()}] 📍 [MobileLoc] _syncLocationToSupabase returned',
+        );
+      } else {
+        print(
+          '[${DateTime.now().toIso8601String()}] ⏸️ [MobileLoc] Skipped Supabase sync (canReachSupabase=false)',
+        );
+      }
     } catch (e) {
-      debugPrint('[${_ts()}] ❌ Mobile location service: Failed to save/sync location: $e');
+      print(
+        '[${DateTime.now().toIso8601String()}] ❌ [MobileLoc] Location save/sync error: $e',
+      );
+    }
+    print(
+      '[${DateTime.now().toIso8601String()}] 📍 [MobileLoc] _fetchAndSendLocation complete',
+    );
+  }
+
+  Future<void> _requestAndSendCurrentPosition() async {
+    if (_isSending || !_isServiceRunning || !_isVisible) {
+      return;
+    }
+
+    // Silent backstop: the GPS timer never runs while pinned (heartbeat
+    // mode instead), but a pin set mid-flight could still land here. Never
+    // power the GPS chip for a pinned user.
+    if (await PinnedLocationGate.isActive()) {
+      return;
+    }
+
+    _isSending = true;
+    try {
+      // Live-stream mode: the map's continuous stream owns the GPS chip and
+      // already pushed every fix to the UI callback. Just transmit its
+      // latest fix — no second GPS request, no cold-start delay. If the
+      // stream died or went quiet (no fix within the staleness window),
+      // fall back to a one-shot so transmission keeps working.
+      Position? position;
+      var usedLiveFix = false;
+      if (_liveStreamSub != null) {
+        final fix = _latestLiveFix;
+        final at = _latestLiveFixAt;
+        if (fix != null &&
+            at != null &&
+            DateTime.now().difference(at) < _liveFixStaleness) {
+          position = fix;
+          usedLiveFix = true;
+        }
+      }
+      if (position == null) {
+        final mobileTimeLimit = await (() async {
+          try {
+            return await appConfigService.getDuration(
+              'gps.mobile_time_limit_seconds',
+              defaultValue: const Duration(seconds: 15),
+            );
+          } catch (e) {
+            return const Duration(seconds: 15);
+          }
+        })();
+        position = await Geolocator.getCurrentPosition(
+          locationSettings: LocationSettings(
+            accuracy: LocationAccuracy.best,
+            timeLimit: mobileTimeLimit,
+          ),
+        );
+      }
+      _consecutiveGpsTimeouts = 0;
+      print(
+        '[${DateTime.now().toIso8601String()}] 📍 [MobileLoc] Got position (${usedLiveFix ? 'live-stream' : 'one-shot'}): ${position.latitude}, ${position.longitude}, accuracy: ${position.accuracy}m',
+      );
+      // Live fixes were already delivered to the callback by the stream;
+      // re-invoking it would double-count them in the throttling history.
+      if (!usedLiveFix) {
+        _locationUpdateCallback?.call(position);
+      }
+      await _fetchAndSendLocation(position);
+    } catch (e) {
+      _consecutiveGpsTimeouts += 1;
+      // Indoors / no GPS fix: best-accuracy one-shot routinely hits the
+      // 15s timeLimit every tick. Fall back to the last known position so
+      // the stream still produces data instead of error-spamming forever.
+      final lower = e.toString().toLowerCase();
+      final isTimeout = e is TimeoutException || lower.contains('timeout');
+      if (isTimeout) {
+        try {
+          final last = await Geolocator.getLastKnownPosition();
+          if (last != null && _isServiceRunning && _isVisible) {
+            print(
+              '[${DateTime.now().toIso8601String()}] 📍 [MobileLoc] GPS timeout — using last known position',
+            );
+            _locationUpdateCallback?.call(last);
+            await _fetchAndSendLocation(last);
+            return;
+          }
+        } catch (_) {}
+      }
+      // Throttle error logs: first failure + at most every 2 minutes, with
+      // the consecutive count so field logs stay useful without spamming
+      // every 20s tick (see release incident: 8x TimeoutException in a row).
+      final now = DateTime.now();
+      final shouldLog =
+          _lastGpsErrorLogAt == null ||
+          now.difference(_lastGpsErrorLogAt!) >= const Duration(minutes: 2);
+      if (shouldLog) {
+        _lastGpsErrorLogAt = now;
+        print(
+          '[${DateTime.now().toIso8601String()}] ❌ [MobileLoc] Timer tick error (x$_consecutiveGpsTimeouts): $e',
+        );
+      }
+    } finally {
+      _isSending = false;
     }
   }
 
@@ -109,9 +291,10 @@ class MobileLocationService implements LocationService {
     }
 
     permission = await Geolocator.checkPermission();
-    
+
     // If permission is already granted, return true
-    if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
+    if (permission == LocationPermission.whileInUse ||
+        permission == LocationPermission.always) {
       return true;
     }
 
@@ -124,16 +307,43 @@ class MobileLocationService implements LocationService {
     // If so, don't request again (respects "request once per run" requirement)
     if (permission == LocationPermission.denied) {
       if (PermissionManager.hasBeenRequestedThisRun('location')) {
-        debugPrint('📍 Mobile location service: Location permission already requested this run, not requesting again');
         return false;
       }
-      
+
       // Request permission (PermissionManager will track this)
       permission = await Geolocator.requestPermission();
       PermissionManager.markRequested('location');
-      
+
       if (permission == LocationPermission.denied) {
         return false;
+      }
+    }
+
+    // For iOS, we need always authorization for background location sharing
+    // Geolocator.requestPermission() returns .authorizedWhenInUse by default on iOS
+    // We need to explicitly request .authorizedAlways for background location
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      try {
+        // On iOS, check if we have always permission
+        // If user granted when-in-use, we need to request always for background location
+        final currentPermission = await Geolocator.checkPermission();
+        if (currentPermission == LocationPermission.whileInUse) {
+          // Request always authorization for background location sharing
+          // Use Permission API directly for iOS always permission
+          final PermissionStatus alwaysStatus = await Permission.locationAlways
+              .request();
+
+          if (alwaysStatus.isGranted || alwaysStatus.isLimited) {
+            // Always permission granted or limited
+          } else {
+            // Always permission not granted - background location may not work
+            // But allow sharing to proceed since the user has granted when-in-use
+            // The native code will handle permission checks
+          }
+        }
+      } catch (e) {
+        // Silently ignore iOS background location permission check errors
+        print('[MobileLoc] iOS background location permission error: $e');
       }
     }
 
@@ -143,12 +353,13 @@ class MobileLocationService implements LocationService {
       try {
         // Check if we have background location permission
         final bgPermission = await Geolocator.checkPermission();
-        if (bgPermission != LocationPermission.always && bgPermission != LocationPermission.whileInUse) {
-          debugPrint('Background location permission not granted - background GPS may not work');
+        if (bgPermission != LocationPermission.always &&
+            bgPermission != LocationPermission.whileInUse) {
+          // Background location permission not granted - background GPS may not work
           // Don't request background location here - it's handled by PermissionCoordinator when needed
         }
       } catch (e) {
-        debugPrint('Error checking background location permission: $e');
+        // Silently ignore background location permission check errors
       }
     }
 
@@ -157,6 +368,35 @@ class MobileLocationService implements LocationService {
 
   @override
   Future<void> startLocationStream(int intervalSeconds) async {
+    // Never start GPS without an authenticated user
+    if (supabase.auth.currentUser == null) {
+      print(
+        '[${DateTime.now().toIso8601String()}] ❌ [MobileLoc] Cannot start — no authenticated user',
+      );
+      return;
+    }
+
+    // Pinned home-base parks GPS entirely: no GPS timer, no per-tick
+    // wakeups, no log spam — just a slow silent heartbeat that keeps
+    // online presence. Checked first so a parked stream can never
+    // short-circuit the resume path below on stale interval state.
+    if (PinnedLocationGate.isActiveCached ||
+        await PinnedLocationGate.isActive()) {
+      _enterHeartbeatMode();
+      return;
+    }
+    if (_heartbeatMode) {
+      // Resuming from parked mode: drop heartbeat state so the GPS path
+      // below starts fresh even when the requested interval is unchanged.
+      _heartbeatTimer?.cancel();
+      _heartbeatTimer = null;
+      _heartbeatMode = false;
+      _isServiceRunning = false;
+      _currentIntervalSeconds = 0;
+      print(
+        '[${DateTime.now().toIso8601String()}] ▶️ [MobileLoc] GPS resumed after pin',
+      );
+    }
     if (_isStarting) {
       return;
     }
@@ -168,50 +408,58 @@ class MobileLocationService implements LocationService {
       }
 
       if (_isServiceRunning && _currentIntervalSeconds != intervalSeconds) {
-        stopLocationStream();
-        await Future.delayed(const Duration(milliseconds: 200));
+        stopLocationStream(keepLiveStream: true);
+        final restartDelayMs = await (() async {
+          try {
+            return await appConfigService.getInt(
+              'performance.mobile_location_restart_delay_ms',
+              defaultValue: 200,
+            );
+          } catch (e) {
+            return 200;
+          }
+        })();
+        await Future.delayed(Duration(milliseconds: restartDelayMs));
       }
 
       final hasPermission = await handleLocationPermission();
       if (!hasPermission) {
-        debugPrint('[${_ts()}] 📍 Mobile location service: Location permission denied');
         return;
       }
 
       // Check if location services are enabled
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      debugPrint('[${_ts()}] 📍 Mobile location service: Location service enabled: $serviceEnabled');
       if (!serviceEnabled) {
-        debugPrint('[${_ts()}] 📍 Mobile location service: Location service is disabled on device');
         return;
       }
 
-      debugPrint('[${_ts()}] 📍 Mobile location service: Setting up periodic location updates with interval: $intervalSeconds');
+      // Re-check the pin after the slow permission/system checks above: a
+      // pin set in that window must park instead of starting GPS.
+      if (PinnedLocationGate.isActiveCached ||
+          await PinnedLocationGate.isActive()) {
+        _enterHeartbeatMode();
+        return;
+      }
 
-      // Use getCurrentPosition with timer for more reliable continuous updates
+      // Use one-shot GPS reads so the location indicator only appears when a
+      // location request is actually made at the configured interval.
       _positionUpdateTimer?.cancel();
-      _positionUpdateTimer = Timer.periodic(Duration(seconds: intervalSeconds), (timer) async {
-        try {
-          debugPrint('[${_ts()}] 📍 Mobile location service: Timer triggered - getting current position');
-          // Use best accuracy for optimal GPS precision on mobile devices
-          final position = await Geolocator.getCurrentPosition(
-            locationSettings: const LocationSettings(
-              accuracy: LocationAccuracy.best,
-              timeLimit: Duration(seconds: 15),
-            ),
-          );
-          debugPrint('[${_ts()}] 📍 Mobile location service: Got current position: ${position.latitude}, ${position.longitude}, accuracy: ${position.accuracy}m');
-          _locationUpdateCallback?.call(position);
-          _fetchAndSendLocation(position);
-        } catch (e) {
-          debugPrint('[${_ts()}] ❌ Mobile location service: Failed to get current position: $e');
-        }
-      });
-
-      debugPrint('[${_ts()}] 📍 Mobile location service: Position timer started successfully with interval: ${intervalSeconds}s');
-
+      print(
+        '[${DateTime.now().toIso8601String()}] 📍 [MobileLoc] Timer created: interval=$intervalSeconds',
+      );
       _isServiceRunning = true;
       _currentIntervalSeconds = intervalSeconds;
+
+      unawaited(_requestAndSendCurrentPosition());
+
+      _positionUpdateTimer = Timer.periodic(Duration(seconds: intervalSeconds), (
+        timer,
+      ) {
+        print(
+          '[${DateTime.now().toIso8601String()}] 📍 [MobileLoc] Timer tick: interval=$intervalSeconds',
+        );
+        unawaited(_requestAndSendCurrentPosition());
+      });
     } catch (e) {
       _isServiceRunning = false;
     } finally {
@@ -219,17 +467,147 @@ class MobileLocationService implements LocationService {
     }
   }
 
+  /// Parks GPS for a pinned home-base: cancels any GPS timer and ensures a
+  /// slow, silent heartbeat instead. Idempotent — repeated calls (e.g. from
+  /// stream re-evaluations while still pinned) only log the transition once
+  /// and never recreate timers.
+  void _enterHeartbeatMode() {
+    _positionUpdateTimer?.cancel();
+    _positionUpdateTimer = null;
+    _stopLiveStream();
+    final firstPark = !_heartbeatMode;
+    _heartbeatMode = true;
+    _isServiceRunning = true;
+    _heartbeatTimer ??= Timer.periodic(_pinnedHeartbeatInterval, (_) {
+      unawaited(_sendPinnedHeartbeat());
+    });
+    if (firstPark) {
+      print(
+        '[${DateTime.now().toIso8601String()}] 📌 [MobileLoc] GPS parked for pinned location — heartbeat every ${_pinnedHeartbeatInterval.inSeconds}s, no GPS access',
+      );
+    }
+  }
+
+  /// Presence-only ping while parked. Silent by design (no per-tick logs);
+  /// failures surface through pingIfDue's own error log.
+  Future<void> _sendPinnedHeartbeat() async {
+    try {
+      final user = supabase.auth.currentUser;
+      if (user == null) return;
+      // Pin gone but heartbeat still scheduled (e.g. unpin raced the
+      // re-eval): do nothing — the resume path restarts GPS.
+      if (!PinnedLocationGate.isActiveCached &&
+          !await PinnedLocationGate.isActive()) {
+        return;
+      }
+      await UserActivityService.instance.pingIfDue(
+        user.id,
+        source: 'location-update-pinned',
+      );
+    } catch (_) {}
+  }
+
   @override
-  void stopLocationStream() {
-    debugPrint('[${_ts()}] 📍 Mobile location service: stopLocationStream called, currently running: $_isServiceRunning');
-    if (!_isServiceRunning) {
+  void stopLocationStream({bool keepLiveStream = false}) {
+    final hadWork = _isServiceRunning || _heartbeatMode || _liveStreamSub != null;
+    if (!hadWork) {
       return;
     }
     _positionUpdateTimer?.cancel();
     _positionUpdateTimer = null;
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+    _heartbeatMode = false;
+    _isSending = false;
     _isServiceRunning = false;
     _currentIntervalSeconds = 0;
-    debugPrint('[${_ts()}] 📍 Mobile location service: Location timer stopped');
+    _consecutiveGpsTimeouts = 0;
+    _lastGpsErrorLogAt = null;
+    // Full stop (invisible, offline, logout, app backgrounded without
+    // background matching) kills the live map stream too. Internal timer
+    // restarts (interval changes) keep it running — the stream is owned by
+    // the map screen and survives timer churn.
+    if (!keepLiveStream) {
+      _stopLiveStream();
+    }
+  }
+
+  /// Internal: cancel the live stream and drop its cached fix.
+  void _stopLiveStream() {
+    _liveStreamSub?.cancel();
+    _liveStreamSub = null;
+    _latestLiveFix = null;
+    _latestLiveFixAt = null;
+    _lastLiveIngestAt = null;
+  }
+
+  @override
+  Future<bool> startMapLiveStream() async {
+    if (supabase.auth.currentUser == null) {
+      return false;
+    }
+    // Pinned home-base: never power the GPS hardware, same as the timer.
+    if (PinnedLocationGate.isActiveCached ||
+        await PinnedLocationGate.isActive()) {
+      return false;
+    }
+    final hasPermission = await handleLocationPermission();
+    if (!hasPermission) {
+      return false;
+    }
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      return false;
+    }
+    if (_liveStreamSub != null) {
+      return true;
+    }
+    print(
+      '[${DateTime.now().toIso8601String()}] 📡 [MobileLoc] Live map stream starting (distanceFilter=15m) — timer will transmit latest fix',
+    );
+    _liveStreamSub = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.best,
+        distanceFilter: 15,
+      ),
+    ).listen((position) {
+      _latestLiveFix = position;
+      _latestLiveFixAt = DateTime.now();
+      // Push to the UI (map marker/camera + local cache) at most ~1Hz;
+      // high-speed movement can produce fixes far more often than the UI
+      // needs. Transmission is unaffected: the timer reads _latestLiveFix.
+      final now = DateTime.now();
+      if (_lastLiveIngestAt != null &&
+          now.difference(_lastLiveIngestAt!) < const Duration(seconds: 1)) {
+        return;
+      }
+      _lastLiveIngestAt = now;
+      _locationUpdateCallback?.call(position);
+    }, onError: (Object e) {
+      // Transient stream errors are logged (throttled) but the subscription
+      // is kept: if it truly died, _latestLiveFixAt goes stale and the timer
+      // falls back to one-shot GPS on its own.
+      final now = DateTime.now();
+      if (_lastLiveErrorLogAt == null ||
+          now.difference(_lastLiveErrorLogAt!) >= const Duration(minutes: 2)) {
+        _lastLiveErrorLogAt = now;
+        print(
+          '[${DateTime.now().toIso8601String()}] ❌ [MobileLoc] Live map stream error: $e',
+        );
+      }
+    });
+    return true;
+  }
+
+  @override
+  void stopMapLiveStream() {
+    if (_liveStreamSub == null) {
+      return;
+    }
+    _stopLiveStream();
+    print(
+      '[${DateTime.now().toIso8601String()}] 📡 [MobileLoc] Live map stream stopped — timer resumes one-shot GPS',
+    );
   }
 
   @override
@@ -239,26 +617,38 @@ class MobileLocationService implements LocationService {
 
   @override
   void setVisibility(bool isVisible) {
-    // No-op: visibility checking removed as match engine is now server-side
+    _isVisible = isVisible;
   }
 
+  /// True only while the GPS polling timer exists. Heartbeat-only parked
+  /// mode reports false so interval bookkeeping restarts GPS on unpin
+  /// instead of assuming it is already running.
+  @override
+  bool get isGpsTimerRunning => _positionUpdateTimer != null;
+
   /// Sync location data directly to Supabase (mobile platform workaround)
-  Future<void> _syncLocationToSupabase(String userId, double latitude, double longitude, double? speed, double? heading) async {
+  /// The caller (_fetchAndSendLocation) decides whether Supabase is reachable,
+  /// so this method no longer blocks on OfflineCacheManager state.
+  Future<void> _syncLocationToSupabase(
+    String userId,
+    double latitude,
+    double longitude,
+    double? speed,
+    double? heading,
+  ) async {
     try {
-      debugPrint('[${_ts()}] 🔄 Mobile location service: Syncing location to Supabase for user: $userId, lat: $latitude, lng: $longitude');
-
       // Use the update_user_location RPC function
-      await supabase.rpc('update_user_location', params: {
-        'p_user_id': userId,
-        'p_latitude': latitude,
-        'p_longitude': longitude,
-        'p_speed': speed,
-        'p_heading': heading,
-      });
-
-      debugPrint('[${_ts()}] ✅ Mobile location service: Location synced to Supabase successfully');
+      await supabase.rpc(
+        'update_user_location',
+        params: {
+          'p_user_id': userId,
+          'p_latitude': latitude,
+          'p_longitude': longitude,
+          'p_speed': speed,
+          'p_heading': heading,
+        },
+      );
     } catch (e) {
-      debugPrint('[${_ts()}] ❌ Mobile location service: Failed to sync location to Supabase: $e');
       // Continue anyway - local DB still has the data for later sync
     }
   }

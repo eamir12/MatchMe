@@ -8,6 +8,7 @@
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image/image.dart' as img;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/services/local_db_service.dart';
@@ -35,14 +36,6 @@ class ProfileEditRequestService {
     bool public = false,
     String bucket = 'profile-photos',
   }) async {
-    const maxSize = 10 * 1024 * 1024;
-    if (bytes.length > maxSize) {
-      throw const ProfileEditAttachmentException(
-        'profileEditAttachmentTooLarge',
-        params: {'maxMb': '10'},
-      );
-    }
-
     final ext = _extensionFromPath(path);
     final allowedTypesText = bucket == 'profile-edit-attachments'
         ? 'jpg, jpeg, png, pdf, doc, docx, xls, xlsx, ppt, pptx'
@@ -69,17 +62,27 @@ class ProfileEditRequestService {
       path = path.replaceFirst('/', '');
     }
 
+    // Compress images for the profile-photos bucket
+    if (bucket == 'profile-photos') {
+      bytes = await _compressImage(bytes);
+    }
+
     // Upload bytes using uploadBinary (Uint8List compatible)
     try {
       final contentType = _contentTypeForExtension(ext);
-      await supabaseClient.storage.from(bucket).uploadBinary(
+      await supabaseClient.storage
+          .from(bucket)
+          .uploadBinary(
             path,
             bytes,
-            fileOptions: FileOptions(contentType: contentType ?? 'application/octet-stream'),
-          );
+            fileOptions: FileOptions(
+              contentType: contentType ?? 'application/octet-stream',
+            ),
+          )
+          .timeout(const Duration(seconds: 60));
     } catch (e) {
       // Upload failed
-      debugPrint('Photo upload failed for path $path: $e');
+      print('Photo upload failed for path $path: $e');
       return null;
     }
 
@@ -95,10 +98,20 @@ class ProfileEditRequestService {
     if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) return true;
 
     // PNG: 89 50 4E 47
-    if (bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47) return true;
+    if (bytes[0] == 0x89 &&
+        bytes[1] == 0x50 &&
+        bytes[2] == 0x4E &&
+        bytes[3] == 0x47) {
+      return true;
+    }
 
     // GIF: 47 49 46 38
-    if (bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x38) return true;
+    if (bytes[0] == 0x47 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x38) {
+      return true;
+    }
 
     return false;
   }
@@ -133,7 +146,10 @@ class ProfileEditRequestService {
     }
     if (ext == 'pdf') {
       if (bytes.length < 4) return false;
-      return bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44 && bytes[3] == 0x46;
+      return bytes[0] == 0x25 &&
+          bytes[1] == 0x50 &&
+          bytes[2] == 0x44 &&
+          bytes[3] == 0x46;
     }
     if (ext == 'doc' || ext == 'xls' || ext == 'ppt') {
       if (bytes.length < 8) return false;
@@ -148,7 +164,11 @@ class ProfileEditRequestService {
     }
     if (ext == 'docx' || ext == 'xlsx' || ext == 'pptx') {
       if (bytes.length < 4) return false;
-      final isZip = bytes[0] == 0x50 && bytes[1] == 0x4B && (bytes[2] == 0x03 || bytes[2] == 0x05 || bytes[2] == 0x07) && (bytes[3] == 0x04 || bytes[3] == 0x06 || bytes[3] == 0x08);
+      final isZip =
+          bytes[0] == 0x50 &&
+          bytes[1] == 0x4B &&
+          (bytes[2] == 0x03 || bytes[2] == 0x05 || bytes[2] == 0x07) &&
+          (bytes[3] == 0x04 || bytes[3] == 0x06 || bytes[3] == 0x08);
       return isZip;
     }
     return false;
@@ -161,17 +181,33 @@ class ProfileEditRequestService {
       'gif' => 'image/gif',
       'pdf' => 'application/pdf',
       'doc' => 'application/msword',
-      'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'docx' =>
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       'xls' => 'application/vnd.ms-excel',
-      'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'xlsx' =>
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'ppt' => 'application/vnd.ms-powerpoint',
-      'pptx' => 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'pptx' =>
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
       _ => null,
     };
   }
 
+  Future<Uint8List> _compressImage(Uint8List original) async {
+    try {
+      return await compute(_compressImageSync, original);
+    } catch (e) {
+      debugPrint('Image compression failed: $e');
+      return original;
+    }
+  }
+
   /// Submit a profile-edit request without attachments.
-  Future<bool> submitRequest(String userId, List<String> requestedFields, String message) async {
+  Future<bool> submitRequest(
+    String userId,
+    List<String> requestedFields,
+    String message,
+  ) async {
     final requestData = {
       'user_id': userId,
       'requested_fields': requestedFields,
@@ -203,7 +239,12 @@ class ProfileEditRequestService {
   }
 
   /// Submit with explicit attachments list (each attachment is a map with name/url/size)
-  Future<bool> submitRequestWithAttachments(String userId, List<String> requestedFields, String message, List<Map<String, dynamic>> attachments) async {
+  Future<bool> submitRequestWithAttachments(
+    String userId,
+    List<String> requestedFields,
+    String message,
+    List<Map<String, dynamic>> attachments,
+  ) async {
     final requestData = {
       'user_id': userId,
       'requested_fields': requestedFields,
@@ -240,15 +281,35 @@ class ProfileEditRequestService {
     try {
       final localDb = ref.read(localDbProvider);
       // Add type to identify this as a profile edit request
-      final outboxData = {
-        'type': 'profile_edit_requests',
-        ...requestData,
-      };
+      final outboxData = {'type': 'profile_edit_requests', ...requestData};
       await localDb.saveMessageToOutbox(outboxData);
     } catch (e) {
-      debugPrint('Failed to store profile edit request locally: $e');
+      print('Failed to store profile edit request locally: $e');
     }
   }
 }
 
-final profileEditRequestServiceProvider = Provider((ref) => ProfileEditRequestService(ref));
+Uint8List _compressImageSync(Uint8List original) {
+  try {
+    final image = img.decodeImage(original);
+    if (image == null) return original;
+
+    img.Image target = image;
+    if (target.width > 1200 || target.height > 1200) {
+      if (target.width >= target.height) {
+        target = img.copyResize(target, width: 1200);
+      } else {
+        target = img.copyResize(target, height: 1200);
+      }
+    }
+
+    return Uint8List.fromList(img.encodeJpg(target, quality: 85));
+  } catch (e) {
+    debugPrint('Image compression failed: $e');
+    return original;
+  }
+}
+
+final profileEditRequestServiceProvider = Provider(
+  (ref) => ProfileEditRequestService(ref),
+);

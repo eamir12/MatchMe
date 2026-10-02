@@ -1,0 +1,20 @@
+INSERT INTO public.translations (locale, key, value) VALUES
+  ('en', 'locationShareChangeDurationTitle', 'Change sharing duration'),
+  ('en', 'locationShareSaveDuration', 'Save duration'),
+  ('en', 'locationShareRecipientNotice', 'You’re sharing your live location with {name}.'),
+  ('en', 'locationSharePrivacyNotice', 'Only share when you’re ready. The other person can see your live location for the selected duration, and you can stop sharing at any time.'),
+  ('en', 'locationShareIndefiniteTitle', 'Share until turned off?'),
+  ('en', 'locationShareIndefiniteMessage', 'You’re choosing to share your live location with {name} until you turn it off. You can stop sharing at any time.'),
+  ('es', 'locationShareChangeDurationTitle', 'Cambiar duración de compartir'),
+  ('es', 'locationShareSaveDuration', 'Guardar duración'),
+  ('es', 'locationShareRecipientNotice', 'Estás compartiendo tu ubicación en vivo con {name}.'),
+  ('es', 'locationSharePrivacyNotice', 'Comparte solo cuando estés listo. La otra persona puede ver tu ubicación en vivo durante la duración elegida y puedes dejar de compartir en cualquier momento.'),
+  ('es', 'locationShareIndefiniteTitle', '¿Compartir hasta que lo desactives?'),
+  ('es', 'locationShareIndefiniteMessage', 'Vas a compartir tu ubicación en vivo con {name} hasta que lo desactives. Puedes dejar de compartir en cualquier momento.'),
+  ('he', 'locationShareChangeDurationTitle', 'שינוי משך השיתוף'),
+  ('he', 'locationShareSaveDuration', 'שמירת משך'),
+  ('he', 'locationShareRecipientNotice', 'אתם משתפים את המיקום בזמן אמת עם {name}.'),
+  ('he', 'locationSharePrivacyNotice', 'אפשר לשתף רק כשאתם מוכנים. האדם השני יכול לראות את המיקום בזמן אמת לאורך המשך שנבחר, ואפשר להפסיק לשתף בכל עת.'),
+  ('he', 'locationShareIndefiniteTitle', 'לשתף עד שתבקשו לעצור?'),
+  ('he', 'locationShareIndefiniteMessage', 'אתם בוחרים לשתף את המיקום בזמן אמת עם {name} עד שתבקשו לעצור. אפשר להפסיק לשתף בכל עת.')
+ON CONFLICT (locale, key) DO UPDATE SET value = EXCLUDED.value;

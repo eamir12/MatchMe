@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <!--
     If you are serving your web app in a path other than the root, change the
@@ -24,26 +24,87 @@
       font-family: 'Noto Sans', 'Noto Sans Hebrew', 'Noto Sans Arabic', 'Noto Sans TC', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
     }
   </style>
+
+  <style>
+    /*
+     * Pre-Flutter launch frame. Proportions mirror
+     * lib/widgets/startup_loader.dart (_nativeLaunchWidth 96, the 0.27
+     * narrow-screen factor, the 0.16 gap and the 0.135 font factor) so the
+     * hand-off from this frame to the Flutter splash is invisible.
+     *
+     * #launch-loader is removed by the script in the body on
+     * 'flutter-first-frame', with a timeout failsafe in case that event is
+     * ever missed. It is pointer-events: none so it can never swallow a tap.
+     */
+    :root { --launch-logo-size: min(96px, 27vmin); }
+    #launch-loader {
+      position: fixed;
+      inset: 0;
+      z-index: 2147483647;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #ffffff;
+      pointer-events: none;
+    }
+    #launch-loader img {
+      width: var(--launch-logo-size);
+      height: auto;
+    }
+    #launch-loader .tagline {
+      margin-top: calc(var(--launch-logo-size) * 0.16);
+      font-size: calc(var(--launch-logo-size) * 0.135);
+      font-weight: 700;
+      line-height: 1.25;
+      letter-spacing: 0.02em;
+      color: #46464f;
+      text-align: center;
+    }
+  </style>
   <base href="$FLUTTER_BASE_HREF">
 
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="google-signin-client_id" content="643478128594-39tuorf6b10otd4dib6or6gcidsn2tg0.apps.googleusercontent.com">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="google-signin-client_id" content="988596890235-q4jdj3eu4r74tik21dlstolgsco2oel7.apps.googleusercontent.com">
+  <meta name="description" content="MatchMe helps you meet people nearby through shared interests, intentions, and real-world moments.">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="matchme">
+  <meta name="apple-mobile-web-app-title" content="MatchMe">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>matchme</title>
+  <title>MatchMe</title>
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
+  <div id="launch-loader">
+    <img src="assets/assets/images/logo.png" alt="" onerror="this.style.display='none'">
+    <div class="tagline">Connecting people, naturally!</div>
+  </div>
+  <script>
+    (function () {
+      var loader = document.getElementById('launch-loader');
+      if (!loader) return;
+      var removed = false;
+      function remove() {
+        if (removed) return;
+        removed = true;
+        if (loader.parentNode) loader.parentNode.removeChild(loader);
+      }
+      // The engine dispatches 'flutter-first-frame' on the window once the
+      // first frame is painted (flutter_web_sdk platform_dispatcher.dart).
+      window.addEventListener('flutter-first-frame', remove);
+      // Failsafe: on a very slow load, drop the frame rather than let it sit
+      // over a live app. Harmless if it fires after the app is already up.
+      setTimeout(remove, 15000);
+    })();
+  </script>
   <script>
     (function () {
       try {
@@ -225,6 +286,28 @@
     }
   </script>
 
+  <!-- Required by the passkeys package for WebAuthn support on web. -->
+  <script src="bundle.js" type="application/javascript"></script>
+  <!-- Local photo prescreen (MediaPipe FaceDetector + PoseLandmarker for web parity with mobile). -->
+  <script src="photo_prescreen.js" defer></script>
+  <!-- Global error handler to catch CanvasKit late initialization error -->
+  <script>
+    window.addEventListener('error', function(event) {
+      if (event.message && event.message.includes('_handledContextLostEvent')) {
+        event.preventDefault();
+        event.stopPropagation();
+        console.warn('Caught CanvasKit initialization error (ignoring):', event.message);
+        return false;
+      }
+    });
+    window.addEventListener('unhandledrejection', function(event) {
+      if (event.reason && event.reason.message && event.reason.message.includes('_handledContextLostEvent')) {
+        event.preventDefault();
+        console.warn('Caught CanvasKit initialization rejection (ignoring):', event.reason.message);
+        return false;
+      }
+    });
+  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

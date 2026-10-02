@@ -4,7 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/providers/user_preferences_provider.dart';
 import 'package:matchme/services/background_service.dart';
+import 'package:matchme/utils/resume_route_restore.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 class PermissionCoordinator {
@@ -34,10 +36,16 @@ class PermissionCoordinator {
 
   /// Proactive audit (used at onboarding/profile completion). This may prompt even if the
   /// app hasn't yet encountered a failure.
-  static Future<void> checkAndPromptIfNeeded(BuildContext context, WidgetRef ref) async {
+  static Future<void> checkAndPromptIfNeeded(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
     if (!context.mounted) return;
     if (_promptInProgress) return;
-    if (_lastPromptAt != null && DateTime.now().difference(_lastPromptAt!) < _minPromptInterval) return;
+    if (_lastPromptAt != null &&
+        DateTime.now().difference(_lastPromptAt!) < _minPromptInterval) {
+      return;
+    }
 
     _promptInProgress = true;
     _lastPromptAt = DateTime.now();
@@ -106,7 +114,8 @@ class PermissionCoordinator {
         }
 
         // 3) Battery optimizations (Android). Highly recommended for boot/always-on reliability.
-        final ignoring = await BackgroundService.isIgnoringBatteryOptimizations();
+        final ignoring =
+            await BackgroundService.isIgnoringBatteryOptimizations();
         if (!context.mounted) return;
         if (!ignoring) {
           if (!context.mounted) return;
@@ -115,7 +124,8 @@ class PermissionCoordinator {
             ref,
             titleKey: 'permBatteryTitle',
             bodyKey: 'permBatteryBody',
-            onPrimary: () => BackgroundService.requestIgnoreBatteryOptimizations(),
+            onPrimary: () =>
+                BackgroundService.requestIgnoreBatteryOptimizations(),
           );
         }
       }
@@ -126,36 +136,148 @@ class PermissionCoordinator {
 
   /// Failure-driven handler. Call this on app resume to surface permission issues recorded
   /// by the native background service. This will NOT proactively audit all permissions.
-  static Future<void> handleOnResume(BuildContext context, WidgetRef ref) async {
+  static Future<void> handleOnResume(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
     if (!context.mounted) return;
     if (_promptInProgress) return;
 
-    final nativeIssue = await BackgroundService.consumeNativePermissionIssueCode();
+    final nativeIssue =
+        await BackgroundService.consumeNativePermissionIssueCode();
     if (!context.mounted) return;
     if (nativeIssue == null || nativeIssue.isEmpty) return;
 
     await notifyIssueNow(context, ref, nativeIssue);
+
+    // Also validate Background Matching Mode permission - if revoked, disable the mode
+    try {
+      await ref
+          .read(userPreferencesProvider.notifier)
+          .validateBackgroundMatchingPermission();
+    } catch (e) {
+      // Ignore validation errors
+    }
+  }
+
+  /// Check if background location permission is granted (needed for Android 14+ foreground service)
+  static Future<bool> hasBackgroundLocationPermission() async {
+    if (kIsWeb || !Platform.isAndroid) return true;
+    final alwaysStatus = await Permission.locationAlways.status;
+    return alwaysStatus.isGranted;
+  }
+
+  /// Request background location permission proactively (needed for Android 14+ foreground service in background)
+  /// Returns true if permission is granted, false otherwise
+  static Future<bool> requestBackgroundLocationPermission(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    if (kIsWeb || !Platform.isAndroid) return true;
+    if (!context.mounted) return false;
+
+    // Ensure basic location is granted first
+    final locStatus = await Permission.location.status;
+    if (!context.mounted) return false;
+    var hasForegroundLocation = locStatus.isGranted;
+    if (!hasForegroundLocation) {
+      final requested = await Permission.location.request();
+      if (!context.mounted) return false;
+      hasForegroundLocation = requested.isGranted;
+      if (!hasForegroundLocation) {
+        if (!context.mounted) return false;
+        await ref
+            .read(userPreferencesProvider.notifier)
+            .setPendingBackgroundMatchingEnable(true);
+        if (!context.mounted) return false;
+        await _showDialog(
+          context,
+          ref,
+          titleKey: 'permLocationAlwaysTitle',
+          bodyKey: 'permLocationWhileInUseBody',
+          onPrimary: () => openAppSettings(),
+        );
+        return false;
+      }
+    }
+
+    // Now request background location
+    if (hasForegroundLocation) {
+      final alwaysStatus = await Permission.locationAlways.status;
+      if (!context.mounted) return false;
+      if (!alwaysStatus.isGranted) {
+        await Permission.locationAlways.request();
+        if (!context.mounted) return false;
+
+        // After permission dialog, re-check the actual status
+        // (user might have granted it in system settings)
+        await Future.delayed(const Duration(milliseconds: 200));
+        final finalStatus = await Permission.locationAlways.status;
+        if (!context.mounted) return false;
+
+        if (!finalStatus.isGranted) {
+          if (!context.mounted) return false;
+          // Show dialog to open settings
+          await ref
+              .read(userPreferencesProvider.notifier)
+              .setPendingBackgroundMatchingEnable(true);
+          if (!context.mounted) return false;
+          await _showDialog(
+            context,
+            ref,
+            titleKey: 'permLocationAlwaysTitle',
+            bodyKey: 'permLocationAlwaysBody',
+            onPrimary: () => openAppSettings(),
+          );
+
+          // After user closes the settings dialog, check permission again
+          if (!context.mounted) return false;
+          await Future.delayed(const Duration(milliseconds: 200));
+          final settingsStatus = await Permission.locationAlways.status;
+          if (!context.mounted) return false;
+
+          return settingsStatus.isGranted;
+        }
+        await ref
+            .read(userPreferencesProvider.notifier)
+            .setPendingBackgroundMatchingEnable(false);
+        return true;
+      }
+    }
+
+    return true;
   }
 
   /// Failure-driven: show the specific permission dialog once per app run per issue code.
-  static Future<void> notifyIssueNow(BuildContext context, WidgetRef ref, String code) async {
+  static Future<void> notifyIssueNow(
+    BuildContext context,
+    WidgetRef ref,
+    String code,
+  ) async {
     if (!context.mounted) return;
     if (_promptInProgress) return;
     if (_suppressedIssueCodesThisRun.contains(code)) return;
-    if (_lastPromptAt != null && DateTime.now().difference(_lastPromptAt!) < _minPromptInterval) return;
+    if (_lastPromptAt != null &&
+        DateTime.now().difference(_lastPromptAt!) < _minPromptInterval) {
+      return;
+    }
 
     _promptInProgress = true;
     _lastPromptAt = DateTime.now();
     _suppressedIssueCodesThisRun.add(code);
 
     try {
-          await _promptForIssue(context, ref, code);
+      await _promptForIssue(context, ref, code);
     } finally {
       _promptInProgress = false;
     }
   }
 
-  static Future<void> _promptForIssue(BuildContext context, WidgetRef ref, String code) async {
+  static Future<void> _promptForIssue(
+    BuildContext context,
+    WidgetRef ref,
+    String code,
+  ) async {
     switch (code) {
       case 'location_always':
         if (!context.mounted) return;
@@ -179,14 +301,14 @@ class PermissionCoordinator {
         return;
       case 'notifications':
         if (!context.mounted) return;
-            await _showDialog(
+        await _showDialog(
           context,
           ref,
           titleKey: 'permNotificationsTitle',
           bodyKey: 'permNotificationsBody',
           onPrimary: () async {
             if (!kIsWeb && Platform.isAndroid) {
-                  await BackgroundService.openAppNotificationSettings();
+              await BackgroundService.openAppNotificationSettings();
             } else {
               await openAppSettings();
             }
@@ -200,7 +322,8 @@ class PermissionCoordinator {
           ref,
           titleKey: 'permBatteryTitle',
           bodyKey: 'permBatteryBody',
-          onPrimary: () => BackgroundService.requestIgnoreBatteryOptimizations(),
+          onPrimary: () =>
+              BackgroundService.requestIgnoreBatteryOptimizations(),
         );
         return;
       default:
@@ -228,6 +351,15 @@ class PermissionCoordinator {
       barrierDismissible: true,
       builder: (ctx) {
         return AlertDialog(
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 24,
+          ),
+          actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+          actionsAlignment: MainAxisAlignment.end,
+          actionsOverflowAlignment: OverflowBarAlignment.end,
+          actionsOverflowButtonSpacing: 8,
+          actionsOverflowDirection: VerticalDirection.down,
           title: Text(title),
           content: Text(body),
           actions: [
@@ -238,6 +370,7 @@ class PermissionCoordinator {
             TextButton(
               onPressed: () async {
                 Navigator.of(ctx).pop();
+                await ResumeRouteRestore.persistPendingRouteForContext(context);
                 await onPrimary();
               },
               child: Text(open),

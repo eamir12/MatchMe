@@ -40,13 +40,13 @@ final class IsVisibleProvider extends $NotifierProvider<IsVisible, bool> {
   }
 }
 
-String _$isVisibleHash() => r'c46e8fe29b01830eb4ee37f2d203b7c2da73a012';
+String _$isVisibleHash() => r'f5bb3447f0f3c384d5e2aa3e7609386a9a95dc24';
 
 abstract class _$IsVisible extends $Notifier<bool> {
   bool build();
   @$mustCallSuper
   @override
-  void runBuild() {
+  WhenComplete runBuild() {
     final ref = this.ref as $Ref<bool, bool>;
     final element =
         ref.element
@@ -56,6 +56,6 @@ abstract class _$IsVisible extends $Notifier<bool> {
               Object?,
               Object?
             >;
-    element.handleCreate(ref, build);
+    return element.handleCreate(ref, build);
   }
 }

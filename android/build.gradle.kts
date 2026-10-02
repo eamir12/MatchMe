@@ -1,9 +1,39 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
 allprojects {
     repositories {
         google()
         mavenCentral()
     }
 }
+
+// NOTE: do NOT force `split-per-abi` here for APK release builds.
+//
+// Flutter's plugin reacts to that project property with
+// `splits.abi { isUniversalApk = false }`, so it suppresses `app-release.apk`
+// entirely and emits only `app-<abi>-release.apk`. The CLI then looks for the
+// one name it was told to expect and aborts with "Gradle build failed to
+// produce an .apk file" *after* a successful 5-minute build:
+//
+//   * `flutter run --release` passes `splitPerAbi: false` and a single
+//     targetArch (android_device.dart), so it only ever looks for
+//     `app-release.apk` — and `flutter run` has no `--split-per-abi` flag, so
+//     there is no way to talk it into the per-ABI layout.
+//   * `scripts/build_release_local.ps1` builds `--target-platform
+//     android-arm64` without `--split-per-abi` and asserts on
+//     `flutter-apk\app-release.apk`.
+//   * a plain `flutter build apk --release` (all three ABIs) has the same
+//     expectation, and is what the docs in this repo tell people to run.
+//
+// Per-ABI APKs are still one flag away, and that is the supported way to keep
+// them small: `flutter build apk --release --split-per-abi` (~88 MB arm64 /
+// 81 MB armv7 / 92 MB x86_64 instead of one 121 MB universal APK). App bundles
+// are unaffected either way — Play splits those per ABI and per density.
 
 val newBuildDir: Directory =
     rootProject.layout.buildDirectory
@@ -12,91 +42,67 @@ val newBuildDir: Directory =
 rootProject.layout.buildDirectory.value(newBuildDir)
 
 subprojects {
-    val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
-    project.layout.buildDirectory.value(newSubprojectBuildDir)
-}
-subprojects {
-    project.evaluationDependsOn(":app")
+    layout.buildDirectory.value(newBuildDir.dir(name))
 
-    // Suppress verbose obsolete 'source/target 8' warnings coming from some older dependencies
-    // and ensure Kotlin JVM target is set consistently for the build.
+    // Keep Java warning noise down without overriding each plugin's chosen target.
     tasks.withType<JavaCompile>().configureEach {
-        // Suppress the 'options' lint which complains about obsolete source/target settings in some libs
-        options.compilerArgs.addAll(listOf("-Xlint:-options", "-Xlint:-unchecked"))
-        // Default Java source/target to 17 so JavaCompile tasks align with AGP/JBR defaults
-        sourceCompatibility = JavaVersion.VERSION_17.toString()
-        targetCompatibility = JavaVersion.VERSION_17.toString()
+        options.compilerArgs.addAll(listOf("-Xlint:-options", "-Xlint:-unchecked", "-Xlint:-deprecation"))
     }
 
-    tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
-        // Dynamically match the Kotlin jvmTarget to the module's JavaCompile targetCompatibility when possible.
-        val javaTaskName = name.replace("Kotlin", "JavaWithJavac")
-        val javaCompile = project.tasks.findByName(javaTaskName) as? JavaCompile
-        kotlinOptions {
-            jvmTarget = javaCompile?.targetCompatibility ?: JavaVersion.VERSION_17.toString()
+    plugins.withId("com.android.library") {
+        extensions.configure<com.android.build.api.dsl.LibraryExtension> {
+            // Register Kotlin sources before applying external Kotlin support.
+            // A few AGP 9-aware plugins otherwise compile an empty AAR when
+            // built-in Kotlin is disabled.
+            sourceSets.getByName("main").java.srcDir("src/main/kotlin")
+            compileSdk = 36
+            // Third-party dependency lint crashes under the AGP 9 toolchain
+            // must not block assembling this app's release artifact.
+            lint {
+                checkReleaseBuilds = false
+            }
+            if (namespace.isNullOrBlank()) {
+                val fallbackGroup = project.group.toString().trim()
+                namespace = if (fallbackGroup.isNotEmpty() && fallbackGroup != "unspecified") {
+                    fallbackGroup
+                } else {
+                    "com.matchme.${project.name.replace('-', '_')}"
+                }
+            }
+        }
+
+        // Some AGP 9-aware Flutter plugins omit KGP and expect built-in Kotlin.
+        // Built-in Kotlin is disabled until the remaining plugins migrate, so
+        // provide the current project KGP consistently to every Android library.
+        apply(plugin = "org.jetbrains.kotlin.android")
+
+        // Make late-declared Kotlin folders visible to external KGP as well.
+        tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+            source(file("src/main/kotlin"))
+        }
+
+        // AGP still creates lintVital tasks for libraries even when release
+        // lint checks are disabled. These dependency-only scans crash in AGP 9.
+        tasks.matching { it.name.startsWith("lintVital") }.configureEach {
+            enabled = false
         }
     }
 
-    // Ensure Java/Kotlin compilation alignment across Android subprojects.
-    // NOTE: Do NOT use `options.release` (the `--release` flag) because the Android Gradle
-    // Plugin rejects it for JavaCompile tasks; instead set source/target compatibility or use
-    // the Java toolchain so libraries/plugins compile consistently.
-    subprojects {
-        // Configure Android modules after they've been evaluated so their android extension exists.
-        plugins.withId("com.android.library") {
-            // Ensure all Android library modules (including third-party plugins) have a namespace
-            extensions.configure<com.android.build.gradle.LibraryExtension> {
-                if (namespace == null || namespace!!.isEmpty()) {
-                    namespace = project.group.toString()
-                }
-            }
-            afterEvaluate {
-                extensions.configure<com.android.build.gradle.LibraryExtension> {
-                    compileOptions {
-                        sourceCompatibility = JavaVersion.VERSION_17
-                        targetCompatibility = JavaVersion.VERSION_17
-                    }
-                }
-            }
-        }
-        plugins.withId("com.android.application") {
-            afterEvaluate {
-                extensions.configure<com.android.build.gradle.AppExtension> {
-                    if (namespace == null || namespace!!.isEmpty()) {
-                        namespace = project.group.toString()
-                    }
-                    compileOptions {
-                        sourceCompatibility = JavaVersion.VERSION_17
-                        targetCompatibility = JavaVersion.VERSION_17
-                    }
-                }
-            }
-        }
-
-        // Also set JavaCompile source/target in case a plugin doesn't set them itself.
-        // Doing this in afterEvaluate ensures it applies after plugins have configured their tasks.
-        afterEvaluate {
-            tasks.withType<JavaCompile>().configureEach {
-                sourceCompatibility = JavaVersion.VERSION_17.toString()
-                targetCompatibility = JavaVersion.VERSION_17.toString()
-            }
-
-            // Match Kotlin's jvmTarget to the corresponding JavaCompile target when possible.
-            tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
-                val javaTaskName = name.replace("Kotlin", "JavaWithJavac")
-                val javaCompile = project.tasks.findByName(javaTaskName) as? JavaCompile
-                kotlinOptions {
-                    jvmTarget = javaCompile?.targetCompatibility ?: JavaVersion.VERSION_17.toString()
+    plugins.withId("com.android.application") {
+        extensions.configure<com.android.build.api.dsl.ApplicationExtension> {
+            if (namespace.isNullOrBlank()) {
+                val fallbackGroup = project.group.toString().trim()
+                namespace = if (fallbackGroup.isNotEmpty() && fallbackGroup != "unspecified") {
+                    fallbackGroup
+                } else {
+                    "com.matchme.${project.name.replace('-', '_')}"
                 }
             }
         }
     }
+
+
 }
-
-// Note: configuring the Kotlin JVM toolchain globally caused finalization errors in some
-// plugin configurations. For now, we align Kotlin's jvmTarget and Android compileOptions to
-// Java 11 (see above) which avoids the mismatches while keeping builds stable.
-// If needed later, we can opt into per-module `kotlin { jvmToolchain { ... } }` changes.
 
 tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)

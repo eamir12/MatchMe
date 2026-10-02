@@ -1,3 +1,11 @@
+# OBSOLETE — kept only for reference.
+# The app no longer bundles NotoSansTC: CJK glyphs render from the platform
+# system font (Windows: Microsoft JhengHei/Yu Gothic, Android: Noto Sans CJK,
+# iOS: PingFang), and the 13.6 MB of bundled TC faces cost every build that
+# much. If a CJK language ever has to render without a system font, restore the
+# files into assets/fonts/ AND add the family back to pubspec.yaml — the
+# download alone is not enough.
+#
 # Attempt to download NotoSansTC-Bold from alternative sources into assets/fonts/
 # Usage: powershell -ExecutionPolicy Bypass -File .\tools\download_noto_tc_bold.ps1
 

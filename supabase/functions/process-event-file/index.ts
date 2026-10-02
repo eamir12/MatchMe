@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { createClient } from "npm:@supabase/supabase-js@2.28.0";
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
+import { buildGeminiUrl, resolveVisionModels } from "../_shared/gemini_config.ts";
 
 console.info('process-event-file function starting');
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
@@ -19,8 +20,17 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-// Helper to fetch localized translation from the translations table
+// Helper to fetch localized translation from the translations table.
+// MatchMe ships en / es / he only; anything else resolves to English.
+function normalizeSupportedLocale(raw: unknown): string {
+  const s = String(raw ?? '').trim().toLowerCase();
+  if (s.startsWith('he')) return 'he';
+  if (s.startsWith('es')) return 'es';
+  return 'en';
+}
+
 async function getTranslation(key: string, locale: string = 'en'): Promise<string> {
+  locale = normalizeSupportedLocale(locale);
   try {
     const result = await svc
       .from('translations')
@@ -423,8 +433,8 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
 
 // Helper to call Gemini API with vision support for images and PDFs
 async function callGeminiVision(fileBytes: Uint8Array, mimeType: string, apiKey: string) {
-  const GEMINI_URL_PRIMARY = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
-  const GEMINI_URL_BACKUP = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const visionModels = await resolveVisionModels(apiKey);
+  const geminiUrls = visionModels.map(m => buildGeminiUrl(m, apiKey));
   
   // Convert bytes to base64 using chunked approach to handle large files
   const base64Data = uint8ArrayToBase64(fileBytes);
@@ -481,37 +491,29 @@ async function callGeminiVision(fileBytes: Uint8Array, mimeType: string, apiKey:
     }
   };
 
-  try {
-    console.log("Calling Gemini Vision Primary URL...");
-    const res = await fetch(GEMINI_URL_PRIMARY, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    
-    if (!res.ok) {
-      const errorText = await res.text();
-      throw new Error(`Gemini Vision Primary API failed: ${res.status} ${errorText}`);
+  for (let i = 0; i < geminiUrls.length; i++) {
+    const modelName = visionModels[i];
+    try {
+      console.log(`Calling Gemini Vision (${modelName})...`);
+      const res = await fetch(geminiUrls[i], {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.warn(`${modelName} failed (${res.status}): ${errorText}`);
+        continue;
+      }
+
+      const data = await res.json();
+      return { parsed: JSON.parse(data.candidates[0].content.parts[0].text), model: modelName };
+    } catch (error) {
+      console.warn(`${modelName} error: ${error.message}, trying next...`);
     }
-    
-    const data = await res.json();
-    return { parsed: JSON.parse(data.candidates[0].content.parts[0].text), model: 'gemini-3-flash-preview' };
-  } catch (error) {
-    console.log("Primary URL failed, switching to backup...", error.message);
-    const res = await fetch(GEMINI_URL_BACKUP, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    
-    if (!res.ok) {
-      const errorText = await res.text();
-      throw new Error(`Gemini Vision Backup API failed: ${res.status} ${errorText}`);
-    }
-    
-    const data = await res.json();
-    return { parsed: JSON.parse(data.candidates[0].content.parts[0].text), model: 'gemini-2.5-flash' };
   }
+  throw new Error(`Gemini Vision API failed: All ${visionModels.length} models exhausted`);
 }
 
 Deno.serve(async (req: Request) => {
@@ -669,7 +671,7 @@ Deno.serve(async (req: Request) => {
     const eventValidation = isEventRelated(parsedData);
     if (!eventValidation.valid) {
       console.log('Content is not event-related. Reason:', eventValidation.reason);
-      const errorMessage = await getTranslation(eventValidation.reason || 'eventExtractionNotEventContent', 'en');
+      errorMessage = await getTranslation(eventValidation.reason || 'eventExtractionNotEventContent', 'en');
       return jsonResponse({ 
         error: errorMessage,
         errorKey: eventValidation.reason,
@@ -684,7 +686,7 @@ Deno.serve(async (req: Request) => {
       looksPersonalTitle(sanitizedTitle) ||
       looksPersonalLocation(sanitizedLocation)
     ) {
-      const errorMessage = await getTranslation('eventExtractionNotEventContent', 'en');
+      errorMessage = await getTranslation('eventExtractionNotEventContent', 'en');
       return jsonResponse({ 
         error: errorMessage,
         errorKey: 'eventExtractionNotEventContent',
@@ -773,7 +775,7 @@ Deno.serve(async (req: Request) => {
     console.error('Function error:', err);
     errorType = err instanceof Error ? err.name : "Error";
     errorMessage = err instanceof Error ? err.message : String(err);
-    return jsonResponse({ error: err.message || 'internal_error' }, 500);
+    return jsonResponse({ error: errorMessage || 'internal_error' }, 500);
   } finally {
     const elapsedMs = Date.now() - startedAtMs;
     await logEdgeFunctionInvocation({

@@ -6,11 +6,19 @@ import 'package:matchme/providers/chat_provider.dart';
 import 'package:matchme/models/chat_message_model.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/screens/chats/reaction_picker.dart';
+import 'package:matchme/utils/emoji_presentation_utils.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
+
 const List<String> _quickReactions = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
 /// Shows message action sheet and returns an action string (e.g., 'edit', 'copy')
-Future<String?> showMessageOptions(BuildContext context, WidgetRef ref, {required String matchId, required String messageId, required ChatMessageModel message}) async {
+Future<String?> showMessageOptions(
+  BuildContext context,
+  WidgetRef ref, {
+  required String matchId,
+  required String messageId,
+  required ChatMessageModel message,
+}) async {
   String? currentUserId;
   try {
     currentUserId = supabase.auth.currentUser?.id;
@@ -34,37 +42,65 @@ Future<String?> showMessageOptions(BuildContext context, WidgetRef ref, {require
           children: [
             // Quick reaction emoji row (matches WhatsApp style)
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 10.0),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 12.0,
+                vertical: 10.0,
+              ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Row(
                     children: [
-                      for (var e in _quickReactions) Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 6.0),
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(20),
-                          onTap: () async {
-                            final scaffoldMessenger = ScaffoldMessenger.of(sheetContext);
-                            final l10n = ref.read(localizationProvider);
-                            Navigator.pop(sheetContext);
-                            try {
-                              await ref.read(chatServiceProvider).setReaction(matchId: matchId, messageId: messageId, reaction: e);
-                              try { ref.invalidate(chatMessagesProvider(matchId)); } catch (_) {}
-                            } catch (err) {
-                              debugPrint('Quick reaction failed for $messageId: $err');
-                              try { scaffoldMessenger.showSnackBar(SnackBar(content: Text(l10n.getString('generalError')))); } catch (_) {}
-                            }
-                          },
-                          child: CircleAvatar(radius: 18, backgroundColor: Theme.of(sheetContext).cardColor, child: Text(e)),
+                      for (var e in _quickReactions)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 6.0),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(20),
+                            onTap: () async {
+                              final scaffoldMessenger = ScaffoldMessenger.of(
+                                sheetContext,
+                              );
+                              final l10n = ref.read(localizationProvider);
+                              Navigator.pop(sheetContext);
+                              try {
+                                await ref
+                                    .read(chatServiceProvider)
+                                    .setReaction(
+                                      matchId: matchId,
+                                      messageId: messageId,
+                                      reaction: e,
+                                    );
+                                try {
+                                  ref.invalidate(chatMessagesProvider(matchId));
+                                } catch (_) {}
+                              } catch (err) {
+                                print('Quick reaction failed: $err');
+                                try {
+                                  scaffoldMessenger.showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        l10n.getString('generalError'),
+                                      ),
+                                    ),
+                                  );
+                                } catch (_) {}
+                              }
+                            },
+                            child: CircleAvatar(
+                              radius: 18,
+                              backgroundColor: Theme.of(sheetContext).cardColor,
+                              child: Text(e),
+                            ),
+                          ),
                         ),
-                      ),
                     ],
                   ),
                   // Plus: fallback to full reaction picker (handled by parent as 'react')
                   InkWell(
                     onTap: () async {
-                      final scaffoldMessenger = ScaffoldMessenger.of(sheetContext);
+                      final scaffoldMessenger = ScaffoldMessenger.of(
+                        sheetContext,
+                      );
                       final l10n = ref.read(localizationProvider);
                       Navigator.pop(sheetContext);
                       try {
@@ -76,23 +112,55 @@ Future<String?> showMessageOptions(BuildContext context, WidgetRef ref, {require
                           useSafeArea: true,
                           backgroundColor: Colors.transparent,
                           builder: (pickerContext) => Container(
-                            height: MediaQuery.of(pickerContext).size.height * 0.75,
+                            height:
+                                MediaQuery.of(pickerContext).size.height * 0.75,
                             decoration: const BoxDecoration(
                               color: Colors.white,
-                              borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                              borderRadius: BorderRadius.vertical(
+                                top: Radius.circular(20),
+                              ),
                             ),
-                            child: EmojiPicker(
-                              onEmojiSelected: (category, emoji) async {
-                                final pickerScaffold = ScaffoldMessenger.of(pickerContext);
-                                final l10n2 = ref.read(localizationProvider);
-                                Navigator.pop(pickerContext);
-                                await recordEmojiUse(emoji.emoji);
-                                try {
-                                  await ref.read(chatServiceProvider).setReaction(matchId: matchId, messageId: messageId, reaction: emoji.emoji);
-                                  try { ref.invalidate(chatMessagesProvider(matchId)); } catch (_) {}
+                            child: DefaultTextStyle(
+                              style: withEmojiFallback(
+                                Theme.of(pickerContext)
+                                        .textTheme
+                                        .bodyMedium ??
+                                    const TextStyle(fontSize: 32),
+                              ),
+                              child: EmojiPicker(
+                                onEmojiSelected: (category, emoji) async {
+                                  final pickerScaffold =
+                                      ScaffoldMessenger.of(pickerContext);
+                                  final l10n2 = ref.read(localizationProvider);
+                                  Navigator.pop(pickerContext);
+                                  final qualified = ensureEmojiPresentation(
+                                    emoji.emoji,
+                                  );
+                                  await recordEmojiUse(qualified);
+                                  try {
+                                    await ref
+                                        .read(chatServiceProvider)
+                                        .setReaction(
+                                          matchId: matchId,
+                                          messageId: messageId,
+                                          reaction: qualified,
+                                        );
+                                  try {
+                                    ref.invalidate(
+                                      chatMessagesProvider(matchId),
+                                    );
+                                  } catch (_) {}
                                 } catch (err) {
-                                  debugPrint('Full picker reaction failed for $messageId: $err');
-                                  try { pickerScaffold.showSnackBar(SnackBar(content: Text(l10n2.getString('generalError')))); } catch (_) {}
+                                  print('Full picker reaction failed: $err');
+                                  try {
+                                    pickerScaffold.showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          l10n2.getString('generalError'),
+                                        ),
+                                      ),
+                                    );
+                                  } catch (_) {}
                                 }
                               },
                               onBackspacePressed: () {},
@@ -105,23 +173,39 @@ Future<String?> showMessageOptions(BuildContext context, WidgetRef ref, {require
                                 ),
                                 categoryViewConfig: CategoryViewConfig(
                                   backgroundColor: Colors.white,
-                                  indicatorColor: Theme.of(pickerContext).colorScheme.primary,
-                                  iconColorSelected: Theme.of(pickerContext).colorScheme.primary,
+                                  indicatorColor: Theme.of(
+                                    pickerContext,
+                                  ).colorScheme.primary,
+                                  iconColorSelected: Theme.of(
+                                    pickerContext,
+                                  ).colorScheme.primary,
                                 ),
                                 searchViewConfig: SearchViewConfig(
                                   backgroundColor: Colors.grey.shade200,
                                 ),
                               ),
+                              ),
                             ),
                           ),
                         );
                       } catch (e) {
-                        debugPrint('Failed to open full reaction picker from options: $e');
-                        try { scaffoldMessenger.showSnackBar(SnackBar(content: Text(l10n.getString('generalError')))); } catch (_) {}
+                        print(
+                          'Failed to open full reaction picker from options: $e',
+                        );
+                        try {
+                          scaffoldMessenger.showSnackBar(
+                            SnackBar(
+                              content: Text(l10n.getString('generalError')),
+                            ),
+                          );
+                        } catch (_) {}
                       }
                     },
                     borderRadius: BorderRadius.circular(16),
-                    child: const CircleAvatar(radius: 18, child: Icon(Icons.add)),
+                    child: const CircleAvatar(
+                      radius: 18,
+                      child: Icon(Icons.add),
+                    ),
                   ),
                 ],
               ),
@@ -147,16 +231,27 @@ Future<String?> showMessageOptions(BuildContext context, WidgetRef ref, {require
                     builder: (c) => AlertDialog(
                       title: Text(l10n.getString('chatDeleteConfirm')),
                       actions: [
-                        TextButton(onPressed: () => Navigator.pop(c, false), child: Text(cancelLabel)),
-                        TextButton(onPressed: () => Navigator.pop(c, true), child: Text(deleteLabel)),
+                        TextButton(
+                          onPressed: () => Navigator.pop(c, false),
+                          child: Text(cancelLabel),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.pop(c, true),
+                          child: Text(deleteLabel),
+                        ),
                       ],
                     ),
                   );
                   if (confirmed == true) {
                     try {
-                      await ref.read(chatServiceProvider).deleteMessage(matchId: matchId, messageId: messageId);
+                      await ref
+                          .read(chatServiceProvider)
+                          .deleteMessage(
+                            matchId: matchId,
+                            messageId: messageId,
+                          );
                     } catch (e) {
-                      debugPrint('Failed to delete message $messageId: $e');
+                      print('Failed to delete message: $e');
                     }
                   }
                 },

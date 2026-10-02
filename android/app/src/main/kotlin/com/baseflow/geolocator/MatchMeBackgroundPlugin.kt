@@ -52,17 +52,19 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 val userToken = call.argument<String>("userToken")
                 val refreshToken = call.argument<String>("refreshToken")
                 val appInForeground = call.argument<Boolean>("appInForeground") ?: false
-                val highAccuracyMode = call.argument<Boolean>("highAccuracyMode") ?: false
+                val backgroundMatchingMode = call.argument<Boolean>("backgroundMatchingMode") ?: false
                 val isVisible = call.argument<Boolean>("isVisible") ?: true
                 val isOnline = call.argument<Boolean>("isOnline") ?: true
+                val gpsInterval = (call.argument<Int>("gpsInterval") ?: 5).coerceAtLeast(1)
+                val smartThrottlingEnabled = call.argument<Boolean>("smartThrottlingEnabled") ?: true
 
                 if (isDebug()) {
-                    println("MatchMeBackgroundPlugin: startService called with token: ${userToken?.let { "present" } ?: "null"}")
+                    println("MatchMeBackgroundPlugin: startService called with token: ${userToken?.let { "present" } ?: "null"} interval=$gpsInterval throttling=$smartThrottlingEnabled")
                 }
 
                 if (userId != null && supabaseUrl != null && supabaseKey != null) {
                     if (hasLocationPermission()) {
-                        MatchMeBackgroundService.startService(context, userId, supabaseUrl, supabaseKey, userToken, refreshToken, appInForeground, highAccuracyMode, isVisible, isOnline)
+                        MatchMeBackgroundService.startService(context, userId, supabaseUrl, supabaseKey, userToken, refreshToken, appInForeground, backgroundMatchingMode, isVisible, isOnline, gpsInterval, smartThrottlingEnabled)
                         result.success(true)
                     } else {
                         result.error("PERMISSION_DENIED", "Location permission not granted", null)
@@ -78,6 +80,9 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             "isRunning" -> {
                 result.success(MatchMeBackgroundService.isServiceAlive())
             }
+            "getDiagnostics" -> {
+                result.success(MatchMeBackgroundService.getDiagnostics())
+            }
             "updateVisibility" -> {
                 val isVisible = call.argument<Boolean>("isVisible") ?: false
                 MatchMeBackgroundService.updateVisibility(context, isVisible)
@@ -88,14 +93,24 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 MatchMeBackgroundService.setConnectivity(context, isOnline)
                 result.success(true)
             }
+            "traceLog" -> {
+                val tag = call.argument<String>("tag") ?: "MatchMeTrace"
+                val message = call.argument<String>("message") ?: ""
+                // Log.d(tag, message)
+                result.success(true)
+            }
             "updateAppForeground" -> {
                 val isForeground = call.argument<Boolean>("isForeground") ?: false
                 MatchMeBackgroundService.updateAppForeground(context, isForeground)
                 result.success(true)
             }
-            "updateHighAccuracyMode" -> {
+            "updateBackgroundMatchingMode" -> {
                 val enabled = call.argument<Boolean>("enabled") ?: false
-                MatchMeBackgroundService.updateHighAccuracyMode(context, enabled)
+                MatchMeBackgroundService.updateBackgroundMatchingMode(context, enabled)
+                result.success(true)
+            }
+            "updatePinnedState" -> {
+                MatchMeBackgroundService.refreshForegroundForPinnedState(context)
                 result.success(true)
             }
             "updateToken" -> {
@@ -104,10 +119,58 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 MatchMeBackgroundService.updateToken(context, token, refreshToken)
                 result.success(true)
             }
+            "setSecureString" -> {
+                val key = call.argument<String>("key")
+                val value = call.argument<String>("value")
+                if (key == null || !SecurePrefsHelper.isSensitiveKey(key)) {
+                    result.error("INVALID_ARGUMENTS", "Missing or non-secure key", null)
+                } else {
+                    SecurePrefsHelper.putString(context, key, value)
+                    result.success(true)
+                }
+            }
+            "getSecureString" -> {
+                val key = call.argument<String>("key")
+                if (key == null || !SecurePrefsHelper.isSensitiveKey(key)) {
+                    result.success(null)
+                } else {
+                    result.success(SecurePrefsHelper.getString(context, key, null))
+                }
+            }
+            "clearSecureKeys" -> {
+                val args = call.arguments as? Map<*, *>
+                val keys = (args?.get("keys") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
+                if (keys.isNotEmpty()) {
+                    SecurePrefsHelper.removeSensitive(context, keys)
+                }
+                result.success(true)
+            }
             "updateConfig" -> {
                 val gpsInterval = call.argument<Int>("gpsInterval") ?: 30
                 val smartThrottlingEnabled = call.argument<Boolean>("smartThrottlingEnabled") ?: true
                 MatchMeBackgroundService.updateConfig(context, gpsInterval, smartThrottlingEnabled)
+                result.success(true)
+            }
+            "startLocationShare" -> {
+                val matchId = call.argument<String>("matchId")
+                val otherUserId = call.argument<String>("otherUserId")
+                val sessionKeyBase64 = call.argument<String>("sessionKeyBase64")
+                val updateIntervalSeconds = call.argument<Int>("updateIntervalSeconds") ?: 5
+                val expiresAtIso = call.argument<String>("expiresAtIso")
+                if (matchId != null && otherUserId != null && sessionKeyBase64 != null) {
+                    MatchMeBackgroundService.startLocationShare(context, matchId, otherUserId, sessionKeyBase64, updateIntervalSeconds, expiresAtIso)
+                    result.success(true)
+                } else {
+                    result.error("INVALID_ARGUMENTS", "Missing required arguments for location share", null)
+                }
+            }
+            "stopLocationShare" -> {
+                MatchMeBackgroundService.stopLocationShare(context)
+                result.success(true)
+            }
+            "updateLocationShareDuration" -> {
+                val expiresAtIso = call.argument<String>("expiresAtIso")
+                MatchMeBackgroundService.updateLocationShareDuration(context, expiresAtIso)
                 result.success(true)
             }
             "checkNotifications" -> {
@@ -117,11 +180,11 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 val senderName = call.argument<String>("senderName")
                 val matchId = call.argument<String>("matchId")
 
-                Log.d("MatchMeBackgroundPlugin", "[PLUGIN] checkNotifications called with messageId: $messageId, translatedContent: '$translatedContent', originalContent: '$originalContent', senderName: '$senderName', matchId: '$matchId'")
+                // Log.d("MatchMeBackgroundPlugin", "[PLUGIN] checkNotifications called with messageId: $messageId, translatedContent: '$translatedContent', originalContent: '$originalContent', senderName: '$senderName', matchId: '$matchId'")
 
                 // If we have translated content, use it directly instead of querying RPC
                 if (translatedContent != null && translatedContent != "null" && translatedContent.isNotEmpty()) {
-                    Log.d("MatchMeBackgroundPlugin", "[PLUGIN] Using provided translated content for notification")
+                    // Log.d("MatchMeBackgroundPlugin", "[PLUGIN] Using provided translated content for notification")
                     CoroutineScope(Dispatchers.IO).launch {
                         try {
                             MatchMeBackgroundService.showTranslatedNotification(
@@ -133,19 +196,19 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                                 matchId
                             )
                         } catch (e: Exception) {
-                            Log.e("MatchMeBackgroundPlugin", "[PLUGIN] Error showing translated notification", e)
+                            // Log.e("MatchMeBackgroundPlugin", "[PLUGIN] Error showing translated notification", e)
                         }
                     }
                 } else {
                     // Fallback to RPC query
-                    Log.d("MatchMeBackgroundPlugin", "[PLUGIN] No translated content provided, falling back to RPC query")
+                    // Log.d("MatchMeBackgroundPlugin", "[PLUGIN] No translated content provided, falling back to RPC query")
                     CoroutineScope(Dispatchers.IO).launch {
                         try {
-                            Log.d("MatchMeBackgroundPlugin", "[PLUGIN] Calling MatchMeBackgroundService.checkForNotifications")
+                            // Log.d("MatchMeBackgroundPlugin", "[PLUGIN] Calling MatchMeBackgroundService.checkForNotifications")
                             MatchMeBackgroundService.checkForNotifications(context, messageId)
-                            Log.d("MatchMeBackgroundPlugin", "[PLUGIN] checkForNotifications completed")
+                            // Log.d("MatchMeBackgroundPlugin", "[PLUGIN] checkForNotifications completed")
                         } catch (e: Exception) {
-                            Log.e("MatchMeBackgroundPlugin", "[PLUGIN] Error checking notifications", e)
+                            // Log.e("MatchMeBackgroundPlugin", "[PLUGIN] Error checking notifications", e)
                         }
                     }
                 }
@@ -283,6 +346,25 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 // Let's return null here and rely on Flutter's deep linking or intent handling if possible.
                 // Actually, we can't easily get the intent here without ActivityAware.
                 result.success(null)
+            }
+            "refreshBackgroundNotification" -> {
+                MatchMeBackgroundService.refreshNotification(context)
+                result.success(true)
+            }
+            "setBackgroundNotificationStrings" -> {
+                val title = call.argument<String>("title")
+                val text = call.argument<String>("text")
+                try {
+                    val prefs = context.getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
+                    prefs.edit().apply {
+                        if (!title.isNullOrBlank()) putString("flutter.bgNotificationTitle", title)
+                        if (!text.isNullOrBlank()) putString("flutter.bgNotificationText", text)
+                        apply()
+                    }
+                    // Refresh the ongoing notification if the service is running
+                    MatchMeBackgroundService.refreshNotification(context)
+                } catch (_: Exception) {}
+                result.success(true)
             }
             else -> {
                 result.notImplemented()

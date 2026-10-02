@@ -12,30 +12,54 @@ class InviteFriendsScreen extends ConsumerStatefulWidget {
   const InviteFriendsScreen({super.key});
 
   @override
-  ConsumerState<InviteFriendsScreen> createState() => _InviteFriendsScreenState();
+  ConsumerState<InviteFriendsScreen> createState() =>
+      _InviteFriendsScreenState();
 }
 
 class _InviteFriendsScreenState extends ConsumerState<InviteFriendsScreen> {
   bool _isLoading = false;
+  String? _cachedReferralCode; // Cache the code locally to display immediately
 
   @override
   void initState() {
     super.initState();
     // Defer the check to next frame to avoid provider issues during build
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadCachedReferralCode();
       _ensureReferralCode();
     });
+  }
+
+  Future<void> _loadCachedReferralCode() async {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return;
+    final code = await ref
+        .read(referralServiceProvider)
+        .getCachedReferralCode(user.id);
+    if (!mounted || code == null || code.isEmpty) return;
+    setState(() => _cachedReferralCode = code);
   }
 
   Future<void> _ensureReferralCode() async {
     final user = Supabase.instance.client.auth.currentUser;
     if (user == null) return;
-    
-    final userProfile = await ref.read(userProfileProvider(user.id).future);
-    
-    if (userProfile != null && (userProfile.referralCode == null || userProfile.referralCode!.isEmpty)) {
-      if (mounted) setState(() => _isLoading = true);
-      await ref.read(referralServiceProvider).generateReferralCodeIfNeeded(user.id, userProfile.referralCode);
+
+    if (mounted) setState(() => _isLoading = true);
+
+    try {
+      final code = await ref
+          .read(referralServiceProvider)
+          .ensureReferralCodeAvailable(user.id);
+      print('[Screen] Got code from service: $code');
+
+      if (code != null && mounted) {
+        // Cache the code locally for immediate display
+        setState(() => _cachedReferralCode = code);
+
+        // Also invalidate the profile provider to refresh the UI in case it's used elsewhere
+        ref.invalidate(userProfileProvider(user.id));
+      }
+    } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
@@ -44,11 +68,14 @@ class _InviteFriendsScreenState extends ConsumerState<InviteFriendsScreen> {
     final l10n = ref.read(localizationProvider);
     // Fetch base URL from app config, default to custom scheme if not set
     final appConfig = AppConfigService();
-    final baseUrl = await appConfig.getString('referral.base_url', defaultValue: 'matchme://invite');
-    
+    final baseUrl = await appConfig.getString(
+      'referral.base_url',
+      defaultValue: 'matchme://invite',
+    );
+
     final separator = baseUrl.contains('?') ? '&' : '?';
-    final link = '$baseUrl${separator}code=$code'; 
-    
+    final link = '$baseUrl${separator}code=$code';
+
     await SharePlus.instance.share(
       ShareParams(
         text: l10n.getString(
@@ -75,48 +102,60 @@ class _InviteFriendsScreenState extends ConsumerState<InviteFriendsScreen> {
       appBar: AppBar(title: Text(l10n.getString('inviteFriendsTitle'))),
       body: userProfileAsync.when(
         data: (profile) {
-          if (profile == null) {
+          final code = _cachedReferralCode ?? profile?.referralCode;
+          print(
+            '[Screen] Build: _isLoading=$_isLoading, cachedCode=$_cachedReferralCode, profileCode=${profile?.referralCode}, finalCode=$code',
+          );
+
+          if (profile == null && (code == null || code.isEmpty)) {
+            print('[Screen] Profile is null');
             return Center(child: Text(l10n.getString('commonProfileNotFound')));
           }
-          
-          final code = profile.referralCode;
 
-          if (_isLoading) {
+          if (_isLoading && (code == null || code.isEmpty)) {
+            print('[Screen] Still loading...');
             return const Center(child: CircularProgressIndicator());
           }
-          
-          if (code == null) {
-             // This happens if _ensureReferralCode hasn't finished or failed
-             return Center(
-               child: Padding(
-                 padding: const EdgeInsets.all(24.0),
-                 child: Column(
-                   mainAxisAlignment: MainAxisAlignment.center,
-                   children: [
-                     Icon(Icons.error_outline, size: 48, color: Theme.of(context).colorScheme.error),
-                     const SizedBox(height: 16),
-                     Text(
-                       l10n.getString('inviteFriendsError'),
-                       style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                     ),
-                     const SizedBox(height: 8),
-                     Text(
-                       l10n.getString('inviteFriendsCheckConnection'),
-                       textAlign: TextAlign.center,
-                       style: const TextStyle(color: Colors.grey),
-                     ),
-                     const SizedBox(height: 24),
-                     ElevatedButton(
-                       onPressed: () {
-                         if (mounted) setState(() => _isLoading = true);
-                         _ensureReferralCode();
-                       },
-                       child: Text(l10n.getString('inviteFriendsRetry')),
-                     ),
-                   ],
-                 ),
-               ),
-             );
+
+          if (code == null || code.isEmpty) {
+            // This happens if _ensureReferralCode hasn't finished or failed
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24.0),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.error_outline,
+                      size: 48,
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      l10n.getString('inviteFriendsError'),
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      l10n.getString('inviteFriendsCheckConnection'),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.grey),
+                    ),
+                    const SizedBox(height: 24),
+                    ElevatedButton(
+                      onPressed: () {
+                        if (mounted) setState(() => _isLoading = true);
+                        _ensureReferralCode();
+                      },
+                      child: Text(l10n.getString('inviteFriendsRetry')),
+                    ),
+                  ],
+                ),
+              ),
+            );
           }
 
           return SingleChildScrollView(
@@ -125,68 +164,177 @@ class _InviteFriendsScreenState extends ConsumerState<InviteFriendsScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                Icon(Icons.card_giftcard, size: 80, color: Theme.of(context).colorScheme.secondary),
-                const SizedBox(height: 24),
-                Text(
-                  l10n.getString('inviteFriendsSubtitle'),
-                  style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  l10n.getString('inviteFriendsDescription'),
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 16, color: Colors.grey),
-                ),
-                const SizedBox(height: 32),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade100,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.grey.shade300),
+                  Icon(
+                    Icons.card_giftcard,
+                    size: 80,
+                    color: Theme.of(context).colorScheme.secondary,
                   ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        code,
-                        style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: 2),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.copy),
-                        onPressed: () {
-                          Clipboard.setData(ClipboardData(text: code));
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text(l10n.getString('inviteFriendsCopied'))),
-                          );
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 32),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: () => _shareLink(code),
-                    icon: const Icon(Icons.share),
-                    label: Text(l10n.getString('inviteFriendsShareBtn')),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
+                  const SizedBox(height: 24),
+                  Text(
+                    l10n.getString('inviteFriendsSubtitle'),
+                    style: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
-                ),
-                const SizedBox(height: 24),
-                 Text(
-                  l10n.getString('inviteFriendsCredits', params: {'0': profile.credits.toString()}),
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
-                ),
-              ],
+                  const SizedBox(height: 12),
+                  Text(
+                    l10n.getString('inviteFriendsDescription'),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 16, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 32),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 16,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade100,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.grey.shade300),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          code,
+                          style: const TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 2,
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.copy),
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: code));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  l10n.getString('inviteFriendsCopied'),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 32),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () => _shareLink(code),
+                      icon: const Icon(Icons.share),
+                      label: Text(l10n.getString('inviteFriendsShareBtn')),
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  if (profile != null)
+                    Text(
+                      l10n.getString(
+                        'inviteFriendsCredits',
+                        params: {'0': profile.credits.toString()},
+                      ),
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                ],
               ),
             ),
           );
         },
-        loading: () => const Center(child: CircularProgressIndicator()),
+        loading: () {
+          final code = _cachedReferralCode;
+          if (code == null || code.isEmpty) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          return SingleChildScrollView(
+            child: Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.card_giftcard,
+                    size: 80,
+                    color: Theme.of(context).colorScheme.secondary,
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    l10n.getString('inviteFriendsSubtitle'),
+                    style: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    l10n.getString('inviteFriendsDescription'),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 16, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 32),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 16,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade100,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.grey.shade300),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          code,
+                          style: const TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 2,
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.copy),
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: code));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  l10n.getString('inviteFriendsCopied'),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 32),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () => _shareLink(code),
+                      icon: const Icon(Icons.share),
+                      label: Text(l10n.getString('inviteFriendsShareBtn')),
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
         error: (e, st) => Center(
           child: Text(
             l10n.getString(

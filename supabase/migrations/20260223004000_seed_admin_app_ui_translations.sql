@@ -129,13 +129,13 @@ INSERT INTO public.translations (locale, key, value) VALUES
   ('es', 'adminDashboardLoadFailed', $$No se pudo cargar el panel.$$),
   ('he', 'adminDashboardLoadFailed', $$טעינת לוח המחוונים נכשלה.$$),
 
-  ('en', 'adminDashboardWindow24h', $$24h$$),
-  ('es', 'adminDashboardWindow24h', $$24h$$),
-  ('he', 'adminDashboardWindow24h', $$24h$$),
+  ('en', 'adminDashboardWindow24h', $$Last 24 hours$$),
+  ('es', 'adminDashboardWindow24h', $$Últimas 24 horas$$),
+  ('he', 'adminDashboardWindow24h', $$24 שעות אחרונות$$),
 
-  ('en', 'adminDashboardWindow7d', $$7d$$),
-  ('es', 'adminDashboardWindow7d', $$7d$$),
-  ('he', 'adminDashboardWindow7d', $$7d$$),
+  ('en', 'adminDashboardWindow7d', $$Last 7 days$$),
+  ('es', 'adminDashboardWindow7d', $$Últimos 7 días$$),
+  ('he', 'adminDashboardWindow7d', $$7 ימים אחרונים$$),
 
   ('en', 'adminDashboardLastUpdated', $$Last updated: {time}$$),
   ('es', 'adminDashboardLastUpdated', $$Última actualización: {time}$$),
@@ -353,9 +353,9 @@ INSERT INTO public.translations (locale, key, value) VALUES
   ('es', 'adminDrilldownSuccess', $$Éxito$$),
   ('he', 'adminDrilldownSuccess', $$הצלחה$$),
 
-  ('en', 'adminDrilldownDurationMs', $$Duration (ms)$$),
-  ('es', 'adminDrilldownDurationMs', $$Duración (ms)$$),
-  ('he', 'adminDrilldownDurationMs', $$משך (מ״ש)$$),
+  ('en', 'adminDrilldownDurationMs', $$Duration (milliseconds)$$),
+  ('es', 'adminDrilldownDurationMs', $$Duración (milisegundos)$$),
+  ('he', 'adminDrilldownDurationMs', $$משך (מילישניות)$$),
 
   ('en', 'adminDrilldownHttpStatus', $$HTTP$$),
   ('es', 'adminDrilldownHttpStatus', $$HTTP$$),
@@ -433,9 +433,9 @@ INSERT INTO public.translations (locale, key, value) VALUES
   ('es', 'adminDashboardVisibleUsers', $$Usuarios visibles$$),
   ('he', 'adminDashboardVisibleUsers', $$משתמשים גלויים$$),
 
-  ('en', 'adminDashboardNearbyUsers', $$Nearby users (10km)$$),
-  ('es', 'adminDashboardNearbyUsers', $$Usuarios cercanos (10 km)$$),
-  ('he', 'adminDashboardNearbyUsers', $$משתמשים בקרבת מקום (10 ק״מ)$$),
+  ('en', 'adminDashboardNearbyUsers', $$Nearby users (10 kilometers)$$),
+  ('es', 'adminDashboardNearbyUsers', $$Usuarios cercanos (10 kilómetros)$$),
+  ('he', 'adminDashboardNearbyUsers', $$משתמשים בקרבת מקום (10 קילומטרים)$$),
 
   ('en', 'adminDashboardMatchesCreated', $$Matches created$$),
   ('es', 'adminDashboardMatchesCreated', $$Coincidencias creadas$$),
@@ -485,8 +485,8 @@ INSERT INTO public.translations (locale, key, value) VALUES
   ('es', 'adminDashboardPaidActiveUsers', $$Usuarios de pago activos$$),
   ('he', 'adminDashboardPaidActiveUsers', $$משתמשים בתשלום פעילים$$),
 
-  ('en', 'adminDashboardPaidExpiring7d', $$Paid expiring (7d)$$),
-  ('es', 'adminDashboardPaidExpiring7d', $$Pagos que vencen (7d)$$),
+  ('en', 'adminDashboardPaidExpiring7d', $$Paid expiring (7 days)$$),
+  ('es', 'adminDashboardPaidExpiring7d', $$Pagos que vencen (7 días)$$),
   ('he', 'adminDashboardPaidExpiring7d', $$מנויים בתשלום שפגים (7 ימים)$$),
 
   ('en', 'adminDashboardPaidByTier', $$Paid by tier$$),
@@ -604,12 +604,12 @@ INSERT INTO public.translations (locale, key, value) VALUES
   ('es', 'adminAppConfigIsUserConfigurable', $$Configurable por el usuario$$),
   ('he', 'adminAppConfigIsUserConfigurable', $$ניתן להגדרה ע"י משתמש$$),
 
-  ('en', 'adminAppConfigMinValue', $$Min$$),
-  ('es', 'adminAppConfigMinValue', $$Mín.$$),
+  ('en', 'adminAppConfigMinValue', $$Minimum$$),
+  ('es', 'adminAppConfigMinValue', $$Mínimo$$),
   ('he', 'adminAppConfigMinValue', $$מינימום$$),
 
-  ('en', 'adminAppConfigMaxValue', $$Max$$),
-  ('es', 'adminAppConfigMaxValue', $$Máx.$$),
+  ('en', 'adminAppConfigMaxValue', $$Maximum$$),
+  ('es', 'adminAppConfigMaxValue', $$Máximo$$),
   ('he', 'adminAppConfigMaxValue', $$מקסימום$$),
 
   ('en', 'adminAppConfigAllowedValues', $$Allowed values (JSON)$$),
@@ -1040,7 +1040,7 @@ INSERT INTO public.translations (locale, key, value) VALUES
   ('es', 'adminBroadcastsInvalidJson', $$JSON no válido.$$),
   ('he', 'adminBroadcastsInvalidJson', $$JSON לא תקין.$$),
 
-  ('en', 'adminBroadcastsLanguage', $$Lang$$),
+  ('en', 'adminBroadcastsLanguage', $$Language$$),
   ('es', 'adminBroadcastsLanguage', $$Idioma$$),
   ('he', 'adminBroadcastsLanguage', $$שפה$$),
 
@@ -1240,7 +1240,7 @@ INSERT INTO public.translations (locale, key, value) VALUES
   ('es', 'adminBroadcastsType', $$Tipo$$),
   ('he', 'adminBroadcastsType', $$סוג$$),
 
-  ('en', 'adminBroadcastsTypeInfo', $$Info$$),
+  ('en', 'adminBroadcastsTypeInfo', $$Information$$),
   ('es', 'adminBroadcastsTypeInfo', $$Información$$),
   ('he', 'adminBroadcastsTypeInfo', $$מידע$$),
 
