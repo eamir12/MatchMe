@@ -487,6 +487,17 @@ class LocalDbService {
   ) async {
     final box = await _getMatchesBox();
     final key = 'recent_matches_$userId';
+    // Persist minimap snapshots for all matches so they render offline even before opening profile
+    try {
+      for (final match in matches) {
+        final matchId = (match['id'] ?? match['match_id'])?.toString() ?? '';
+        if (matchId.isEmpty) continue;
+        final locs = _extractDisplayableLocationsFromMatch(match, matchId);
+        if (locs.isNotEmpty) {
+          await saveMatchMinimapSnapshot(matchId, locs);
+        }
+      }
+    } catch (_) {}
     // Avoid Hive watch event when nothing changed - prevents visible list flicker
     // on every 15s sync when data is identical.
     try {
@@ -740,10 +751,129 @@ class LocalDbService {
               .toList();
         } catch (_) {}
       }
+
+      // Also inspect matches box to ensure all cached matches across all chats
+      // have minimap snapshots available offline and queued for tile warming.
+      try {
+        final matchesBox = await _getMatchesBox();
+        for (final key in matchesBox.keys) {
+          final k = key.toString();
+          if (!k.startsWith('recent_matches_')) continue;
+          final raw = matchesBox.get(key);
+          if (raw == null || raw.isEmpty) continue;
+          try {
+            final decoded = jsonDecode(raw) as List;
+            for (final item in decoded) {
+              if (item is! Map) continue;
+              final m = Map<String, dynamic>.from(item);
+              final matchId = (m['id'] ?? m['match_id'])?.toString() ?? '';
+              if (matchId.isEmpty || result.containsKey(matchId)) continue;
+              final locs = _extractDisplayableLocationsFromMatch(m, matchId);
+              if (locs.isNotEmpty) {
+                result[matchId] = locs;
+                await saveMatchMinimapSnapshot(matchId, locs);
+              }
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
+
       return result;
     } catch (_) {
       return const {};
     }
+  }
+
+  /// Extracts displayable location maps (MatchLocation format) from a cached match row.
+  List<Map<String, dynamic>> _extractDisplayableLocationsFromMatch(
+    Map<dynamic, dynamic> m,
+    String matchId,
+  ) {
+    final list = <Map<String, dynamic>>[];
+    double? parseCoord(dynamic v) => v == null
+        ? null
+        : (v is num ? v.toDouble() : double.tryParse(v.toString()));
+    int parseOcc(dynamic v) => v == null
+        ? 1
+        : (v is int ? v : int.tryParse(v.toString()) ?? 1);
+
+    final occ = parseOcc(m['match_occurrence'] ?? m['matchOccurrence']);
+    final cLat = parseCoord(
+      m['map_center_lat'] ?? m['mapCenterLat'] ?? m['center_lat'],
+    );
+    final cLng = parseCoord(
+      m['map_center_lng'] ?? m['mapCenterLng'] ?? m['center_lng'],
+    );
+    final zoom = parseCoord(m['map_zoom'] ?? m['mapZoom'] ?? m['zoom']);
+    final u1Lat = parseCoord(
+      m['user1_lat'] ?? m['user1Lat'] ?? m['user1_latitude'],
+    );
+    final u1Lng = parseCoord(
+      m['user1_lng'] ?? m['user1Lng'] ?? m['user1_longitude'],
+    );
+    final u2Lat = parseCoord(
+      m['user2_lat'] ?? m['user2Lat'] ?? m['user2_latitude'],
+    );
+    final u2Lng = parseCoord(
+      m['user2_lng'] ?? m['user2Lng'] ?? m['user2_longitude'],
+    );
+    final intent = (m['matched_intent'] ?? m['matchedIntent'])?.toString();
+    final createdAt =
+        m['created_at']?.toString() ?? m['createdAt']?.toString();
+
+    // Check previous locations
+    final prev = m['previous_locations'] ?? m['locations_history'];
+    if (prev is List) {
+      for (final p in prev) {
+        if (p is Map) {
+          final pMap = Map<String, dynamic>.from(p);
+          final pLat = parseCoord(
+            pMap['map_center_lat'] ?? pMap['mapCenterLat'] ?? pMap['center_lat'],
+          );
+          final pLng = parseCoord(
+            pMap['map_center_lng'] ?? pMap['mapCenterLng'] ?? pMap['center_lng'],
+          );
+          final pU1Lat = parseCoord(
+            pMap['user1_lat'] ?? pMap['user1Lat'] ?? pMap['user1_latitude'],
+          );
+          final pU2Lat = parseCoord(
+            pMap['user2_lat'] ?? pMap['user2Lat'] ?? pMap['user2_latitude'],
+          );
+          final hasLoc = (pLat != null && pLng != null) ||
+              (pU1Lat != null && pU2Lat != null);
+          if (hasLoc) {
+            pMap['match_id'] ??= matchId;
+            list.add(pMap);
+          }
+        }
+      }
+    }
+
+    final hasCurrent = (cLat != null && cLng != null) ||
+        (u1Lat != null && u1Lng != null && u2Lat != null && u2Lng != null);
+    if (hasCurrent) {
+      final currentMap = <String, dynamic>{
+        'occurrence': occ,
+        'match_id': matchId,
+        'map_center_lat': ?cLat,
+        'map_center_lng': ?cLng,
+        'map_zoom': ?zoom,
+        'user1_lat': ?u1Lat,
+        'user1_lng': ?u1Lng,
+        'user2_lat': ?u2Lat,
+        'user2_lng': ?u2Lng,
+        'matched_intent': ?intent,
+        'created_at': ?createdAt,
+      };
+      if (!list.any((e) => e['occurrence'] == occ)) {
+        list.add(currentMap);
+      }
+    }
+
+    list.sort(
+      (a, b) => parseOcc(a['occurrence']).compareTo(parseOcc(b['occurrence'])),
+    );
+    return list;
   }
 
   Future<void> deleteChat(String matchId, {String? userId}) async {
@@ -814,8 +944,7 @@ class LocalDbService {
     final currentChats = box.get(key);
     if (currentChats == null) return;
 
-    var chats = (jsonDecode(currentChats) as List)
-        .cast<Map<String, dynamic>>();
+    var chats = (jsonDecode(currentChats) as List).cast<Map<String, dynamic>>();
 
     // Find and update the chat with this matchId and lastMessageId
     var rowIndex = -1;
@@ -841,8 +970,7 @@ class LocalDbService {
         await recomputeChatLastMessagePreviewFromMessages(userId, matchId);
         final refreshed = box.get(key);
         if (refreshed != null) {
-          chats = (jsonDecode(refreshed) as List)
-              .cast<Map<String, dynamic>>();
+          chats = (jsonDecode(refreshed) as List).cast<Map<String, dynamic>>();
           for (int i = 0; i < chats.length; i++) {
             if (chats[i]['match_id'] == matchId &&
                 chats[i]['last_message_id'] == lastMessageId) {
@@ -856,34 +984,34 @@ class LocalDbService {
     }
     if (rowIndex != -1) {
       final i = rowIndex;
-        // Never store raw ciphertext as a preview. Callers in the realtime and
-        // sync-fallback notification paths can hand us the RPC's
-        // last_message_translated column, which is base64 ciphertext for v1
-        // messages and unreadable for the user. Clearing the field leaves the
-        // chat list preview blank until the decrypt path produces real text.
-        if (looksLikeEncryptedBlob(translatedText)) {
-          translatedText = null;
+      // Never store raw ciphertext as a preview. Callers in the realtime and
+      // sync-fallback notification paths can hand us the RPC's
+      // last_message_translated column, which is base64 ciphertext for v1
+      // messages and unreadable for the user. Clearing the field leaves the
+      // chat list preview blank until the decrypt path produces real text.
+      if (looksLikeEncryptedBlob(translatedText)) {
+        translatedText = null;
+      }
+      if (translatedText == null || translatedText.trim().isEmpty) {
+        chats[i].remove('last_message_translated');
+        chats[i].remove('last_message_target_language');
+        chats[i].remove('last_message_translated_edited_at');
+      } else {
+        chats[i]['last_message_translated'] = translatedText;
+        if (targetLanguage != null) {
+          chats[i]['last_message_target_language'] = targetLanguage;
         }
-        if (translatedText == null || translatedText.trim().isEmpty) {
-          chats[i].remove('last_message_translated');
-          chats[i].remove('last_message_target_language');
-          chats[i].remove('last_message_translated_edited_at');
-        } else {
-          chats[i]['last_message_translated'] = translatedText;
-          if (targetLanguage != null) {
-            chats[i]['last_message_target_language'] = targetLanguage;
-          }
-          // Bind the preview to the content version it was made for. An edit
-          // keeps `last_message_id` the same, so this marker is the only thing
-          // that distinguishes a translation of the current text from one of
-          // the text before the edit. Callers that don't know the message's
-          // `edited_at` pass null, which matches only a never-edited message —
-          // the same fail-safe direction as `translationEditMarkersMatch`.
-          if (editedAt != null) {
-            chats[i]['last_message_translated_edited_at'] = editedAt;
-          }
+        // Bind the preview to the content version it was made for. An edit
+        // keeps `last_message_id` the same, so this marker is the only thing
+        // that distinguishes a translation of the current text from one of
+        // the text before the edit. Callers that don't know the message's
+        // `edited_at` pass null, which matches only a never-edited message —
+        // the same fail-safe direction as `translationEditMarkersMatch`.
+        if (editedAt != null) {
+          chats[i]['last_message_translated_edited_at'] = editedAt;
         }
-        await box.put(key, jsonEncode(chats));
+      }
+      await box.put(key, jsonEncode(chats));
     }
   }
 
@@ -1236,6 +1364,28 @@ class LocalDbService {
               }
             }
           }
+
+          // Archived chats must not fall off the list just because the server
+          // page is limited: get_user_recent_chats returns the N most
+          // recently active chats, and an archived chat stops receiving
+          // activity by definition, so once archived it would drop out of
+          // every subsequent sync page and vanish from the Archived view.
+          // Keep cached archived rows that this (necessarily limited) page
+          // did not include; when the server does include them again, its
+          // authoritative archived_at row replaces the cached copy above.
+          final incomingIds = <String>{
+            for (final c in chats) c['match_id']?.toString() ?? '',
+          };
+          for (final cached in existingByMatch.values) {
+            final mid = cached['match_id']?.toString() ?? '';
+            if (mid.isEmpty || incomingIds.contains(mid)) continue;
+            final archivedAt = cached['archived_at'];
+            if (archivedAt != null &&
+                archivedAt.toString().isNotEmpty &&
+                archivedAt.toString() != 'null') {
+              chats.add(cached);
+            }
+          }
         } catch (_) {
           // If merge fails for any reason, fall back to overwriting cache
         }
@@ -1561,6 +1711,63 @@ class LocalDbService {
     }
 
     return false;
+  }
+
+  /// Whether the cached chat row for [matchId] is currently marked archived.
+  /// Used by the chats realtime handler to skip no-op echoes of archive
+  /// writes made on this device (best-effort: uncached rows report false).
+  Future<bool> isChatCachedArchived(String userId, String matchId) async {
+    try {
+      final box = await _getChatsBox();
+      final raw = box.get('recent_chats_$userId');
+      if (raw == null) return false;
+      final chats = (jsonDecode(raw) as List).cast<Map<String, dynamic>>();
+      for (final c in chats) {
+        if (c['match_id']?.toString() == matchId) {
+          final v = c['archived_at']?.toString() ?? '';
+          return v.isNotEmpty && v != 'null';
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  /// Optimistically set the archived flag on cached chat rows for [userId]
+  /// while the server write is in flight (see ChatArchiveService). Writing the
+  /// cache fires the Hive watch that [watchChats] streams, so the chats list
+  /// updates immediately; the next sync reconciles with the server's
+  /// authoritative archived_at.
+  Future<void> setChatsArchived(
+    String userId,
+    Set<String> matchIds,
+    bool archived,
+  ) async {
+    if (matchIds.isEmpty) return;
+    try {
+      final box = await _getChatsBox();
+      final key = 'recent_chats_$userId';
+      final raw = box.get(key);
+      if (raw == null) return;
+      final chats = (jsonDecode(raw) as List).cast<Map<String, dynamic>>();
+      final stamp = archived ? DateTime.now().toUtc().toIso8601String() : null;
+      var changed = false;
+      final updated = chats.map((c) {
+        final mid = c['match_id']?.toString() ?? '';
+        if (!matchIds.contains(mid)) return c;
+        final copy = Map<String, dynamic>.from(c);
+        if ((copy['archived_at']?.toString() ?? '') != (stamp ?? '')) {
+          copy['archived_at'] = stamp;
+          changed = true;
+        }
+        return copy;
+      }).toList();
+      if (changed) {
+        await box.put(key, jsonEncode(updated));
+      }
+    } catch (_) {
+      // Best-effort local cache update — the server call and next sync
+      // reconcile the state either way.
+    }
   }
 
   Stream<List<Map<String, dynamic>>> watchChats(String userId) async* {
@@ -2136,6 +2343,7 @@ class LocalDbService {
       // edited_at changed. In that case any cached translation of the OLD
       // content is stale and must be dropped instead of preserved — the
       // message needs to be retranslated for the current UI language.
+      bool originalContentChanged = false;
       bool contentChanged = false;
       if (oldMsg != null) {
         final oldOriginal = oldMsg['content_original']?.toString();
@@ -2152,6 +2360,7 @@ class LocalDbService {
             oldOriginal != 'null' &&
             newOriginal != oldOriginal) {
           contentChanged = true;
+          originalContentChanged = true;
         }
         final hasNewEnc = incomingMsg.containsKey('content_original_encrypted');
         final newEnc = hasNewEnc
@@ -2165,6 +2374,7 @@ class LocalDbService {
             oldEnc.isNotEmpty &&
             newEnc != oldEnc) {
           contentChanged = true;
+          originalContentChanged = true;
         }
         final hasNewEdited = incomingMsg.containsKey('edited_at');
         final newEdited = hasNewEdited
@@ -2176,6 +2386,7 @@ class LocalDbService {
             newEdited.isNotEmpty &&
             newEdited != oldEdited) {
           contentChanged = true;
+          originalContentChanged = true;
         }
         // Server clears the encrypted translation payload on edit
         // (edit_chat_message sets content_translated_encrypted = NULL).
@@ -2253,6 +2464,65 @@ class LocalDbService {
         'my_reaction': mergedMyReaction,
       };
 
+      if (!originalContentChanged) {
+        // Preserve locally decrypted content_original and encrypted cache
+        // when server / realtime updates (e.g. read_at, delivery receipts, reactions)
+        // return rows without decrypted plaintext.
+        if (oldMsg != null) {
+          final incomingOrig = incomingMsg['content_original']?.toString();
+          if (incomingOrig == null ||
+              incomingOrig.isEmpty ||
+              incomingOrig == 'null') {
+            final oldOrig = oldMsg['content_original']?.toString();
+            if (oldOrig != null &&
+                oldOrig.isNotEmpty &&
+                oldOrig != 'null') {
+              mergedRow['content_original'] = oldOrig;
+            }
+          }
+          final incomingTrans = incomingMsg['content_translated']?.toString();
+          if (incomingTrans == null ||
+              incomingTrans.isEmpty ||
+              incomingTrans == 'null') {
+            final oldTrans = oldMsg['content_translated']?.toString();
+            if (oldTrans != null &&
+                oldTrans.isNotEmpty &&
+                oldTrans != 'null') {
+              mergedRow['content_translated'] = oldTrans;
+            }
+          }
+          if (mergedRow['content_original_encrypted_cache'] == null &&
+              oldMsg['content_original_encrypted_cache'] != null) {
+            mergedRow['content_original_encrypted_cache'] =
+                oldMsg['content_original_encrypted_cache'];
+          }
+          if (mergedRow['content_translated_encrypted_cache'] == null &&
+              oldMsg['content_translated_encrypted_cache'] != null) {
+            mergedRow['content_translated_encrypted_cache'] =
+                oldMsg['content_translated_encrypted_cache'];
+          }
+        }
+      }
+
+      // If content_original is still empty but we have an encrypted cache backup,
+      // recover the plaintext immediately so the UI is never stuck on "Loading...".
+      if ((mergedRow['content_original'] == null ||
+              mergedRow['content_original'].toString().isEmpty ||
+              mergedRow['content_original'] == 'null') &&
+          mergedRow['content_original_encrypted_cache'] != null) {
+        final cached =
+            mergedRow['content_original_encrypted_cache'].toString();
+        if (cached.isNotEmpty) {
+          try {
+            final restored = await EncryptedCacheService.instance
+                .decryptFromCache(cached);
+            if (restored != null && restored.isNotEmpty) {
+              mergedRow['content_original'] = restored;
+            }
+          } catch (_) {}
+        }
+      }
+
       if (!contentChanged) {
         final incomingReplyTrans =
             incomingMsg['reply_to_content_translated'] as String?;
@@ -2267,8 +2537,8 @@ class LocalDbService {
         // Preserve locally resolved reply originals/senders + offline
         // fallbacks that the server never sends (only reply_to_message_id).
         if (oldMsg != null) {
-          final incomingReplyContent =
-              incomingMsg['reply_to_content']?.toString();
+          final incomingReplyContent = incomingMsg['reply_to_content']
+              ?.toString();
           if ((incomingReplyContent == null || incomingReplyContent.isEmpty)) {
             final oldReplyContent = oldMsg['reply_to_content']?.toString();
             if (oldReplyContent != null && oldReplyContent.isNotEmpty) {
@@ -2278,16 +2548,6 @@ class LocalDbService {
                 mergedRow['reply_to_sender_id'] = oldReplySender;
               }
             }
-          }
-          if (mergedRow['content_original_encrypted_cache'] == null &&
-              oldMsg['content_original_encrypted_cache'] != null) {
-            mergedRow['content_original_encrypted_cache'] =
-                oldMsg['content_original_encrypted_cache'];
-          }
-          if (mergedRow['content_translated_encrypted_cache'] == null &&
-              oldMsg['content_translated_encrypted_cache'] != null) {
-            mergedRow['content_translated_encrypted_cache'] =
-                oldMsg['content_translated_encrypted_cache'];
           }
           if (mergedRow['reactors'] == null && oldMsg['reactors'] is Map) {
             mergedRow['reactors'] = oldMsg['reactors'];
@@ -2318,19 +2578,20 @@ class LocalDbService {
         // When the ciphertext changed but no fresh decrypted plaintext was
         // supplied (the typical realtime edit payload carries only encrypted
         // columns), drop the stale decrypted original so Phase 2 re-decrypts
-        // the new ciphertext instead of reusing the old text. Without this,
-        // Phase 2's `contentOriginal.isEmpty` guard would skip decryption and
-        // the bubble would keep showing the pre-edit text with no retranslation.
-        final freshOriginal = incomingMsg['content_original']?.toString();
-        final hasNewEncForOriginal = incomingMsg.containsKey(
-          'content_original_encrypted',
-        );
-        if ((freshOriginal == null ||
-                freshOriginal.isEmpty ||
-                freshOriginal == 'null') &&
-            hasNewEncForOriginal) {
-          mergedRow.remove('content_original');
-          mergedRow.remove('content_original_encrypted_cache');
+        // the new ciphertext instead of reusing the old text.
+        // ONLY drop when the original ciphertext or edited_at genuinely changed!
+        if (originalContentChanged) {
+          final freshOriginal = incomingMsg['content_original']?.toString();
+          final hasNewEncForOriginal = incomingMsg.containsKey(
+            'content_original_encrypted',
+          );
+          if ((freshOriginal == null ||
+                  freshOriginal.isEmpty ||
+                  freshOriginal == 'null') &&
+              hasNewEncForOriginal) {
+            mergedRow.remove('content_original');
+            mergedRow.remove('content_original_encrypted_cache');
+          }
         }
       }
       messageMap[incomingMsg['id'].toString()] = mergedRow;
@@ -2462,7 +2723,9 @@ class LocalDbService {
       }
       // Encrypted-cache backups (DCK layer) for offline decrypt without keys.
       final origCache = existingMsg['content_original_encrypted_cache'];
-      if (msgId != null && origCache != null && origCache.toString().isNotEmpty) {
+      if (msgId != null &&
+          origCache != null &&
+          origCache.toString().isNotEmpty) {
         existingTranslations[msgId] = {
           ...?existingTranslations[msgId],
           'content_original_encrypted_cache': origCache,
@@ -2589,8 +2852,8 @@ class LocalDbService {
         if ((message['content_translated'] == null ||
                 (message['content_translated'] is String &&
                     (message['content_translated'] as String).isEmpty)) &&
-            existingMsg['encryption_scheme']?.toString() ==
-                message['encryption_scheme']?.toString() &&
+            (existingMsg['encryption_scheme']?.toString() ?? 'v1') ==
+                (message['encryption_scheme']?.toString() ?? 'v1') &&
             existingMsg['content_translated_encrypted']?.toString() ==
                 message['content_translated_encrypted']?.toString()) {
           String? preserved = existingMsg['content_translated'] as String?;
@@ -2663,8 +2926,8 @@ class LocalDbService {
             (message['content_original'] == null ||
                 (message['content_original'] is String &&
                     (message['content_original'] as String).isEmpty)) &&
-            existingMsg['encryption_scheme']?.toString() ==
-                message['encryption_scheme']?.toString() &&
+            (existingMsg['encryption_scheme']?.toString() ?? 'v1') ==
+                (message['encryption_scheme']?.toString() ?? 'v1') &&
             existingMsg['content_original_encrypted']?.toString() ==
                 message['content_original_encrypted']?.toString()) {
           String? preserved = existingMsg['content_original'] as String?;
@@ -2775,8 +3038,8 @@ class LocalDbService {
         if (cacheService.currentDck != null &&
             translation.isNotEmpty &&
             messages[index]['content_translated_encrypted'] != null) {
-          messages[index]['content_translated_encrypted_cache'] = await cacheService
-              .encryptForCache(translation);
+          messages[index]['content_translated_encrypted_cache'] =
+              await cacheService.encryptForCache(translation);
         }
       } catch (_) {}
       await box.put(matchId, jsonEncode(messages));
@@ -3178,7 +3441,10 @@ class LocalDbService {
         final keysToDelete = settingsBox.keys
             .map((k) => k.toString())
             .where((k) => k.startsWith('match_minimap_'))
-            .where((k) => ownedMatchIds.contains(k.substring('match_minimap_'.length)))
+            .where(
+              (k) =>
+                  ownedMatchIds.contains(k.substring('match_minimap_'.length)),
+            )
             .toList();
         for (final key in keysToDelete) {
           await settingsBox.delete(key);
@@ -3646,6 +3912,25 @@ class LocalDbService {
       // print('LocalDb.getEventAttendees failed: $e');
       return null;
     }
+  }
+
+  /// Drop all cached event-attendees (matched attendees) entries. Called
+  /// when attendance or matches may have changed server-side (realtime
+  /// change or the periodic refresh): this user's realtime subscription
+  /// only fires for their own attendance rows, so it can't see other
+  /// users joining — without invalidation a cached list would hide
+  /// brand-new matches for up to the cache TTL.
+  Future<void> clearEventAttendeesCache() async {
+    try {
+      final box = await _getEventsBox();
+      final keys = box.keys
+          .whereType<String>()
+          .where((key) => key.startsWith('attendees_'))
+          .toList();
+      if (keys.isNotEmpty) {
+        await box.deleteAll(keys);
+      }
+    } catch (_) {}
   }
 
   /// Save the hierarchical options map (intents + interest categories) to local Hive cache.

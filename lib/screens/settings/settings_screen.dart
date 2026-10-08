@@ -134,6 +134,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
         <
           ({
             String label,
+            String group,
             String description,
             IconData icon,
             VoidCallback onTap,
@@ -141,6 +142,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
         >[
           (
             label: l10n.getString('settingsAppDisplay'),
+            group: l10n.getString('settingsSectionGeneral'),
             description: l10n.getString('settingsAppDisplayDesc'),
             icon: Icons.settings_display,
             onTap: () => Navigator.of(parentContext).push(
@@ -151,6 +153,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           ),
           (
             label: l10n.getString('settingsMatching'),
+            group: l10n.getString('settingsSectionMatching'),
             description: l10n.getString('settingsMatchingDesc'),
             icon: Icons.favorite_border,
             onTap: () => Navigator.of(parentContext).push(
@@ -159,6 +162,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           ),
           (
             label: l10n.getString('settingsMatchPreferences'),
+            group: l10n.getString('settingsSectionMatching'),
             description: l10n.getString('settingsMatchPreferencesDesc'),
             icon: Icons.people_alt_outlined,
             onTap: () => Navigator.of(parentContext).push(
@@ -167,6 +171,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           ),
           (
             label: l10n.getString('settingsInvisibilityRules'),
+            group: l10n.getString('settingsSectionMatching'),
             description: l10n.getString('settingsInvisibilityRulesDesc'),
             icon: Icons.visibility_off,
             onTap: () => Navigator.of(parentContext).push(
@@ -177,6 +182,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           ),
           (
             label: l10n.getString('settingsNotifications'),
+            group: l10n.getString('settingsNotifications'),
             description: l10n.getString('settingsNotificationsSettingsDesc'),
             icon: Icons.notifications_outlined,
             onTap: () => Navigator.of(
@@ -185,6 +191,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           ),
           (
             label: l10n.getString('inboxTitle'),
+            group: l10n.getString('settingsNotifications'),
             description: l10n.getString('inboxEntryDesc'),
             icon: Icons.mark_email_unread_outlined,
             onTap: () => Navigator.of(
@@ -192,7 +199,35 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
             ).pushNamed(ResumeRouteRestore.notificationInboxRoute),
           ),
           (
+            label: l10n.getString('paywallTitle'),
+            group: l10n.getString('settingsSectionPremium'),
+            description: l10n.getString('paywallFeaturesTitle'),
+            icon: Icons.workspace_premium_outlined,
+            onTap: () => Navigator.of(
+              parentContext,
+            ).push(MaterialPageRoute(builder: (_) => const PaywallScreen())),
+          ),
+          (
+            label: l10n.getString('billingTitle'),
+            group: l10n.getString('settingsSectionPremium'),
+            description: l10n.getString('billingSettingsDescription'),
+            icon: Icons.receipt_long_outlined,
+            onTap: () => Navigator.of(
+              parentContext,
+            ).push(MaterialPageRoute(builder: (_) => const BillingScreen())),
+          ),
+          (
+            label: l10n.getString('inviteFriendsTitle'),
+            group: l10n.getString('settingsSectionPremium'),
+            description: l10n.getString('inviteFriendsDescription'),
+            icon: Icons.card_giftcard,
+            onTap: () => Navigator.of(parentContext).push(
+              MaterialPageRoute(builder: (_) => const InviteFriendsScreen()),
+            ),
+          ),
+          (
             label: l10n.getString('profileVerification'),
+            group: l10n.getString('settingsSectionAccount'),
             description: l10n.getString('getVerifiedToBuildTrust'),
             icon: Icons.verified_outlined,
             onTap: () => Navigator.of(parentContext).push(
@@ -201,6 +236,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           ),
           (
             label: l10n.getString('securitySignInHubTitle'),
+            group: l10n.getString('settingsSectionAccount'),
             description: l10n.getString('securitySignInHubDescription'),
             icon: Icons.security,
             onTap: () => Navigator.of(
@@ -209,6 +245,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           ),
           (
             label: l10n.getString('settingsAccountManagement'),
+            group: l10n.getString('settingsSectionAccount'),
             description: l10n.getString('settingsAccountManagementDesc'),
             icon: Icons.person_outline,
             onTap: () => Navigator.of(parentContext).push(
@@ -217,19 +254,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
               ),
             ),
           ),
-          (
-            label: l10n.getString('paywallTitle'),
-            description: l10n.getString('paywallFeaturesTitle'),
-            icon: Icons.workspace_premium_outlined,
-            onTap: () => Navigator.of(
-              parentContext,
-            ).push(MaterialPageRoute(builder: (_) => const PaywallScreen())),
-          ),
           // The legal documents used to be reachable only from the paywall,
           // which is not an acceptable place to be the sole route to a privacy
           // policy or terms of service.
           (
             label: l10n.getString('settingsLegalTerms'),
+            group: l10n.getString('settingsSectionGeneral'),
             description: l10n.getString('settingsLegalTermsDesc'),
             icon: Icons.gavel_outlined,
             onTap: () => Navigator.of(parentContext).push(
@@ -242,6 +272,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           ),
           (
             label: l10n.getString('settingsLegalPrivacy'),
+            group: l10n.getString('settingsSectionGeneral'),
             description: l10n.getString('settingsLegalPrivacyDesc'),
             icon: Icons.privacy_tip_outlined,
             onTap: () => Navigator.of(parentContext).push(
@@ -250,22 +281,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                   document: LegalDocument.privacyPolicy,
                 ),
               ),
-            ),
-          ),
-          (
-            label: l10n.getString('billingTitle'),
-            description: l10n.getString('billingSettingsDescription'),
-            icon: Icons.receipt_long_outlined,
-            onTap: () => Navigator.of(
-              parentContext,
-            ).push(MaterialPageRoute(builder: (_) => const BillingScreen())),
-          ),
-          (
-            label: l10n.getString('inviteFriendsTitle'),
-            description: l10n.getString('inviteFriendsDescription'),
-            icon: Icons.card_giftcard,
-            onTap: () => Navigator.of(parentContext).push(
-              MaterialPageRoute(builder: (_) => const InviteFriendsScreen()),
             ),
           ),
         ];
@@ -287,6 +302,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                     query: query,
                     label: destination.label,
                     description: destination.description,
+                    group: destination.group,
                   ),
                 )
                 .toList();
@@ -343,10 +359,27 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                           return ListTile(
                             leading: Icon(destination.icon),
                             title: Text(destination.label),
-                            subtitle: Text(
-                              destination.description,
-                              maxLines: 2,
-                              overflow: TextOverflow.visible,
+                            subtitle: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  destination.group,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color:
+                                        Theme.of(
+                                          sheetContext,
+                                        ).colorScheme.primary,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  destination.description,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.visible,
+                                ),
+                              ],
                             ),
                             trailing: Icon(directionalChevron(sheetContext)),
                             onTap: () {
@@ -538,10 +571,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                         ),
                       ),
 
-                      _buildSectionHeader(
-                        context,
-                        l10n.getString('settingsAppDisplay'),
-                      ),
                       // App Display Section - Navigate to dedicated screen
                       Container(
                         margin: const EdgeInsets.only(bottom: 8),
@@ -639,7 +668,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
 
                       _buildSectionHeader(
                         context,
-                        l10n.getString('settingsMatching'),
+                        l10n.getString('settingsSectionMatching'),
                       ),
                       // Matching Section - Navigate to dedicated screen
                       Container(
@@ -830,10 +859,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                         ),
                       ),
 
-                      _buildSectionHeader(
-                        context,
-                        l10n.getString('settingsInvisibilityRules'),
-                      ),
                       // Invisibility Rules Section - Navigate to dedicated screen
                       Container(
                         key: _invisibilityRulesKey,
@@ -1114,7 +1139,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
 
                       _buildSectionHeader(
                         context,
-                        l10n.getString('paywallTitle'),
+                        l10n.getString('settingsSectionPremium'),
                       ),
                       Builder(
                         builder: (context) {
@@ -1449,7 +1474,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
 
                       _buildSectionHeader(
                         context,
-                        l10n.getString('profileVerification'),
+                        l10n.getString('settingsSectionAccount'),
                       ),
                       Container(
                         margin: const EdgeInsets.only(bottom: 8),

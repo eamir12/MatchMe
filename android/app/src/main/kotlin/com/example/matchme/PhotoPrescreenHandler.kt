@@ -7,18 +7,28 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.Face
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
+import com.google.mlkit.vision.objects.ObjectDetection
+import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
 import com.google.mlkit.vision.pose.Pose
 import com.google.mlkit.vision.pose.PoseDetection
 import com.google.mlkit.vision.pose.defaults.PoseDetectorOptions
+import com.google.mlkit.vision.text.Text
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.tasks.await
 
 /**
  * Handler for photo prescreening using ML Kit Vision APIs
  * Extends existing MainActivity integration with more detailed analysis
+ *
+ * prescreenVersion: bump when the native analysis contract changes, so the
+ * Dart side (and logcat) can verify that a rebuilt binary is actually running
+ * — Kotlin changes never arrive via hot reload.
  */
 class PhotoPrescreenHandler {
     companion object {
         private const val TAG = "PhotoPrescreenHandler"
+        const val PRESCREEN_VERSION = 3
         
         suspend fun analyzePhoto(
             bytes: ByteArray
@@ -41,6 +51,10 @@ class PhotoPrescreenHandler {
                         "faceTouchesImageEdge" to false,
                         "completeFaceDetected" to false,
                         "faceObstructed" to false,
+                        "bothEyesClosed" to false,
+                        "textOverFace" to false,
+                        "objectOverFace" to false,
+                        "documentNearFace" to false,
                         "upperBodyOnly" to false,
                         "fullBodyVisible" to false,
                         "completeBodyDetected" to false
@@ -50,15 +64,17 @@ class PhotoPrescreenHandler {
                 val image = InputImage.fromBitmap(bitmap, 0)
                 val totalArea = (bitmap.width * bitmap.height).toDouble().coerceAtLeast(1.0)
 
-                // Configure face detector
-                val faceDetector = FaceDetection.getClient(
-                    FaceDetectorOptions.Builder()
-                        .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
-                        .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
-                        .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
-                        .enableTracking()
-                        .build()
-                )
+            // Configure face detector. Classification mode enables per-face
+            // eye-open probabilities, which power the eyes-closed and
+            // occlusion signals for the primary-photo prescreen.
+            val faceDetector = FaceDetection.getClient(
+                FaceDetectorOptions.Builder()
+                    .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
+                    .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
+                    .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
+                    .enableTracking()
+                    .build()
+            )
 
                 // Configure pose detector
                 val poseDetector = PoseDetection.getClient(
@@ -67,10 +83,30 @@ class PhotoPrescreenHandler {
                         .build()
                 )
 
+                // Text recognition: catches cards, signs, watermarks and
+                // screenshots before they ever reach server-side AI. Note
+                // ML Kit's bundled v2 has no Hebrew/RTL recognizer, so
+                // non-Latin cards are the object-detection signal's job.
+                val textRecognizer = TextRecognition.getClient(
+                    TextRecognizerOptions.DEFAULT_OPTIONS
+                )
+
+                // Prominent-object detection: language-agnostic signal for a
+                // card/document held over the face (works even when the card
+                // is blank or its script has no bundled recognizer).
+                val objectDetector = ObjectDetection.getClient(
+                    ObjectDetectorOptions.Builder()
+                        .setDetectorMode(ObjectDetectorOptions.SINGLE_IMAGE_MODE)
+                        .enableMultipleObjects()
+                        .build()
+                )
+
                 try {
                     // Perform detections
                     val faces = faceDetector.process(image).await()
                     val pose = poseDetector.process(image).await()
+                    val text = textRecognizer.process(image).await()
+                    val detectedObjects = objectDetector.process(image).await()
 
                     // Face analysis
                     val faceCount = faces.size
@@ -118,19 +154,256 @@ class PhotoPrescreenHandler {
                         }
                     } else false
 
+                    // Eyes-closed signal on the largest face. Probabilities are
+                    // in [-1, 1] where negative means "not computed" — treat
+                    // unknown as not-closed so unsupported devices never
+                    // falsely reject. Threshold is deliberately lenient: a
+                    // blink is a valid reject for a face-only primary selfie,
+                    // but a squint must not be.
+                    val largestFace = if (containsFace) {
+                        faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
+                    } else null
+                    val bothEyesClosed = if (largestFace != null) {
+                        val left = largestFace.leftEyeOpenProbability
+                        val right = largestFace.rightEyeOpenProbability
+                        left != null && right != null &&
+                            left >= 0f && right >= 0f &&
+                            left < 0.2f && right < 0.2f
+                    } else false
+
                     // Body analysis
                     val (containsBody, bodyConfidence) = computeBodyPresence(pose)
                     val upperBodyOnly = isUpperBodyOnly(pose)
                     val fullBodyVisible = isFullBodyVisible(pose)
                     val completeBodyDetected = isCompleteBodyVisible(pose, bitmap.width, bitmap.height)
 
+                    // Text analysis: per-block metrics so the Dart side can
+                    // flag substantial text (cards/signs/watermarks) while
+                    // ignoring incidental text like small shirt prints.
+                    val textBlocks = mutableListOf<Map<String, Any?>>()
+                    var largestTextAreaRatio = 0.0
+                    var largestTextHeightRatio = 0.0
+                    var largestTextWidthRatio = 0.0
+                    var largestTextCharCount = 0
+                    var textAreaSum = 0.0
+
+                    // Text overlapping the face region: a card or document held
+                    // over the face. Deliberately independent of the
+                    // substantial-text thresholds — even 2 recognized characters
+                    // inside the face box condemn the photo (low-contrast cards
+                    // often yield almost no OCR hits, which is exactly the case
+                    // that used to slip through).
+                    val faceBox = largestFace?.boundingBox
+                    val textOverFaceRect = faceBox?.let { expandRect(it, bitmap.width, bitmap.height, 0.25f) }
+                    var textOverFace = false
+                    var objectOverFace = false
+                    var documentNearFace = false
+
+                    // Region overlays for the failure dialog: normalized
+                    // top-left-origin boxes so the Dart side can draw exactly
+                    // where the problem is.
+                    val faceBoxNormalized = faceBox?.let {
+                        mapOf(
+                            "x" to it.left / bitmap.width.toDouble(),
+                            "y" to it.top / bitmap.height.toDouble(),
+                            "w" to it.width().toDouble() / bitmap.width,
+                            "h" to it.height().toDouble() / bitmap.height
+                        )
+                    }
+                    val issueBoxes = mutableListOf<Map<String, Any?>>()
+
+                    // Merge text blocks (single recognizer today; the merge
+                    // structure keeps a second script recognizer drop-in
+                    // ready), dropping blocks that duplicate an already
+                    // recorded region.
+                    val mergedBlocks = mutableListOf<Pair<Rect, Int>>()
+                    val recordedBoxes = mutableListOf<Rect>()
+                    for (block in text.textBlocks) {
+                        val box = block.boundingBox ?: continue
+                        val charCount = block.lines.sumOf { it.text.length }
+                        if (charCount < 3) continue
+                        val isDuplicate = recordedBoxes.any { existing ->
+                            intersectionRatio(box, existing) >= 0.5 ||
+                                intersectionRatio(existing, box) >= 0.5
+                        }
+                        if (isDuplicate) continue
+                        recordedBoxes.add(box)
+                        mergedBlocks.add(box to charCount)
+                    }
+
+                    for ((box, charCount) in mergedBlocks) {
+                        val blockArea = (box.width().toDouble() * box.height().toDouble())
+                        val areaRatio = (blockArea / totalArea).coerceIn(0.0, 1.0)
+                        textAreaSum += areaRatio
+                        textBlocks.add(
+                            mapOf(
+                                "x" to box.left / bitmap.width.toDouble(),
+                                "y" to box.top / bitmap.height.toDouble(),
+                                "w" to box.width().toDouble() / bitmap.width,
+                                "h" to box.height().toDouble() / bitmap.height
+                            )
+                        )
+                        if (areaRatio > largestTextAreaRatio) {
+                            largestTextAreaRatio = areaRatio
+                            largestTextHeightRatio = box.height().toDouble() / bitmap.height
+                            largestTextWidthRatio = box.width().toDouble() / bitmap.width
+                            largestTextCharCount = charCount
+                        }
+                        if (textOverFaceRect != null && charCount >= 2 &&
+                            intersectionRatio(box, textOverFaceRect) >= 0.25
+                        ) {
+                            textOverFace = true
+                            issueBoxes.add(
+                                mapOf(
+                                    "x" to box.left / bitmap.width.toDouble(),
+                                    "y" to box.top / bitmap.height.toDouble(),
+                                    "w" to box.width().toDouble() / bitmap.width,
+                                    "h" to box.height().toDouble() / bitmap.height,
+                                    "label" to "text"
+                                )
+                            )
+                        }
+                    }
+                    val textContentAreaRatio = textAreaSum.coerceAtMost(1.0)
+
+                    // Object near/over the face, without OCR. Two tiers so
+                    // the user message stays accurate:
+                    //
+                    // - objectOverFace: a card-sized object (or a wrist)
+                    //   actually OVER the face — "something is covering".
+                    // - documentNearFace: a document visible next to / below
+                    //   the face (or only a coarse merged person+card box) —
+                    //   "documents are not allowed". Still a violation for a
+                    //   face-only primary selfie, but the face is not
+                    //   occluded and the message must not claim it is.
+                    if (faceBox != null) {
+                        val coreZone = expandRect(faceBox, bitmap.width, bitmap.height, 0.1f)
+                        val nearZone = expandRect(faceBox, bitmap.width, bitmap.height, 0.5f)
+                        val faceArea = (faceBox.width().toDouble() * faceBox.height().toDouble()).coerceAtLeast(1.0)
+
+                        // Object detection first — it is the box-locatable
+                        // signal, so its region wins the overlay.
+                        for (obj in detectedObjects) {
+                            val ob = obj.boundingBox
+                            val obArea = (ob.width().toDouble() * ob.height().toDouble())
+                            // Whole-frame object: background/frame, not a held item.
+                            if (obArea > totalArea * 0.85) continue
+                            val overlapWithFace = intersectionRatio(ob, faceBox)
+                            val ratioToFace = obArea / faceArea
+                            // The detected face itself: high overlap with the
+                            // face box at a comparable size.
+                            if (overlapWithFace >= 0.7 && ratioToFace in 0.4..3.0) continue
+                            val overlapCore = intersectionRatio(ob, coreZone)
+                            val overlapNear = intersectionRatio(ob, nearZone)
+                            if (overlapCore >= 0.25) {
+                                // Over the face itself — but only claim
+                                // "covering" when the box is card-sized; a
+                                // coarse merged person+card box cannot
+                                // localize the occlusion.
+                                if (ratioToFace <= 3.0) {
+                                    objectOverFace = true
+                                } else {
+                                    documentNearFace = true
+                                }
+                                // Draw only informative regions: skip boxes
+                                // that mostly repaint the face or span most
+                                // of the frame.
+                                val drawsUsefulRegion =
+                                    overlapWithFace < 0.7 &&
+                                        obArea <= totalArea * 0.6 &&
+                                        ratioToFace <= 3.0
+                                if (drawsUsefulRegion) {
+                                    issueBoxes.add(
+                                        mapOf(
+                                            "x" to ob.left / bitmap.width.toDouble(),
+                                            "y" to ob.top / bitmap.height.toDouble(),
+                                            "w" to ob.width().toDouble() / bitmap.width,
+                                            "h" to ob.height().toDouble() / bitmap.height,
+                                            "label" to "document"
+                                        )
+                                    )
+                                }
+                                break
+                            }
+                            if (overlapNear >= 0.25) {
+                                documentNearFace = true
+                                // Near-zone hits are only drawable when the
+                                // box is card-sized; a torso-spanning box
+                                // says nothing about where the card is.
+                                if (ratioToFace <= 3.0 && obArea <= totalArea * 0.6) {
+                                    issueBoxes.add(
+                                        mapOf(
+                                            "x" to ob.left / bitmap.width.toDouble(),
+                                            "y" to ob.top / bitmap.height.toDouble(),
+                                            "w" to ob.width().toDouble() / bitmap.width,
+                                            "h" to ob.height().toDouble() / bitmap.height,
+                                            "label" to "document"
+                                        )
+                                    )
+                                }
+                                break
+                            }
+                        }
+
+                        // Wrist signal second: contributes the covering /
+                        // document flags, but only draws a box when object
+                        // detection produced no card region — otherwise the
+                        // dialog would stack a redundant wrist box on top of
+                        // the card box (and one box per wrist at that).
+                        val hasDocumentBox = issueBoxes.any { it["label"] == "document" }
+                        var wristBoxDrawn = false
+                        for (type in listOf(
+                            com.google.mlkit.vision.pose.PoseLandmark.LEFT_WRIST,
+                            com.google.mlkit.vision.pose.PoseLandmark.RIGHT_WRIST,
+                        )) {
+                            val wrist = pose.getPoseLandmark(type) ?: continue
+                            if (wrist.inFrameLikelihood < 0.5f) continue
+                            val inCore = wrist.position.x >= coreZone.left &&
+                                wrist.position.x <= coreZone.right &&
+                                wrist.position.y >= coreZone.top &&
+                                wrist.position.y <= coreZone.bottom
+                            val inNear = wrist.position.x >= nearZone.left &&
+                                wrist.position.x <= nearZone.right &&
+                                wrist.position.y >= nearZone.top &&
+                                wrist.position.y <= nearZone.bottom
+                            if (inCore) {
+                                objectOverFace = true
+                            } else if (inNear) {
+                                documentNearFace = true
+                            } else {
+                                continue
+                            }
+                            if (hasDocumentBox || wristBoxDrawn) continue
+                            val bw = faceBox.width().toDouble() * 0.35
+                            val bh = faceBox.height().toDouble() * 0.35
+                            val wristRect = Rect(
+                                (wrist.position.x - bw / 2).toInt(),
+                                (wrist.position.y - bh / 2).toInt(),
+                                (wrist.position.x + bw / 2).toInt(),
+                                (wrist.position.y + bh / 2).toInt()
+                            )
+                            if (intersectionRatio(wristRect, faceBox) >= 0.7) continue
+                            issueBoxes.add(
+                                mapOf(
+                                    "x" to ((wrist.position.x - bw / 2) / bitmap.width).coerceIn(0.0, 1.0),
+                                    "y" to ((wrist.position.y - bh / 2) / bitmap.height).coerceIn(0.0, 1.0),
+                                    "w" to (bw / bitmap.width).coerceAtMost(1.0),
+                                    "h" to (bh / bitmap.height).coerceAtMost(1.0),
+                                    "label" to "document"
+                                )
+                            )
+                            wristBoxDrawn = true
+                        }
+                    }
+
                     // Determine uncertainty
                     val uncertain = !containsFace && !containsBody && pose.allPoseLandmarks.isNotEmpty()
 
-                    Log.d(TAG, "Photo analysis complete: face=$containsFace, body=$containsBody, confidence=$faceConfidence")
+                    Log.d(TAG, "Photo analysis complete v$PRESCREEN_VERSION: face=$containsFace, body=$containsBody, confidence=$faceConfidence, text=$textContentAreaRatio, textOverFace=$textOverFace, objectOverFace=$objectOverFace")
 
                     return mapOf(
                         "supported" to true,
+                        "prescreenVersion" to PRESCREEN_VERSION,
                         "containsFace" to containsFace,
                         "containsBody" to containsBody,
                         "uncertain" to uncertain,
@@ -142,13 +415,27 @@ class PhotoPrescreenHandler {
                         "faceTouchesImageEdge" to faceTouchesImageEdge,
                         "completeFaceDetected" to completeFaceDetected,
                         "faceObstructed" to faceObstructed,
+                        "bothEyesClosed" to bothEyesClosed,
+                        "textOverFace" to textOverFace,
+                        "objectOverFace" to objectOverFace,
+                        "documentNearFace" to documentNearFace,
+                        "faceBox" to faceBoxNormalized,
+                        "issueBoxes" to issueBoxes,
                         "upperBodyOnly" to upperBodyOnly,
                         "fullBodyVisible" to fullBodyVisible,
-                        "completeBodyDetected" to completeBodyDetected
+                        "completeBodyDetected" to completeBodyDetected,
+                        "textContentAreaRatio" to textContentAreaRatio,
+                        "largestTextAreaRatio" to largestTextAreaRatio,
+                        "largestTextHeightRatio" to largestTextHeightRatio,
+                        "largestTextWidthRatio" to largestTextWidthRatio,
+                        "largestTextCharCount" to largestTextCharCount,
+                        "textBlocks" to textBlocks
                     )
                 } finally {
                     faceDetector.close()
                     poseDetector.close()
+                    textRecognizer.close()
+                    objectDetector.close()
                     bitmap.recycle()
                 }
             } catch (e: Exception) {
@@ -166,6 +453,10 @@ class PhotoPrescreenHandler {
                     "faceTouchesImageEdge" to false,
                     "completeFaceDetected" to false,
                     "faceObstructed" to false,
+                    "bothEyesClosed" to false,
+                    "textOverFace" to false,
+                    "objectOverFace" to false,
+                    "documentNearFace" to false,
                     "upperBodyOnly" to false,
                     "fullBodyVisible" to false,
                     "completeBodyDetected" to false
@@ -192,6 +483,30 @@ class PhotoPrescreenHandler {
             return boundingBox.left <= tolerance || boundingBox.top <= tolerance ||
                 boundingBox.right >= imageWidth - tolerance ||
                 boundingBox.bottom >= imageHeight - tolerance
+        }
+
+        /// Expand [boundingBox] by [fraction] of its own size on every side,
+        /// clamped to the image bounds.
+        private fun expandRect(boundingBox: Rect, imageWidth: Int, imageHeight: Int, fraction: Float): Rect {
+            val dx = (boundingBox.width() * fraction).toInt().coerceAtLeast(1)
+            val dy = (boundingBox.height() * fraction).toInt().coerceAtLeast(1)
+            return Rect(
+                (boundingBox.left - dx).coerceAtLeast(0),
+                (boundingBox.top - dy).coerceAtLeast(0),
+                (boundingBox.right + dx).coerceAtMost(imageWidth),
+                (boundingBox.bottom + dy).coerceAtMost(imageHeight)
+            )
+        }
+
+        /// Intersection area of [a] and [b] divided by the area of [a].
+        private fun intersectionRatio(a: Rect, b: Rect): Double {
+            val left = maxOf(a.left, b.left)
+            val top = maxOf(a.top, b.top)
+            val right = minOf(a.right, b.right)
+            val bottom = minOf(a.bottom, b.bottom)
+            if (right <= left || bottom <= top) return 0.0
+            val aArea = (a.width().toDouble() * a.height().toDouble()).coerceAtLeast(1.0)
+            return ((right - left).toDouble() * (bottom - top).toDouble()) / aArea
         }
 
         private fun isCompleteBodyVisible(pose: Pose, imageWidth: Int, imageHeight: Int): Boolean {

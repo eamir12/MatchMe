@@ -146,6 +146,24 @@ class MatchReasonFormatter {
       } else {
         return '$youMatchedBecause $proximityText.';
       }
+    } else if (matchType == 'co_motion') {
+      final movingTogetherText = _getTranslationWithFallback(
+        l10n,
+        'matchReasonMovingTogether',
+      );
+      final intentsText = formattedIntents.isNotEmpty
+          ? formattedIntents.join(', ')
+          : '';
+      final youMatchedBecause = _getTranslationWithFallback(
+        l10n,
+        'youMatchedBecause',
+      );
+
+      if (intentsText.isNotEmpty) {
+        return '$youMatchedBecause $movingTogetherText, $intentsText.';
+      } else {
+        return '$youMatchedBecause $movingTogetherText.';
+      }
     } else {
       // Fallback to comma-separated for other types
       return formatMatchReasons(

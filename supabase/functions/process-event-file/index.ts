@@ -2,6 +2,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2.28.0";
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
 import { buildGeminiUrl, resolveVisionModels } from "../_shared/gemini_config.ts";
+import { consumeAiRateLimit, getClientIp } from "../_shared/ai_rate_limit.ts";
 
 console.info('process-event-file function starting');
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
@@ -650,6 +651,19 @@ Deno.serve(async (req: Request) => {
     const API_KEY = Deno.env.get('GOOGLE_AI_API_KEY');
     if (!API_KEY) {
       return jsonResponse({ error: 'API key not set in Supabase secrets' }, 500);
+    }
+
+    // AI rate limiting (app_config ai.rate_limit.event_file_parse.*).
+    const rateLimit = await consumeAiRateLimit(svc, {
+      task: 'event_file_parse',
+      userId: userData.user.id,
+      ip: getClientIp(req),
+    });
+    if (!rateLimit.allowed) {
+      return jsonResponse(
+        { error: 'Too many event uploads. Please try again later.', retryAfterSeconds: rateLimit.retryAfterSeconds },
+        429,
+      );
     }
 
     // Process with Gemini Vision API

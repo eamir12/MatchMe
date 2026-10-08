@@ -186,6 +186,12 @@ class MobileLocalNotificationService {
         showWhen: true,
         playSound: soundEnabled,
         enableVibration: vibrationEnabled,
+        // Same tag the server push and the native background-service dedup
+        // key on: the Kotlin poller checks the tray for "new_match_<id>"
+        // before posting its own fallback card, so this foreground card must
+        // carry the tag too or the poller would stack a duplicate after the
+        // app is backgrounded with the match still unread.
+        tag: 'new_match_$matchId',
       ),
       iOS: DarwinNotificationDetails(
         presentAlert: true,
@@ -202,6 +208,17 @@ class MobileLocalNotificationService {
       notificationDetails: details,
       payload: matchId,
     );
+    // Best-effort: share the native one-buzz-per-match key so the background
+    // service and the WorkManager fallback stay quiet for this match even
+    // after the tray card is dismissed. Non-sensitive key → plain prefs,
+    // which is exactly where the Kotlin side reads it.
+    if (id.isNotEmpty) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('flutter.last_notified_match_id', id);
+        await prefs.setString('flutter.worker_last_notified_key', 'match:$id');
+      } catch (_) {}
+    }
     await _bumpBadge();
   }
 

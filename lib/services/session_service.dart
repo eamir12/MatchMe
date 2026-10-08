@@ -498,9 +498,7 @@ class SessionService {
   /// Cooldown guard: prevents re-entry when [setInitialSession] triggers SDK
   /// token refresh which fails and fires a follow-up [signedOut] event,
   /// creating an infinite recovery loop.
-  static DateTime? _lastRecoveryAttempt;
-
-  /// Gather persisted session snapshots, encrypted stores first (this
+  static DateTime? _lastRecoveryAttempt;  /// Gather persisted session snapshots, encrypted stores first (this
   /// release), then legacy plaintext keys for upgrade migration.
   static Future<List<String>> _gatherPersistedSessionCandidates() async {
     final candidates = <String>[];
@@ -524,6 +522,91 @@ class SessionService {
       }
     } catch (_) {}
     return candidates;
+  }
+
+  /// Definitive "this account / session family no longer exists on the
+  /// server" signatures. Deliberately narrow: transient network failures and
+  /// the ambiguous refresh_token_already_used race (the native background
+  /// service rotating the token concurrently) must NOT land here — those are
+  /// tolerated by the permissive session policy and recover on their own.
+  static bool isAccountGoneAuthError(Object error) {
+    if (_isTransientSupabaseNetworkFailure(error)) return false;
+    final text = error.toString().toLowerCase();
+    if (text.contains('already used') || text.contains('already_used')) {
+      return false;
+    }
+    return text.contains('user from sub claim') ||
+        text.contains('user not found') ||
+        text.contains('invalid refresh token') ||
+        text.contains('refresh token not found') ||
+        text.contains('refresh_token_not_found') ||
+        text.contains('session not found') ||
+        text.contains('invalid claim');
+  }
+
+  /// Asks the server whether the currently signed-in account still exists.
+  ///
+  /// Probe 1 calls getUser() with the in-memory access token. If that fails
+  /// with an ambiguous error (expired JWT, transient network), probe 2
+  /// refreshes with the newest refresh token the native layer holds — the
+  /// same guard safeRefreshSession uses against the rotation race. Only when
+  /// BOTH paths fail with a definitive account-gone signature do we conclude
+  /// the account was deleted (by the admin or by the user on another device).
+  /// Returns true only for a confirmed deletion; ambiguity keeps the user
+  /// signed in per the permissive session policy.
+  static Future<bool> confirmAccountDeleted() async {
+    final auth = Supabase.instance.client.auth;
+    if (auth.currentSession == null) return false;
+
+    var definitiveGone = false;
+    try {
+      await auth.getUser().timeout(const Duration(seconds: 8));
+      return false;
+    } catch (e) {
+      if (isAccountGoneAuthError(e)) {
+        definitiveGone = true;
+      }
+      // Ambiguous (expired JWT, network blip): fall through to the refresh
+      // probe, which exercises the path the SDK refresh loop actually uses.
+    }
+
+    try {
+      final rt = await SensitiveSessionStore.instance.readRefreshToken();
+      if (rt.isNotEmpty) {
+        await auth.refreshSession(rt).timeout(const Duration(seconds: 8));
+        // A refresh succeeded — the session family is alive, so the account
+        // exists. Persist the rotated tokens for the native layer.
+        try {
+          await persistCurrentSupabaseSessionSnapshot();
+        } catch (_) {}
+        return false;
+      }
+    } catch (e) {
+      if (isAccountGoneAuthError(e)) definitiveGone = true;
+    }
+    return definitiveGone;
+  }
+
+  /// Clears every local trace of the deleted account and routes the UI to
+  /// the login screen. Marks the sign-out explicit so the auth provider's
+  /// non-explicit-signedOut suppression cannot resurrect the dead session.
+  static Future<void> signOutDeletedAccount(String reason) async {
+    debugPrint(
+      '🔐 [SESSION] Account no longer exists on the server — signing out: '
+      '$reason',
+    );
+    try {
+      await persistSignOutReason(
+        reason: reason,
+        source: 'accountDeletedCheck',
+      );
+    } catch (_) {}
+    disableRecovery();
+    markExplicitUserSignOut();
+    await clearPersistedSupabaseSessionSnapshot();
+    try {
+      await Supabase.instance.client.auth.signOut(scope: SignOutScope.local);
+    } catch (_) {}
   }
 
   static Future<bool> recoverPersistedSupabaseSession({

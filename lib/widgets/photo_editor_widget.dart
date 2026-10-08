@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:extended_image/extended_image.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:matchme/models/photo_moderation_rejection.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/photo_prescreen_service.dart';
@@ -12,6 +14,7 @@ import 'package:matchme/web_imports.dart' as web;
 import 'package:image/image.dart' as img;
 import 'package:http/http.dart' as http;
 import 'package:matchme/widgets/custom_camera_widget.dart';
+import 'package:matchme/widgets/photo_rejection_dialog.dart';
 import 'package:matchme/widgets/please_wait_dialog.dart';
 import 'package:matchme/services/primary_selfie_capture.dart';
 
@@ -30,18 +33,21 @@ class PhotoEditor {
 
   /// Pick an image, let the user crop/adjust it, run the prescreen on the
   /// final result and return bytes ready for upload — or null if the user
-  /// cancelled / could not produce a compliant photo.
+  /// cancelled / could not produce a compliant photo. [ref] is required:
+  /// every caller must run the prescreen — there is deliberately no
+  /// prescreen-less variant.
   static Future<Uint8List?> pickAndEdit({
     required BuildContext context,
     ImageSource source = ImageSource.gallery,
     String? preparingMessage,
     bool isPrimaryPhoto = false,
-    WidgetRef? ref,
+    required WidgetRef ref,
     Set<String>? existingHashes,
+    Set<String>? existingPerceptualHashes,
   }) async {
     Uint8List? bytes;
     try {
-      if (source == ImageSource.camera && isPrimaryPhoto && ref != null) {
+      if (source == ImageSource.camera && isPrimaryPhoto) {
         // Primary selfie on any platform: live-gated capture reusing the
         // verification selfie UX in face-only mode. The oval turns green
         // only while a single clear face is inside it, the face must hold
@@ -87,21 +93,13 @@ class PhotoEditor {
       return null;
     }
 
-    if (ref == null) {
-      // No ref provided: skip prescreen (legacy behaviour) and just edit.
-      final editorContext = context;
-      // ignore: use_build_context_synchronously
-      final edited = await _showImageEditor(editorContext, bytes);
-      if (edited == null) return null;
-      return compressImage(edited);
-    }
-
     final finalBytes = await editWithPrescreen(
       context: context,
       bytes: bytes,
       isPrimaryPhoto: isPrimaryPhoto,
       ref: ref,
       existingHashes: existingHashes,
+      existingPerceptualHashes: existingPerceptualHashes,
     );
     return finalBytes;
   }
@@ -119,6 +117,7 @@ class PhotoEditor {
     bool isPrimaryPhoto = false,
     required WidgetRef ref,
     Set<String>? existingHashes,
+    Set<String>? existingPerceptualHashes,
   }) async {
     Uint8List candidate = bytes;
     while (true) {
@@ -134,6 +133,7 @@ class PhotoEditor {
         candidate,
         isPrimary: isPrimaryPhoto,
         existingHashes: existingHashes,
+        existingPerceptualHashes: existingPerceptualHashes,
       );
       if (prescreenResult.passed) {
         return await compressImage(candidate);
@@ -426,33 +426,120 @@ class _ImageEditorDialogState extends ConsumerState<ImageEditorDialog> {
 
 enum PrescreenFailureAction { adjust, chooseAnother }
 
-/// Visual failure dialog: shows the rejected photo, a per-rule icon and a
-/// user-friendly message, with actions to fix the current photo or pick a
-/// different one. Returns what the user chose (null when dismissed).
+/// Visual failure dialog: shows the rejected photo large, with the problem
+/// regions (face + offending text/object boxes) highlighted when the native
+/// analyzer reported coordinates, one row per failed rule (all issues at
+/// once, so a single retake can fix everything), and actions to fix the
+/// current photo or pick a different one. Returns what the user chose (null
+/// when dismissed).
 Future<PrescreenFailureAction?> showPrescreenFailureDialog(
   BuildContext context,
   PhotoPrescreenResult result,
   WidgetRef ref, {
   Uint8List? photoBytes,
-}) {
+}) async {
   final l10n = ref.read(localizationProvider);
 
-  final String errorMessage;
-  if (result.failureReason == null) {
-    errorMessage = result.errorMessage ?? l10n.getString('photoErrorGeneral');
-  } else {
-    errorMessage = l10n.getString(
-      prescreenFailureL10nKey(result.failureReason),
-    );
+  final reasons = result.failureReasons.isNotEmpty
+      ? result.failureReasons
+      : <PrescreenFailureReason?>[
+          result.failureReason,
+        ];
+  final messages = reasons
+      .map(
+        (reason) => reason == null
+            ? (result.errorMessage ?? l10n.getString('photoErrorGeneral'))
+            : l10n.getString(prescreenFailureL10nKey(reason)),
+      )
+      .toList();
+
+  // Decode the photo dimensions so the overlay boxes can be mapped onto the
+  // BoxFit.contain rect (same approach as the AI-moderation rejection
+  // dialog). Prescreen issue boxes are normalized 0..1, so only the aspect
+  // ratio matters.
+  int? imageWidth;
+  int? imageHeight;
+  if (photoBytes != null && photoBytes.isNotEmpty) {
+    try {
+      final codec = await ui.instantiateImageCodec(
+        photoBytes,
+        targetWidth: 720,
+      );
+      final frame = await codec.getNextFrame();
+      imageWidth = frame.image.width;
+      imageHeight = frame.image.height;
+      frame.image.dispose();
+      codec.dispose();
+    } catch (_) {
+      imageWidth = null;
+    }
   }
 
-  final (IconData icon, Color iconColor) = switch (result.failureReason) {
+  final issueBoxes = <PhotoIssueBox>[];
+  // The face box is only drawn when the face itself is what the rejection is
+  // about — being covered by text/an object, or failing a face rule. A pure
+  // document rejection (card elsewhere in frame) highlights only the card:
+  // boxing a perfectly fine face would suggest it is the problem.
+  final faceIsTheSubject = reasons.any(
+    (reason) =>
+        reason == PrescreenFailureReason.textOverFace ||
+        reason == PrescreenFailureReason.objectOverFace ||
+        reason == PrescreenFailureReason.multipleFaces ||
+        reason == PrescreenFailureReason.noFaceOrBody ||
+        reason == PrescreenFailureReason.noFaceDetected ||
+        reason == PrescreenFailureReason.faceNotVisible ||
+        reason == PrescreenFailureReason.faceTooSmall ||
+        reason == PrescreenFailureReason.eyesClosed,
+  );
+  if (faceIsTheSubject && result.faceBox != null) {
+    issueBoxes.add(
+      PhotoIssueBox(
+        x: result.faceBox!['x'] ?? 0,
+        y: result.faceBox!['y'] ?? 0,
+        w: result.faceBox!['w'] ?? 0,
+        h: result.faceBox!['h'] ?? 0,
+        label: 'face',
+      ),
+    );
+  }
+  // The offending regions (text blocks / held objects over the face).
+  for (final box in result.issueBoxes) {
+    final parsed = PhotoIssueBox.fromJson(box, fallbackLabel: 'text');
+    if (parsed != null) issueBoxes.add(parsed);
+  }
+  // Generic text rejection (card/sign away from the face): the native
+  // analyzer knows where the text blocks are — mark them, so the highlight
+  // sits on the actual issue instead of showing an unexplained rejection.
+  if (reasons.contains(PrescreenFailureReason.textDetected) &&
+      !issueBoxes.any((box) => box.label == 'text') &&
+      result.textAnalysis != null) {
+    for (final block in result.textAnalysis!.blocks) {
+      final w = block['w'] ?? 0;
+      final h = block['h'] ?? 0;
+      if (w <= 0 || h <= 0) continue;
+      issueBoxes.add(
+        PhotoIssueBox(
+          x: block['x'] ?? 0,
+          y: block['y'] ?? 0,
+          w: w,
+          h: h,
+          label: 'text',
+        ),
+      );
+    }
+  }
+
+  final (IconData icon, Color iconColor) = switch (reasons.first) {
     PrescreenFailureReason.multipleFaces ||
     PrescreenFailureReason.noFaceOrBody ||
     PrescreenFailureReason.noFaceDetected ||
     PrescreenFailureReason.bodyShotNotAllowed ||
     PrescreenFailureReason.faceTooSmall ||
-    PrescreenFailureReason.faceNotVisible => (
+    PrescreenFailureReason.faceNotVisible ||
+    PrescreenFailureReason.eyesClosed ||
+    PrescreenFailureReason.textOverFace ||
+    PrescreenFailureReason.objectOverFace ||
+    PrescreenFailureReason.documentDetected => (
       Icons.face_retouching_off,
       Colors.orange.shade700,
     ),
@@ -469,13 +556,14 @@ Future<PrescreenFailureAction?> showPrescreenFailureDialog(
     _ => (Icons.image_not_supported_outlined, Colors.red.shade400),
   };
 
+  if (!context.mounted) return null;
   return showDialog<PrescreenFailureAction>(
     context: context,
     barrierDismissible: false,
     builder: (dialogContext) {
-      // Voice guidance repeats the reason so the user hears what to fix
-      // (same localized string shown in the dialog).
-      unawaited(VoiceGuidanceService.instance.speakText(errorMessage));
+      // Voice guidance repeats the first reason so the user hears what to fix
+      // (same localized string shown first in the dialog).
+      unawaited(VoiceGuidanceService.instance.speakText(messages.first));
       return AlertDialog(
         title: Row(
           children: [
@@ -484,21 +572,57 @@ Future<PrescreenFailureAction?> showPrescreenFailureDialog(
             Expanded(child: Text(l10n.getString('photoPrescreenFailedTitle'))),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (photoBytes != null)
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 180),
-                  child: Image.memory(photoBytes, fit: BoxFit.cover),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (photoBytes != null)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: 360,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        Image.memory(photoBytes, fit: BoxFit.contain),
+                        if (imageWidth != null &&
+                            imageHeight != null &&
+                            issueBoxes.isNotEmpty)
+                          Positioned.fill(
+                            child: CustomPaint(
+                              painter: IssueBoxesPainter(
+                                boxes: issueBoxes,
+                                imageWidth: imageWidth,
+                                imageHeight: imageHeight,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
-            const SizedBox(height: 16),
-            Text(errorMessage),
-          ],
+              const SizedBox(height: 16),
+              // Every failed rule, each with its own bullet — not just the
+              // first — so one retake can address them all.
+              for (final message in messages)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Padding(
+                        padding: EdgeInsets.only(top: 2),
+                        child: Icon(Icons.circle, size: 6),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text(message)),
+                    ],
+                  ),
+                ),
+            ],
+          ),
         ),
         actions: [
           TextButton(

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/pinned_location_provider.dart';
 import 'package:matchme/providers/visibility_provider.dart';
+import 'package:matchme/widgets/pinned_location_sheet.dart';
 
 class PinnedMapStatusBanner extends ConsumerWidget {
   final PinnedLocationState pin;
@@ -39,26 +40,32 @@ class PinnedMapStatusBanner extends ConsumerWidget {
       child: Material(
         color: colorScheme.secondaryContainer,
         borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          child: Row(
-            children: [
-              Icon(
-                Icons.push_pin_outlined,
-                size: 18,
-                color: colorScheme.onSecondaryContainer,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  message,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSecondaryContainer,
-                    fontWeight: FontWeight.w600,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          // Same canonical management surface as Home/settings: extend or
+          // unpin right from the map without navigating away.
+          onTap: () => showPinnedLocationSheet(context, ref),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.push_pin_outlined,
+                  size: 18,
+                  color: colorScheme.onSecondaryContainer,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    message,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: colorScheme.onSecondaryContainer,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

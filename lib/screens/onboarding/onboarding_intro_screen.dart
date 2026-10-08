@@ -8,7 +8,7 @@
 //
 // Playback model ("watch mode"): when playing, every beat is spoken via
 // VoiceGuidanceService.speakAndWait — the loop advances when the utterance
-// finishes (or after a timed fallback when speech is muted/unavailable) —
+// finishes (or after a timed fallback when guidance is disabled/unavailable) —
 // then after a short pause the next beat starts. Any user action (pause,
 // next, back, chapter dots) bumps a playback generation that immediately
 // invalidates the in-flight loop, so controls always win over autoplay.
@@ -26,6 +26,7 @@ import 'package:matchme/screens/onboarding/onboarding_content.dart';
 import 'package:matchme/screens/onboarding/onboarding_scenes.dart';
 import 'package:matchme/services/onboarding_intro_service.dart';
 import 'package:matchme/services/voice_guidance_service.dart';
+import 'package:matchme/widgets/voice_guidance_mute_button.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class OnboardingIntroScreen extends ConsumerStatefulWidget {
@@ -143,7 +144,7 @@ class _OnboardingIntroScreenState extends ConsumerState<OnboardingIntroScreen> {
 
       var spoke = false;
       final service = VoiceGuidanceService.instance;
-      print('[ONBOARDING] Service state: enabled=${service.enabled}, available=${service.isAvailable}, muted=${service.muted}');
+      print('[ONBOARDING] Service state: enabled=${service.enabled}, available=${service.isAvailable}');
       if (service.enabled && service.isAvailable) {
         print('[ONBOARDING] Calling speakAndWait...');
         spoke = await service.speakAndWait(
@@ -638,24 +639,10 @@ class _OnboardingIntroScreenState extends ConsumerState<OnboardingIntroScreen> {
                   _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
                 ),
               ),
-              // Mute/Unmute button for audio control
-              IconButton.filledTonal(
-                tooltip: l10n.getString(
-                  VoiceGuidanceService.instance.muted
-                      ? 'onboardingUnmuteTooltip'
-                      : 'onboardingMuteTooltip',
-                ),
-                onPressed: () {
-                  setState(() {
-                    VoiceGuidanceService.instance.toggleMute();
-                  });
-                },
-                icon: Icon(
-                  VoiceGuidanceService.instance.muted
-                      ? Icons.volume_off
-                      : Icons.volume_up,
-                ),
-              ),
+              // Shared voice-guidance toggle — same state and look as the
+              // mute button in the profile wizard, verification screen and
+              // the settings switch.
+              const VoiceGuidanceMuteButton(),
             ],
           ),
           // Next/Finish button right-aligned (same heightFactor note as

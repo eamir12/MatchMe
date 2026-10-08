@@ -8,6 +8,7 @@ import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/services/ad_service.dart';
+import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/supabase_reachability.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -216,12 +217,67 @@ final _adRefreshProvider = NotifierProvider<AdRefreshNotifier, int>(() {
   return AdRefreshNotifier();
 });
 
+/// Public alias so the external ad provider can share the same poll tick.
+final externalAdPollProvider = _adRefreshProvider;
+
+/// Bumps whenever the admin changes anything in the ad systems.
+///
+/// The admin app calls admin_touch_ad_config() after every ad write
+/// (campaign save/toggle/delete, config changes, network toggles), which
+/// updates the ads.config_version row in app_config. That row reaches this
+/// provider through the app_config realtime stream. On change we hard-clear
+/// all internal ad caches so the next fetch ignores the debounce/reuse
+/// windows and the change is visible immediately.
+class AdConfigEpochNotifier extends Notifier<int> {
+  String? _lastVersion;
+  int _counter = 0;
+
+  @override
+  int build() {
+    final config = ref.watch(appConfigProvider);
+    final version = config['ads.config_version'];
+
+    if (_lastVersion == null) {
+      // First build — adopt the current value without invalidating.
+      _lastVersion = version;
+    } else if (_lastVersion != version) {
+      _lastVersion = version;
+      _counter++;
+      if (kDebugMode) {
+        print(
+          '[AdConfigEpoch] ad config changed (version=$version) - clearing ad caches',
+        );
+      }
+      unawaited(clearAdCache());
+      // The eligibility path reads config through AppConfigService, which has
+      // its own 5-minute-TTL cache. Drop it and refresh so placement/tier/
+      // pacing checks reflect the change immediately instead of up to 5
+      // minutes later.
+      appConfigService.clearCache();
+      unawaited(
+        appConfigService.refresh().catchError((Object e) {
+          if (kDebugMode) {
+            print('[AdConfigEpoch] AppConfigService refresh failed: $e');
+          }
+        }),
+      );
+    }
+    return _counter;
+  }
+}
+
+/// Counter that increments on every admin ad change (via realtime config).
+final adConfigEpochProvider =
+    NotifierProvider<AdConfigEpochNotifier, int>(AdConfigEpochNotifier.new);
+
 /// Helper provider that creates a cache-busting key when config changes or on periodic refresh
 /// This ensures ad providers invalidate when config changes OR periodically
 final _adConfigKeyProvider = Provider<String>((ref) {
   final config = ref.watch(appConfigProvider);
   // Watch the refresh counter to trigger periodic invalidation
   final refreshCounter = ref.watch(_adRefreshProvider);
+  // Bump on every admin ad change (campaign edits, toggles, config writes)
+  final adEpoch = ref.watch(adConfigEpochProvider);
 
   // Create a simple hash of critical ad config values
   // When any of these change, the key changes and providers invalidate
@@ -236,7 +292,7 @@ final _adConfigKeyProvider = Provider<String>((ref) {
       config['ads.internal.allowed_placements'] ??
       '["home_inline", "matches_inline"]';
 
-  return '$familySafeOnly|$adsEnabled|$sponsoredCardsEnabled|$allowedTiers|$allowedPlacements|$refreshCounter';
+  return '$familySafeOnly|$adsEnabled|$sponsoredCardsEnabled|$allowedTiers|$allowedPlacements|$refreshCounter|$adEpoch';
 });
 
 final adEligibilityProvider = FutureProvider.family<AdEligibility, AdPlacement>(
@@ -284,7 +340,7 @@ final sponsoredAdProvider = FutureProvider.family<SponsoredAd?, AdPlacement>((
   if (!isOnline || shouldSkipSupabaseCalls()) {
     final config = ref.read(appConfigProvider);
     final adsEnabled =
-        (config['ads.internal.enabled'] ?? 'true').toLowerCase() == 'true';
+        (config['ads.internal.enabled'] ?? 'false').toLowerCase() == 'true';
     final sponsoredCardsEnabled =
         (config['ads.internal.sponsored_cards_enabled'] ?? 'true')
             .toLowerCase() ==

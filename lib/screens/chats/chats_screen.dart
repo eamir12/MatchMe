@@ -3,10 +3,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/models/chat_model.dart';
 import 'package:matchme/models/sponsored_ad.dart';
+import 'package:matchme/services/chat_archive_service.dart';
+import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/widgets/ad_slot.dart';
 import 'package:matchme/widgets/app_empty_state.dart';
 import 'package:matchme/widgets/app_skeleton.dart';
 import 'package:matchme/widgets/chat_list_item.dart';
+import 'package:matchme/widgets/multi_select.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/new_options_provider.dart';
@@ -23,6 +26,12 @@ final supabase = Supabase.instance.client;
 ///   the app's top-level Scaffold in MainNavigationScreen without producing duplicate bars).
 /// - Set [showAppBar] to true if you want a self-contained Scaffold + AppBar (e.g., when
 ///   navigating to ChatsScreen directly).
+///
+/// Multi-select: long-press a chat row to enter selection mode (shared
+/// machinery in lib/widgets/multi_select.dart), tap more rows, then Archive or
+/// Unarchive from the bottom bar. Archived chats move to the Archived view
+/// (entry row below the search bar); archiving is per-user and display-only —
+/// archived chats still receive notifications.
 class ChatsScreen extends ConsumerStatefulWidget {
   final bool showAppBar;
   const ChatsScreen({super.key, this.showAppBar = false});
@@ -38,6 +47,65 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
   String _searchQuery = '';
   MatchTypeFilter _matchTypeFilter = MatchTypeFilter.all;
   ListSortOption _sortOption = ListSortOption.recent;
+
+  /// Multi-select state. The controller holds the selected match ids; while
+  /// it is non-empty the screen is in selection mode.
+  final SelectionController _selection = SelectionController();
+
+  /// Whether the Archived view (instead of the main chat list) is shown.
+  bool _showArchived = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _selection.addListener(_onSelectionChanged);
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _selection.removeListener(_onSelectionChanged);
+    _selection.dispose();
+    super.dispose();
+  }
+
+  void _onSelectionChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// Archive/unarchive the given chats. The actual local+server work lives in
+  /// ChatArchiveService.archiveChats, shared with Home's Recent Chats row
+  /// menu; this adds the selection reset and the confirmation snackbar.
+  /// Used both by the bulk selection bar and by the per-row ⋮ menu (a single
+  /// chat).
+  Future<void> _setChatsArchived(Set<String> ids, bool archived) async {
+    if (ids.isEmpty) return;
+    _selection.clear();
+    final userId = supabase.auth.currentUser?.id;
+    if (userId != null && userId.isNotEmpty) {
+      await ChatArchiveService.archiveChats(
+        userId: userId,
+        localDb: ref.read(localDbProvider),
+        matchIds: ids,
+        archived: archived,
+      );
+    }
+    if (!mounted) return;
+    final l10n = ref.read(localizationProvider);
+    // One chat reads better without the count ("Chat archived" vs
+    // "1 chats archived"); the count keys cover every other size.
+    final message = ids.length == 1
+        ? l10n.getString(
+            archived ? 'chatsArchivedOne' : 'chatsUnarchivedOne',
+          )
+        : l10n.getString(
+            archived ? 'chatsArchivedCount' : 'chatsUnarchivedCount',
+            params: {'count': ids.length.toString()},
+          );
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
 
   /// Sort orders the Chats screen offers, in sheet order.
   ///
@@ -89,12 +157,6 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
     return sorted;
   }
 
-  @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
-  }
-
   void _clearSearch() {
     _searchController.clear();
     ref.read(chatFullTextSearchProvider('chats').notifier).clear();
@@ -111,6 +173,14 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
       _matchTypeFilter = MatchTypeFilter.all;
       _sortOption = ListSortOption.recent;
     });
+  }
+
+  /// Switch between the main chat list and the Archived view. Filters and
+  /// search are cleared on the way in: the two views are independent lists
+  /// and stale filters would silently hide rows in the other view.
+  void _setShowArchived(bool value) {
+    setState(() => _showArchived = value);
+    _clearFilters();
   }
 
   /// Intent keys for a chat, preferring the underlying match's `matched_intent`
@@ -224,6 +294,14 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
     final content = recentChatsAsync.when(
       data: (chats) {
         final matches = allMatchesAsync.asData?.value ?? const [];
+        // Archive is per-user: split the cached list into what this screen
+        // shows in its two views.
+        final activeChats =
+            filterArchivedChats(chats, archived: false);
+        final archivedChats =
+            filterArchivedChats(chats, archived: true);
+        final viewChats = _showArchived ? archivedChats : activeChats;
+
         // Map matchId -> intent keys that created that match.
         final matchIntentById = <String, List<String>>{
           for (final m in matches)
@@ -259,8 +337,8 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
         // Preview search: name and last message. This is instant and always
         // available, so it seeds the results while the full-text pass runs.
         final previewFiltered = normalizedSearch.isEmpty
-            ? chats
-            : chats.where((chat) {
+            ? viewChats
+            : viewChats.where((chat) {
                 final searchableText = [
                   chat.otherUserName,
                   chat.lastMessage,
@@ -286,7 +364,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
         // preview result stands alone, so results never flicker empty.
         final searchedChats = normalizedSearch.isEmpty || !bodySearchResolved
             ? previewFiltered
-            : chats
+            : viewChats
                   .where(
                     (chat) =>
                         bodyMatches.contains(chat.matchId) ||
@@ -326,80 +404,188 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
         final newestHits = newestHitByChat(bodyHits);
 
         final filterOptions = <String>{};
-        for (final chat in chats) {
+        for (final chat in activeChats) {
           filterOptions.addAll(chatIntentKeysForChat(chat));
         }
         final sortedFilterOptions = getOrderedSharedIntentKeys(filterOptions);
 
         final hasSearch = normalizedSearch.isNotEmpty;
         final hasUnreadFilter = _unreadOnly;
-        final unreadConversationCount = chats
+        final unreadConversationCount = activeChats
             .where((chat) => chat.unreadCount > 0)
             .length;
         final hasIntentFilter =
             normalizedSelected != null && normalizedSelected.isNotEmpty;
         final hasMatchTypeFilter = _matchTypeFilter != MatchTypeFilter.all;
         final canFilterByMatchType = MatchTypeFilter.canFilter(
-          chats.map(chatMatchType).toList(),
+          viewChats.map(chatMatchType).toList(),
         );
         final hasActiveFilters =
             hasSearch ||
             hasUnreadFilter ||
             hasIntentFilter ||
             hasMatchTypeFilter;
+        final selecting = _selection.isActive;
 
         return Column(
           children: [
-            if (chats.isNotEmpty)
-              ListSearchBar(
-                controller: _searchController,
-                onQueryChanged: (value) {
-                  setState(() => _searchQuery = value);
-                  // Full-text pass over the cached message bodies. Debounced
-                  // inside the provider, and scoped to the chats on screen.
-                  ref
-                      .read(chatFullTextSearchProvider('chats').notifier)
-                      .search(
-                        ChatSearchRequest(
-                          query: value,
-                          matchIds: chats
-                              .map((c) => c.matchId)
-                              .toList(growable: false),
-                        ),
-                      );
-                },
-                onClearQuery: () => _clearSearch(),
-                onOpenFilters: () => _openFilterSheet(
-                  context,
-                  l10n,
-                  sortedFilterOptions,
-                  allIntentsAsync.asData?.value ?? const <AppIntent>[],
-                  canFilterByMatchType,
-                  (draft) =>
-                      _countChats(chats, matchIntentById, matchTypeById, draft),
+            if (selecting)
+              SelectionHeaderBar(
+                controller: _selection,
+                allIds:
+                    viewChats.map((c) => c.matchId).toList(growable: false),
+                selectedLabel: l10n.getString(
+                  'inboxSelectedCount',
+                  params: {'count': _selection.count.toString()},
                 ),
-                activeFilterCount: ListFilterState(
-                  selectedIntentKey: _selectedIntentKey,
-                  matchType: _matchTypeFilter,
-                  extraToggleKey: 'unread',
-                  extraToggleLabel: unreadConversationCount == 0
-                      ? l10n.getString('chatsUnreadOnly')
-                      : l10n.getString(
-                          'chatsUnreadOnlyWithCount',
-                          params: {'count': '$unreadConversationCount'},
+                closeTooltip: l10n.getString('cancel'),
+                selectAllTooltip: l10n.getString('inboxSelectAll'),
+                deselectAllTooltip: l10n.getString('inboxDeselectAll'),
+              )
+            else if (_showArchived)
+              // Archived view header: back to the main list, title, and the
+              // one-line promise that archiving is display-only.
+              Row(
+                children: [
+                  BackButton(
+                    onPressed: () => _setShowArchived(false),
+                  ),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          l10n.getString('chatsArchived'),
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w700),
                         ),
-                  extraToggleActive: _unreadOnly,
-                  sort: _sortOption,
-                ).activeCount,
-                l10n: l10n,
-                hintKey: 'chatsSearchHint',
-              ),
-            if (chats.isNotEmpty)
-              ResultCountLabel(
-                shown: finalChats.length,
-                total: chats.length,
-                l10n: l10n,
-              ),
+                        Text(
+                          l10n.getString('chatsArchivedHint'),
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
+                              ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                ],
+              )
+            else ...[
+              if (activeChats.isNotEmpty)
+                ListSearchBar(
+                  controller: _searchController,
+                  onQueryChanged: (value) {
+                    setState(() => _searchQuery = value);
+                    // Full-text pass over the cached message bodies. Debounced
+                    // inside the provider, and scoped to the chats on screen.
+                    ref
+                        .read(chatFullTextSearchProvider('chats').notifier)
+                        .search(
+                          ChatSearchRequest(
+                            query: value,
+                            matchIds: viewChats
+                                .map((c) => c.matchId)
+                                .toList(growable: false),
+                          ),
+                        );
+                  },
+                  onClearQuery: () => _clearSearch(),
+                  onOpenFilters: () => _openFilterSheet(
+                    context,
+                    l10n,
+                    sortedFilterOptions,
+                    allIntentsAsync.asData?.value ?? const <AppIntent>[],
+                    canFilterByMatchType,
+                    (draft) => _countChats(
+                      viewChats,
+                      matchIntentById,
+                      matchTypeById,
+                      draft,
+                    ),
+                  ),
+                  activeFilterCount: ListFilterState(
+                    selectedIntentKey: _selectedIntentKey,
+                    matchType: _matchTypeFilter,
+                    extraToggleKey: 'unread',
+                    extraToggleLabel: unreadConversationCount == 0
+                        ? l10n.getString('chatsUnreadOnly')
+                        : l10n.getString(
+                            'chatsUnreadOnlyWithCount',
+                            params: {'count': '$unreadConversationCount'},
+                          ),
+                    extraToggleActive: _unreadOnly,
+                    sort: _sortOption,
+                  ).activeCount,
+                  l10n: l10n,
+                  hintKey: 'chatsSearchHint',
+                ),
+              if (activeChats.isNotEmpty)
+                ResultCountLabel(
+                  shown: finalChats.length,
+                  total: activeChats.length,
+                  l10n: l10n,
+                ),
+              // Entry into the Archived view — the WhatsApp pattern. Archived
+              // chats keep receiving notifications; they are just parked here.
+              if (archivedChats.isNotEmpty)
+                InkWell(
+                  onTap: () => _setShowArchived(true),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 10,
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.archive_outlined,
+                          size: 20,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            l10n.getString('chatsArchived'),
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyMedium
+                                ?.copyWith(fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                        Text(
+                          archivedChats.length.toString(),
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
+                              ),
+                        ),
+                        const SizedBox(width: 4),
+                        Icon(
+                          Icons.chevron_right,
+                          size: 18,
+                          color:
+                              Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
             // A quiet line explaining that the search is still running over
             // message bodies. Without it the list looks "wrong" for a beat:
             // the user types, sees nothing change, and assumes the feature
@@ -430,49 +616,94 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
               ),
             Expanded(
               child: finalChats.isEmpty
-                  ? chats.isEmpty && initialSyncAsync.isLoading
-                        ? Semantics(
-                            container: true,
-                            label: l10n.getString('generalLoading'),
-                            child: const AppSkeletonList(itemCount: 5),
-                          )
-                        : AppEmptyState(
-                            icon: hasSearch
-                                ? Icons.search_off
-                                : hasUnreadFilter
-                                ? Icons.mark_chat_unread_outlined
-                                : Icons.chat_bubble_outline,
-                            title: chats.isEmpty
-                                ? l10n.getString('homeNoChats')
-                                : hasSearch
-                                ? l10n.getString('chatsNoSearchResults')
-                                : hasUnreadFilter
-                                ? l10n.getString('chatsNoUnreadResults')
-                                : l10n.getString('chatsNoIntentResults'),
-                            message: chats.isEmpty
-                                ? l10n.getString('chatsNoConversationsMessage')
-                                : hasSearch
-                                ? l10n.getString('chatsNoSearchResultsMessage')
-                                : hasUnreadFilter
-                                ? l10n.getString('chatsNoUnreadResultsMessage')
-                                : l10n.getString('chatsNoIntentResultsMessage'),
-                            actionLabel: chats.isEmpty
-                                ? l10n.getString('chatsBrowseMatches')
-                                : hasActiveFilters
-                                ? l10n.getString('chatsClearFilters')
-                                : null,
-                            onAction: chats.isEmpty
-                                ? () => ref
-                                      .read(navigationIndexProvider.notifier)
-                                      .setIndex(1)
-                                : hasActiveFilters
-                                ? _clearFilters
-                                : null,
-                          )
+                  ? viewChats.isEmpty && initialSyncAsync.isLoading
+                      ? Semantics(
+                          container: true,
+                          label: l10n.getString('generalLoading'),
+                          child: const AppSkeletonList(itemCount: 5),
+                        )
+                      : Column(
+                          children: [
+                            Expanded(
+                              child: _showArchived
+                                  ? AppEmptyState(
+                                      icon: Icons.archive_outlined,
+                                      title: l10n.getString(
+                                        'chatsArchivedEmptyTitle',
+                                      ),
+                                      message: l10n.getString(
+                                        'chatsArchivedEmptyMessage',
+                                      ),
+                                    )
+                                  : AppEmptyState(
+                                      icon: hasSearch
+                                          ? Icons.search_off
+                                          : hasUnreadFilter
+                                          ? Icons.mark_chat_unread_outlined
+                                          : Icons.chat_bubble_outline,
+                                      title: viewChats.isEmpty
+                                          ? l10n.getString('homeNoChats')
+                                          : hasSearch
+                                          ? l10n.getString('chatsNoSearchResults')
+                                          : hasUnreadFilter
+                                          ? l10n.getString(
+                                              'chatsNoUnreadResults',
+                                            )
+                                          : l10n.getString(
+                                              'chatsNoIntentResults',
+                                            ),
+                                      message: viewChats.isEmpty
+                                          ? l10n.getString(
+                                              'chatsNoConversationsMessage',
+                                            )
+                                          : hasSearch
+                                          ? l10n.getString(
+                                              'chatsNoSearchResultsMessage',
+                                            )
+                                          : hasUnreadFilter
+                                          ? l10n.getString(
+                                              'chatsNoUnreadResultsMessage',
+                                            )
+                                          : l10n.getString(
+                                              'chatsNoIntentResultsMessage',
+                                            ),
+                                      actionLabel: viewChats.isEmpty
+                                          ? l10n.getString('chatsBrowseMatches')
+                                          : hasActiveFilters
+                                          ? l10n.getString('chatsClearFilters')
+                                          : null,
+                                      onAction: viewChats.isEmpty
+                                          ? () => ref
+                                                .read(
+                                                  navigationIndexProvider
+                                                      .notifier,
+                                                )
+                                                .setIndex(1)
+                                          : hasActiveFilters
+                                          ? _clearFilters
+                                          : null,
+                                    ),
+                            ),
+                            // Ad at the bottom of the content on the empty
+                            // state too — uniform with the Events screen.
+                            if (!_showArchived)
+                              const AdSlot(placement: AdPlacement.chatsInline),
+                            if (!_showArchived) const SizedBox(height: 32),
+                          ],
+                        )
                   : ListView.builder(
-                      itemCount: finalChats.length,
+                      itemCount:
+                          finalChats.length +
+                          (!_showArchived && !selecting ? 1 : 0),
                       padding: const EdgeInsets.only(bottom: 80),
                       itemBuilder: (context, index) {
+                        if (index == finalChats.length) {
+                          // Ad scrolls with the content at the bottom of the
+                          // list — uniform with the other tabs.
+                          return const AdSlot(
+                            placement: AdPlacement.chatsInline,
+                          );
+                        }
                         final chat = finalChats[index];
                         final hit = hasSearch
                             ? newestHits[chat.matchId]
@@ -483,12 +714,42 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                           searchQuery: hasSearch ? _searchQuery : null,
                           searchSnippet: hit?.snippet,
                           searchMessageId: hit?.messageId,
+                          selectionMode: selecting,
+                          selected: _selection.isSelected(chat.matchId),
+                          onToggleSelect: () => _selection.toggle(chat.matchId),
+                          onLongPress: () => _selection.toggle(chat.matchId),
+                          // Per-row ⋮ menu (hidden while selecting, where the
+                          // bottom bar covers these actions).
+                          onRowMenuArchive: selecting
+                              ? null
+                              : () => _setChatsArchived(
+                                  {chat.matchId}, !chat.isArchived),
+                          onRowMenuSelect: selecting
+                              ? null
+                              : () => _selection.toggle(chat.matchId),
                         );
                       },
                     ),
             ),
-            if (finalChats.isNotEmpty)
-              const AdSlot(placement: AdPlacement.chatsInline),
+            // The bulk-action bar replaces the bottom area while a selection
+            // is in progress (the inline ad is skipped inside the list then).
+            if (selecting)
+              SelectionBottomBar(
+                actions: [
+                  SelectionAction(
+                    icon: _showArchived
+                        ? Icons.unarchive_outlined
+                        : Icons.archive_outlined,
+                    label: l10n.getString(
+                      _showArchived ? 'chatsUnarchive' : 'chatsArchive',
+                    ),
+                    onPressed: () {
+                      final ids = _selection.selected.toSet();
+                      _setChatsArchived(ids, !_showArchived);
+                    },
+                  ),
+                ],
+              ),
           ],
         );
       },

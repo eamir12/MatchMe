@@ -11,9 +11,11 @@ import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/screens/events/apple_calendar_import_screen.dart';
 import 'package:matchme/services/calendar_sync_service.dart';
 import 'package:matchme/services/web_calendar_service.dart';
+import 'package:matchme/utils/event_import_classifier.dart';
 import 'package:matchme/utils/map_utils.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/time_format_utils.dart';
+import 'package:matchme/widgets/event_import_block_sheet.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class OnlineProvidersScreen extends ConsumerStatefulWidget {
@@ -460,57 +462,16 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
     return false;
   }
 
-  bool _hasPhysicalImportLocation(String? rawLocation) {
-    final location = rawLocation?.trim();
-    return location != null &&
-        location.isNotEmpty &&
-        !_isVirtualMeetingLocation(location);
+  String _usableImportLink(String? link, {String? provider}) {
+    return usableImportLink(link, provider: provider);
   }
 
-  String _usableImportLink(String? link, {String? provider}) {
-    final trimmed = link?.trim();
-    if (trimmed == null || trimmed.isEmpty) {
-      return '';
-    }
-    final uri = Uri.tryParse(trimmed);
-    final scheme = uri?.scheme.toLowerCase();
-    if (uri == null ||
-        (scheme != 'http' && scheme != 'https') ||
-        uri.host.isEmpty) {
-      return '';
-    }
-    final host = uri.host.toLowerCase();
-    final path = uri.path.toLowerCase();
-    final normalizedProvider = provider?.trim().toLowerCase() ?? '';
-    final isGoogleCalendarLink =
-        host.contains('calendar.google.') ||
-        (host.contains('google.') && path.contains('calendar'));
-    final isOutlookCalendarLink =
-        host.contains('outlook.') ||
-        host.contains('office.') ||
-        host.contains('live.') ||
-        (host.contains('microsoft.') && path.contains('calendar'));
-    final isAppleCalendarLink =
-        host.contains('icloud.') || path.endsWith('.ics');
-    final isProviderCalendarLink =
-        isGoogleCalendarLink ||
-        isOutlookCalendarLink ||
-        isAppleCalendarLink ||
-        (normalizedProvider == 'google' && isGoogleCalendarLink) ||
-        (normalizedProvider == 'outlook' && isOutlookCalendarLink) ||
-        (normalizedProvider == 'apple' && isAppleCalendarLink);
-    if (isProviderCalendarLink) {
-      return '';
-    }
-    return trimmed;
+  EventImportBlockReason _blockReasonForEvent(EventModel event) {
+    return classifyEventModelImport(event);
   }
 
   bool _isImportableEvent(EventModel event) {
-    final hasLink = _usableImportLink(
-      event.eventLink,
-      provider: event.externalProvider,
-    ).isNotEmpty;
-    return hasLink || _hasPhysicalImportLocation(event.eventVenue);
+    return _blockReasonForEvent(event).importable;
   }
 
   bool _isVisibleOnlineProviderEvent(EventModel event) {
@@ -527,14 +488,42 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
     return filtered;
   }
 
-  void _showImportRequirementsMessage(LocalizationState l10n) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          l10n.getString('calendarSyncImportRequiresLocationOrLink'),
-        ),
+  /// Scrubbed event fields captured at block time so an admin can later
+  /// review the feedback and import the event if deemed public. The link
+  /// is stored only when it's a usable public link — provider-calendar
+  /// deep-links (Outlook OWA, Google Calendar, ICS) are the user's private
+  /// calendar pointers and must never reach the feedback record.
+  Map<String, dynamic> _importSnapshotFor(EventModel event) {
+    return {
+      'event_name': event.eventName,
+      'event_venue': event.eventVenue,
+      'event_link': usableImportLink(
+        event.eventLink,
+        provider: event.externalProvider,
       ),
+      'start_time': event.startTime.toIso8601String(),
+      'end_time': event.endTime.toIso8601String(),
+      'is_all_day': event.isAllDay,
+      'event_description': event.description,
+      'external_provider': event.externalProvider,
+      'external_calendar_id': event.externalCalendarId,
+      'external_event_id': event.externalEventId,
+    };
+  }
+
+  void _showImportBlockedMessage(
+    LocalizationState l10n,
+    EventImportBlockReason reason,
+    EventModel event,
+  ) {
+    if (!mounted || reason.importable) return;
+    showEventImportBlockSheet(
+      context,
+      l10n,
+      reason,
+      eventTitle: event.eventName,
+      provider: event.externalProvider,
+      eventSnapshot: _importSnapshotFor(event),
     );
   }
 
@@ -703,7 +692,11 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
           OnlineProvider.google,
           calendars,
         );
-        final events = await _loadGoogleEvents(filteredCalendars, token);
+        final events = await _loadGoogleEvents(
+          filteredCalendars,
+          token,
+          ownerEmail: account.email,
+        );
         final accountLabel = _resolveAccountLabel(
           provider: OnlineProvider.google,
           accountName: account.accountName,
@@ -727,7 +720,11 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
           );
         }
         final calendars = await service.retrieveApplePublicCalendars(url);
-        final events = await _loadAppleEvents(url, calendars);
+        final events = await _loadAppleEvents(
+          url,
+          calendars,
+          ownerEmail: account.email,
+        );
         final accountLabel = _resolveAccountLabel(
           provider: OnlineProvider.apple,
           accountName: account.accountName,
@@ -810,7 +807,11 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
       OnlineProvider.outlook,
       calendars,
     );
-    final events = await _loadOutlookEvents(filteredCalendars, accessToken);
+    final events = await _loadOutlookEvents(
+      filteredCalendars,
+      accessToken,
+      ownerEmail: resolvedEmail,
+    );
     final accountLabel = _resolveAccountLabel(
       provider: OnlineProvider.outlook,
       accountName: account.accountName,
@@ -890,8 +891,9 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
 
   Future<List<EventModel>> _loadGoogleEvents(
     List<ExternalCalendar> calendars,
-    String accessToken,
-  ) async {
+    String accessToken, {
+    String? ownerEmail,
+  }) async {
     final service = ref.read(calendarSyncServiceProvider);
     final events = <EventModel>[];
     final mainCalendars = _mainCalendarsOnly(OnlineProvider.google, calendars);
@@ -906,6 +908,7 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
             event,
             calendar: calendar,
             provider: OnlineProvider.google,
+            ownerEmail: ownerEmail,
           ),
         ),
       );
@@ -915,8 +918,9 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
 
   Future<List<EventModel>> _loadOutlookEvents(
     List<ExternalCalendar> calendars,
-    String accessToken,
-  ) async {
+    String accessToken, {
+    String? ownerEmail,
+  }) async {
     final service = ref.read(calendarSyncServiceProvider);
     final events = <EventModel>[];
     final mainCalendars = _mainCalendarsOnly(OnlineProvider.outlook, calendars);
@@ -931,6 +935,7 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
             event,
             calendar: calendar,
             provider: OnlineProvider.outlook,
+            ownerEmail: ownerEmail,
           ),
         ),
       );
@@ -940,8 +945,9 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
 
   Future<List<EventModel>> _loadAppleEvents(
     String publicCalendarUrl,
-    List<ExternalCalendar> calendars,
-  ) async {
+    List<ExternalCalendar> calendars, {
+    String? ownerEmail,
+  }) async {
     final service = ref.read(calendarSyncServiceProvider);
     final events = await service.retrieveApplePublicEvents(publicCalendarUrl);
     final calendar = calendars.isNotEmpty
@@ -960,6 +966,7 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
             event,
             calendar: calendar,
             provider: OnlineProvider.apple,
+            ownerEmail: ownerEmail,
           ),
         )
         .toList();
@@ -970,12 +977,18 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
     ExternalEvent event, {
     required ExternalCalendar calendar,
     required OnlineProvider provider,
+    String? ownerEmail,
   }) {
     final start = event.start ?? DateTime.now();
     final end =
         event.end ??
         event.start?.add(const Duration(hours: 1)) ??
         DateTime.now().add(const Duration(hours: 1));
+    final blockReason = classifyExternalEventImport(
+      event,
+      provider: provider.name,
+      ownerEmail: ownerEmail,
+    );
     return EventModel(
       id: event.id.trim().isNotEmpty
           ? event.id.trim()
@@ -997,6 +1010,13 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
       externalEventId: event.id,
       externalProvider: provider.name,
       isAllDay: event.isAllDay,
+      markedPrivateInSource: isMarkedPrivateInSourceCalendar(
+        availability: event.availability,
+        transparency: event.transparency,
+        visibility: event.visibility,
+        sensitivity: event.sensitivity,
+      ),
+      importBlockReason: blockReason.importable ? null : blockReason.name,
     );
   }
 
@@ -1235,7 +1255,11 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
         '[CalendarSync] _addGoogleAccount: ${calendars.length} main calendar(s) '
         '-> ${calendars.map((c) => c.id).toList()}',
       );
-      final events = await _loadGoogleEvents(calendars, token);
+      final events = await _loadGoogleEvents(
+        calendars,
+        token,
+        ownerEmail: email,
+      );
       debugPrint(
         '[CalendarSync] _addGoogleAccount: ${events.length} event(s) fetched',
       );
@@ -1330,7 +1354,11 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
           userEmail: email,
         ),
       );
-      final events = await _loadOutlookEvents(calendars, token);
+      final events = await _loadOutlookEvents(
+        calendars,
+        token,
+        ownerEmail: email,
+      );
       final identifier = email?.isNotEmpty == true
           ? email!
           : (calendars.isNotEmpty
@@ -1591,6 +1619,8 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
           externalCalendarId: sourceEvent.externalCalendarId,
           externalEventId: sourceEvent.externalEventId,
           externalProvider: sourceEvent.externalProvider,
+          markedPrivateInSource: sourceEvent.markedPrivateInSource,
+          importBlockReason: sourceEvent.importBlockReason,
         ),
       );
       if (result.success) {
@@ -1656,31 +1686,6 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
         ),
       ),
     );
-  }
-
-  bool _isVirtualMeetingLocation(String raw) {
-    final value = raw.toLowerCase().trim();
-    if (value.isEmpty) return false;
-    if (value == 'online' || value == 'virtual') return true;
-    if (value.contains('http://') || value.contains('https://')) return true;
-    if (value.contains('zoom') ||
-        value.contains('meet.google.com') ||
-        value.contains('google meet') ||
-        value.contains('teams.microsoft.com') ||
-        value.contains('microsoft teams') ||
-        value.contains('webex') ||
-        value.contains('gotomeeting') ||
-        value.contains('skype') ||
-        value.contains('hangouts') ||
-        value.contains('discord.gg') ||
-        value.contains('discord.com') ||
-        value.contains('online meeting') ||
-        value.contains('virtual meeting') ||
-        value.contains('video call') ||
-        value.contains('conference call')) {
-      return true;
-    }
-    return false;
   }
 
   String _formatDateOnly(LocalizationState l10n, DateTime dateTime) {
@@ -2306,7 +2311,8 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
     final selectionKey = _selectionKey(account, event);
     final isDuplicate = _duplicateEventKeys.contains(selectionKey);
     final isSelected = _selectedEventKeys.contains(selectionKey);
-    final isImportable = _isImportableEvent(event);
+    final blockReason = _blockReasonForEvent(event);
+    final isImportable = blockReason.importable;
     final enabled = !isDuplicate && isImportable;
     final usableEventLink = _usableImportLink(
       event.eventLink,
@@ -2314,7 +2320,7 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
     );
     final location = event.eventVenue?.trim();
     final hasLocation = location != null && location.isNotEmpty;
-    final showMap = hasLocation && !_isVirtualMeetingLocation(location);
+    final showMap = hasLocation && !isVirtualMeetingLocation(location);
     final hasLink = usableEventLink.isNotEmpty;
 
     Widget content = Container(
@@ -2344,7 +2350,7 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
         onTap: () {
           if (!enabled) {
             if (!isImportable) {
-              _showImportRequirementsMessage(l10n);
+              _showImportBlockedMessage(l10n, blockReason, event);
             }
             return;
           }
@@ -2411,7 +2417,7 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Text(
-                        l10n.getString('calendarSyncCannotImportBadge'),
+                        l10n.getString(blockReason.badgeKey),
                         style: Theme.of(context).textTheme.labelSmall,
                       ),
                     ),
@@ -2444,7 +2450,7 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
               if (!isImportable) ...[
                 const SizedBox(height: 8),
                 Text(
-                  l10n.getString('calendarSyncMissingLocationOrLinkHint'),
+                  l10n.getString(blockReason.hintKey),
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: Theme.of(
                       context,
@@ -2525,6 +2531,10 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
         ),
       ),
     );
+
+    if (!enabled) {
+      content = Opacity(opacity: 0.55, child: content);
+    }
 
     return content;
   }

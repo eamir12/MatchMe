@@ -24,10 +24,10 @@ import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/pinned_location_provider.dart';
+import 'package:matchme/widgets/pinned_location_sheet.dart';
 import 'package:matchme/providers/visibility_provider.dart';
 import 'package:matchme/screens/nearby/nearby_map_screen.dart';
 import 'package:matchme/screens/paywall/paywall_screen.dart';
-import 'package:matchme/screens/settings/matching_settings_screen.dart';
 import 'package:matchme/widgets/ad_slot.dart';
 import 'package:matchme/widgets/match_box.dart';
 import 'package:matchme/widgets/chat_list_item.dart';
@@ -42,6 +42,8 @@ import 'package:matchme/widgets/list_filter_bar.dart';
 import 'package:matchme/utils/chat_inbox_utils.dart';
 import 'package:matchme/utils/match_score_utils.dart';
 import 'package:matchme/providers/chat_search_provider.dart';
+import 'package:matchme/services/chat_archive_service.dart';
+import 'package:matchme/services/local_db_service.dart';
 
 /// How many rows the Recent Matches and Recent Chats sections show.
 ///
@@ -222,6 +224,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       _matchTypeFilterChats = MatchTypeFilter.all;
       _sortOptionChats = ListSortOption.recent;
     });
+  }
+
+  /// Archive/unarchive one chat from the Recent Chats row menu. Same shared
+  /// path as the Chats tab (optimistic local write + best-effort server
+  /// write); only the confirmation snackbar is added here. No selection mode
+  /// exists on Home, so this is always a single chat.
+  Future<void> _archiveChatFromHome(ChatModel chat) async {
+    final userId = supabase.auth.currentUser?.id;
+    if (userId == null || userId.isEmpty) return;
+    final archived = !chat.isArchived;
+    await ChatArchiveService.archiveChats(
+      userId: userId,
+      localDb: ref.read(localDbProvider),
+      matchIds: {chat.matchId},
+      archived: archived,
+    );
+    if (!mounted) return;
+    final l10n = ref.read(localizationProvider);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          l10n.getString(
+            archived ? 'chatsArchivedOne' : 'chatsUnarchivedOne',
+          ),
+        ),
+      ),
+    );
   }
 
   int _countMatches(List<MatchModel> matches, ListFilterState draft) {
@@ -599,10 +628,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Widget _buildPinnedLocationCard(
     BuildContext context,
+    WidgetRef ref,
     LocalizationState l10n,
     PinnedLocationState pinState,
   ) {
-    if (!pinState.isActive) return const SizedBox.shrink();
+    // Home stays quiet for users who are not pinned — no passive promo for
+    // people simply using the app. Starting a pin lives in contextual spots
+    // (map pin FAB, Settings → Matching); this card is status-only.
+    if (!pinState.initialized || !pinState.isActive) {
+      return const SizedBox.shrink();
+    }
 
     final colorScheme = Theme.of(context).colorScheme;
     final statusColor = colorScheme.tertiary;
@@ -625,13 +660,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         margin: const EdgeInsets.fromLTRB(16, 4, 16, 12),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
-          onTap: () {
-            Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => const MatchingSettingsScreen(),
-              ),
-            );
-          },
+          // One canonical management surface for start/extend/unpin — the
+          // shared sheet (also used by the map banner and the settings card).
+          onTap: () => unawaited(showPinnedLocationSheet(context, ref)),
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Row(
@@ -922,7 +953,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           // irrelevant and stays hidden. Full pin management (extend/unpin)
           // remains available in Matching settings.
           if (isVisible)
-            _buildPinnedLocationCard(context, l10n, pinnedLocationState),
+            _buildPinnedLocationCard(context, ref, l10n, pinnedLocationState),
           Padding(
             padding: const EdgeInsets.symmetric(
               horizontal: 16.0,
@@ -1221,6 +1252,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ),
           recentChatsAsync.when(
             data: (chats) {
+              // Archived chats live in the Chats tab's Archived view; the
+              // Home feed shows active chats only. (Archive is per-user and
+              // display-only — see ChatArchiveService.)
+              final activeChats =
+                  filterArchivedChats(chats, archived: false);
               // Build a lookup from matchId -> matchedIntent keys using the
               // matches that created the chats. This is the only correct
               // source: a chat exists because its underlying match was created
@@ -1246,7 +1282,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               }
 
               final canFilterByMatchType = MatchTypeFilter.canFilter(
-                chats.map(chatMatchType).toList(),
+                activeChats.map(chatMatchType).toList(),
               );
 
               final normalizedSearchChats =
@@ -1256,8 +1292,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               // available, seeding results while the full-text pass runs.
               // Same pipeline as the Chats screen.
               final previewFilteredChats = normalizedSearchChats.isEmpty
-                  ? chats
-                  : chats.where((chat) {
+                  ? activeChats
+                  : activeChats.where((chat) {
                       final searchableText = [
                         chat.otherUserName,
                         chat.lastMessage,
@@ -1282,7 +1318,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               final searchedChats =
                   normalizedSearchChats.isEmpty || !bodySearchResolvedChats
                   ? previewFilteredChats
-                  : chats
+                  : activeChats
                         .where(
                           (chat) =>
                               bodyMatchesChats.contains(chat.matchId) ||
@@ -1326,7 +1362,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               final sortedChats = _sortChats(afterMatchTypeChats);
 
               final filterOptions = <String>{};
-              for (final chat in chats) {
+              for (final chat in activeChats) {
                 filterOptions.addAll(chatIntentKeysForChat(chat));
               }
               if (normalizedSelectedChats != null &&
@@ -1338,7 +1374,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               );
 
               final unreadConversationCount =
-                  chats.where((c) => c.unreadCount > 0).length;
+                  activeChats.where((c) => c.unreadCount > 0).length;
 
               final activeFilterCount = ListFilterState(
                 selectedIntentKey: _selectedChatsIntentKey,
@@ -1366,7 +1402,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       ref.read(navigationIndexProvider.notifier).setIndex(2);
                     },
                   ),
-                  if (chats.isNotEmpty) ...[
+                  if (activeChats.isNotEmpty) ...[
                     ListSearchBar(
                       controller: _chatsSearchController,
                       onQueryChanged: (value) {
@@ -1381,7 +1417,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                             .search(
                               ChatSearchRequest(
                                 query: value,
-                                matchIds: chats
+                                matchIds: activeChats
                                     .map((c) => c.matchId)
                                     .toList(growable: false),
                               ),
@@ -1405,7 +1441,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         allIntentsAsync.asData?.value ?? const <AppIntent>[],
                         canFilterByMatchType,
                         (draft) => _countChats(
-                          chats,
+                          activeChats,
                           matchIntentById,
                           matchTypeById,
                           draft,
@@ -1417,7 +1453,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     ),
                       ResultCountLabel(
                         shown: sortedChats.length,
-                        total: chats.length,
+                        total: activeChats.length,
                         l10n: l10n,
                       ),
                       // While the full-text pass runs, say so — same as the
@@ -1484,6 +1520,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                 : null,
                             searchSnippet: hit?.snippet,
                             searchMessageId: hit?.messageId,
+                            // Per-row ⋮ menu: archive from Home too. No
+                            // "Select" entry here — multi-select lives on
+                            // the Chats tab, Home is a preview.
+                            onRowMenuArchive: () =>
+                                _archiveChatFromHome(chat),
                           );
                         }),
                 ],

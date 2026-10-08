@@ -464,13 +464,19 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
                     Expanded(
                       child: SingleChildScrollView(
                         padding: const EdgeInsets.only(bottom: 80),
-                        child: MatchBoxList(
-                          matches: sortedMatches,
-                          showTitle: false,
+                        child: Column(
+                          children: [
+                            MatchBoxList(
+                              matches: sortedMatches,
+                              showTitle: false,
+                            ),
+                            // Ad scrolls with the content at the bottom of
+                            // the list — uniform with the other tabs.
+                            const AdSlot(placement: AdPlacement.matchesInline),
+                          ],
                         ),
                       ),
                     ),
-                    const AdSlot(placement: AdPlacement.matchesInline),
                   ],
                 );
               },

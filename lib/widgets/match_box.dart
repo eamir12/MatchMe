@@ -20,8 +20,6 @@ import 'package:matchme/utils/match_score_utils.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/widgets/signed_image.dart';
-import 'package:matchme/widgets/verified_badge.dart';
-import 'package:matchme/widgets/new_user_badge.dart';
 import 'package:matchme/widgets/match_profile_navigation_cue.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:ui' as ui;
@@ -510,16 +508,16 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
         child: Padding(
           padding: const EdgeInsetsDirectional.symmetric(
             horizontal: 16,
-            vertical: 10,
+            vertical: 12,
           ),
           child: Column(
             textDirection: textDir,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  _buildProfilePhoto(otherProfileAsync, context),
+                  _buildProfilePhoto(otherProfileAsync, context, l10n),
                   const SizedBox(width: 12),
                   Expanded(
                     child: _buildContentColumn(
@@ -531,6 +529,8 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
                     ),
                   ),
                   const SizedBox(width: 8),
+                  // Rating kept top-right but quiet, so the name stays primary.
+                  _RatingSummaryWidget(otherUserId: widget.match.otherUserId),
                   MatchProfileNavigationCue(
                     textDirection: textDir,
                     label: l10n.getString('viewMatch'),
@@ -538,6 +538,15 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
                 ],
               ),
               const SizedBox(height: 6),
+              _buildMetaLine(
+                context,
+                ref,
+                l10n,
+                textDir,
+                otherProfileAsync,
+                currentProfileAsync,
+              ),
+              _buildExceptionPills(context, textDir),
               _buildDetailsSection(
                 context,
                 ref,
@@ -555,6 +564,11 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     );
   }
 
+  /// Identity column: bold name (+"New here!" pill when applicable) on line
+  /// 1, quiet "67 · Male" on line 2 — no "Age:"/"Gender:" labels, and the
+  /// name's trailing last-initial period never collides with the age.
+  /// Verification moved to an overlay on the avatar; rating sits top-right
+  /// of the card (rendered by the caller).
   Widget _buildContentColumn(
     BuildContext context,
     WidgetRef ref,
@@ -562,124 +576,105 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     ui.TextDirection textDir,
     AsyncValue<UserProfile?> otherProfileAsync,
   ) {
+    final profile = otherProfileAsync.asData?.value;
+    final name =
+        profile?.name.formatAsFirstNameLastInitial() ??
+        l10n.getString('generalUnknown');
+    final age = profile?.dateOfBirth != null
+        ? _calculateAge(profile!.dateOfBirth!)
+        : null;
+    final rawGender = profile?.gender;
+    final genderText =
+        (rawGender != null && rawGender.trim().isNotEmpty)
+            ? _getGenderLabel(rawGender, ref, l10n)
+            : null;
+    bool isNewUser = false;
+    if (profile?.createdAt != null) {
+      isNewUser = DateTime.now().difference(profile!.createdAt!).inDays < 7;
+    }
+
+    final metaParts = <String>[
+      if (age != null) '$age',
+      ?genderText,
+    ];
+
     return Column(
       textDirection: textDir,
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        // Row 1: Name
         Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Expanded(
-              child: otherProfileAsync.when(
-                data: (profile) {
-                  final name =
-                      profile?.name.formatAsFirstNameLastInitial() ??
-                      l10n.getString('generalUnknown');
-                  return Text(
-                    name,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                    textAlign: TextAlign.start,
-                  );
-                },
-                loading: () => const Text(
-                  '...',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              child: Text(
+                name,
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
                 ),
-                error: (e, s) => Text(
-                  l10n.getString('generalError'),
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.start,
               ),
             ),
-            // Watch rating summary via provider so it auto-refreshes when
-            // invalidated (e.g. after the user returns from rating a match).
-            _RatingSummaryWidget(otherUserId: widget.match.otherUserId),
+            if (isNewUser) ...[
+              const SizedBox(width: 6),
+              _buildNewUserPill(context, l10n, profile!),
+            ],
           ],
         ),
-        _buildBadgeRow(otherProfileAsync, l10n, textDir),
-        PinnedPartnerChip(otherUserId: widget.match.otherUserId),
-        const SizedBox(height: 3),
-        // Row 2: Age and Gender info
-        otherProfileAsync.when(
-          data: (profile) {
-            final age = profile?.dateOfBirth != null
-                ? _calculateAge(profile!.dateOfBirth!)
-                : null;
-            final gender = profile?.gender;
-            final List<String> infoParts = [];
-            if (age != null) {
-              infoParts.add('${l10n.getString('profileAgeLabel')}: $age');
-            }
-            if (gender != null && gender.isNotEmpty) {
-              infoParts.add(
-                '${l10n.getString('profileGender')}: ${_getGenderLabel(gender, ref, l10n)}',
-              );
-            }
-            if (infoParts.isEmpty) return const SizedBox.shrink();
-            return Text(
-              infoParts.join('  •  '),
-              style: TextStyle(
-                fontSize: 12,
-                color: Theme.of(
-                  context,
-                ).colorScheme.onSurface.withValues(alpha: 0.7),
+        if (metaParts.isNotEmpty) ...[
+          const SizedBox(height: 1),
+          Text(
+            metaParts.join('  ·  '),
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w400,
+              color: Theme.of(context).colorScheme.onSurface.withValues(
+                alpha: 0.55,
               ),
-              textAlign: TextAlign.start,
-            );
-          },
-          loading: () => const SizedBox.shrink(),
-          error: (e, s) => const SizedBox.shrink(),
-        ),
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.start,
+          ),
+        ],
       ],
     );
   }
 
-  /// Badges row shown under the name — same pills as the Profile screen:
-  /// [VerifiedBadge] with text ("Verified") + [NewUserBadge] with text
-  /// ("New here!"), on the same row. Hidden when neither applies.
-  Widget _buildBadgeRow(
-    AsyncValue<UserProfile?> otherProfileAsync,
+  /// Compact "New here!" accent pill shown inline after the name.
+  Widget _buildNewUserPill(
+    BuildContext context,
     LocalizationState l10n,
-    ui.TextDirection textDir,
+    UserProfile profile,
   ) {
-    final profile = otherProfileAsync.asData?.value;
-    if (profile == null) return const SizedBox.shrink();
-    final isVerified = profile.isVerified;
-    bool isNewUser = false;
-    if (profile.createdAt != null) {
-      isNewUser = DateTime.now().difference(profile.createdAt!).inDays < 7;
-    }
-    if (!isVerified && !isNewUser) return const SizedBox.shrink();
-
-    return Padding(
-      padding: const EdgeInsets.only(top: 4),
-      child: Wrap(
-        textDirection: textDir,
-        spacing: 8,
-        runSpacing: 6,
-        crossAxisAlignment: WrapCrossAlignment.center,
+    final color = Colors.green.shade700;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.green.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        textDirection: Directionality.of(context),
         children: [
-          if (isVerified)
-            VerifiedBadge(
-              size: 14,
-              showText: true,
-              text: _verifiedBadgeText(l10n, profile.gender),
+          Icon(Icons.fiber_new_rounded, size: 12, color: color),
+          const SizedBox(width: 2),
+          Flexible(
+            child: Text(
+              _newUserBadgeText(l10n, profile.gender),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: color,
+              ),
             ),
-          if (isNewUser)
-            NewUserBadge(
-              size: 14,
-              showText: true,
-              text: _newUserBadgeText(l10n, profile.gender),
-              gender: profile.gender,
-            ),
+          ),
         ],
       ),
     );
@@ -738,9 +733,7 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
       textDirection: textDir,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildReasonLine(context, ref, l10n),
-        _buildSharedInterestsLine(l10n, otherProfileAsync, currentProfileAsync),
-        // Rematch banner AFTER Shared Interests row
+        // Rematch banner below the chips row
         if (widget.match.isRematch) ...[
           const SizedBox(height: 4),
           _buildRematchIndicator(context, l10n, otherProfileAsync),
@@ -847,100 +840,134 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     );
   }
 
-  /// Single line combining the match reason (proximity / event) with the
-  /// matched intent(s), e.g. "Matched by proximity • Intent: romantic" or
-  /// "Event: Concert • Intent: romantic, friendship".
-  Widget _buildReasonLine(
+  /// Quiet single-line meta: icon-prefixed facts separated by dots, no chip
+  /// backgrounds — "📍 Proximity · 💬 Friendship · ❤ Shared interests: 3".
+  /// Repeating facts (reason, intents, shared interests) live here; only
+  /// exceptional signals get pills (see [_buildExceptionPills]). Single line
+  /// that ellipsizes, so every card keeps the same height.
+  Widget _buildMetaLine(
     BuildContext context,
     WidgetRef ref,
     LocalizationState l10n,
-  ) {
-    final parts = <String>[];
-    final isProximity =
-        widget.match.matchType == 'proximity' ||
-        widget.match.matchType == 'manual_test';
-    if (isProximity) {
-      parts.add(l10n.getString('matchedByProximityLabel'));
-    } else if (widget.match.matchType == 'event' &&
-        (widget.match.eventName?.isNotEmpty ?? false)) {
-      parts.add('${l10n.getString('eventLabel')}: ${widget.match.eventName}');
-    }
-    final intentsText = _localizedIntentList(
-      widget.match.matchedIntent,
-      ref,
-      l10n,
-    );
-    if (intentsText.isNotEmpty) {
-      parts.add('${l10n.getString('intentLabel')}: $intentsText');
-    }
-    if (parts.isEmpty) return const SizedBox.shrink();
-
-    return Row(
-      children: [
-        if (isProximity) ...[
-          Icon(
-            Icons.location_on,
-            size: 12,
-            color: Theme.of(context).colorScheme.primary,
-          ),
-          const SizedBox(width: 2),
-        ],
-        Expanded(
-          child: Text(
-            parts.join(' • '),
-            style: TextStyle(
-              fontSize: 11,
-              color: Theme.of(
-                context,
-              ).colorScheme.onSurface.withValues(alpha: 0.6),
-            ),
-            textAlign: TextAlign.start,
-          ),
-        ),
-      ],
-    );
-  }
-
-  /// "Shared interests: N" line, colored by the optimistic score ramp.
-  /// Hidden until both profiles have loaded.
-  Widget _buildSharedInterestsLine(
-    LocalizationState l10n,
+    ui.TextDirection textDir,
     AsyncValue<UserProfile?> otherProfileAsync,
     AsyncValue<UserProfile?> currentProfileAsync,
   ) {
+    final metaColor = Theme.of(
+      context,
+    ).colorScheme.onSurface.withValues(alpha: 0.55);
+    final spans = <InlineSpan>[];
+
+    void addSegment(IconData icon, String text, {Color? color}) {
+      if (spans.isNotEmpty) {
+        spans.add(const TextSpan(text: '   ·   '));
+      }
+      spans.add(
+        WidgetSpan(
+          alignment: PlaceholderAlignment.middle,
+          child: Icon(icon, size: 13, color: color ?? metaColor),
+        ),
+      );
+      spans.add(
+        TextSpan(
+          text: ' $text',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: color != null ? FontWeight.w600 : FontWeight.w400,
+            color: color ?? metaColor,
+          ),
+        ),
+      );
+    }
+
+    // Match reason
+    final matchType = widget.match.matchType;
+    if (matchType == 'proximity' || matchType == 'manual_test') {
+      addSegment(
+        Icons.location_on_rounded,
+        l10n.getString('matchedByProximityLabel'),
+      );
+    } else if (matchType == 'co_motion') {
+      addSegment(
+        Icons.directions_walk_rounded,
+        l10n.getString('matchedByCoMotionLabel'),
+      );
+    }
+
+    // Matched intent(s) — no "Intent:" label
+    for (final intent in widget.match.matchedIntent.split(',')) {
+      final trimmed = intent.trim();
+      if (trimmed.isEmpty) continue;
+      addSegment(
+        Icons.chat_bubble_outline_rounded,
+        _getIntentTranslation(trimmed, ref, l10n),
+      );
+    }
+
+    // Shared interests — the only colored element in the band
     final otherProfile = otherProfileAsync.asData?.value;
     final currentProfile = currentProfileAsync.asData?.value;
-    if (otherProfile == null || currentProfile == null) {
-      return const SizedBox.shrink();
+    if (otherProfile != null && currentProfile != null) {
+      final count = computeSharedInterestCount(
+        currentProfile: currentProfile,
+        otherProfile: otherProfile,
+        matchedIntent: widget.match.matchedIntent,
+      );
+      addSegment(
+        Icons.favorite_rounded,
+        l10n.getString('sharedInterestsCount', params: {'count': '$count'}),
+        color: sharedInterestColor(count),
+      );
     }
-    final count = computeSharedInterestCount(
-      currentProfile: currentProfile,
-      otherProfile: otherProfile,
-      matchedIntent: widget.match.matchedIntent,
-    );
-    final scoreColor = sharedInterestColor(count);
+
+    if (spans.isEmpty) return const SizedBox.shrink();
+
     return Padding(
-      padding: const EdgeInsets.only(top: 3),
-      child: Row(
-        children: [
-          Icon(Icons.favorite_rounded, size: 11, color: scoreColor),
-          const SizedBox(width: 4),
-          Expanded(
-            child: Text(
-              l10n.getString(
-                'sharedInterestsCount',
-                params: {'count': '$count'},
-              ),
-              style: TextStyle(
-                fontSize: 11,
-                color: scoreColor,
-                fontWeight: FontWeight.w600,
-              ),
-              textAlign: TextAlign.start,
-            ),
-          ),
-        ],
+      padding: const EdgeInsets.only(top: 5),
+      child: Text.rich(
+        TextSpan(children: spans),
+        style: TextStyle(fontSize: 12, color: metaColor),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        textDirection: textDir,
+        textAlign: TextAlign.start,
       ),
+    );
+  }
+
+  /// Pills reserved for exceptional signals that differ card-to-card: the
+  /// event a match came from, and the pinned-location chip (which hides
+  /// itself when the partner isn't pinned).
+  Widget _buildExceptionPills(
+    BuildContext context,
+    ui.TextDirection textDir,
+  ) {
+    final pills = <Widget>[];
+    if (widget.match.matchType == 'event' &&
+        (widget.match.eventName?.isNotEmpty ?? false)) {
+      pills.add(
+        Padding(
+          padding: const EdgeInsets.only(top: 5),
+          child: _InfoChip(
+            icon: Icons.event_rounded,
+            label: widget.match.eventName!,
+          ),
+        ),
+      );
+    }
+    pills.add(
+      Padding(
+        padding: const EdgeInsets.only(top: 5),
+        child: PinnedPartnerChip(otherUserId: widget.match.otherUserId),
+      ),
+    );
+
+    return Wrap(
+      textDirection: textDir,
+      spacing: 6,
+      runSpacing: 6,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: pills,
     );
   }
 
@@ -1057,97 +1084,86 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     );
   }
 
-  /// Localized, comma-separated list of the intents in [matchedIntent].
-  String _localizedIntentList(
-    String matchedIntent,
-    WidgetRef ref,
-    LocalizationState l10n,
-  ) {
-    if (matchedIntent.isEmpty) return '';
-    final localized = <String>[];
-    for (final s in matchedIntent.split(',')) {
-      final trimmed = s.trim();
-      if (trimmed.isNotEmpty) {
-        localized.add(_getIntentTranslation(trimmed, ref, l10n));
-      }
-    }
-    return localized.join(', ');
-  }
-
+  /// 56px avatar with a small verified check overlaid on the leading corner —
+  /// replaces the old full-width "Verified" pill. Semantics keep the
+  /// localized verified label so screen readers still announce it.
   Widget _buildProfilePhoto(
     AsyncValue<UserProfile?> otherProfileAsync,
     BuildContext context,
+    LocalizationState l10n,
   ) {
-    return otherProfileAsync.when(
-      data: (profile) {
-        if (profile?.photos.isNotEmpty == true) {
-          return ClipOval(
-            child: SignedImage(
-              source: profile!.photos[0],
-              width: 40,
-              height: 40,
-              fit: BoxFit.cover,
-              placeholder: Container(
-                width: 40,
-                height: 40,
-                color: Theme.of(
-                  context,
-                ).colorScheme.primary.withValues(alpha: 0.08),
-                child: Icon(
-                  Icons.person,
-                  size: 24,
+    final profile = otherProfileAsync.asData?.value;
+    final isVerified = profile?.isVerified ?? false;
+    final placeholderColor = Theme.of(
+      context,
+    ).colorScheme.primary.withValues(alpha: 0.08);
+    final placeholderIcon = Icon(
+      Icons.person,
+      size: 28,
+      color: Theme.of(context).colorScheme.primary,
+    );
+
+    Widget avatar;
+    if (profile?.photos.isNotEmpty == true) {
+      avatar = ClipOval(
+        child: SignedImage(
+          source: profile!.photos[0],
+          width: 56,
+          height: 56,
+          fit: BoxFit.cover,
+          placeholder: Container(
+            width: 56,
+            height: 56,
+            color: placeholderColor,
+            child: placeholderIcon,
+          ),
+          errorWidget: Container(
+            width: 56,
+            height: 56,
+            color: placeholderColor,
+            child: placeholderIcon,
+          ),
+        ),
+      );
+    } else {
+      avatar = CircleAvatar(
+        radius: 28,
+        backgroundColor: placeholderColor,
+        child: placeholderIcon,
+      );
+    }
+
+    return Semantics(
+      label: isVerified
+          ? _verifiedBadgeText(l10n, profile?.gender)
+          : null,
+      excludeSemantics: isVerified,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          avatar,
+          if (isVerified)
+            PositionedDirectional(
+              end: -2,
+              bottom: -2,
+              child: Container(
+                padding: const EdgeInsets.all(3),
+                decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.primary,
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.surface,
+                    width: 2,
+                  ),
                 ),
-              ),
-              errorWidget: Container(
-                width: 40,
-                height: 40,
-                color: Theme.of(
-                  context,
-                ).colorScheme.primary.withValues(alpha: 0.08),
                 child: Icon(
-                  Icons.person,
-                  size: 24,
-                  color: Theme.of(context).colorScheme.primary,
+                  Icons.check_rounded,
+                  size: 10,
+                  color: Theme.of(context).colorScheme.onPrimary,
                 ),
               ),
             ),
-          );
-        } else {
-          return CircleAvatar(
-            radius: 20,
-            backgroundColor: Theme.of(
-              context,
-            ).colorScheme.primary.withValues(alpha: 0.08),
-            child: Icon(
-              Icons.person,
-              size: 24,
-              color: Theme.of(context).colorScheme.primary,
-            ),
-          );
-        }
-      },
-      loading: () => CircleAvatar(
-        radius: 20,
-        backgroundColor: Theme.of(
-          context,
-        ).colorScheme.primary.withValues(alpha: 0.08),
-        child: Icon(
-          Icons.person,
-          size: 24,
-          color: Theme.of(context).colorScheme.primary,
-        ),
-      ),
-      error: (e, s) => CircleAvatar(
-        radius: 20,
-        backgroundColor: Theme.of(
-          context,
-        ).colorScheme.primary.withValues(alpha: 0.08),
-        child: Icon(
-          Icons.person,
-          size: 24,
-          color: Theme.of(context).colorScheme.primary,
-        ),
+        ],
       ),
     );
   }
@@ -1255,6 +1271,49 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
   }
 }
 
+/// Small uniform pill used across the match card: neutral surface background,
+/// leading icon, compact text. Currently used for the event-name pill.
+class _InfoChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _InfoChip({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final effectiveColor = theme.colorScheme.onSurface.withValues(alpha: 0.75);
+    final background = theme.colorScheme.surfaceContainerHighest;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        textDirection: Directionality.of(context),
+        children: [
+          Icon(icon, size: 12, color: effectiveColor),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: effectiveColor,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _RatingSummaryWidget extends ConsumerWidget {
   final String otherUserId;
 
@@ -1276,26 +1335,21 @@ class _RatingSummaryWidget extends ConsumerWidget {
         return Semantics(
           label: '$ratingText. $countText',
           child: Padding(
-            padding: const EdgeInsetsDirectional.only(start: 8.0),
+            padding: const EdgeInsetsDirectional.only(start: 4.0),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.star, size: 16, color: Colors.amber.shade700),
-                const SizedBox(width: 4),
+                Icon(Icons.star_rounded, size: 14, color: Colors.amber.shade700),
+                const SizedBox(width: 2),
                 Text(
                   ratingText,
                   style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
-                if (summary.ratedByCount > 0) ...[
-                  const SizedBox(width: 3),
-                  Text(
-                    '(${summary.ratedByCount})',
-                    style: Theme.of(context).textTheme.labelSmall,
-                  ),
-                ],
+                // Rated-by count intentionally omitted at list level; it
+                // lives on the profile screen.
               ],
             ),
           ),

@@ -31,6 +31,8 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:matchme/providers/auth_provider.dart';
 import 'package:matchme/providers/app_config_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/providers/payment_provider.dart';
+import 'package:matchme/providers/new_options_provider.dart';
 import 'package:matchme/providers/theme_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/visibility_provider.dart';
@@ -3874,6 +3876,7 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
   bool _translationSyncRunning = false;
   DateTime? _lastTranslationSyncAt;
   DateTime? _lastResumeSyncAt;
+  void Function()? _realtimeRestoreUnregister;
 
   /// The account the auth router is currently rendering. Retained so a
   /// transient provider session (see [AuthTransitionGuard]) can be ignored
@@ -4101,6 +4104,20 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
     );
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+
+    // A network flap that starts and ends entirely while the app is
+    // foregrounded never triggers a lifecycle resume, so the lifecycle path
+    // below can't recreate the dead stream subscriptions. Connectivity
+    // restore is the catch-all: rebuild them whenever Supabase becomes
+    // reachable again. Invalidating is cheap and safe even if the lifecycle
+    // path also fires.
+    _realtimeRestoreUnregister = onSupabaseResume(() {
+      final userId = supabase.auth.currentUser?.id;
+      if (userId == null || userId.isEmpty) return;
+      if (!mounted) return;
+      if (shouldSkipSupabaseCalls()) return;
+      _recreateStreamRealtimeProviders(userId);
+    });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _installWebRealtimeVisibilityDisconnect();
@@ -4332,7 +4349,25 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _connectivityUiStatusSub?.close();
+    _realtimeRestoreUnregister?.call();
     super.dispose();
+  }
+
+  /// Recreate the stream-based realtime subscriptions (supabase .stream()).
+  /// The vendored realtime client does not rejoin their channels after a
+  /// socket disconnect, so after a real offline they must be rebuilt.
+  /// recentChatsProvider is included because its chat/match/chats channels
+  /// are not registered when the provider happens to rebuild while offline.
+  void _recreateStreamRealtimeProviders(String userId) {
+    ref.invalidate(recentChatsProvider(userId));
+    ref.invalidate(currentUserUsersTableProvider);
+    ref.invalidate(translationsRealtimeProvider);
+    ref.invalidate(subscriptionTiersRealtimeProvider);
+    ref.invalidate(subscriptionPlansRealtimeProvider);
+    ref.invalidate(intentsRealtimeProvider);
+    ref.invalidate(profileOptionsRealtimeProvider);
+    ref.invalidate(interestsRealtimeProvider);
+    ref.invalidate(basicFieldAdminReviewsProvider);
   }
 
   @override
@@ -4455,7 +4490,7 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
             // manager-owned channels; invalidating here re-creates the
             // recentChatsProvider-owned chat channels after a real offline.
             if (hadRealtimeDisconnect) {
-              ref.invalidate(recentChatsProvider(resumedUserId));
+              _recreateStreamRealtimeProviders(resumedUserId);
             }
           }
         } catch (e) {

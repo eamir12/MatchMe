@@ -13,6 +13,7 @@ import 'package:matchme/utils/encrypted_text_guard.dart';
 import 'package:matchme/utils/emoji_presentation_utils.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/time_format_utils.dart';
+import 'package:matchme/widgets/multi_select.dart';
 import 'package:matchme/widgets/signed_image.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/screens/chats/chat_screen.dart';
@@ -32,6 +33,21 @@ class ChatListItem extends ConsumerWidget {
   final String? searchSnippet;
   final String? searchMessageId;
 
+  /// Multi-select support (see lib/widgets/multi_select.dart). While
+  /// [selectionMode] is true the row renders a leading check circle and taps
+  /// toggle the selection instead of opening the chat. [onLongPress] is the
+  /// conventional selection-mode entry point and works in both modes.
+  final bool selectionMode;
+  final bool selected;
+  final VoidCallback? onToggleSelect;
+  final VoidCallback? onLongPress;
+
+  /// Per-row menu actions (trailing ⋮ button). Null callbacks hide their menu
+  /// entries; both null (or [selectionMode]) hides the button entirely, which
+  /// is how Home's Recent Chats and selection mode opt out.
+  final VoidCallback? onRowMenuArchive;
+  final VoidCallback? onRowMenuSelect;
+
   const ChatListItem({
     super.key,
     required this.chat,
@@ -39,6 +55,12 @@ class ChatListItem extends ConsumerWidget {
     this.searchQuery,
     this.searchSnippet,
     this.searchMessageId,
+    this.selectionMode = false,
+    this.selected = false,
+    this.onToggleSelect,
+    this.onLongPress,
+    this.onRowMenuArchive,
+    this.onRowMenuSelect,
   });
 
   @override
@@ -200,7 +222,12 @@ class ChatListItem extends ConsumerWidget {
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: Ink(
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surface,
+          color: selected
+              ? Theme.of(context)
+                  .colorScheme
+                  .primary
+                  .withValues(alpha: 0.08)
+              : Theme.of(context).colorScheme.surface,
           borderRadius: BorderRadius.circular(16),
           boxShadow: [
             BoxShadow(
@@ -210,7 +237,9 @@ class ChatListItem extends ConsumerWidget {
             ),
           ],
           border: Border.all(
-            color: showUnreadBorder && chat.unreadCount > 0
+            color: selected
+                ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.45)
+                : showUnreadBorder && chat.unreadCount > 0
                 ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.2)
                 : Colors.transparent,
             width: 1,
@@ -218,7 +247,10 @@ class ChatListItem extends ConsumerWidget {
         ),
         child: InkWell(
           borderRadius: BorderRadius.circular(16),
-          onTap: () async {
+          onLongPress: onLongPress,
+          onTap: selectionMode
+              ? onToggleSelect
+              : () async {
             final otherProfile = otherProfileAsync.value;
             final profileName =
                 otherProfile?.name.formatAsFirstNameLastInitial() ?? '';
@@ -264,7 +296,22 @@ class ChatListItem extends ConsumerWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildAvatar(context, otherProfileAsync),
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 150),
+                  transitionBuilder: (child, animation) => FadeTransition(
+                    opacity: animation,
+                    child: child,
+                  ),
+                  child: selectionMode
+                      ? SelectionCheckCircle(
+                          key: const ValueKey('chat_check'),
+                          selected: selected,
+                        )
+                      : KeyedSubtree(
+                          key: const ValueKey('chat_avatar'),
+                          child: _buildAvatar(context, otherProfileAsync),
+                        ),
+                ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
@@ -457,6 +504,13 @@ class ChatListItem extends ConsumerWidget {
                     ],
                   ),
                 ),
+                if (!selectionMode &&
+                    (onRowMenuArchive != null || onRowMenuSelect != null))
+                  _ChatRowMenuButton(
+                    chat: chat,
+                    onArchive: onRowMenuArchive,
+                    onSelect: onRowMenuSelect,
+                  ),
               ],
             ),
           ),
@@ -572,5 +626,101 @@ class ChatListItem extends ConsumerWidget {
         .split(' ')
         .map((w) => w.isNotEmpty ? w[0].toUpperCase() + w.substring(1) : '')
         .join(' ');
+  }
+}
+
+/// Trailing ⋮ button on a chat row, opening the per-row action menu
+/// (archive/unarchive, select). Rendered only when the host screen supplies
+/// at least one of the menu callbacks and multi-select is not active — the
+/// menu makes archive reachable without knowing the long-press gesture.
+class _ChatRowMenuButton extends ConsumerWidget {
+  final ChatModel chat;
+  final VoidCallback? onArchive;
+  final VoidCallback? onSelect;
+
+  const _ChatRowMenuButton({
+    required this.chat,
+    required this.onArchive,
+    required this.onSelect,
+  });
+
+  Future<void> _open(
+    BuildContext buttonContext,
+    LocalizationState l10n,
+  ) async {
+    // Anchor the popup at the button itself (just below its bottom edge)
+    // so the menu opens next to the ⋮ regardless of screen position or RTL.
+    final RenderBox button =
+        buttonContext.findRenderObject() as RenderBox;
+    final RenderBox overlay =
+        Navigator.of(buttonContext).overlay!.context.findRenderObject()
+            as RenderBox;
+    final anchorTop = button.localToGlobal(
+      Offset(button.size.width - 4, button.size.height + 4),
+      ancestor: overlay,
+    );
+    final position = RelativeRect.fromRect(
+      Rect.fromPoints(anchorTop, anchorTop + const Offset(4, 8)),
+      Offset.zero & overlay.size,
+    );
+
+    final choice = await showMenu<String>(
+      context: buttonContext,
+      position: position,
+      items: [
+        if (onArchive != null)
+          PopupMenuItem<String>(
+            value: 'archive',
+            child: ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                chat.isArchived
+                    ? Icons.unarchive_outlined
+                    : Icons.archive_outlined,
+                size: 20,
+              ),
+              title: Text(
+                l10n.getString(
+                  chat.isArchived ? 'chatsUnarchive' : 'chatsArchive',
+                ),
+              ),
+            ),
+          ),
+        if (onSelect != null)
+          PopupMenuItem<String>(
+            value: 'select',
+            child: ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.checklist, size: 20),
+              title: Text(l10n.getString('chatsSelect')),
+            ),
+          ),
+      ],
+    );
+    if (!buttonContext.mounted || choice == null) return;
+    switch (choice) {
+      case 'archive':
+        onArchive?.call();
+      case 'select':
+        onSelect?.call();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l10n = ref.watch(localizationProvider);
+    final colors = Theme.of(context).colorScheme;
+    return IconButton(
+      visualDensity: VisualDensity.compact,
+      icon: Icon(
+        Icons.more_vert,
+        size: 20,
+        color: colors.onSurfaceVariant,
+      ),
+      tooltip: MaterialLocalizations.of(context).moreButtonTooltip,
+      onPressed: () => _open(context, l10n),
+    );
   }
 }

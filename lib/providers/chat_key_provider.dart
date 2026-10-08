@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/models/user_chat_key_model.dart';
 import 'package:matchme/services/chat_key_service.dart';
+import 'package:matchme/services/encrypted_cache_service.dart';
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -86,6 +87,9 @@ class ChatKeyNotifier extends Notifier<ChatKeyState> {
       // the connectivity-resume refresh above.
       final userId = Supabase.instance.client.auth.currentUser?.id;
       if (userId != null) {
+        try {
+          await EncryptedCacheService.instance.initialize(userId);
+        } catch (_) {}
         final hasLocal = await _chatKeyService.hasPrivateKeyLocally(userId);
         final hasCrk = await _chatKeyService.loadCrkBytes(userId) != null;
         // Mark init done for this user even offline: otherwise consumers
@@ -120,6 +124,9 @@ class ChatKeyNotifier extends Notifier<ChatKeyState> {
     }
     final userId = Supabase.instance.client.auth.currentUser?.id;
     if (userId == null) return;
+    try {
+      await EncryptedCacheService.instance.initialize(userId);
+    } catch (_) {}
 
     if (_initializedForUserId != userId) {
       // A different user is now active (login after logout, or an account

@@ -2,6 +2,20 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
 import { buildGeminiUrl, resolveVisionModels } from "../_shared/gemini_config.ts";
+import {
+  cloudVisionContentPrecheck,
+  cloudVisionPhotoDecision,
+  getCloudVisionCredential,
+  getImageDimensions,
+  isExplicitLikelihood,
+  textBoxOverlapsFace,
+} from "../_shared/cloud_vision_fallback.ts";
+import { sanitizeProfilePhoto } from "../_shared/photo_sanitize.ts";
+import {
+  matchesStoredHash,
+  perceptualHash,
+} from "../_shared/photo_phash.ts";
+import { consumeAiRateLimit, getClientIp } from "../_shared/ai_rate_limit.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -21,6 +35,13 @@ function normalizeStorageObjectPath(path: string, bucketName: string): string {
   return trimmed.startsWith(bucketPrefix)
     ? trimmed.slice(bucketPrefix.length)
     : trimmed;
+}
+
+async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 interface IdentityDescriptor {
@@ -153,6 +174,8 @@ function translationKeyForPrimaryPhotoReasonCode(reasonCode: string | null | und
       return "primaryPhotoVerificationErrorFaceNotVisible";
     case "BAD_CONTENT":
       return "primaryPhotoVerificationErrorBadContent";
+    case "DOCUMENT_DETECTED":
+      return "primaryPhotoVerificationErrorDocument";
     case "MULTIPLE_PEOPLE":
       return "primaryPhotoVerificationErrorMultipleFaces";
     case "BODY_SHOT":
@@ -178,7 +201,8 @@ serve(async (req) => {
   const functionName = "validate-primary-photo";
   let aiUsed = false;
   let aiModel: string | null = null;
-  const aiProvider = "google_gemini";
+  let aiProvider = "google_gemini";
+  let ownerId: string | null = null;
   const aiTask = "primary_photo_validation";
 
   const jsonResponse = async (
@@ -417,9 +441,12 @@ The 16 featureVector dimensions, in order, must be:
       return { descriptor: null, modelUsed: null };
     };
 
-    const body = (await req.json()) as { photoPath?: string };
+    const body = (await req.json()) as {
+      photoPath?: string;
+      clientSupportsServerSanitize?: boolean;
+    };
     const photoPath = (body.photoPath ?? "").toString().trim();
-    const ownerId = photoPath.split("/")[0] ?? "";
+    ownerId = photoPath.split("/")[0] ?? "";
 
     if (!photoPath) {
       return await jsonResponse(
@@ -464,6 +491,308 @@ The 16 featureVector dimensions, in order, must be:
     );
     const photoBase64 = arrayBufferToBase64(photoBuffer);
 
+    // Content-hash dedupe: the same bytes re-uploaded under a new path
+    // (gallery re-add, re-onboarding, retaken "clean" pipeline output) were
+    // already approved once — reuse that decision instead of paying for
+    // another AI round-trip. The perceptual (dHash) list extends this to
+    // re-encoded / re-compressed copies of the same photo that change the
+    // exact bytes. Verified-user identity checks are skipped for the same
+    // reason an already-approved path is: the original approval already ran
+    // them.
+    const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const photoHash = await sha256Hex(photoBuffer);
+    const photoPhash = await perceptualHash(new Uint8Array(photoBuffer));
+    if (photoHash && uuidRe.test(ownerId)) {
+      const { data: hashRow, error: hashErr } = await supabase
+        .from("user_profiles")
+        .select("approved_primary_photos, approved_primary_photo_hashes, approved_primary_photo_phashes")
+        .eq("user_id", ownerId)
+        .maybeSingle();
+      if (hashErr) {
+        // The phash column may not exist yet (migration pending) — the
+        // whole lookup fails, so fall back to the two legacy columns.
+        console.warn(
+          `[validate-primary-photo:${requestId}] Hash lookup failed (phash column pending?): ${truncate(safeStringify(hashErr))}`,
+        );
+        const { data: legacyRow } = await supabase
+          .from("user_profiles")
+          .select("approved_primary_photos, approved_primary_photo_hashes")
+          .eq("user_id", ownerId)
+          .maybeSingle();
+        const legacyHashes = Array.isArray(legacyRow?.approved_primary_photo_hashes)
+          ? ((legacyRow as any).approved_primary_photo_hashes as unknown[]).map((v) => String(v))
+          : [];
+        if (legacyHashes.includes(photoHash)) {
+          const existingPaths = Array.isArray(legacyRow?.approved_primary_photos)
+            ? ((legacyRow as any).approved_primary_photos as unknown[]).map((v) => String(v))
+            : [];
+          const nextPaths = Array.from(new Set([...existingPaths, photoPath]));
+          if (nextPaths.length !== existingPaths.length) {
+            await supabase
+              .from("user_profiles")
+              .update({ approved_primary_photos: nextPaths })
+              .eq("user_id", ownerId);
+          }
+          console.log(
+            `[validate-primary-photo:${requestId}] Hash dedupe hit (legacy lookup), skipping AI validation`,
+          );
+          return await jsonResponse(
+            {
+              allow: true,
+              action: "ALLOW",
+              shotType: "face",
+              reasonCode: "OK",
+              translationKey: null,
+              confidence: 1,
+              message: "OK",
+              faceBox: null,
+              textBoxes: [],
+              sexualContent: "none",
+            },
+            200,
+            {
+              success: true,
+              userId: ownerId,
+              meta: {
+                action: "ALLOW",
+                shotType: "face",
+                sexualContent: "none",
+                textBoxesCount: 0,
+                deduped: true,
+              },
+            },
+          );
+        }
+      } else if (hashRow) {
+        const approvedHashes = Array.isArray(
+          (hashRow as any).approved_primary_photo_hashes,
+        )
+          ? ((hashRow as any).approved_primary_photo_hashes as unknown[]).map((v) => String(v))
+          : [];
+        const approvedPhashes = Array.isArray(
+          (hashRow as any).approved_primary_photo_phashes,
+        )
+          ? ((hashRow as any).approved_primary_photo_phashes as unknown[]).map((v) => String(v))
+          : [];
+        if (approvedHashes.includes(photoHash)) {
+          const existingPaths = Array.isArray((hashRow as any).approved_primary_photos)
+            ? ((hashRow as any).approved_primary_photos as unknown[]).map((v) => String(v))
+            : [];
+          const nextPaths = Array.from(new Set([...existingPaths, photoPath]));
+          if (nextPaths.length !== existingPaths.length) {
+            const { error: pathUpdateErr } = await supabase
+              .from("user_profiles")
+              .update({ approved_primary_photos: nextPaths })
+              .eq("user_id", ownerId);
+            if (pathUpdateErr) {
+              console.error(
+                `[validate-primary-photo:${requestId}] Dedupe path persist failed: ${truncate(safeStringify(pathUpdateErr))}`,
+              );
+            }
+          }
+          console.log(
+            `[validate-primary-photo:${requestId}] Hash dedupe hit, skipping AI validation hash=${photoHash.slice(0, 12)}…`,
+          );
+          return await jsonResponse(
+            {
+              allow: true,
+              action: "ALLOW",
+              shotType: "face",
+              reasonCode: "OK",
+              translationKey: null,
+              confidence: 1,
+              message: "OK",
+              faceBox: null,
+              textBoxes: [],
+              sexualContent: "none",
+            },
+            200,
+            {
+              success: true,
+              userId: ownerId,
+              meta: {
+                action: "ALLOW",
+                shotType: "face",
+                sexualContent: "none",
+                textBoxesCount: 0,
+                deduped: true,
+              },
+            },
+          );
+        }
+        if (matchesStoredHash(photoPhash, approvedPhashes)) {
+          const existingPaths = Array.isArray((hashRow as any).approved_primary_photos)
+            ? ((hashRow as any).approved_primary_photos as unknown[]).map((v) => String(v))
+            : [];
+          const nextPaths = Array.from(new Set([...existingPaths, photoPath]));
+          const { error: pathUpdateErr } = await supabase
+            .from("user_profiles")
+            .update({ approved_primary_photos: nextPaths })
+            .eq("user_id", ownerId);
+          if (pathUpdateErr) {
+            console.error(
+              `[validate-primary-photo:${requestId}] Phash dedupe path persist failed: ${truncate(safeStringify(pathUpdateErr))}`,
+            );
+          }
+          console.log(
+            `[validate-primary-photo:${requestId}] Perceptual dedupe hit, skipping AI validation phash=${(photoPhash ?? "").slice(0, 16)}…`,
+          );
+          return await jsonResponse(
+            {
+              allow: true,
+              action: "ALLOW",
+              shotType: "face",
+              reasonCode: "OK",
+              translationKey: null,
+              confidence: 1,
+              message: "OK",
+              faceBox: null,
+              textBoxes: [],
+              sexualContent: "none",
+            },
+            200,
+            {
+              success: true,
+              userId: ownerId,
+              meta: {
+                action: "ALLOW",
+                shotType: "face",
+                sexualContent: "none",
+                textBoxesCount: 0,
+                deduped: true,
+                dedupedBy: "phash",
+              },
+            },
+          );
+        }
+      }
+    }
+
+    // AI rate limiting (app_config ai.rate_limit.primary_photo_validation.*).
+    // Consumed only when a validation will actually run — the dedupe hit
+    // above is free. Denied requests never consume quota.
+    const rateLimit = await consumeAiRateLimit(supabase, {
+      task: "primary_photo_validation",
+      userId: uuidRe.test(ownerId) ? ownerId : null,
+      ip: getClientIp(req),
+      requestId,
+    });
+    if (!rateLimit.allowed) {
+      console.warn(
+        `[validate-primary-photo:${requestId}] Rate limited, retryAfter=${rateLimit.retryAfterSeconds}s`,
+      );
+      return await jsonResponse(
+        {
+          allow: false,
+          translationKey: translationKeyForPrimaryPhotoReasonCode("SYSTEM_ERROR"),
+          message: "Too many verification attempts. Please try again later.",
+          retryAfterSeconds: rateLimit.retryAfterSeconds,
+        },
+        429,
+        {
+          success: false,
+          errorType: "rate_limited",
+          errorMessage: "AI rate limit exceeded for primary_photo_validation",
+          userId: ownerId,
+          meta: { rateLimit },
+        },
+      );
+    }
+
+    // Deterministic pre-Gemini gate (one Cloud Vision call, SafeSearch + Face
+    // + Text): rejects explicit content and — script-agnostically, in ANY
+    // language — text/cards overlapping the face before a Gemini round-trip
+    // is spent. Skipped when no Cloud Vision credential is configured; any
+    // failure continues to Gemini.
+    const precheckCredential = getCloudVisionCredential();
+    if (precheckCredential) {
+      const precheckDims = getImageDimensions(new Uint8Array(photoBuffer));
+      aiUsed = true;
+      aiProvider = "google_cloud_vision";
+      aiModel = "cloud-vision-v1-prescreen";
+      const precheck = await cloudVisionContentPrecheck(
+        {
+          base64: photoBase64,
+          width: precheckDims?.width ?? null,
+          height: precheckDims?.height ?? null,
+        },
+        precheckCredential,
+      );
+      if (precheck) {
+        if (isExplicitLikelihood(precheck.adult)) {
+          console.warn(
+            `[validate-primary-photo:${requestId}] Precheck: explicit content, rejecting without Gemini`,
+          );
+          return await jsonResponse(
+            {
+              allow: false,
+              action: "REJECT",
+              shotType: "neither",
+              reasonCode: "BAD_CONTENT",
+              translationKey: translationKeyForPrimaryPhotoReasonCode("BAD_CONTENT"),
+              confidence: 0.9,
+              message: "Please use an appropriate profile photo.",
+              faceBox: null,
+              textBoxes: [],
+              sexualContent: "explicit",
+            },
+            200,
+            {
+              success: true,
+              userId: ownerId,
+              meta: {
+                action: "REJECT",
+                shotType: "neither",
+                sexualContent: "explicit",
+                textBoxesCount: 0,
+                prescreen: "explicit",
+              },
+            },
+          );
+        }
+        const precheckFace = precheck.faces[0];
+        if (
+          precheckFace &&
+          precheckFace.confidence >= 0.5 &&
+          textBoxOverlapsFace(precheckFace.box, precheck.textBoxes)
+        ) {
+          console.warn(
+            `[validate-primary-photo:${requestId}] Precheck: text/card over face (${precheck.textBoxes.length} text boxes), rejecting without Gemini`,
+          );
+          return await jsonResponse(
+            {
+              allow: false,
+              action: "REJECT",
+              shotType: "face",
+              reasonCode: "DOCUMENT_DETECTED",
+              translationKey: translationKeyForPrimaryPhotoReasonCode("DOCUMENT_DETECTED"),
+              confidence: precheckFace.confidence,
+              message:
+                "ID cards and documents are not allowed in photos. Please retake it without them.",
+              faceBox: precheckFace.box,
+              textBoxes: precheck.textBoxes,
+              sexualContent: "none",
+            },
+            200,
+            {
+              success: true,
+              userId: ownerId,
+              meta: {
+                action: "REJECT",
+                shotType: "face",
+                sexualContent: "none",
+                textBoxesCount: precheck.textBoxes.length,
+                prescreen: "document_over_face",
+              },
+            },
+          );
+        }
+      }
+      aiUsed = false;
+      aiProvider = "google_gemini";
+      aiModel = null;
+    }
+
     const prompt = `
 You are a strict dating-app profile photo reviewer.
 Your job: decide whether this image is acceptable as the user's PRIMARY profile photo.
@@ -478,20 +807,25 @@ Reject if:
 - there are multiple people in the photo, OR
 - no person is visible, OR
 - the face is not clearly visible, OR
+- the person is holding any card or document over or in front of their face
+  (ID card, passport, driver's license, credit card, badge, or any similar
+  object covering part of the face), OR
+- any ID card, passport, license, or official document is clearly visible
+  anywhere in the photo, OR
 - the face is tiny compared with the image, partially outside the frame, or
   the image is mostly a room, object, scenery, ceiling, or background, OR
 - the image is a meme, screenshot, collage, text-only, cartoon, AI art, or heavily filtered, OR
 - the image is explicit/sexual, shows nudity, or suggests minors.
 
 Additionally, if the photo contains any visible text (including phone numbers, @handles, websites, QR codes, or any other text), it must NOT be accepted as-is.
-Instead, request sanitization so the app can crop tightly to the face and pixelate any remaining text.
+Instead, request sanitization so the app can crop tightly to the face and pixelate any remaining text — UNLESS the text or the card/document overlaps the face, in which case it must be REJECTED (see DOCUMENT_DETECTED below).
 
 Return ONLY valid JSON matching this schema:
 {
   "action": "ALLOW" | "REJECT" | "SANITIZE",
   "allow": boolean,
   "shotType": "face" | "body" | "multiple_people" | "neither",
-  "reasonCode": "NO_PERSON" | "FACE_NOT_VISIBLE" | "BAD_CONTENT" | "MULTIPLE_PEOPLE" | "BODY_SHOT" | "OK",
+  "reasonCode": "NO_PERSON" | "FACE_NOT_VISIBLE" | "BAD_CONTENT" | "DOCUMENT_DETECTED" | "MULTIPLE_PEOPLE" | "BODY_SHOT" | "OK",
   "confidence": number,
   "message": string,
   "faceBox": {"x": number, "y": number, "w": number, "h": number} | null,
@@ -504,7 +838,13 @@ Rules:
 - confidence must be a number from 0 to 1
 - message must be short and user-friendly (no explicit content descriptions)
 - reasonCode must be one of the specified values. If allow is true, reasonCode must be "OK".
-- If the image contains ANY visible text, set action to "SANITIZE" (not "ALLOW"), allow must be false, shotType must still reflect what you see.
+- If the person is holding any card or document over/in front of their face, or
+  any visible text OVERLAPS the face area, set action to "REJECT" with
+  reasonCode "DOCUMENT_DETECTED" (never SANITIZE for those), and provide the
+  faceBox and textBoxes locating the card/text.
+- Otherwise, if the image contains ANY visible text, set action to "SANITIZE"
+  (not "ALLOW"), allow must be false, shotType must still reflect what you see.
+- Text that has already been pixelated, blurred, or mosaic-obscured so that no characters are legible has ALREADY been sanitized by the app's automatic pipeline. Do NOT flag it as visible text — if the photo is otherwise acceptable, action must be "ALLOW". Only flag text whose characters are actually legible.
 - If action is "SANITIZE", you MUST provide faceBox (normalized to 0..1 relative to full image) and any detected textBoxes (also normalized).
 - When action is "REJECT", also provide faceBox (if any face is visible) and
   textBoxes for every visible text, watermark, or handle region, so the app can
@@ -541,15 +881,33 @@ Rules:
     console.log(
       `[validate-primary-photo:${requestId}] Gemini request models=[${visionModels.join(",")}] promptChars=${prompt.length} requestBytes=${requestBody.length}`,
     );
-    const maxAttempts = 3;
+    // Walk up to 6 models of the resolved chain: 503 demand spikes usually hit
+    // the newest full-flash tiers first, and the lite models at the end of the
+    // chain are normally the ones with spare capacity.
+    // The Flutter client aborts this call after 30s (profile_provider), so the
+    // whole run — retries plus the Cloud Vision fallback — must stay under it:
+    // hung models burn the full per-attempt timeout, hence the wall-clock budget.
+    const maxAttempts = Math.min(geminiUrls.length, 6);
+    const perAttemptTimeoutMs = 8_000;
+    const retryBudgetMs = 18_000;
+    const retryStartedAt = Date.now();
     let decoded: any | null = null;
     let lastErrText: string | null = null;
     let lastStatus: number | null = null;
     let lastErrorType: "http" | "network" | "timeout" | null = null;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (
+        attempt > 0 &&
+        Date.now() - retryStartedAt + perAttemptTimeoutMs > retryBudgetMs
+      ) {
+        console.warn(
+          `[validate-primary-photo:${requestId}] Retry budget exhausted after ${attempt} attempts (${Date.now() - retryStartedAt}ms), moving on`,
+        );
+        break;
+      }
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 12000);
+      const timeoutId = setTimeout(() => controller.abort(), perAttemptTimeoutMs);
       const target = geminiUrls[Math.min(attempt, geminiUrls.length - 1)];
       aiUsed = true;
       aiModel = target.model;
@@ -602,77 +960,105 @@ Rules:
       await sleep(backoffMsForAttempt(attempt));
     }
 
+    let obj: Record<string, unknown> | null = null;
     if (!decoded) {
       console.error(
         `[validate-primary-photo:${requestId}] Gemini unavailable (status=${lastStatus ?? "n/a"} type=${lastErrorType ?? "n/a"})`,
       );
-      return await jsonResponse(
-        {
-          allow: false,
-          translationKey: translationKeyForPrimaryPhotoReasonCode("SYSTEM_ERROR"),
-          message: "Unable to verify your photo right now. Please try again.",
-          geminiStatus: lastStatus,
-        },
-        503,
-        {
-          success: false,
-          errorType: lastErrorType ?? "unknown",
-          errorMessage: truncate(lastErrText ?? "Gemini unavailable"),
-          userId: ownerId,
-          meta: { geminiStatus: lastStatus },
-        },
-      );
-    }
+      const visionCredential = getCloudVisionCredential();
+      if (visionCredential) {
+        const dims = getImageDimensions(new Uint8Array(photoBuffer));
+        console.log(
+          `[validate-primary-photo:${requestId}] Trying Cloud Vision fallback auth=${visionCredential.kind} dims=${dims ? `${dims.width}x${dims.height}` : "unknown"}`,
+        );
+        const fallbackDecision = await cloudVisionPhotoDecision(
+          "primary",
+          {
+            base64: photoBase64,
+            width: dims?.width ?? null,
+            height: dims?.height ?? null,
+          },
+          visionCredential,
+        );
+        if (fallbackDecision) {
+          obj = fallbackDecision;
+          aiProvider = "google_cloud_vision";
+          aiModel = "cloud-vision-v1";
+        }
+      } else {
+        console.warn(
+          `[validate-primary-photo:${requestId}] Cloud Vision fallback skipped: no GOOGLE_CLOUD_VISION_API_KEY or GOOGLE_CLOUD_VISION_SERVICE_ACCOUNT_JSON configured`,
+        );
+      }
+      if (!obj) {
+        return await jsonResponse(
+          {
+            allow: false,
+            translationKey: translationKeyForPrimaryPhotoReasonCode("SYSTEM_ERROR"),
+            message: "Unable to verify your photo right now. Please try again.",
+            geminiStatus: lastStatus,
+          },
+          503,
+          {
+            success: false,
+            errorType: lastErrorType ?? "unknown",
+            errorMessage: truncate(lastErrText ?? "Gemini unavailable"),
+            userId: ownerId,
+            meta: { geminiStatus: lastStatus },
+          },
+        );
+      }
+    } else {
+      const text = decoded?.candidates?.[0]?.content?.parts?.[0]?.text?.trim?.();
+      if (!text) {
+        console.error(
+          `[validate-primary-photo:${requestId}] Gemini response missing candidates text summary=${truncate(safeStringify(summarizeGeminiDecoded(decoded)))}`,
+        );
+        console.error(
+          `[validate-primary-photo:${requestId}] Gemini raw decoded=${truncate(safeStringify(decoded))}`,
+        );
+        return await jsonResponse(
+          {
+            allow: false,
+            translationKey: translationKeyForPrimaryPhotoReasonCode("SYSTEM_ERROR"),
+            message: "Unable to verify your photo right now. Please try again.",
+          },
+          500,
+          {
+            success: false,
+            errorType: "ai_response_invalid",
+            errorMessage: truncate(safeStringify(summarizeGeminiDecoded(decoded))),
+            userId: ownerId,
+          },
+        );
+      }
 
-    const text = decoded?.candidates?.[0]?.content?.parts?.[0]?.text?.trim?.();
-    if (!text) {
-      console.error(
-        `[validate-primary-photo:${requestId}] Gemini response missing candidates text summary=${truncate(safeStringify(summarizeGeminiDecoded(decoded)))}`,
+      console.log(
+        `[validate-primary-photo:${requestId}] Gemini candidates[0].text length=${text.length} preview=${truncate(text, 800)}`,
       );
-      console.error(
-        `[validate-primary-photo:${requestId}] Gemini raw decoded=${truncate(safeStringify(decoded))}`,
-      );
-      return await jsonResponse(
-        {
-          allow: false,
-          translationKey: translationKeyForPrimaryPhotoReasonCode("SYSTEM_ERROR"),
-          message: "Unable to verify your photo right now. Please try again.",
-        },
-        500,
-        {
-          success: false,
-          errorType: "ai_response_invalid",
-          errorMessage: truncate(safeStringify(summarizeGeminiDecoded(decoded))),
-          userId: ownerId,
-        },
-      );
-    }
+      const cleaned = text
+        .replace(/^```(?:json)?\s*/i, "")
+        .replace(/\s*```$/, "")
+        .trim();
 
-    console.log(
-      `[validate-primary-photo:${requestId}] Gemini candidates[0].text length=${text.length} preview=${truncate(text, 800)}`,
-    );
-    const cleaned = text
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/\s*```$/, "")
-      .trim();
-
-    let parsed: unknown = null;
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch (_) {
-      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        try {
-          parsed = JSON.parse(jsonMatch[0]);
-        } catch (_) {
-          parsed = null;
+      let parsed: unknown = null;
+      try {
+        parsed = JSON.parse(cleaned);
+      } catch (_) {
+        const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          try {
+            parsed = JSON.parse(jsonMatch[0]);
+          } catch (_) {
+            parsed = null;
+          }
         }
       }
-    }
 
-    const obj = parsed && typeof parsed === "object"
-      ? (parsed as Record<string, unknown>)
-      : null;
+      obj = parsed && typeof parsed === "object"
+        ? (parsed as Record<string, unknown>)
+        : null;
+    }
 
     const allow = obj?.allow === true;
     const actionRaw = typeof obj?.action === "string" ? obj.action : null;
@@ -702,37 +1088,73 @@ Rules:
       : 0;
 
     const hasSexual = sexualContent === "suggestive" || sexualContent === "explicit";
+    // Geometric guard, independent of Gemini's own action: any text box
+    // overlapping the face is a card/document held to the face or another
+    // occlusion — reject outright, never auto-sanitize, never allow. This is
+    // the server-side mirror of the client prescreen's text-over-face rule,
+    // and the fix for the case where Gemini classifies a card as merely
+    // "text" and requests SANITIZE.
+    const textOnFace = faceBox !== null && textBoxes.some((tb) => {
+      const ix = Math.max(0, Math.min(faceBox.x + faceBox.w, tb.x + tb.w) - Math.max(faceBox.x, tb.x));
+      const iy = Math.max(0, Math.min(faceBox.y + faceBox.h, tb.y + tb.h) - Math.max(faceBox.y, tb.y));
+      const intersection = ix * iy;
+      const tbArea = tb.w * tb.h;
+      const faceArea = faceBox.w * faceBox.h;
+      return (tbArea > 0 && intersection / tbArea >= 0.25) ||
+        (faceArea > 0 && intersection / faceArea >= 0.08);
+    });
     // Do not accept an AI "face" classification for a tiny or cropped face.
     // This check makes the server-side decision match the native prescreen
     // even when a local detector was unavailable.
+    // Tolerance is measured on the RAW, unclamped coordinates: Gemini's boxes
+    // are quantized to ~1-2%, and a face that merely touches the frame edge is
+    // complete — only reject when the box clearly extends past the frame.
+    const rawFaceBox = obj?.faceBox && typeof obj.faceBox === "object"
+      ? (obj.faceBox as Record<string, unknown>)
+      : null;
+    const rawFaceX = toNumber(rawFaceBox?.x) ?? 0;
+    const rawFaceY = toNumber(rawFaceBox?.y) ?? 0;
+    const rawFaceW = toNumber(rawFaceBox?.w) ?? 0;
+    const rawFaceH = toNumber(rawFaceBox?.h) ?? 0;
     const faceBoxIsUsable = faceBox !== null &&
       faceBox.w * faceBox.h >= 0.10 &&
-      faceBox.x > 0.02 && faceBox.y > 0.02 &&
-      faceBox.x + faceBox.w < 0.98 && faceBox.y + faceBox.h < 0.98;
+      rawFaceX > -0.02 && rawFaceY > -0.02 &&
+      rawFaceX + rawFaceW < 1.02 && rawFaceY + rawFaceH < 1.02;
     const rejectedForUnusableFaceBox = allow && normalizedShotType === "face" &&
       !hasSexual && !faceBoxIsUsable;
-    const effectiveAllow = allow && (normalizedShotType === "face") && !hasSexual && faceBoxIsUsable;
+    // Content-policy rejections keep their own reasonCode; everything else
+    // with text on the face becomes DOCUMENT_DETECTED.
+    const rejectedForTextOnFace = textOnFace && !hasSexual &&
+      reasonCode !== "BAD_CONTENT" &&
+      (allow || actionRaw !== "REJECT");
+    const effectiveAllow = allow && (normalizedShotType === "face") && !hasSexual &&
+      faceBoxIsUsable && !textOnFace;
     const normalizedAction = actionRaw === "ALLOW" || actionRaw === "REJECT" || actionRaw === "SANITIZE"
       ? actionRaw
       : effectiveAllow
       ? "ALLOW"
       : "REJECT";
-    const effectiveAction = hasSexual || rejectedForUnusableFaceBox ? "REJECT" : normalizedAction;
+    const effectiveAction = hasSexual || rejectedForUnusableFaceBox || rejectedForTextOnFace
+      ? "REJECT"
+      : normalizedAction;
     const effectiveReasonCode = hasSexual
       ? "BAD_CONTENT"
       : rejectedForUnusableFaceBox
       ? "FACE_NOT_VISIBLE"
+      : rejectedForTextOnFace
+      ? "DOCUMENT_DETECTED"
       : reasonCode;
     const effectiveMessage = rejectedForUnusableFaceBox
       ? "Please use a clear photo with your full face visible."
+      : rejectedForTextOnFace
+      ? "ID cards and documents are not allowed in photos. Please retake it without them."
       : message;
 
     console.log(
-      `[validate-primary-photo:${requestId}] Decision action=${effectiveAction} allow=${effectiveAllow} shotType=${normalizedShotType} confidence=${normalizedConfidence} reasonCode=${effectiveReasonCode} sexual=${sexualContent} textBoxes=${textBoxes.length}`,
+      `[validate-primary-photo:${requestId}] Decision action=${effectiveAction} allow=${effectiveAllow} shotType=${normalizedShotType} confidence=${normalizedConfidence} reasonCode=${effectiveReasonCode} sexual=${sexualContent} textBoxes=${textBoxes.length} textOnFace=${textOnFace}`,
     );
 
     if (effectiveAllow) {
-      const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (!uuidRe.test(ownerId)) {
         console.error(
           `[validate-primary-photo:${requestId}] Invalid ownerId derived from photoPath ownerId=${ownerId} photoPath=${photoPath}`,
@@ -778,7 +1200,7 @@ Rules:
       // approved_primary_photos is now on user_profiles
       const { data: profileRow } = await supabase
         .from("user_profiles")
-        .select("approved_primary_photos")
+        .select("approved_primary_photos, approved_primary_photo_hashes, approved_primary_photo_phashes")
         .eq("user_id", ownerId)
         .maybeSingle();
 
@@ -1133,28 +1555,155 @@ Rules:
       }
 
       const next = Array.from(new Set([...existing, photoPath]));
+      const existingHashes = Array.isArray(
+        (profileRow as any)?.approved_primary_photo_hashes,
+      )
+        ? ((profileRow as any).approved_primary_photo_hashes as unknown[]).map((v) => String(v))
+        : [];
+      const nextHashes = Array.from(new Set([...existingHashes, photoHash]));
+      const existingPhashes = Array.isArray(
+        (profileRow as any)?.approved_primary_photo_phashes,
+      )
+        ? ((profileRow as any).approved_primary_photo_phashes as unknown[]).map((v) => String(v))
+        : [];
+      // Cap the stored perceptual-hash list so it cannot grow unbounded over
+      // years of photo churn; the oldest hashes fall off first.
+      const nextPhashes = photoPhash
+        ? [...new Set([...existingPhashes, photoPhash])].slice(-50)
+        : existingPhashes;
       const { error: updateErr } = await supabase
         .from("user_profiles")
-        .update({ approved_primary_photos: next })
+        .update({
+          approved_primary_photos: next,
+          approved_primary_photo_hashes: nextHashes,
+          approved_primary_photo_phashes: nextPhashes,
+        })
         .eq("user_id", ownerId);
       if (updateErr) {
+        // Likely the phash column is missing (migration pending) — retry with
+        // just the legacy columns so the approval itself still persists.
+        console.warn(
+          `[validate-primary-photo:${requestId}] Approval persist with phash failed: ${truncate(safeStringify(updateErr))}`,
+        );
+        await supabase
+          .from("user_profiles")
+          .update({
+            approved_primary_photos: next,
+            approved_primary_photo_hashes: nextHashes,
+          })
+          .eq("user_id", ownerId);
+      }
+    }
+
+    // Server-side sanitize: when the client declares support, the server
+    // crops the offending text out itself (using Gemini's own boxes, so any
+    // script works), verifies the result geometrically, and approves the
+    // cleaned copy — one AI call for the whole sanitize flow instead of two.
+    // Verified users keep the legacy two-call flow: their path runs the
+    // identity comparison against the final photo, which a server crop would
+    // otherwise skip.
+    if (
+      effectiveAction === "SANITIZE" &&
+      !effectiveAllow &&
+      faceBox !== null &&
+      body.clientSupportsServerSanitize === true &&
+      uuidRe.test(ownerId)
+    ) {
+      const { data: verifyRow, error: verifyErr } = await supabase
+        .from("users")
+        .select("is_verified")
+        .eq("id", ownerId)
+        .maybeSingle();
+      if (verifyErr) {
         console.error(
-          `[validate-primary-photo:${requestId}] Failed to persist approved_primary_photos error=${truncate(safeStringify(updateErr))}`,
+          `[validate-primary-photo:${requestId}] Server sanitize verify lookup failed: ${truncate(safeStringify(verifyErr))}`,
         );
-        return await jsonResponse(
-          {
-            allow: false,
-            translationKey: translationKeyForPrimaryPhotoReasonCode("SYSTEM_ERROR"),
-            message: "Unable to verify your photo right now. Please try again.",
-          },
-          500,
-          {
-            success: false,
-            errorType: "db_write_failed",
-            errorMessage: truncate(safeStringify(updateErr)),
-            userId: ownerId,
-          },
-        );
+      } else if ((verifyRow as any)?.is_verified !== true) {
+        const result = await sanitizeProfilePhoto(new Uint8Array(photoBuffer), faceBox, textBoxes);
+        if (result.ok) {
+          const newPath = `${ownerId}/${Date.now()}_clean_${crypto.randomUUID()}.jpg`;
+          const { error: uploadErr } = await supabase.storage
+            .from("profile-photos")
+            .upload(newPath, result.bytes, { contentType: "image/jpeg" });
+          if (!uploadErr) {
+            // Best-effort cleanup of the original upload — the cropped copy
+            // replaces it everywhere.
+            try {
+              await supabase.storage.from("profile-photos").remove([photoPath]);
+            } catch (_) {}
+            const { data: profileRow } = await supabase
+              .from("user_profiles")
+              .select("approved_primary_photos, approved_primary_photo_hashes, approved_primary_photo_phashes")
+              .eq("user_id", ownerId)
+              .maybeSingle();
+            const existingPaths = Array.isArray((profileRow as any)?.approved_primary_photos)
+              ? ((profileRow as any).approved_primary_photos as unknown[]).map((v) => String(v))
+              : [];
+            const existingHashes = Array.isArray((profileRow as any)?.approved_primary_photo_hashes)
+              ? ((profileRow as any).approved_primary_photo_hashes as unknown[]).map((v) => String(v))
+              : [];
+            const existingPhashes = Array.isArray((profileRow as any)?.approved_primary_photo_phashes)
+              ? ((profileRow as any).approved_primary_photo_phashes as unknown[]).map((v) => String(v))
+              : [];
+            const croppedHash = await sha256Hex(result.bytes.slice().buffer as ArrayBuffer);
+            const croppedPhash = await perceptualHash(result.bytes);
+            const nextPhashes = croppedPhash
+              ? [...new Set([...existingPhashes, croppedPhash])].slice(-50)
+              : existingPhashes;
+            const { error: updateErr } = await supabase
+              .from("user_profiles")
+              .update({
+                approved_primary_photos: Array.from(new Set([...existingPaths, newPath])),
+                approved_primary_photo_hashes: Array.from(new Set([...existingHashes, croppedHash])),
+                approved_primary_photo_phashes: nextPhashes,
+              })
+              .eq("user_id", ownerId);
+            if (updateErr) {
+              console.error(
+                `[validate-primary-photo:${requestId}] Server sanitize persist failed: ${truncate(safeStringify(updateErr))}`,
+              );
+            }
+            console.log(
+              `[validate-primary-photo:${requestId}] Server sanitize complete, approving cropped copy path=${newPath}`,
+            );
+            return await jsonResponse(
+              {
+                allow: true,
+                action: "ALLOW",
+                shotType: "face",
+                reasonCode: "OK",
+                translationKey: null,
+                confidence: normalizedConfidence,
+                message: "OK",
+                faceBox: null,
+                textBoxes: [],
+                sexualContent: "none",
+                serverSanitized: true,
+                photoPath: newPath,
+              },
+              200,
+              {
+                success: true,
+                userId: ownerId,
+                meta: {
+                  action: "ALLOW",
+                  shotType: "face",
+                  sexualContent: "none",
+                  textBoxesCount: 0,
+                  serverSanitized: true,
+                },
+              },
+            );
+          } else {
+            console.error(
+              `[validate-primary-photo:${requestId}] Server sanitize upload failed: ${truncate(safeStringify(uploadErr))}`,
+            );
+          }
+        } else {
+          console.error(
+            `[validate-primary-photo:${requestId}] Server sanitize skipped: ${result.reason}`,
+          );
+        }
       }
     }
 

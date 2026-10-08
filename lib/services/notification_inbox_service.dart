@@ -103,15 +103,26 @@ class NotificationInboxService {
         .filter('read_at', 'is', null);
   }
 
-  Future<void> markAllRead() async {
-    final userId = _client.auth.currentUser?.id;
-    if (userId == null || userId.isEmpty) return;
+  /// Mark a specific set of rows read (multi-select). Skips rows that are
+  /// already read, mirroring the single-item variant.
+  Future<void> markReadMany(Set<String> ids) async {
+    if (ids.isEmpty) return;
     await _client
         .from('user_notifications')
         .update({'read_at': DateTime.now().toUtc().toIso8601String()})
-        .eq('user_id', userId)
-        .filter('read_at', 'is', null)
-        .filter('deleted_at', 'is', null);
+        .inFilter('id', ids.toList())
+        .filter('read_at', 'is', null);
+  }
+
+  /// Mark a specific set of rows unread (multi-select). Only rows that are
+  /// currently read are touched.
+  Future<void> markUnreadMany(Set<String> ids) async {
+    if (ids.isEmpty) return;
+    await _client
+        .from('user_notifications')
+        .update({'read_at': null})
+        .inFilter('id', ids.toList())
+        .filter('read_at', 'is', null);
   }
 
   /// Soft delete so the client list can be reconciled from the server.
@@ -122,23 +133,28 @@ class NotificationInboxService {
         .eq('id', id);
   }
 
-  Future<void> deleteAll() async {
-    final userId = _client.auth.currentUser?.id;
-    if (userId == null || userId.isEmpty) return;
+  /// Soft-delete a specific set of rows so the client list can be reconciled
+  /// from the server (multi-select).
+  Future<void> deleteMany(Set<String> ids) async {
+    if (ids.isEmpty) return;
     await _client
         .from('user_notifications')
         .update({'deleted_at': DateTime.now().toUtc().toIso8601String()})
-        .eq('user_id', userId)
-        .filter('deleted_at', 'is', null);
+        .inFilter('id', ids.toList());
   }
 
-  /// Subscribe to realtime inserts for the current user's inbox.
+  /// Subscribe to realtime changes for the current user's inbox. New rows go
+  /// to [onInsert]; read_at / deleted_at changes made on another device (or by
+  /// an admin) go to [onUpdate] — soft-deletes surface there as rows with a
+  /// non-null deletedAt. Hard DELETEs (server-side cleanups) go to [onDelete].
   /// Returns the channel; caller owns its lifecycle (see
   /// SupabaseRealtimeManager) and should remove it when the user signs out.
   RealtimeChannel subscribeInbox(
     String userId,
-    void Function(NotificationInboxItem item) onInsert,
-  ) {
+    void Function(NotificationInboxItem item) onInsert, {
+    void Function(NotificationInboxItem item)? onUpdate,
+    void Function(String id)? onDelete,
+  }) {
     final channelName = 'notification_inbox_$userId';
     final channel = _client.channel(channelName);
     channel.onPostgresChanges(
@@ -157,6 +173,45 @@ class NotificationInboxService {
           onInsert(NotificationInboxItem.fromMap(record));
         } catch (e) {
           debugPrint('NotificationInbox: realtime insert error: $e');
+        }
+      },
+    );
+    channel.onPostgresChanges(
+      event: PostgresChangeEvent.update,
+      schema: 'public',
+      table: 'user_notifications',
+      filter: PostgresChangeFilter(
+        type: PostgresChangeFilterType.eq,
+        column: 'user_id',
+        value: userId,
+      ),
+      callback: (payload) {
+        try {
+          final record = payload.newRecord;
+          if (record.isEmpty) return;
+          onUpdate?.call(NotificationInboxItem.fromMap(record));
+        } catch (e) {
+          debugPrint('NotificationInbox: realtime update error: $e');
+        }
+      },
+    );
+    channel.onPostgresChanges(
+      event: PostgresChangeEvent.delete,
+      schema: 'public',
+      table: 'user_notifications',
+      filter: PostgresChangeFilter(
+        type: PostgresChangeFilterType.eq,
+        column: 'user_id',
+        value: userId,
+      ),
+      callback: (payload) {
+        try {
+          final oldRecord = payload.oldRecord;
+          final id = oldRecord['id']?.toString();
+          if (id == null || id.isEmpty) return;
+          onDelete?.call(id);
+        } catch (e) {
+          debugPrint('NotificationInbox: realtime delete error: $e');
         }
       },
     );

@@ -972,7 +972,11 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
           prevChat['last_message_source_language']?.toString() !=
               nextChat['last_message_source_language']?.toString() ||
           prevChat['matched_intent']?.toString() !=
-              nextChat['matched_intent']?.toString()) {
+              nextChat['matched_intent']?.toString() ||
+          // Archive moves a chat between the active and archived views; a
+          // cache write that only flips this flag must still surface.
+          prevChat['archived_at']?.toString() !=
+              nextChat['archived_at']?.toString()) {
         return false;
       }
     }
@@ -1084,8 +1088,13 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
 
   // Skip realtime channel setup when offline - it will fail to connect and cause retries
   RealtimeChannel? chatUpdateChannel;
-  if (!isOffline) {
-    chatUpdateChannel = supabase
+
+  // Builder so SupabaseRealtimeManager can re-create the channel after an
+  // offline→online cycle: the vendored realtime client does NOT auto-rejoin
+  // channels after a socket disconnect, so without re-creation the chat
+  // subscription silently stops delivering until the provider is rebuilt.
+  RealtimeChannel buildChatMessagesChannel() {
+    return supabase
         .channel('public:chat_messages:for_user_$userId')
         .onPostgresChanges(
           event: PostgresChangeEvent.all,
@@ -1622,8 +1631,7 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
   // message delivery while still preventing frame drops during initialization.
   // The 200ms delay is sufficient to let ChatKeyProvider complete without
   // causing noticeable message delays.
-  if (!isOffline && chatUpdateChannel != null) {
-    (() async {
+  Future<void> subscribeChatMessagesChannel() async {
       final initialDelay = await (() async {
         try {
           return await appConfigService.getDuration(
@@ -1746,13 +1754,30 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
           }
         });
       });
-    })();
+  }
+
+  if (!isOffline) {
+    chatUpdateChannel = buildChatMessagesChannel();
+    unawaited(subscribeChatMessagesChannel());
+    SupabaseRealtimeManager.instance.register(
+      'public:chat_messages:for_user_$userId',
+      () {
+        final ch = buildChatMessagesChannel();
+        chatUpdateChannel = ch;
+        unawaited(subscribeChatMessagesChannel());
+        return ch;
+      },
+      activateNow: false,
+    );
   }
 
   // Subscribe to matches table changes for real-time match deletions (skip when offline)
   RealtimeChannel? matchUpdateChannel;
-  if (!isOffline) {
-    matchUpdateChannel = supabase
+
+  // Builder for manager re-creation after offline→online (see
+  // buildChatMessagesChannel above).
+  RealtimeChannel buildMatchesChannel() {
+    return supabase
         .channel('public:matches:for_user_$userId')
         .onPostgresChanges(
           event: PostgresChangeEvent.all,
@@ -1776,8 +1801,7 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
   }
 
   // Defer subscribe to past first frame (reduced to 200ms for near-instant updates)
-  if (!isOffline && matchUpdateChannel != null) {
-    (() async {
+  Future<void> subscribeMatchesChannel() async {
       final initialDelay = await (() async {
         try {
           return await appConfigService.getDuration(
@@ -1886,7 +1910,21 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
           }
         });
       });
-    })();
+  }
+
+  if (!isOffline) {
+    matchUpdateChannel = buildMatchesChannel();
+    unawaited(subscribeMatchesChannel());
+    SupabaseRealtimeManager.instance.register(
+      'public:matches:for_user_$userId',
+      () {
+        final ch = buildMatchesChannel();
+        matchUpdateChannel = ch;
+        unawaited(subscribeMatchesChannel());
+        return ch;
+      },
+      activateNow: false,
+    );
   }
 
   // Subscribe to chats table changes for real-time chat deletions AND
@@ -1903,8 +1941,11 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
   // user would also receive the other participant's chat-row events and
   // overwrite their own per-user translation state with the other user's.
   RealtimeChannel? chatsUpdateChannel;
-  if (!isOffline) {
-    chatsUpdateChannel = supabase
+
+  // Builder for manager re-creation after offline→online (see
+  // buildChatMessagesChannel above).
+  RealtimeChannel buildChatsChannel() {
+    return supabase
         .channel('public:chats:for_user_$userId')
         .onPostgresChanges(
           event: PostgresChangeEvent.delete,
@@ -1946,14 +1987,37 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
           ),
           callback: (payload) async {
             if (!ref.mounted) return;
-            // Only react to translation-column changes. Other column updates
-            // (last_message_*, unread_count, etc.) are reconciled by the
-            // chat_messages subscription and periodic syncChatsNow pulls.
             final newRecord = payload.newRecord as Map<String, dynamic>?;
             if (newRecord == null) return;
 
             final matchId = newRecord['match_id'] as String?;
             if (matchId == null || matchId.isEmpty) return;
+
+            // Cross-device archive sync: react to archived_at changes too —
+            // an archive/unarchive made on another device moves the chat
+            // between the Chats and Archived lists immediately instead of on
+            // the next sync cycle. setChatsArchived no-ops when the cache
+            // already matches, so the echo of this device's own archive
+            // write is skipped.
+            final archivedRaw = newRecord['archived_at'];
+            final remoteArchived = archivedRaw != null &&
+                archivedRaw.toString().isNotEmpty &&
+                archivedRaw.toString() != 'null';
+            try {
+              final localDb = ref.read(localDbProvider);
+              final cachedArchived =
+                  await localDb.isChatCachedArchived(userId, matchId);
+              if (cachedArchived != remoteArchived) {
+                await localDb.setChatsArchived(userId, {matchId}, remoteArchived);
+              }
+            } catch (e) {
+              debugPrint('Error syncing chat archive update from realtime: $e');
+            }
+
+            // Only react to translation-column changes beyond the archive
+            // flag above. Other column updates (last_message_*,
+            // unread_count, etc.) are reconciled by the chat_messages
+            // subscription and periodic syncChatsNow pulls.
 
             final newEnabled = newRecord['translation_enabled'] == true;
             final newLanguage = newRecord['translation_language'] as String?;
@@ -2007,8 +2071,7 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
   }
 
   // Defer subscribe to past first frame (reduced to 200ms for near-instant updates)
-  if (!isOffline && chatsUpdateChannel != null) {
-    (() async {
+  Future<void> subscribeChatsChannel() async {
       final initialDelay = await (() async {
         try {
           return await appConfigService.getDuration(
@@ -2144,13 +2207,36 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
           }
         });
       });
-    })();
+  }
+
+  if (!isOffline) {
+    chatsUpdateChannel = buildChatsChannel();
+    unawaited(subscribeChatsChannel());
+    SupabaseRealtimeManager.instance.register(
+      'public:chats:for_user_$userId',
+      () {
+        final ch = buildChatsChannel();
+        chatsUpdateChannel = ch;
+        unawaited(subscribeChatsChannel());
+        return ch;
+      },
+      activateNow: false,
+    );
   }
 
   ref.onDispose(() {
-    if (chatUpdateChannel != null) supabase.removeChannel(chatUpdateChannel);
-    if (matchUpdateChannel != null) supabase.removeChannel(matchUpdateChannel);
-    if (chatsUpdateChannel != null) supabase.removeChannel(chatsUpdateChannel);
+    SupabaseRealtimeManager.instance
+        .unregister('public:chat_messages:for_user_$userId');
+    SupabaseRealtimeManager.instance
+        .unregister('public:matches:for_user_$userId');
+    SupabaseRealtimeManager.instance
+        .unregister('public:chats:for_user_$userId');
+    final chatMessagesCh = chatUpdateChannel;
+    if (chatMessagesCh != null) supabase.removeChannel(chatMessagesCh);
+    final matchesCh = matchUpdateChannel;
+    if (matchesCh != null) supabase.removeChannel(matchesCh);
+    final chatsCh = chatsUpdateChannel;
+    if (chatsCh != null) supabase.removeChannel(chatsCh);
   });
 
   // When the chat key becomes available (first load or unlock), re-sync
@@ -3163,6 +3249,10 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
 /// of "self not yet marked online" timing bugs (and the debounced session
 /// registration, the 60s cooldown, and the heartbeat no longer matter for the
 /// displayed count at all).
+///
+/// The `+ 1` for self only applies when the signed-in user's own profile is
+/// complete — the RPC excludes incomplete profiles, so a user who has not
+/// finished onboarding is never counted, not even as self.
 Future<({Map<String, int?> stats, int radiusMeters, double radiusKm})>
 _fetchLiveDashboardStats(String userId) async {
   // The online-others count does not depend on the radius, so start it before
@@ -3184,22 +3274,26 @@ _fetchLiveDashboardStats(String userId) async {
       return 100;
     }
   })();
+  // Convert meters to km for the RPC call - use exact precision
+  final userRadiusKm = userRadiusMeters / 1000.0;
+
+  // Self only inflates the online count when their own profile is complete;
+  // the RPC already excludes incomplete profiles for everyone else.
+  bool selfProfileComplete = false;
   try {
     final userResponse = await supabase
         .from('users')
-        .select('match_radius_default')
+        .select('match_radius_default, is_profile_complete')
         .eq('id', userId)
         .single();
     userRadiusMeters =
         (userResponse['match_radius_default'] as int?) ?? userRadiusMeters;
+    selfProfileComplete = userResponse['is_profile_complete'] == true;
   } catch (e) {
     if (!isExpectedOfflineFailure(e)) {
       debugPrint('Could not fetch user radius, using default: $e');
     }
   }
-
-  // Convert meters to km for the RPC call - use exact precision
-  final userRadiusKm = userRadiusMeters / 1000.0;
 
   final nearbyFuture = supabase.rpc(
     'get_nearby_users_count',
@@ -3212,7 +3306,7 @@ _fetchLiveDashboardStats(String userId) async {
   return (
     stats: <String, int?>{
       'nearby': nearbyCount,
-      'online': othersOnlineCount + 1,
+      'online': othersOnlineCount + (selfProfileComplete ? 1 : 0),
     },
     radiusMeters: userRadiusMeters,
     radiusKm: userRadiusKm,
@@ -4159,73 +4253,6 @@ final activityUpdateProvider = Provider.autoDispose<void>((ref) {
     );
   }
 });
-
-// Potential matches provider - fetches users that could be matches
-// Uses server-side get_potential_matches RPC for distance computation,
-// match exclusion, and radius filtering — no client-side Haversine needed.
-final potentialMatchesProvider =
-    FutureProvider.autoDispose<List<Map<String, dynamic>>>((ref) async {
-      final user = supabase.auth.currentUser;
-      if (user == null) return [];
-
-      try {
-        // Get current user's location and settings
-        final userResponse = await supabase
-            .from('users')
-            .select('match_radius_default')
-            .eq('id', user.id)
-            .single();
-
-        final userRadiusMeters =
-            (userResponse['match_radius_default'] as int?) ?? 50000;
-        final matchRadiusKm = (userRadiusMeters / 1000.0);
-
-        // Get current user's location
-        final locationResponse = await supabase
-            .from('user_locations')
-            .select('latitude, longitude')
-            .eq('user_id', user.id)
-            .order('updated_at', ascending: false)
-            .limit(1)
-            .maybeSingle();
-
-        if (locationResponse == null) return [];
-
-        final userLat = locationResponse['latitude'] as double;
-        final userLng = locationResponse['longitude'] as double;
-
-        // Call server-side RPC that handles: distance calc, match exclusion, radius filter, sorting
-        final response = await supabase.rpc(
-          'get_potential_matches',
-          params: {
-            'p_user_id': user.id,
-            'p_latitude': userLat,
-            'p_longitude': userLng,
-            'p_radius_km': matchRadiusKm,
-          },
-        );
-
-        final rawList = response as List<dynamic>? ?? [];
-        final potentialMatches = rawList.map((item) {
-          final row = item as Map<String, dynamic>;
-          return {
-            'id': row['user_id'],
-            'display_name': row['display_name'],
-            'profile_data': row['profile_data'],
-            'distance': row['distance_km'],
-            'location': {
-              'latitude': row['latitude'],
-              'longitude': row['longitude'],
-            },
-          };
-        }).toList();
-
-        return potentialMatches;
-      } catch (e) {
-        debugPrint('Error fetching potential matches: $e');
-        return [];
-      }
-    });
 
 // --- userChatIdsProvider ---
 // Returns a set of match IDs that have chats for the given user

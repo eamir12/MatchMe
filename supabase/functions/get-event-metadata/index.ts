@@ -4,6 +4,7 @@ import { DOMParser } from "https://deno.land/x/deno_dom@v0.1.36-alpha/deno-dom-w
 import { createClient } from "npm:@supabase/supabase-js@2.28.0";
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
 import { buildGeminiUrl, resolveTextModels } from "../_shared/gemini_config.ts";
+import { consumeAiRateLimit, getClientIp } from "../_shared/ai_rate_limit.ts";
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -469,6 +470,23 @@ serve(async (req) => {
       body?.eventValidation && typeof body.eventValidation === 'object'
         ? body.eventValidation as Record<string, unknown>
         : null;
+
+    // AI rate limiting (app_config ai.rate_limit.event_metadata.*). This
+    // function has no user context, so the limit is per hashed client IP;
+    // one unit covers the whole request (metadata or joinability).
+    {
+      const rateLimit = await consumeAiRateLimit(svc, {
+        task: 'event_metadata',
+        userId: null,
+        ip: getClientIp(req),
+      });
+      if (!rateLimit.allowed) {
+        return jsonResponse(
+          { error: 'Too many requests. Please try again later.', retryAfterSeconds: rateLimit.retryAfterSeconds },
+          429,
+        );
+      }
+    }
 
     if (eventValidation != null) {
       const API_KEY = Deno.env.get('GOOGLE_AI_API_KEY');

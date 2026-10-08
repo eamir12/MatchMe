@@ -156,6 +156,8 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
   Future<List<_SponsoredLocaleOption>>? _localeOptionsFuture;
   bool _isLoadingEditor = false;
   bool _isSubscribed = false;
+  final List<StreamSubscription<List<Map<String, dynamic>>>?> _realtimeSubs =
+      [];
   StreamSubscription<bool>? _availabilitySub;
   Timer? _dashboardReloadDebounce;
 
@@ -204,13 +206,15 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
     _clearFormFields();
     _setupRealtimeSubscription();
 
-    // Re-establish realtime subscriptions when connectivity is restored
+    // Re-establish realtime subscriptions when connectivity is restored.
+    // The stream channels don't survive an offline→online transition (the
+    // realtime client doesn't rejoin them), so tear down and re-create.
     _availabilitySub = adminOfflineCacheManager.availabilityStream.listen((
       available,
     ) {
       if (!mounted) return;
       if (available) {
-        _isSubscribed = false;
+        _teardownRealtimeSubscriptions();
         _setupRealtimeSubscription();
       }
     });
@@ -670,6 +674,7 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
   @override
   void dispose() {
     _availabilitySub?.cancel();
+    _teardownRealtimeSubscriptions();
     _dashboardReloadDebounce?.cancel();
     _analyticsPersistDebounce?.cancel();
     _tabController?.removeListener(_handleTabControllerChanged);
@@ -721,9 +726,10 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
   }
 
   void _setupRealtimeSubscription() {
-    // Skip realtime subscriptions when offline to avoid noisy connection errors
+    // Skip realtime subscriptions when offline to avoid noisy connection
+    // errors — the availability listener re-runs this when Supabase is
+    // reachable again.
     if (adminOfflineCacheManager.shouldUseCachedData()) {
-      _isSubscribed = true;
       return;
     }
     if (_isSubscribed) return;
@@ -739,79 +745,107 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
       }
 
       // Listen to app_config changes (ad settings)
-      Supabase.instance.client
-          .from('app_config')
-          .stream(primaryKey: ['config_key'])
-          .listen((data) {
-            debugPrint('[SponsoredAds] app_config realtime update received');
-            if (!mounted) return;
-            if (_hasLocalConfigEdits || _isSavingConfig) return;
-            _refresh();
-          }, onError: (error) => logRealtimeError('app_config', error));
+      _realtimeSubs.add(
+        Supabase.instance.client
+            .from('app_config')
+            .stream(primaryKey: ['config_key'])
+            .listen((data) {
+              debugPrint('[SponsoredAds] app_config realtime update received');
+              if (!mounted) return;
+              if (_hasLocalConfigEdits || _isSavingConfig) return;
+              _refresh();
+            }, onError: (error) => logRealtimeError('app_config', error)),
+      );
 
       // Listen to ad_campaigns changes (campaign updates)
-      Supabase.instance.client
-          .from('ad_campaigns')
-          .stream(primaryKey: ['id'])
-          .listen((data) {
-            debugPrint('[SponsoredAds] ad_campaigns realtime update received');
-            // Campaign rows are authoritative server state, so the aggregates
-            // cache must be dropped to guarantee a fresh read.
-            if (mounted) _scheduleDashboardReload(clearCache: true);
-          }, onError: (error) => logRealtimeError('ad_campaigns', error));
+      _realtimeSubs.add(
+        Supabase.instance.client
+            .from('ad_campaigns')
+            .stream(primaryKey: ['id'])
+            .listen((data) {
+              debugPrint(
+                '[SponsoredAds] ad_campaigns realtime update received',
+              );
+              // Campaign rows are authoritative server state, so the aggregates
+              // cache must be dropped to guarantee a fresh read.
+              if (mounted) _scheduleDashboardReload(clearCache: true);
+            }, onError: (error) => logRealtimeError('ad_campaigns', error)),
+      );
 
       // Listen to ad_creatives changes (creative updates)
-      Supabase.instance.client
-          .from('ad_creatives')
-          .stream(primaryKey: ['id'])
-          .listen((data) {
-            debugPrint('[SponsoredAds] ad_creatives realtime update received');
-            if (mounted) _scheduleDashboardReload(clearCache: true);
-          }, onError: (error) => logRealtimeError('ad_creatives', error));
+      _realtimeSubs.add(
+        Supabase.instance.client
+            .from('ad_creatives')
+            .stream(primaryKey: ['id'])
+            .listen((data) {
+              debugPrint('[SponsoredAds] ad_creatives realtime update received');
+              if (mounted) _scheduleDashboardReload(clearCache: true);
+            }, onError: (error) => logRealtimeError('ad_creatives', error)),
+      );
 
       // Listen to ad_impressions changes (impression tracking)
-      Supabase.instance.client
-          .from('ad_impressions')
-          .stream(primaryKey: ['id'])
-          .listen((data) {
-            debugPrint(
-              '[SponsoredAds] ad_impressions realtime update received: ${data.length} records',
-            );
-            // Clear local cache to ensure fresh data on mobile
-            _clearLocalCache();
-            // Apply local increment for immediate UI update (no full reload)
-            if (mounted) {
-              _applyImpressionIncrement(data.cast<Map<String, dynamic>>());
-            }
-          }, onError: (error) => logRealtimeError('ad_impressions', error));
+      _realtimeSubs.add(
+        Supabase.instance.client
+            .from('ad_impressions')
+            .stream(primaryKey: ['id'])
+            .listen((data) {
+              debugPrint(
+                '[SponsoredAds] ad_impressions realtime update received: ${data.length} records',
+              );
+              // Clear local cache to ensure fresh data on mobile
+              _clearLocalCache();
+              // Apply local increment for immediate UI update (no full reload)
+              if (mounted) {
+                _applyImpressionIncrement(data.cast<Map<String, dynamic>>());
+              }
+            }, onError: (error) => logRealtimeError('ad_impressions', error)),
+      );
 
       // Listen to ad_clicks changes (click tracking)
-      Supabase.instance.client.from('ad_clicks').stream(primaryKey: ['id']).listen((
-        data,
-      ) {
-        debugPrint(
-          '[SponsoredAds] ad_clicks realtime update received: ${data.length} records',
-        );
-        // Clear local cache to ensure fresh data on mobile
-        _clearLocalCache();
-        // Apply local increment for immediate UI update (no full reload)
-        if (mounted) _applyClickIncrement(data.cast<Map<String, dynamic>>());
-      }, onError: (error) => logRealtimeError('ad_clicks', error));
+      _realtimeSubs.add(
+        Supabase.instance.client.from('ad_clicks').stream(
+          primaryKey: ['id'],
+        ).listen((data) {
+          debugPrint(
+            '[SponsoredAds] ad_clicks realtime update received: ${data.length} records',
+          );
+          // Clear local cache to ensure fresh data on mobile
+          _clearLocalCache();
+          // Apply local increment for immediate UI update (no full reload)
+          if (mounted) _applyClickIncrement(data.cast<Map<String, dynamic>>());
+        }, onError: (error) => logRealtimeError('ad_clicks', error)),
+      );
 
       // Listen to ad_reports changes (report tracking)
-      Supabase.instance.client
-          .from('ad_reports')
-          .stream(primaryKey: ['id'])
-          .listen((data) {
-            debugPrint('[SponsoredAds] ad_reports realtime update received');
-            if (mounted) _scheduleDashboardReload(clearCache: true);
-          }, onError: (error) => logRealtimeError('ad_reports', error));
+      _realtimeSubs.add(
+        Supabase.instance.client
+            .from('ad_reports')
+            .stream(primaryKey: ['id'])
+            .listen((data) {
+              debugPrint('[SponsoredAds] ad_reports realtime update received');
+              if (mounted) _scheduleDashboardReload(clearCache: true);
+            }, onError: (error) => logRealtimeError('ad_reports', error)),
+      );
 
       debugPrint('[SponsoredAds] Realtime subscriptions established');
     } catch (e, stackTrace) {
       debugPrint('[SponsoredAds] Failed to setup realtime subscriptions: $e');
       debugPrint('[SponsoredAds] StackTrace: $stackTrace');
     }
+  }
+
+  /// Cancel the stream subscriptions so they can be re-created after an
+  /// offline→online cycle. The realtime client does not rejoin stream
+  /// channels after a socket disconnect, and re-subscribing without
+  /// cancelling would accumulate duplicate channels.
+  void _teardownRealtimeSubscriptions() {
+    for (final sub in _realtimeSubs) {
+      try {
+        sub?.cancel();
+      } catch (_) {}
+    }
+    _realtimeSubs.clear();
+    _isSubscribed = false;
   }
 
   /// Compute the analytics date window (local → UTC) from the active range.
@@ -3074,16 +3108,21 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
           else
             ClipRRect(
               borderRadius: BorderRadius.circular(12),
-              child: CachedNetworkImage(
-                imageUrl: imageUrl,
-                height: 180,
-                width: double.infinity,
-                fit: BoxFit.cover,
-                errorWidget: (context, error, stackTrace) => Container(
+              // BoxFit.contain so the whole creative is visible, matching the
+              // full-size preview dialog; surface color fills leftover space.
+              child: Container(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                child: CachedNetworkImage(
+                  imageUrl: imageUrl,
                   height: 180,
-                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                  alignment: Alignment.center,
-                  child: Text(t('adminSponsoredAdsImagePreviewFailed')),
+                  width: double.infinity,
+                  fit: BoxFit.contain,
+                  errorWidget: (context, error, stackTrace) => Container(
+                    height: 180,
+                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    alignment: Alignment.center,
+                    child: Text(t('adminSponsoredAdsImagePreviewFailed')),
+                  ),
                 ),
               ),
             ),
@@ -3241,13 +3280,19 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
                     children: [
                       ClipRRect(
                         borderRadius: BorderRadius.circular(12),
-                        child: CachedNetworkImage(
-                          imageUrl: campaign.imageUrl.trim(),
-                          height: 140,
-                          width: double.infinity,
-                          fit: BoxFit.cover,
-                          errorWidget: (context, error, stackTrace) =>
-                              const SizedBox.shrink(),
+                        // BoxFit.contain so the whole creative is visible in
+                        // the card, matching the full-size preview dialog;
+                        // the surface color letterboxes any leftover space.
+                        child: Container(
+                          color: theme.colorScheme.surfaceContainerHighest,
+                          child: CachedNetworkImage(
+                            imageUrl: campaign.imageUrl.trim(),
+                            height: 140,
+                            width: double.infinity,
+                            fit: BoxFit.contain,
+                            errorWidget: (context, error, stackTrace) =>
+                                const SizedBox.shrink(),
+                          ),
                         ),
                       ),
                       Positioned(
@@ -3308,14 +3353,20 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
                 ],
               ),
               const SizedBox(height: 16),
+              // Compact paddings + smaller icons so Edit / Disable / Delete
+              // stay on ONE row at phone width instead of wrapping Delete
+              // onto its own row (the Wrap is the graceful fallback).
               Wrap(
-                spacing: 12,
-                runSpacing: 12,
+                spacing: 8,
+                runSpacing: 8,
                 children: [
                   FilledButton.icon(
                     onPressed: () => _loadForEditing(campaign),
-                    icon: const Icon(Icons.edit_outlined),
+                    icon: const Icon(Icons.edit_outlined, size: 18),
                     label: Text(t('generalEdit')),
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                    ),
                   ),
                   OutlinedButton.icon(
                     onPressed: () => _toggleCampaignActive(campaign),
@@ -3323,17 +3374,24 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
                       campaign.isActive
                           ? Icons.block_outlined
                           : Icons.check_circle_outline,
+                      size: 18,
                     ),
                     label: Text(
                       campaign.isActive
                           ? t('adminSponsoredAdsDisableAction')
                           : t('adminSponsoredAdsEnableAction'),
                     ),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                    ),
                   ),
                   TextButton.icon(
                     onPressed: () => _deleteCampaign(campaign),
-                    icon: const Icon(Icons.delete_outline),
+                    icon: const Icon(Icons.delete_outline, size: 18),
                     label: Text(t('generalDelete')),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                    ),
                   ),
                 ],
               ),
@@ -3744,11 +3802,26 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             SegmentedButton<String>(
+              // The default selected checkmark eats ~24px inside the segment,
+              // which is what wraps "30 days" onto a second row on
+              // phone-width screens.
+              showSelectedIcon: false,
               segments: [
-                ButtonSegment(value: '7d', label: Text(t('adminAdsRange7d'))),
-                ButtonSegment(value: '30d', label: Text(t('adminAdsRange30d'))),
-                ButtonSegment(value: '90d', label: Text(t('adminAdsRange90d'))),
-                ButtonSegment(value: 'all', label: Text(t('adminAdsRangeAll'))),
+                for (final entry in const {
+                  '7d': 'adminAdsRange7d',
+                  '30d': 'adminAdsRange30d',
+                  '90d': 'adminAdsRange90d',
+                  'all': 'adminAdsRangeAll',
+                }.entries)
+                  ButtonSegment(
+                    value: entry.key,
+                    label: Text(
+                      t(entry.value),
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
               ],
               selected: _rangePreset == 'custom' ? <String>{} : {_rangePreset},
               onSelectionChanged: (value) {
@@ -6039,6 +6112,7 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
       } catch (_) {}
 
       _showSuccess(t('adminSponsoredAdsConfigSaved'));
+      unawaited(_touchAdConfig());
       setState(() {
         _configHydrated = false;
         _adConfigFuture = _loadAdConfig();
@@ -6201,10 +6275,20 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
     setState(() => _isSaving = true);
     try {
       final supabase = Supabase.instance.client;
-      _headlineKey ??= _translationKey('headline');
-      _bodyKey ??= _translationKey('body');
-      _ctaKey ??= _translationKey('cta');
-      _sponsorNameKey ??= _translationKey('sponsor');
+      // An existing campaign can carry EMPTY translation keys — a past save
+      // with blank text fields wrote '' into ad_creatives. `??=` only
+      // regenerates for null, so the empty string silently persisted: text
+      // typed afterwards was saved under an empty key (or rejected) and the
+      // app rendered a text-less card forever. Treat empty as absent.
+      String effectiveKey(String? current, String field) {
+        final trimmed = current?.trim() ?? '';
+        return trimmed.isEmpty ? _translationKey(field) : trimmed;
+      }
+
+      _headlineKey = effectiveKey(_headlineKey, 'headline');
+      _bodyKey = effectiveKey(_bodyKey, 'body');
+      _ctaKey = effectiveKey(_ctaKey, 'cta');
+      _sponsorNameKey = effectiveKey(_sponsorNameKey, 'sponsor');
       final removedLocales = _persistedLocaleCodes.difference(
         _selectedLocaleCodes,
       );
@@ -6379,7 +6463,24 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
             : t('adminSponsoredAdsCreateSuccess'),
       );
       _persistedLocaleCodes = {..._selectedLocaleCodes};
+      // Orphan cleanup: when the campaign's managed image was replaced, the
+      // previous object is deleted only NOW — after the new URL is durably
+      // persisted. Deleting any earlier (on upload or on Clear) left the
+      // creatives pointing at a removed file when a later step failed or the
+      // editor was discarded.
+      final previousImageUrl = _editingCampaignPreview?.imageUrl ?? '';
+      if (previousImageUrl.isNotEmpty &&
+          previousImageUrl != imageUrl &&
+          _extractManagedStoragePath(previousImageUrl) != null) {
+        try {
+          await _deleteStorageImageIfManaged(previousImageUrl);
+        } catch (_) {
+          // Non-fatal: an orphaned object is preferable to touching the new
+          // state after a successful save.
+        }
+      }
       _resetForm();
+      unawaited(_touchAdConfig());
       // Invalidate the aggregates cache and re-read ad_campaigns from the
       // server. Previously this called localDb.clearSponsoredAds(), wiping the
       // cached campaign list; combined with the analytics cache short-circuit
@@ -6424,7 +6525,11 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
       }
 
       final path = _buildStoragePath(file, bytes);
-      await _deleteStorageImageIfManaged(_imageUrlController.text.trim());
+      // NOTE: the previous object is deliberately NOT deleted here. Deleting
+      // before the new upload (or before save) meant any later failure left
+      // the creatives pointing at a removed file — a dead URL rendering as an
+      // invisible blank in the app. The previous object is cleaned up by the
+      // save-time orphan cleanup in _saveCampaign instead.
       await Supabase.instance.client.storage
           .from(_imageBucket)
           .uploadBinary(
@@ -6488,11 +6593,11 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
     };
   }
 
-  Future<void> _clearImage() async {
-    await _deleteStorageImageIfManaged(_imageUrlController.text.trim());
-    if (!mounted) {
-      return;
-    }
+  void _clearImage() {
+    // Clears the form field only. The stored object must stay: creatives
+    // still reference it until a save changes the URL, and deleting here
+    // broke them whenever the editor was discarded without saving. Orphaned
+    // objects are cleaned up by the save-time diff in _saveCampaign.
     setState(() {
       _imageUrlController.clear();
     });
@@ -6743,12 +6848,24 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
 
   Future<void> _toggleCampaignActive(_SponsoredCampaignRow campaign) async {
     try {
+      final payload = <String, dynamic>{'is_active': !campaign.isActive};
+      // The serving RPC only returns campaigns with moderation_status =
+      // 'approved', so activating a 'draft' campaign without approving it
+      // silently serves nothing. Approve it along with the toggle.
+      if (!campaign.isActive && campaign.moderationStatus == 'draft') {
+        payload['moderation_status'] = 'approved';
+        payload['approved_at'] = DateTime.now().toUtc().toIso8601String();
+        final adminId = Supabase.instance.client.auth.currentUser?.id;
+        if (adminId != null) {
+          payload['approved_by'] = adminId;
+        }
+      }
       // `.select()` so a zero-row write (RLS rejection) is not reported as
       // success. Previously the UI re-rendered the stale cached row and the
       // toggle appeared to do nothing.
       final updated = await Supabase.instance.client
           .from('ad_campaigns')
-          .update({'is_active': !campaign.isActive})
+          .update(payload)
           .eq('id', campaign.campaignId)
           .select('id');
       if (List<Map<String, dynamic>>.from(updated).isEmpty) {
@@ -6757,6 +6874,7 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
       if (!mounted) {
         return;
       }
+      unawaited(_touchAdConfig());
       await _reloadDashboardIntoState();
     } catch (e) {
       _showError('${widget.t('adminSponsoredAdsSaveFailed')} $e');
@@ -6815,6 +6933,7 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
       }
       await _removeCampaignFromLocalState(campaign.campaignId);
       _showSuccess(widget.t('adminSponsoredAdsDeleteSuccess'));
+      unawaited(_touchAdConfig());
       setState(() {
         if (_editingCampaignId == campaign.campaignId) {
           _clearFormFields();
@@ -6941,6 +7060,18 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message), backgroundColor: Colors.green),
     );
+  }
+
+  /// Bump ads.config_version in app_config after every ad write. The MatchMe
+  /// app watches that key over the app_config realtime stream and hard-clears
+  /// its ad caches, so admin changes appear immediately without waiting for
+  /// the client's debounce/reuse windows or app restart.
+  Future<void> _touchAdConfig() async {
+    try {
+      await Supabase.instance.client.rpc('admin_touch_ad_config');
+    } catch (e) {
+      debugPrint('[SponsoredAds] admin_touch_ad_config failed: $e');
+    }
   }
 
   void _showError(String message) {

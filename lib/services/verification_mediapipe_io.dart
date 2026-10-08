@@ -167,9 +167,11 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
 
   /// Primary-selfie (FACE_ONLY) instruction gate: the capture page holds
   /// auto-capture until the spoken instructions finish. This flag tracks
-  /// whether the host has finished speaking and signalled the page.
+  /// whether the host has finished speaking AND the page has acknowledged
+  /// the readiness signal.
   bool _faceOnlyInstructionsSignaled = false;
   bool _faceOnlyInstructionsSpoken = false;
+  int _faceOnlySignalAttempts = 0;
 
   bool get _isFaceOnlyCapture => widget.gestureCode == 'FACE_ONLY';
 
@@ -200,16 +202,39 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
     if (_faceOnlyInstructionsSignaled) return;
     final controller = _controller;
     if (controller == null) {
-      // WebView not ready yet — retry once it is (called again after
+      // WebView not ready yet — retried once it is (called again after
       // _initController sets the controller).
       return;
     }
+    // The page may still be loading (module script not yet executed), in
+    // which case window.setFaceOnlyInstructionsReady is undefined and the
+    // call is silently dropped — which used to block auto-capture forever.
+    // Probe for the function and only stop retrying once the page answers.
+    const probe =
+        '(typeof window.setFaceOnlyInstructionsReady === "function" ? '
+        '(window.setFaceOnlyInstructionsReady(), "ok") : "pending")';
+    var result = '';
     try {
-      await controller.runJavaScript(
-        'window.setFaceOnlyInstructionsReady && window.setFaceOnlyInstructionsReady()',
-      );
+      final res = await controller.runJavaScriptReturningResult(probe);
+      result = res.toString();
+    } catch (_) {
+      result = '';
+    }
+    if (result.contains('ok')) {
       _faceOnlyInstructionsSignaled = true;
-    } catch (_) {}
+      return;
+    }
+    _faceOnlySignalAttempts++;
+    if (_faceOnlySignalAttempts > 120) {
+      // ~60s of retries is plenty; the page also lifts this gate itself
+      // after 20s as a hard fallback.
+      return;
+    }
+    Timer(const Duration(milliseconds: 500), () {
+      if (mounted && !_faceOnlyInstructionsSignaled) {
+        unawaited(_signalFaceOnlyReadyToPage());
+      }
+    });
   }
 
   Future<void> _onPhotoReceived(Uint8List? bytes) async {
@@ -570,13 +595,11 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
       if (!mounted) return;
       // Primary selfie: speak the instructions now (while the camera/models
       // load) so the user hears what to do; the page holds auto-capture
-      // until speaking finishes. A fallback timer guarantees the gate
-      // lifts even if TTS never completes.
+      // until speaking finishes. _signalFaceOnlyReadyToPage retries with
+      // backoff until the page acknowledges, so the gate can't be lost to a
+      // WebView race, and the page lifts it itself after 20s as a fallback.
       if (_isFaceOnlyCapture) {
         unawaited(_speakPrimarySelfieInstructionsAndSignalReady());
-        Timer(const Duration(seconds: 12), () {
-          if (mounted) unawaited(_signalFaceOnlyReadyToPage());
-        });
       }
       _initController().catchError((e) {
         if (mounted) setState(() => _loadError = e.toString());

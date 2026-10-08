@@ -6,8 +6,10 @@ import 'package:flutter/widgets.dart'
 import 'package:matchme/config/security_constants.dart';
 import 'package:matchme/models/user_chat_key_model.dart';
 import 'package:matchme/services/crypto_service.dart';
+import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/secure_storage_service.dart';
 import 'package:matchme/utils/offline_utils.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class ChatKeyService {
@@ -289,6 +291,61 @@ class ChatKeyService {
     }
   }
 
+  Future<String?> _resolveEffectiveRecipientId({
+    required String matchId,
+    required String senderId,
+    required String currentUserId,
+    String? explicitRecipientId,
+  }) async {
+    if (explicitRecipientId != null && explicitRecipientId.isNotEmpty) {
+      return explicitRecipientId;
+    }
+    if (currentUserId != senderId) {
+      return currentUserId;
+    }
+    // Sender is current user. Find match partner locally (100% offline friendly).
+    try {
+      final localDb = await LocalDbService.instance;
+      final cachedMatches = await localDb.watchMatches(currentUserId).first;
+      for (final m in cachedMatches) {
+        if (m['id']?.toString() == matchId) {
+          final u1 = m['user1_id']?.toString();
+          final u2 = m['user2_id']?.toString();
+          if (u1 != null && u2 != null) {
+            return (u1 == senderId) ? u2 : u1;
+          }
+        }
+      }
+      final cachedChats = await localDb.watchChats(currentUserId).first;
+      for (final c in cachedChats) {
+        if (c['id']?.toString() == matchId ||
+            c['match_id']?.toString() == matchId) {
+          final otherId = c['other_user_id']?.toString();
+          if (otherId != null && otherId.isNotEmpty) {
+            return otherId;
+          }
+        }
+      }
+    } catch (_) {}
+
+    if (!shouldSkipSupabaseCalls()) {
+      try {
+        final supabase = Supabase.instance.client;
+        final matchResp = await supabase
+            .from('matches')
+            .select('user1_id, user2_id')
+            .eq('id', matchId)
+            .maybeSingle();
+        if (matchResp != null) {
+          return matchResp['user1_id'] == senderId
+              ? matchResp['user2_id'] as String?
+              : matchResp['user1_id'] as String?;
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
   Future<String?> decryptMessageContent({
     required String currentUserId,
     required Uint8List currentUserPrivateKey,
@@ -310,28 +367,22 @@ class ChatKeyService {
       return cached;
     }
 
-    final supabase = Supabase.instance.client;
-
-    String effectiveRecipientId;
-    if (recipientId != null && recipientId.isNotEmpty) {
-      effectiveRecipientId = recipientId;
-    } else {
-      final matchResp = await supabase
-          .from('matches')
-          .select('user1_id, user2_id')
-          .eq('id', matchId)
-          .maybeSingle();
-      if (matchResp == null) return null;
-      effectiveRecipientId = matchResp['user1_id'] == senderId
-          ? matchResp['user2_id'] as String
-          : matchResp['user1_id'] as String;
-    }
+    final effectiveRecipientId = await _resolveEffectiveRecipientId(
+      matchId: matchId,
+      senderId: senderId,
+      currentUserId: currentUserId,
+      explicitRecipientId: recipientId,
+    );
+    if (effectiveRecipientId == null) return null;
 
     final bool iAmSender = currentUserId == senderId;
     final String peerKeyId = iAmSender ? recipientKeyId : senderKeyId;
 
     final peerKey = prefetchedPeerKey ?? await fetchPeerPublicKey(peerKeyId);
-    if (peerKey == null) return null;
+    if (peerKey == null) {
+      // Do not cache null: the key may be fetched later or loaded on reconnect
+      return null;
+    }
     final peerPublicKeyBytes = base64Decode(peerKey.publicKeyBase64);
 
     // Try with the provided (current) private key first
@@ -375,11 +426,13 @@ class ChatKeyService {
         matchId: matchId,
         senderId: senderId,
       );
-      _decryptedContentCache[cacheKey] = fallbackResult;
-      return fallbackResult;
+      if (fallbackResult != null) {
+        _decryptedContentCache[cacheKey] = fallbackResult;
+        return fallbackResult;
+      }
     }
 
-    // Cache the null result to avoid retrying the same failed decryption
+    // Cache null only when keys were genuinely available and failed verification
     _decryptedContentCache[cacheKey] = null;
     return null;
   }
@@ -481,28 +534,22 @@ class ChatKeyService {
       return cached;
     }
 
-    final supabase = Supabase.instance.client;
-
-    String effectiveRecipientId;
-    if (recipientId != null && recipientId.isNotEmpty) {
-      effectiveRecipientId = recipientId;
-    } else {
-      final matchResp = await supabase
-          .from('matches')
-          .select('user1_id, user2_id')
-          .eq('id', matchId)
-          .maybeSingle();
-      if (matchResp == null) return null;
-      effectiveRecipientId = matchResp['user1_id'] == senderId
-          ? matchResp['user2_id'] as String
-          : matchResp['user1_id'] as String;
-    }
+    final effectiveRecipientId = await _resolveEffectiveRecipientId(
+      matchId: matchId,
+      senderId: senderId,
+      currentUserId: currentUserId,
+      explicitRecipientId: recipientId,
+    );
+    if (effectiveRecipientId == null) return null;
 
     final bool iAmSender = currentUserId == senderId;
     final String peerKeyId = iAmSender ? recipientKeyId : senderKeyId;
 
     final peerKey = prefetchedPeerKey ?? await fetchPeerPublicKey(peerKeyId);
-    if (peerKey == null) return null;
+    if (peerKey == null) {
+      // Do not cache null: the key may be fetched later or loaded on reconnect
+      return null;
+    }
     final peerPublicKeyBytes = base64Decode(peerKey.publicKeyBase64);
 
     // Try with the provided (current) private key first
@@ -550,10 +597,13 @@ class ChatKeyService {
         detectedSourceLanguage: detectedSourceLanguage,
         targetLanguage: targetLanguage,
       );
-      _decryptedContentCache[cacheKey] = fallbackResult;
-      return fallbackResult;
+      if (fallbackResult != null) {
+        _decryptedContentCache[cacheKey] = fallbackResult;
+        return fallbackResult;
+      }
     }
 
+    // Cache null only when keys were genuinely available and failed verification
     _decryptedContentCache[cacheKey] = null;
     return null;
   }
@@ -569,28 +619,103 @@ class ChatKeyService {
   }
 
   Future<UserChatKeyModel?> fetchPeerPublicKey(String keyId) async {
-    if (shouldSkipSupabaseCalls()) return _peerKeyCache[keyId];
     if (_peerKeyCache.containsKey(keyId)) {
       final cached = _peerKeyCache[keyId];
-      debugPrint(
-        '🔍 [fetchPeerPublicKey] CACHE HIT for keyId=$keyId status=${cached?.status}',
-      );
-      return cached;
+      if (cached != null) return cached;
     }
-    final supabase = Supabase.instance.client;
-    final data = await supabase
-        .from('user_chat_keys')
-        .select(
-          'id, user_id, key_version, public_key, status, created_at, activated_at, retired_at',
-        )
-        .eq('id', keyId)
-        .maybeSingle();
-    final key = data == null ? null : UserChatKeyModel.fromJson(data);
-    _peerKeyCache[keyId] = key;
-    debugPrint(
-      '🔍 [fetchPeerPublicKey] CACHE MISS for keyId=$keyId status=${key?.status}',
-    );
-    return key;
+
+    // Check persistent disk cache (SharedPreferences)
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final storedJson = prefs.getString('peer_chat_key:$keyId');
+      if (storedJson != null && storedJson.isNotEmpty) {
+        final key = UserChatKeyModel.fromJson(
+          jsonDecode(storedJson) as Map<String, dynamic>,
+        );
+        _peerKeyCache[keyId] = key;
+        return key;
+      }
+    } catch (e) {
+      debugPrint('⚠️ [fetchPeerPublicKey] Failed loading peer key from prefs: $e');
+    }
+
+    if (shouldSkipSupabaseCalls()) return _peerKeyCache[keyId];
+
+    try {
+      final supabase = Supabase.instance.client;
+      final data = await supabase
+          .from('user_chat_keys')
+          .select(
+            'id, user_id, key_version, public_key, status, created_at, activated_at, retired_at',
+          )
+          .eq('id', keyId)
+          .maybeSingle();
+      if (data == null) return null;
+      final key = UserChatKeyModel.fromJson(data);
+      _peerKeyCache[keyId] = key;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(
+          'peer_chat_key:$keyId',
+          jsonEncode(key.toJson()),
+        );
+      } catch (_) {}
+      return key;
+    } catch (e) {
+      debugPrint('⚠️ [fetchPeerPublicKey] Supabase fetch failed: $e');
+      return null;
+    }
+  }
+
+  /// Batch warm peer public keys into memory and persistent disk cache.
+  /// Called on chat sync and Phase 2 decryption so offline access always succeeds.
+  Future<void> warmPeerKeys(Iterable<String> keyIds) async {
+    final toFetch = <String>[];
+    SharedPreferences? prefs;
+    try {
+      prefs = await SharedPreferences.getInstance();
+    } catch (_) {}
+
+    for (final id in keyIds) {
+      if (id.isEmpty) continue;
+      if (_peerKeyCache[id] != null) continue;
+      if (prefs != null) {
+        final stored = prefs.getString('peer_chat_key:$id');
+        if (stored != null && stored.isNotEmpty) {
+          try {
+            _peerKeyCache[id] = UserChatKeyModel.fromJson(
+              jsonDecode(stored) as Map<String, dynamic>,
+            );
+            continue;
+          } catch (_) {}
+        }
+      }
+      toFetch.add(id);
+    }
+
+    if (toFetch.isEmpty || shouldSkipSupabaseCalls()) return;
+
+    try {
+      final supabase = Supabase.instance.client;
+      final rows = await supabase
+          .from('user_chat_keys')
+          .select(
+            'id, user_id, key_version, public_key, status, created_at, activated_at, retired_at',
+          )
+          .filter('id', 'in', toFetch);
+      for (final row in rows) {
+        final key = UserChatKeyModel.fromJson(row);
+        _peerKeyCache[key.id] = key;
+        if (prefs != null) {
+          await prefs.setString(
+            'peer_chat_key:${key.id}',
+            jsonEncode(key.toJson()),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('⚠️ [warmPeerKeys] Failed warming peer keys: $e');
+    }
   }
 
   void clearPeerKeyCache() => _peerKeyCache.clear();

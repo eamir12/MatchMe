@@ -17,12 +17,14 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart' show DateFormat, NumberFormat;
 import 'package:matchme_admin/screens/promo_code_dashboard.dart';
+import 'package:matchme_admin/screens/event_import_feedback_dashboard.dart';
 import 'package:matchme_admin/screens/integrated_ad_dashboard.dart';
 import 'package:matchme_admin/screens/match_comparison_dashboard.dart';
 import 'package:matchme_admin/screens/user_match_management_dashboard.dart';
 import 'package:matchme_admin/screens/notification_delivery_dashboard.dart';
 import 'package:matchme_admin/services/admin_local_db_service.dart';
 import 'package:matchme_admin/services/admin_offline_cache_manager.dart';
+import 'package:matchme_admin/services/admin_realtime_refresher.dart';
 import 'package:matchme_admin/services/admin_session_service.dart';
 import 'package:matchme_admin/services/admin_sync_manager.dart';
 import 'package:matchme_admin/services/public_reference_data_service.dart';
@@ -2179,6 +2181,7 @@ enum _AdminSection {
   intentsInterests,
   userVerification,
   profileEdits,
+  eventImportFeedback,
   promoCodes,
   matchInspector,
   userMatchManagement,
@@ -2201,6 +2204,25 @@ class _DeliveryScreen extends ConsumerWidget {
       },
       localeCode: l10n.locale.languageCode,
       textDirection: l10n.textDirection,
+    );
+  }
+}
+
+class _EventImportFeedbackScreen extends ConsumerWidget {
+  const _EventImportFeedbackScreen();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l10n = ref.watch(localizationProvider);
+    return AdminEventImportFeedbackDashboard(
+      localeCode: l10n.locale.languageCode,
+      t: (key, {params}) {
+        var value = l10n.getString(key);
+        params?.forEach((paramKey, paramValue) {
+          value = value.replaceAll('{$paramKey}', paramValue);
+        });
+        return value;
+      },
     );
   }
 }
@@ -2435,6 +2457,11 @@ class _AdminShellState extends ConsumerState<_AdminShell>
         selectedIcon: const Icon(Icons.fact_check),
         label: Text(l10n.getString('adminNavProfileEdits')),
       ),
+      _AdminSection.eventImportFeedback: NavigationRailDestination(
+        icon: const Icon(Icons.event_available_outlined),
+        selectedIcon: const Icon(Icons.event_available),
+        label: Text(l10n.getString('adminNavEventFeedback')),
+      ),
       _AdminSection.promoCodes: NavigationRailDestination(
         icon: const Icon(Icons.local_offer_outlined),
         selectedIcon: const Icon(Icons.local_offer),
@@ -2510,6 +2537,11 @@ class _AdminShellState extends ConsumerState<_AdminShell>
         icon: const Icon(Icons.fact_check_outlined),
         selectedIcon: const Icon(Icons.fact_check),
         label: Text(l10n.getString('adminNavProfileEdits')),
+      ),
+      NavigationDrawerDestination(
+        icon: const Icon(Icons.event_available_outlined),
+        selectedIcon: const Icon(Icons.event_available),
+        label: Text(l10n.getString('adminNavEventFeedback')),
       ),
       NavigationDrawerDestination(
         icon: const Icon(Icons.local_offer_outlined),
@@ -2638,6 +2670,9 @@ class _AdminShellState extends ConsumerState<_AdminShell>
       ),
       _AdminSection.userVerification => l10n.getString('adminNavVerification'),
       _AdminSection.profileEdits => l10n.getString('adminNavProfileEdits'),
+      _AdminSection.eventImportFeedback => l10n.getString(
+        'adminNavEventFeedback',
+      ),
       _AdminSection.promoCodes => l10n.getString('adminNavPromoCodes'),
       _AdminSection.matchInspector => l10n.getString('adminNavMatchInspector'),
       _AdminSection.userMatchManagement => l10n.getString(
@@ -2668,6 +2703,7 @@ class _AdminShellState extends ConsumerState<_AdminShell>
               _IntentsInterestsScreen(),
               _UserVerificationScreen(),
               _ProfileEditRequestsScreen(),
+              _EventImportFeedbackScreen(),
               _PromoCodesScreen(),
               _MatchInspectorScreen(),
               _UserMatchManagementScreen(),
@@ -7533,10 +7569,40 @@ class _IntentsInterestsScreenState
   List<_AdminTaxonomyRow> _intents = const [];
   List<_AdminTaxonomyRow> _interests = const [];
 
+  // Realtime + poll fallback so taxonomy changes made by another admin
+  // appear without a refresh button or restart.
+  late final List<AdminRealtimeRefresher> _refreshers = [
+    AdminRealtimeRefresher(
+      channelName: 'admin_intents',
+      table: 'intents',
+      onChange: () {
+        if (mounted && !_isLoading) unawaited(_load(force: true));
+      },
+    ),
+    AdminRealtimeRefresher(
+      channelName: 'admin_interests',
+      table: 'interests',
+      onChange: () {
+        if (mounted && !_isLoading) unawaited(_load(force: true));
+      },
+    ),
+  ];
+
   @override
   void initState() {
     super.initState();
     unawaited(_load());
+    for (final r in _refreshers) {
+      r.start();
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final r in _refreshers) {
+      r.dispose();
+    }
+    super.dispose();
   }
 
   Future<void> _load({bool force = false}) async {
@@ -8805,6 +8871,8 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
   List<_AdminBroadcastRow> _rows = const [];
   RealtimeChannel? _channel;
   Timer? _scheduledRealtimeRefresh;
+  Timer? _pollTimer;
+  int _realtimeRetries = 0;
   final ValueNotifier<int> _detailsRefreshTick = ValueNotifier<int>(0);
   final Set<String> _pendingRealtimeBroadcastIds = <String>{};
   String? _detailsRefreshBroadcastId;
@@ -8819,6 +8887,14 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
     super.initState();
     _setupRealtime();
     unawaited(_load());
+    // Fallback for when realtime delivery is unavailable (publication
+    // membership off, or a socket the reconnect logic can't recover):
+    // delivery progress and list changes still appear, just delayed.
+    _pollTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted && !_isLoading) {
+        unawaited(_load(force: true));
+      }
+    });
   }
 
   void _setupRealtime() {
@@ -8854,7 +8930,27 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
         callback: onDeliveryChange,
       );
 
-      channel.subscribe();
+      channel.subscribe((status, error) {
+        // Bounded re-subscribe when the channel dies without a clean close;
+        // the 30s poll covers us in the meantime and afterwards.
+        if (mounted &&
+            _realtimeRetries < 3 &&
+            (status == RealtimeSubscribeStatus.channelError ||
+                status == RealtimeSubscribeStatus.timedOut)) {
+          _realtimeRetries++;
+          Future.delayed(const Duration(seconds: 2), () {
+            if (!mounted) return;
+            final old = _channel;
+            _channel = null;
+            if (old != null) {
+              try {
+                Supabase.instance.client.removeChannel(old);
+              } catch (_) {}
+            }
+            _setupRealtime();
+          });
+        }
+      });
       _channel = channel;
     } catch (_) {}
   }
@@ -9035,9 +9131,20 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
     return row.automationEnabled && row.automationType == 'birthday';
   }
 
+  bool _isProfileReminderAutomation(_AdminBroadcastRow row) {
+    return row.automationEnabled && row.automationType == 'profile_reminder';
+  }
+
+  bool _isAnyAutomation(_AdminBroadcastRow row) {
+    return _isBirthdayAutomation(row) || _isProfileReminderAutomation(row);
+  }
+
   String _automationLabel(LocalizationState l10n, _AdminBroadcastRow row) {
     if (_isBirthdayAutomation(row)) {
       return l10n.getString('adminBroadcastsAutomationBirthday');
+    }
+    if (_isProfileReminderAutomation(row)) {
+      return l10n.getString('adminBroadcastsAutomationProfileReminder');
     }
     return row.automationType ?? '';
   }
@@ -9046,9 +9153,9 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
     if (_status != 'all' && row.status != _status) return false;
 
     // Status-based time buckets (not raw dates): overdue scheduled stays
-    // upcoming, birthday automation is always active and excluded from
-    // past/upcoming unless explicitly filtered.
-    final isAuto = _isBirthdayAutomation(row);
+    // upcoming, automations (birthday / profile reminder) are always active
+    // and excluded from past/upcoming unless explicitly filtered.
+    final isAuto = _isAnyAutomation(row);
     if (_timeFilter == 'upcoming') {
       if (isAuto) return false;
       if (row.status != 'scheduled' && row.status != 'sending') return false;
@@ -10105,7 +10212,7 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                                 label: l10n.getString('adminBroadcastsType'),
                                 value: _typeLabel(l10n, latestRow.messageType),
                               ),
-                              if (_isBirthdayAutomation(latestRow))
+                              if (_isAnyAutomation(latestRow))
                                 _MetaChip(
                                   label: l10n.getString(
                                     'adminBroadcastsAutomation',
@@ -10307,6 +10414,7 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
 
   @override
   void dispose() {
+    _pollTimer?.cancel();
     _scheduledRealtimeRefresh?.cancel();
     _detailsRefreshTick.dispose();
     final channel = _channel;
@@ -10329,6 +10437,9 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
     var birthdayAutomationEnabled =
         existing?.automationEnabled == true &&
         existing?.automationType == 'birthday';
+    var profileReminderAutomationEnabled =
+        existing?.automationEnabled == true &&
+        existing?.automationType == 'profile_reminder';
 
     Timer? targetingCountDebounce;
     String? lastTargetingCountRequest;
@@ -11130,6 +11241,7 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
             final genderSelected = currentList('gender');
             final tierSelected = currentList('subscription_tiers');
             final verificationSelected = currentList('verification_status');
+            final profileCompletionSelected = currentList('profile_completion');
             final platformSelected = currentList('platform');
             final uiLanguages = (() {
               final out = <String>{...currentList('ui_languages')};
@@ -11341,6 +11453,34 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                               );
                             })
                             .toList(growable: false),
+                  ),
+                  sectionTitle(
+                    l10n.getString('adminBroadcastsFilterProfileCompletion'),
+                  ),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: const ['complete', 'incomplete']
+                        .map((s) {
+                          final isSelected = profileCompletionSelected.contains(
+                            s,
+                          );
+                          return FilterChip(
+                            selected: isSelected,
+                            onSelected: (_) =>
+                                toggleStringInList('profile_completion', s),
+                            label: Text(
+                              s == 'complete'
+                                  ? l10n.getString(
+                                      'adminBroadcastsProfileCompleted',
+                                    )
+                                  : l10n.getString(
+                                      'adminBroadcastsProfileIncomplete',
+                                    ),
+                            ),
+                          );
+                        })
+                        .toList(growable: false),
                   ),
                   sectionTitle(l10n.getString('adminBroadcastsFilterPlatform')),
                   Wrap(
@@ -11764,6 +11904,9 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
               'verification_status' => l10n.getString(
                 'adminBroadcastsFilterVerificationStatus',
               ),
+              'profile_completion' => l10n.getString(
+                'adminBroadcastsFilterProfileCompletion',
+              ),
               'platform' => l10n.getString('adminBroadcastsFilterPlatform'),
               'last_active_days' => l10n.getString(
                 'adminBroadcastsFilterLastActiveDays',
@@ -11900,6 +12043,26 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                     '${criteriaLabel('verification_status')}: ${formatListValue('verification_status', verification)}',
                   ),
                   onDeleted: () => removeCriteriaKey('verification_status'),
+                ),
+              );
+            }
+
+            final profileCompletion = asStringList(
+              criteria['profile_completion'],
+            );
+            if (profileCompletion.isNotEmpty) {
+              String completionLabel(String v) {
+                return v == 'complete'
+                    ? l10n.getString('adminBroadcastsProfileCompleted')
+                    : l10n.getString('adminBroadcastsProfileIncomplete');
+              }
+
+              chips.add(
+                InputChip(
+                  label: Text(
+                    '${criteriaLabel('profile_completion')}: ${profileCompletion.map(completionLabel).join(', ')}',
+                  ),
+                  onDeleted: () => removeCriteriaKey('profile_completion'),
                 ),
               );
             }
@@ -12074,8 +12237,12 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                       'message_type': type,
                       'automation_type': birthdayAutomationEnabled
                           ? 'birthday'
+                          : profileReminderAutomationEnabled
+                          ? 'profile_reminder'
                           : null,
-                      'automation_enabled': birthdayAutomationEnabled,
+                      'automation_enabled':
+                          birthdayAutomationEnabled ||
+                          profileReminderAutomationEnabled,
                       'action_url': actionUrlController.text.trim().isEmpty
                           ? null
                           : actionUrlController.text.trim(),
@@ -12136,8 +12303,12 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                     'message_type': type,
                     'automation_type': birthdayAutomationEnabled
                         ? 'birthday'
+                        : profileReminderAutomationEnabled
+                        ? 'profile_reminder'
                         : null,
-                    'automation_enabled': birthdayAutomationEnabled,
+                    'automation_enabled':
+                        birthdayAutomationEnabled ||
+                        profileReminderAutomationEnabled,
                     'action_url': actionUrl,
                     'action_url_text': switch (locale) {
                       'es' =>
@@ -12233,8 +12404,12 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                   'message_type': type,
                   'automation_type': birthdayAutomationEnabled
                       ? 'birthday'
+                      : profileReminderAutomationEnabled
+                      ? 'profile_reminder'
                       : null,
-                  'automation_enabled': birthdayAutomationEnabled,
+                  'automation_enabled':
+                      birthdayAutomationEnabled ||
+                      profileReminderAutomationEnabled,
                   'action_url': actionUrlController.text.trim().isEmpty
                       ? null
                       : actionUrlController.text.trim(),
@@ -12371,6 +12546,10 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                                     : (value) => setDialogState(() {
                                         birthdayAutomationEnabled =
                                             value ?? false;
+                                        if (birthdayAutomationEnabled) {
+                                          profileReminderAutomationEnabled =
+                                              false;
+                                        }
                                       }),
                                 title: Text(
                                   l10n.getString(
@@ -12380,6 +12559,29 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                                 subtitle: Text(
                                   l10n.getString(
                                     'adminBroadcastsBirthdayAutomationHelp',
+                                  ),
+                                ),
+                              ),
+                              CheckboxListTile(
+                                contentPadding: EdgeInsets.zero,
+                                value: profileReminderAutomationEnabled,
+                                onChanged: isSubmitting
+                                    ? null
+                                    : (value) => setDialogState(() {
+                                        profileReminderAutomationEnabled =
+                                            value ?? false;
+                                        if (profileReminderAutomationEnabled) {
+                                          birthdayAutomationEnabled = false;
+                                        }
+                                      }),
+                                title: Text(
+                                  l10n.getString(
+                                    'adminBroadcastsProfileReminderAutomationToggle',
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  l10n.getString(
+                                    'adminBroadcastsProfileReminderAutomationHelp',
                                   ),
                                 ),
                               ),
@@ -12410,6 +12612,39 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                                       Text(
                                         l10n.getString(
                                           'adminBroadcastsBirthdayPlaceholdersBody',
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                              if (profileReminderAutomationEnabled) ...[
+                                const SizedBox(height: 12),
+                                Container(
+                                  width: double.infinity,
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(
+                                      ctx,
+                                    ).colorScheme.surfaceContainerHighest,
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        l10n.getString(
+                                          'adminBroadcastsProfileReminderPlaceholdersTitle',
+                                        ),
+                                        style: Theme.of(
+                                          ctx,
+                                        ).textTheme.titleSmall,
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        l10n.getString(
+                                          'adminBroadcastsProfileReminderPlaceholdersBody',
                                         ),
                                       ),
                                     ],
@@ -13766,7 +14001,7 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                     final lang = langSingle.isNotEmpty
                         ? langSingle.toUpperCase()
                         : langMulti;
-                    final isBirthdayAutomation = _isBirthdayAutomation(row);
+                    final isAnyAutomation = _isAnyAutomation(row);
 
                     return Padding(
                       padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
@@ -13800,7 +14035,7 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                                     ),
                                     value: _typeLabel(l10n, row.messageType),
                                   ),
-                                  if (isBirthdayAutomation)
+                                  if (isAnyAutomation)
                                     _MetaChip(
                                       label: l10n.getString(
                                         'adminBroadcastsAutomation',
@@ -13890,7 +14125,7 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                                   if ((row.status == 'draft' ||
                                           row.status == 'failed' ||
                                           row.status == 'cancelled') &&
-                                      !isBirthdayAutomation)
+                                      !isAnyAutomation)
                                     ElevatedButton.icon(
                                       onPressed: () =>
                                           _scheduleDraft(l10n, row),
@@ -13904,7 +14139,7 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                                   if ((row.status == 'draft' ||
                                           row.status == 'failed' ||
                                           row.status == 'cancelled') &&
-                                      !isBirthdayAutomation)
+                                      !isAnyAutomation)
                                     ElevatedButton.icon(
                                       onPressed: () => _sendNow(l10n, row),
                                       icon: const Icon(Icons.send),
@@ -13916,7 +14151,7 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                                     ),
                                   if ((row.status == 'scheduled' ||
                                           row.status == 'sending') &&
-                                      !isBirthdayAutomation)
+                                      !isAnyAutomation)
                                     OutlinedButton.icon(
                                       onPressed: () =>
                                           _cancelScheduled(l10n, row),
@@ -13926,7 +14161,7 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                                   if ((row.status == 'sent' ||
                                           row.status == 'failed' ||
                                           row.status == 'cancelled') &&
-                                      !isBirthdayAutomation)
+                                      !isAnyAutomation)
                                     ElevatedButton.icon(
                                       onPressed:
                                           _resendInFlightIds.contains(row.id)
@@ -13950,7 +14185,7 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                                   if ((row.status == 'sent' ||
                                           row.status == 'failed' ||
                                           row.status == 'cancelled') &&
-                                      !isBirthdayAutomation)
+                                      !isAnyAutomation)
                                     OutlinedButton.icon(
                                       onPressed: () =>
                                           _rescheduleSent(l10n, row),
@@ -14148,10 +14383,27 @@ class _TranslationsScreenState extends ConsumerState<_TranslationsScreen> {
   late final Future<Map<String, String>> _uiLanguageDisplayNamesFuture =
       loadUiLanguageDisplayNames();
 
+  // Realtime + poll fallback so translation changes made by another admin
+  // (or the bulk-upsert webhook) appear without a refresh button or restart.
+  late final AdminRealtimeRefresher _refresher = AdminRealtimeRefresher(
+    channelName: 'admin_translations',
+    table: 'translations',
+    onChange: () {
+      if (mounted && !_isLoading) unawaited(_load(force: true));
+    },
+  );
+
   @override
   void initState() {
     super.initState();
     unawaited(_load());
+    _refresher.start();
+  }
+
+  @override
+  void dispose() {
+    _refresher.dispose();
+    super.dispose();
   }
 
   _TranslationKeyGroup _groupFromMap(Map<String, dynamic> m) {
@@ -15027,10 +15279,27 @@ class _AppConfigScreenState extends ConsumerState<_AppConfigScreen> {
   String? _category;
   bool? _userConfigurable;
 
+  // Realtime + poll fallback so config changes made by another admin (or a
+  // webhook) appear without a refresh button or restart.
+  late final AdminRealtimeRefresher _refresher = AdminRealtimeRefresher(
+    channelName: 'admin_app_config',
+    table: 'app_config',
+    onChange: () {
+      if (mounted && !_isLoading) unawaited(_load(force: true));
+    },
+  );
+
   @override
   void initState() {
     super.initState();
     unawaited(_load());
+    _refresher.start();
+  }
+
+  @override
+  void dispose() {
+    _refresher.dispose();
+    super.dispose();
   }
 
   Future<void> _load({bool force = false}) async {
@@ -15840,6 +16109,25 @@ class _SubscriptionsScreenState extends ConsumerState<_SubscriptionsScreen> {
   List<_AdminSubscriptionTier> _tiers = const [];
   Map<String, List<_AdminSubscriptionPlan>> _plansByTierId = const {};
 
+  // Realtime + poll fallback so catalog changes made by another admin (or a
+  // webhook flipping is_active) appear without a refresh button or restart.
+  late final List<AdminRealtimeRefresher> _refreshers = [
+    AdminRealtimeRefresher(
+      channelName: 'admin_subscription_tiers',
+      table: 'subscription_tiers',
+      onChange: () {
+        if (mounted && !_isLoading) unawaited(_load(force: true));
+      },
+    ),
+    AdminRealtimeRefresher(
+      channelName: 'admin_subscription_plans',
+      table: 'subscription_plans',
+      onChange: () {
+        if (mounted && !_isLoading) unawaited(_load(force: true));
+      },
+    ),
+  ];
+
   String _durationLabel(LocalizationState l10n, String duration) {
     return switch (duration) {
       'day' => l10n.getString('paywallPeriodDaily'),
@@ -15854,6 +16142,17 @@ class _SubscriptionsScreenState extends ConsumerState<_SubscriptionsScreen> {
   void initState() {
     super.initState();
     unawaited(_load());
+    for (final r in _refreshers) {
+      r.start();
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final r in _refreshers) {
+      r.dispose();
+    }
+    super.dispose();
   }
 
   Future<void> _load({bool force = false}) async {
@@ -17380,6 +17679,8 @@ class _UserVerificationScreenState
 
   RealtimeChannel? _realtimeChannel;
   Timer? _realtimeDebounce;
+  Timer? _pollTimer;
+  int _realtimeRetries = 0;
   StreamSubscription<bool>? _availabilitySub;
   bool _isAppForeground = true;
 
@@ -17403,6 +17704,14 @@ class _UserVerificationScreenState
         unawaited(_load(force: true, silent: true));
       }
     });
+    // Poll fallback for when realtime delivery is unavailable: the queue
+    // still self-updates in the foreground, just delayed. Realtime makes it
+    // instant when it works.
+    _pollTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted && _isAppForeground && !_isLoading) {
+        unawaited(_load(force: true, silent: true));
+      }
+    });
     unawaited(_load());
   }
 
@@ -17410,6 +17719,7 @@ class _UserVerificationScreenState
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _realtimeDebounce?.cancel();
+    _pollTimer?.cancel();
     _availabilitySub?.cancel();
     final ch = _realtimeChannel;
     if (ch != null) {
@@ -17544,7 +17854,14 @@ class _UserVerificationScreenState
       );
 
       channel.subscribe((status, error) {
-        if (error != null) {
+        // Bounded re-subscribe when the channel dies without a clean close;
+        // the 30s poll covers us in the meantime and afterwards.
+        if (mounted &&
+            _realtimeRetries < 3 &&
+            (error != null ||
+                status == RealtimeSubscribeStatus.channelError ||
+                status == RealtimeSubscribeStatus.timedOut)) {
+          _realtimeRetries++;
           Future.delayed(const Duration(seconds: 3), () {
             if (!mounted) return;
             final old = _realtimeChannel;
@@ -19576,10 +19893,85 @@ class _ProfileEditRequestsScreenState
   String _query = '';
   String _status = 'pending';
 
+  RealtimeChannel? _realtimeChannel;
+  Timer? _pollTimer;
+  int _realtimeRetries = 0;
+
   @override
   void initState() {
     super.initState();
     unawaited(_load());
+    _ensureRealtime();
+    // Fallback for when realtime delivery is unavailable (e.g. publication
+    // membership off, or a silently dead socket): new user-submitted edit
+    // requests still appear without a manual refresh. Realtime makes them
+    // instant when it works.
+    _pollTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (mounted && !_isLoading) {
+        unawaited(_load(force: true));
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    final channel = _realtimeChannel;
+    _realtimeChannel = null;
+    if (channel != null) {
+      try {
+        Supabase.instance.client.removeChannel(channel);
+      } catch (_) {}
+    }
+    super.dispose();
+  }
+
+  /// Instant updates: new user-submitted requests and review-status changes
+  /// (own actions included) reload the queue without any manual refresh.
+  /// Requires the admin SELECT policy on profile_edit_requests and the table
+  /// enabled in the supabase_realtime publication.
+  void _ensureRealtime() {
+    try {
+      _realtimeChannel = Supabase.instance.client
+          .channel('admin_profile_edit_requests')
+          .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'profile_edit_requests',
+            callback: (_) {
+              if (!mounted) return;
+              unawaited(_load(force: true));
+            },
+          )
+          .subscribe((status, error) {
+            debugPrint(
+              '[PROFILE_EDITS_REALTIME] subscribe status=$status error=$error',
+            );
+            // Bounded re-subscribe when the channel dies without a clean
+            // close; the 15s poll covers us in the meantime and after the
+            // retries are exhausted.
+            if (mounted &&
+                _realtimeRetries < 3 &&
+                (status == RealtimeSubscribeStatus.channelError ||
+                    status == RealtimeSubscribeStatus.timedOut)) {
+              _realtimeRetries++;
+              Future.delayed(const Duration(seconds: 2), () {
+                if (!mounted) return;
+                final channel = _realtimeChannel;
+                _realtimeChannel = null;
+                if (channel != null) {
+                  try {
+                    Supabase.instance.client.removeChannel(channel);
+                  } catch (_) {}
+                }
+                _ensureRealtime();
+              });
+            }
+          });
+    } catch (_) {
+      // Realtime is an enhancement; the 15s poll keeps the queue current.
+      _realtimeChannel = null;
+    }
   }
 
   Future<void> _load({bool force = false}) async {
@@ -21221,6 +21613,32 @@ const Map<String, String> _defaultTranslations = {
   'actionApprove': 'Approve',
   'actionRefresh': 'Refresh',
   'actionReject': 'Reject',
+  'adminNavEventFeedback': 'Event Feedback',
+  'adminEventFeedbackEmpty': 'No import feedback yet.',
+  'adminEventFeedbackSearchHint': 'Search title or user',
+  'adminEventFeedbackFilterAll': 'All',
+  'adminEventFeedbackFilterPending': 'Pending',
+  'adminEventFeedbackFilterImported': 'Imported',
+  'adminEventFeedbackFilterDismissed': 'Dismissed',
+  'adminEventFeedbackImportButton': 'Import event',
+  'adminEventFeedbackDismissButton': 'Dismiss',
+  'adminEventFeedbackSnapshotTitle': 'Event details',
+  'adminEventFeedbackOpenLink': 'Open event link',
+  'adminEventFeedbackReportedBy': 'Reported by {name}',
+  'adminEventFeedbackBlockReason': 'Blocked as: {reason}',
+  'adminEventFeedbackProvider': 'Source: {provider}',
+  'adminEventFeedbackStart': 'Start: {start}',
+  'adminEventFeedbackReviewedBy': 'Reviewed by {name}',
+  'adminEventFeedbackImportSuccess': 'Event imported for the user.',
+  'adminEventFeedbackDismissSuccess': 'Feedback dismissed.',
+  'adminEventFeedbackErrorGeneric': 'The action failed. Try again.',
+  'adminEventFeedbackErrorStartInPast':
+      'The event date has passed and can no longer be imported.',
+  'adminEventFeedbackErrorAlreadyReviewed':
+      'This feedback was already reviewed.',
+  'adminEventFeedbackErrorNoSnapshot':
+      'This feedback has no importable event data.',
+  'adminEventFeedbackErrorNotFound': 'This feedback no longer exists.',
   'activity_partner': 'Activity partner',
   'activity_partner::hiking': 'Hiking',
   'activity_partner::travel_partner': 'Travel Partner',
@@ -21334,6 +21752,15 @@ const Map<String, String> _defaultTranslations = {
   'adminBroadcastsBirthdayPlaceholdersBody':
       'Use {first_name} or {name} in the title, message, action URL text, or URL to personalize each birthday greeting.',
   'adminBroadcastsBirthdayPlaceholdersTitle': 'Birthday placeholders',
+  'adminBroadcastsAutomationProfileReminder': 'Profile reminder',
+  'adminBroadcastsProfileReminderAutomationToggle':
+      'Automatic profile reminder',
+  'adminBroadcastsProfileReminderAutomationHelp':
+      'Queues this broadcast automatically to users who have not completed their profiles: 1 hour after they close the app, again after 5 hours, then every 24 hours while the profile stays incomplete. Intervals are configured server-side (app_config); targeting filters do not apply.',
+  'adminBroadcastsProfileReminderPlaceholdersTitle':
+      'Profile reminder placeholders',
+  'adminBroadcastsProfileReminderPlaceholdersBody':
+      'Use {first_name} or {name} in the title, message, action URL text, or URL to personalize each reminder.',
   'adminBroadcastsClearDateTime': 'Clear',
   'adminBroadcastsConfirmScheduleBody':
       'Review the message and recipients before scheduling for {time}.',
@@ -21359,6 +21786,9 @@ const Map<String, String> _defaultTranslations = {
   'adminBroadcastsFilterUiLanguage': 'UI language',
   'adminBroadcastsFilterUiLanguages': 'UI languages',
   'adminBroadcastsFilterVerificationStatus': 'Verification status',
+  'adminBroadcastsFilterProfileCompletion': 'Profile completion',
+  'adminBroadcastsProfileCompleted': 'Completed',
+  'adminBroadcastsProfileIncomplete': 'Not completed',
   'adminBroadcastsFilterVisibility': 'Visibility',
   'adminBroadcastsFilterVisibleOnly': 'Visible only',
   'adminBroadcastsInvalidJson': 'Invalid JSON.',

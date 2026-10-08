@@ -168,6 +168,20 @@ import Vision
     return profile.contains("<key>aps-environment</key>")
   }
 
+  /// Expands a normalized Vision box by `fraction` of its own size on every
+  /// side, clamped to the image.
+  private func expandedBox(_ box: CGRect, fraction: CGFloat) -> CGRect {
+    return box.insetBy(dx: -box.width * fraction, dy: -box.height * fraction)
+      .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+  }
+
+  /// Intersection area of `a` and `b` divided by the area of `a`.
+  private func intersectionRatio(_ a: CGRect, _ b: CGRect) -> Double {
+    let intersection = a.intersection(b)
+    if intersection.isEmpty || a.width <= 0 || a.height <= 0 { return 0 }
+    return Double(intersection.width * intersection.height / (a.width * a.height))
+  }
+
   private func analyzeProfilePhotoPresence(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     guard
       let args = call.arguments as? [String: Any],
@@ -255,6 +269,9 @@ import Vision
         "faceTouchesImageEdge": false,
         "completeFaceDetected": false,
         "faceObstructed": false,
+        "bothEyesClosed": false,
+        "textOverFace": false,
+        "objectOverFace": false,
         "upperBodyOnly": false,
         "fullBodyVisible": false,
         "completeBodyDetected": false
@@ -278,6 +295,9 @@ import Vision
         "faceTouchesImageEdge": false,
         "completeFaceDetected": false,
         "faceObstructed": false,
+        "bothEyesClosed": false,
+        "textOverFace": false,
+        "objectOverFace": false,
         "upperBodyOnly": false,
         "fullBodyVisible": false,
         "completeBodyDetected": false
@@ -294,11 +314,36 @@ import Vision
         let bodyRequest = VNDetectHumanRectanglesRequest()
         bodyRequest.upperBodyOnly = false
 
+        // Text recognition: catches cards, signs, watermarks and screenshots
+        // before they ever reach server-side AI. Revision 3 (iOS 16+) adds
+        // many more scripts — including Hebrew and Arabic, the common card
+        // languages for RTL users — so prefer it when the OS supports it.
+        let textRequest = VNRecognizeTextRequest()
+        textRequest.recognitionLevel = .fast
+        textRequest.usesLanguageCorrection = false
+        if #available(iOS 16.0, *) {
+          textRequest.revision = 3
+        }
+
+        // Salient rectangle detection: a card/document held up in a selfie is
+        // a rectangle even when its text is too small or low-contrast for OCR
+        // to read — the exact case the text-only gate misses. Faces are not
+        // rectangular, so this does not fire on ordinary portraits.
+        let rectangleRequest = VNDetectRectanglesRequest()
+        rectangleRequest.minimumAspectRatio = 0.3
+        rectangleRequest.maximumAspectRatio = 3.0
+        rectangleRequest.minimumSize = 0.08
+        rectangleRequest.minimumConfidence = 0.5
+        rectangleRequest.minimumQuadratureConfidence = 0.25
+        rectangleRequest.maximumObservations = 5
+
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-        try handler.perform([faceRequest, bodyRequest])
+        try handler.perform([faceRequest, bodyRequest, textRequest, rectangleRequest])
 
         let faceObservations = (faceRequest.results as? [VNFaceObservation]) ?? []
         let bodyObservations = (bodyRequest.results as? [VNHumanObservation]) ?? []
+        let textObservations = (textRequest.results as? [VNRecognizedTextObservation]) ?? []
+        let rectangleObservations = (rectangleRequest.results as? [VNRectangleObservation]) ?? []
 
         let faceCount = faceObservations.count
         let containsFace = faceCount > 0
@@ -359,11 +404,128 @@ import Vision
             box.maxY < 1 - edgeTolerance
         }
 
+        // Text analysis: per-observation metrics so the Dart side can flag
+        // substantial text (cards/signs/watermarks) while ignoring incidental
+        // text like small shirt prints. Vision boxes are normalized (origin
+        // bottom-left); the ratios below are origin-independent.
+        var textBlocks: [[String: CGFloat]] = []
+        var textAreaSum: Double = 0
+        var largestTextAreaRatio: Double = 0
+        var largestTextHeightRatio: Double = 0
+        var largestTextWidthRatio: Double = 0
+        var largestTextCharCount = 0
+
+        // Text overlapping the face region: a card or document held over the
+        // face. Independent of the substantial-text thresholds — even 2
+        // recognized characters inside the face box condemn the photo
+        // (low-contrast cards often yield almost no OCR hits, which is exactly
+        // the case that used to slip through).
+        let largestFaceObservation = faceObservations.max(by: { $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height })
+        // Two zones so the user message stays accurate: text/objects over the
+        // CORE face box mean "covering"; objects only near the face (or a
+        // coarse merged person+card box) mean "document visible" — still a
+        // violation, but the face is not occluded and the message must not
+        // claim it is.
+        let coreFaceZone = largestFaceObservation.map { expandedBox($0.boundingBox, fraction: 0.1) }
+        let nearFaceZone = largestFaceObservation.map { expandedBox($0.boundingBox, fraction: 0.5) }
+        var textOverFace = false
+        var objectOverFace = false
+        var documentNearFace = false
+
+        // Region overlays for the failure dialog (normalized, top-left origin
+        // to match Android).
+        let faceBoxNormalized: [String: Double]? = largestFaceObservation.map { face in
+          [
+            "x": Double(face.boundingBox.minX),
+            "y": Double(1 - face.boundingBox.maxY),
+            "w": Double(face.boundingBox.width),
+            "h": Double(face.boundingBox.height),
+          ]
+        }
+        var issueBoxes: [[String: Any]] = []
+
+        func normalizedIssueBox(_ box: CGRect, label: String) -> [String: Any] {
+          return [
+            "x": Double(box.minX),
+            "y": Double(1 - box.maxY),
+            "w": Double(box.width),
+            "h": Double(box.height),
+            "label": label,
+          ]
+        }
+
+        for observation in textObservations {
+          guard let candidate = observation.topCandidates(1).first else { continue }
+          let charCount = candidate.string.count
+          if let coreZone = coreFaceZone, charCount >= 2,
+            intersectionRatio(observation.boundingBox, coreZone) >= 0.25 {
+            textOverFace = true
+            issueBoxes.append(normalizedIssueBox(observation.boundingBox, label: "text"))
+          }
+          guard charCount >= 3 else { continue }
+          let box = observation.boundingBox
+          let areaRatio = Double(box.width * box.height)
+          textAreaSum += areaRatio
+          textBlocks.append([
+            "x": box.minX,
+            "y": 1 - box.maxY, // convert to top-left origin to match Android
+            "w": box.width,
+            "h": box.height,
+          ])
+          if areaRatio > largestTextAreaRatio {
+            largestTextAreaRatio = Double(areaRatio)
+            largestTextHeightRatio = Double(box.height)
+            largestTextWidthRatio = Double(box.width)
+            largestTextCharCount = charCount
+          }
+        }
+        let textContentAreaRatio = min(textAreaSum, 1.0)
+
+        // Object near/over the face without OCR: a salient rectangle
+        // (card/document) intersecting the face zones. Only the first
+        // (highest-confidence) match flags and draws — one box tells the
+        // story; a stack of boxes is noise.
+        if let nearZone = nearFaceZone, let faceObservation = largestFaceObservation {
+          let faceArea = Double(
+            faceObservation.boundingBox.width * faceObservation.boundingBox.height)
+          for rectangle in rectangleObservations {
+            let rectBox = rectangle.boundingBox
+            let overlapCore = coreFaceZone.map { intersectionRatio(rectBox, $0) } ?? 0
+            let overlapNear = intersectionRatio(rectBox, nearZone)
+            guard overlapCore >= 0.25 || overlapNear >= 0.25 else { continue }
+            let rectArea = Double(rectBox.width * rectBox.height)
+            let ratioToFace = faceArea > 0 ? rectArea / faceArea : 0
+            let overlapWithFace = intersectionRatio(rectBox, faceObservation.boundingBox)
+            // The detected face itself: high overlap at a comparable size.
+            if overlapWithFace >= 0.7 && ratioToFace >= 0.4 && ratioToFace <= 3.0 {
+              continue
+            }
+            if overlapCore >= 0.25 {
+              if ratioToFace <= 3.0 {
+                objectOverFace = true
+              } else {
+                // Coarse merged box cannot localize the occlusion.
+                documentNearFace = true
+              }
+              if overlapWithFace < 0.7 && rectArea < 0.6 && ratioToFace <= 3.0 {
+                issueBoxes.append(normalizedIssueBox(rectBox, label: "document"))
+              }
+            } else {
+              documentNearFace = true
+              if ratioToFace <= 3.0 && rectArea < 0.6 {
+                issueBoxes.append(normalizedIssueBox(rectBox, label: "document"))
+              }
+            }
+            break
+          }
+        }
+
         let uncertain = !containsFace && !containsBody
 
         DispatchQueue.main.async {
           result([
             "supported": true,
+            "prescreenVersion": 3,
             "containsFace": containsFace,
             "containsBody": containsBody,
             "uncertain": uncertain,
@@ -375,9 +537,21 @@ import Vision
             "faceTouchesImageEdge": faceTouchesImageEdge,
             "completeFaceDetected": completeFaceDetected,
             "faceObstructed": faceObstructed,
+            "bothEyesClosed": false,
+            "textOverFace": textOverFace,
+            "objectOverFace": objectOverFace,
+            "documentNearFace": documentNearFace,
+            "faceBox": faceBoxNormalized as Any,
+            "issueBoxes": issueBoxes,
             "upperBodyOnly": upperBodyOnly,
             "fullBodyVisible": fullBodyVisible,
-            "completeBodyDetected": completeBodyDetected
+            "completeBodyDetected": completeBodyDetected,
+            "textContentAreaRatio": textContentAreaRatio,
+            "largestTextAreaRatio": largestTextAreaRatio,
+            "largestTextHeightRatio": largestTextHeightRatio,
+            "largestTextWidthRatio": largestTextWidthRatio,
+            "largestTextCharCount": largestTextCharCount,
+            "textBlocks": textBlocks
           ])
         }
       } catch {
@@ -395,6 +569,10 @@ import Vision
             "faceTouchesImageEdge": false,
             "completeFaceDetected": false,
             "faceObstructed": false,
+            "bothEyesClosed": false,
+            "textOverFace": false,
+            "objectOverFace": false,
+            "documentNearFace": false,
             "upperBodyOnly": false,
             "fullBodyVisible": false,
             "completeBodyDetected": false

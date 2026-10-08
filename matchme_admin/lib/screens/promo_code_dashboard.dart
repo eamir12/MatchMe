@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme_admin/services/admin_local_db_service.dart';
 import 'package:matchme_admin/services/admin_offline_cache_manager.dart';
+import 'package:matchme_admin/services/admin_realtime_refresher.dart';
 
 enum _PromoCodeListFilter { all, enabled, disabled, expired }
 
@@ -63,6 +64,22 @@ class _AdminPromoCodeDashboardState
     return trimmed.isEmpty ? 'en' : trimmed;
   }
 
+  // Realtime + poll fallback so redemptions by end users (usage counts) and
+  // changes made elsewhere appear without reopening a drilldown or restart.
+  // The poll also covers redemption-table activity that doesn't touch the
+  // promo_codes rows this channel listens to, and keeps the analytics tab
+  // (usage totals) fresh without a range change.
+  late final AdminRealtimeRefresher _refresher = AdminRealtimeRefresher(
+    channelName: 'admin_promo_codes',
+    table: 'promo_codes',
+    pollInterval: const Duration(seconds: 60),
+    onChange: () {
+      if (!mounted) return;
+      unawaited(_refreshLocalCache());
+      _refreshAnalytics();
+    },
+  );
+
   @override
   void initState() {
     super.initState();
@@ -71,6 +88,7 @@ class _AdminPromoCodeDashboardState
       _primeFutures();
     });
     _loadPromoCodesConfig();
+    _refresher.start();
   }
 
   Future<void> _initializeAndLoadFromLocalStorage() async {
@@ -120,6 +138,7 @@ class _AdminPromoCodeDashboardState
 
   @override
   void dispose() {
+    _refresher.dispose();
     _tabController?.dispose();
     _codeController.dispose();
     _descriptionController.dispose();
@@ -2139,11 +2158,26 @@ class _AdminPromoCodeDashboardState
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             SegmentedButton<String>(
+              // The default selected checkmark eats ~24px inside the segment,
+              // which is what wraps "30 days" onto a second row on
+              // phone-width screens.
+              showSelectedIcon: false,
               segments: [
-                ButtonSegment(value: '7d', label: Text(t('adminAdsRange7d'))),
-                ButtonSegment(value: '30d', label: Text(t('adminAdsRange30d'))),
-                ButtonSegment(value: '90d', label: Text(t('adminAdsRange90d'))),
-                ButtonSegment(value: 'all', label: Text(t('adminAdsRangeAll'))),
+                for (final entry in const {
+                  '7d': 'adminAdsRange7d',
+                  '30d': 'adminAdsRange30d',
+                  '90d': 'adminAdsRange90d',
+                  'all': 'adminAdsRangeAll',
+                }.entries)
+                  ButtonSegment(
+                    value: entry.key,
+                    label: Text(
+                      t(entry.value),
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
               ],
               selected: _rangePreset == 'custom' ? <String>{} : {_rangePreset},
               onSelectionChanged: (value) {

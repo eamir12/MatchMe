@@ -34,12 +34,16 @@ final eventMatchesProvider = FutureProvider.autoDispose
       final localDb = ref.read(localDbProvider);
 
       try {
-        // Try cached attendees first
+        // Try cached attendees first. An EMPTY cached list is treated as a
+        // miss on purpose: matches are created server-side when another
+        // user joins (a change that doesn't trip this user's realtime
+        // subscription), so a cached empty list is usually stale and would
+        // hide a brand-new match for up to the cache TTL.
         final cachedAttendees = await localDb.getEventAttendees(event.id);
-        if (cachedAttendees != null) {
+        if (cachedAttendees != null && cachedAttendees.isNotEmpty) {
           if (kIsWeb) {
             print(
-              '🔍 [WEB] eventMatchesProvider - Using cached attendees for event: ${event.id}',
+              '?? [WEB] eventMatchesProvider - Using cached attendees for event: ${event.id}',
             );
           }
           return cachedAttendees;
@@ -286,323 +290,356 @@ class AttendeesScreen extends ConsumerWidget {
               ),
             ),
           ],
-          // Event details header
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surface,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.black.withValues(alpha: 0.05)),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.04),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
+          // Event card: details and matched attendees in one container.
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surface,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: Colors.black.withValues(alpha: 0.05),
                   ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    event.eventName,
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
-                      color: Theme.of(context).colorScheme.onSurface,
-                    ),
-                    textAlign: event.eventName.isRtl()
-                        ? TextAlign.right
-                        : TextAlign.left,
-                    textDirection: event.eventName.isRtl()
-                        ? ui.TextDirection.rtl
-                        : ui.TextDirection.ltr,
-                  ),
-                  const SizedBox(height: 8),
-                  EventAttendanceSummary(
-                    attendeeCount: event.attendeeCount,
-                    l10n: l10n,
-                  ),
-                  const SizedBox(height: 8),
-                  _buildLocationRow(
-                    context,
-                    l10n,
-                    l10n.getString('eventLocationLabel'),
-                    event.eventVenue?.trim().isNotEmpty == true
-                        ? event.eventVenue!.trim()
-                        : l10n.getString('eventVenueNotSpecified'),
-                  ),
-                  const SizedBox(height: 4),
-                  _buildEventDetailRow(
-                    context,
-                    l10n.getString('eventDateLabel'),
-                    _formatDateOnly(event.startTime, l10n),
-                  ),
-                  const SizedBox(height: 4),
-                  _buildEventDetailRow(
-                    context,
-                    l10n.getString('eventTimeLabel'),
-                    formatTimeOfDateTimeWithPrefs(
-                      context,
-                      ref,
-                      l10n,
-                      event.startTime,
-                    ),
-                  ),
-                  if (event.eventLink?.trim().isNotEmpty == true) ...[
-                    const SizedBox(height: 8),
-                    TextButton(
-                      onPressed: () =>
-                          _openEventLink(context, l10n, event.eventLink!),
-                      style: TextButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 4,
-                          vertical: 4,
-                        ),
-                        minimumSize: const Size(48, 48),
-                        tapTargetSize: MaterialTapTargetSize.padded,
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            Icons.link,
-                            size: 14,
-                            color: Theme.of(context).colorScheme.primary,
-                          ),
-                          const SizedBox(width: 4),
-                          Flexible(
-                            child: Text(
-                              l10n.getString('eventViewDetails'),
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Theme.of(context).colorScheme.primary,
-                                decoration: TextDecoration.underline,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.04),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
                     ),
                   ],
-                  if (event.eventVenue != null &&
-                      event.eventVenue!.isNotEmpty &&
-                      !isVirtualMeetingLocation(event.eventVenue)) ...[
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      event.eventName,
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                      textAlign: event.eventName.isRtl()
+                          ? TextAlign.right
+                          : TextAlign.left,
+                      textDirection: event.eventName.isRtl()
+                          ? ui.TextDirection.rtl
+                          : ui.TextDirection.ltr,
+                    ),
                     const SizedBox(height: 8),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: InkWell(
-                        onTap: () async {
-                          final success = await openGoogleMaps(
-                            event.eventVenue!,
-                          );
-                          if (!success && context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  l10n.getString('errorCouldNotOpenMaps'),
+                    EventAttendanceSummary(
+                      attendeeCount: event.attendeeCount,
+                      l10n: l10n,
+                    ),
+                    const SizedBox(height: 8),
+                    _buildLocationRow(
+                      context,
+                      l10n,
+                      l10n.getString('eventLocationLabel'),
+                      event.eventVenue?.trim().isNotEmpty == true
+                          ? event.eventVenue!.trim()
+                          : l10n.getString('eventVenueNotSpecified'),
+                    ),
+                    const SizedBox(height: 4),
+                    _buildEventDetailRow(
+                      context,
+                      l10n.getString('eventDateLabel'),
+                      _formatDateOnly(event.startTime, l10n),
+                    ),
+                    const SizedBox(height: 4),
+                    _buildEventDetailRow(
+                      context,
+                      l10n.getString('eventTimeLabel'),
+                      formatTimeOfDateTimeWithPrefs(
+                        context,
+                        ref,
+                        l10n,
+                        event.startTime,
+                      ),
+                    ),
+                    if (event.eventLink?.trim().isNotEmpty == true) ...[
+                      const SizedBox(height: 8),
+                      TextButton(
+                        onPressed: () =>
+                            _openEventLink(context, l10n, event.eventLink!),
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 4,
+                            vertical: 4,
+                          ),
+                          minimumSize: const Size(48, 48),
+                          tapTargetSize: MaterialTapTargetSize.padded,
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.link,
+                              size: 14,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                            const SizedBox(width: 4),
+                            Flexible(
+                              child: Text(
+                                l10n.getString('eventViewDetails'),
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: Theme.of(context).colorScheme.primary,
+                                  decoration: TextDecoration.underline,
                                 ),
-                                backgroundColor: Colors.orange,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    if (event.eventVenue != null &&
+                        event.eventVenue!.isNotEmpty &&
+                        !isVirtualMeetingLocation(event.eventVenue)) ...[
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: InkWell(
+                          onTap: () async {
+                            final success = await openGoogleMaps(
+                              event.eventVenue!,
+                            );
+                            if (!success && context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    l10n.getString('errorCouldNotOpenMaps'),
+                                  ),
+                                  backgroundColor: Colors.orange,
+                                ),
+                              );
+                            }
+                          },
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .primaryContainer
+                                  .withValues(alpha: 0.3),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.primary.withValues(alpha: 0.5),
+                                width: 1,
+                              ),
+                            ),
+                            child: Icon(
+                              Icons.map_outlined,
+                              size: 20,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 16),
+                    const Divider(height: 1),
+                    const SizedBox(height: 12),
+                    Text(
+                      l10n.getString('eventMatchedAttendeesOnly'),
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+
+                    // Matched attendees list (kept inside the event card)
+                    Expanded(
+                      child: matchesAsync.when(
+                        data: (matches) {
+                          if (matches.isEmpty) {
+                            return SingleChildScrollView(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              child: AppEmptyState(
+                                icon: Icons.people_outline,
+                                title: l10n.getString(
+                                  'noMatchesFoundForThisEvent',
+                                ),
+                                message: l10n.getString('eventMatchingTooltip'),
                               ),
                             );
                           }
-                        },
-                        borderRadius: BorderRadius.circular(8),
-                        child: Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: Theme.of(context)
-                                .colorScheme
-                                .primaryContainer
-                                .withValues(alpha: 0.3),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.primary.withValues(alpha: 0.5),
-                              width: 1,
-                            ),
-                          ),
-                          child: Icon(
-                            Icons.map_outlined,
-                            size: 20,
-                            color: Theme.of(context).colorScheme.primary,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Text(
-              l10n.getString('eventMatchedAttendeesOnly'),
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ),
+                          return ListView.builder(
+                            itemCount: matches.length,
+                            itemBuilder: (context, index) {
+                              final match = matches[index];
+                              final String matchId = match['id'];
+                              final String user1Id = match['user1_id'];
+                              final String user2Id = match['user2_id'];
+                              final String matchedIntent =
+                                  match['matched_intent'] ??
+                                  l10n.getString('attendingSharedEvent');
 
-          // Matches list
-          Expanded(
-            child: matchesAsync.when(
-              data: (matches) {
-                if (matches.isEmpty) {
-                  return SingleChildScrollView(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    child: AppEmptyState(
-                      icon: Icons.people_outline,
-                      title: l10n.getString('noMatchesFoundForThisEvent'),
-                      message: l10n.getString('eventMatchingTooltip'),
-                    ),
-                  );
-                }
-                return ListView.builder(
-                  itemCount: matches.length,
-                  itemBuilder: (context, index) {
-                    final match = matches[index];
-                    final String matchId = match['id'];
-                    final String user1Id = match['user1_id'];
-                    final String user2Id = match['user2_id'];
-                    final String matchedIntent =
-                        match['matched_intent'] ??
-                        l10n.getString('attendingSharedEvent');
+                              // Determine the other user
+                              final currentUserId =
+                                  supabase.auth.currentUser?.id;
+                              final String otherUserId =
+                                  (user1Id == currentUserId)
+                                  ? user2Id
+                                  : user1Id;
 
-                    // Determine the other user
-                    final currentUserId = supabase.auth.currentUser?.id;
-                    final String otherUserId = (user1Id == currentUserId)
-                        ? user2Id
-                        : user1Id;
+                              final otherProfileAsync = ref.watch(
+                                userProfileProvider(otherUserId),
+                              );
 
-                    final otherProfileAsync = ref.watch(
-                      userProfileProvider(otherUserId),
-                    );
-
-                    return ListTile(
-                      leading: otherProfileAsync.when(
-                        data: (profile) {
-                          final photo = (profile?.photos.isNotEmpty == true)
-                              ? profile!.photos.first
-                              : null;
-                          return CircleAvatar(
-                            radius: 22,
-                            backgroundColor: Theme.of(
-                              context,
-                            ).colorScheme.surfaceContainerHighest,
-                            child: photo == null
-                                ? Icon(
-                                    Icons.person,
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.primary,
-                                  )
-                                : ClipOval(
-                                    child: SignedImage(
-                                      source: photo,
-                                      width: 44,
-                                      height: 44,
-                                      fit: BoxFit.cover,
-                                      placeholder: const Center(
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
-                                      ),
-                                      errorWidget: Icon(
-                                        Icons.person,
-                                        color: Theme.of(
-                                          context,
-                                        ).colorScheme.primary,
-                                      ),
+                              return ListTile(
+                                leading: otherProfileAsync.when(
+                                  data: (profile) {
+                                    final photo =
+                                        (profile?.photos.isNotEmpty == true)
+                                        ? profile!.photos.first
+                                        : null;
+                                    return CircleAvatar(
+                                      radius: 22,
+                                      backgroundColor: Theme.of(
+                                        context,
+                                      ).colorScheme.surfaceContainerHighest,
+                                      child: photo == null
+                                          ? Icon(
+                                              Icons.person,
+                                              color: Theme.of(
+                                                context,
+                                              ).colorScheme.primary,
+                                            )
+                                          : ClipOval(
+                                              child: SignedImage(
+                                                source: photo,
+                                                width: 44,
+                                                height: 44,
+                                                fit: BoxFit.cover,
+                                                placeholder: const Center(
+                                                  child:
+                                                      CircularProgressIndicator(
+                                                        strokeWidth: 2,
+                                                      ),
+                                                ),
+                                                errorWidget: Icon(
+                                                  Icons.person,
+                                                  color: Theme.of(
+                                                    context,
+                                                  ).colorScheme.primary,
+                                                ),
+                                              ),
+                                            ),
+                                    );
+                                  },
+                                  loading: () => const CircleAvatar(
+                                    radius: 22,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
                                     ),
                                   ),
+                                  error: (error, stack) => const CircleAvatar(
+                                    radius: 22,
+                                    child: Icon(Icons.person),
+                                  ),
+                                ),
+                                title: otherProfileAsync.when(
+                                  data: (profile) {
+                                    final name =
+                                        profile?.name
+                                            .formatAsFirstNameLastInitial() ??
+                                        l10n.getString('generalUnknown');
+                                    final age = _calculateAge(
+                                      profile?.dateOfBirth,
+                                    );
+                                    if (age == null) {
+                                      return Text(
+                                        name,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      );
+                                    }
+                                    return Text(
+                                      l10n.getString(
+                                        'generalNameAge',
+                                        params: {
+                                          'name': name,
+                                          'age': age.toString(),
+                                        },
+                                      ),
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    );
+                                  },
+                                  loading: () => Text(
+                                    l10n.getString('generalLoading'),
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  error: (error, stack) => Text(
+                                    l10n.getString('generalUnknown'),
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  MatchReasonFormatter.formatMatchReasons(
+                                    ref,
+                                    matchedIntent,
+                                    'event',
+                                  ),
+                                ),
+                                onTap: () {
+                                  // Resolve the cached name so the profile shows it offline.
+                                  final cachedName =
+                                      otherProfileAsync.asData?.value?.name
+                                          .formatAsFirstNameLastInitial() ??
+                                      l10n.getString('generalUnknown');
+                                  // Navigate to existing MatchProfileScreen
+                                  Navigator.of(
+                                    context,
+                                    rootNavigator: true,
+                                  ).push(
+                                    MaterialPageRoute(
+                                      builder: (context) => MatchProfileScreen(
+                                        matchId: matchId,
+                                        otherUserId: otherUserId,
+                                        otherUserName: cachedName,
+                                        matchedIntent: matchedIntent,
+                                        matchType:
+                                            match['match_type'] ?? 'event',
+                                        eventId: event.id,
+                                        eventName: event.eventName,
+                                        eventLink: event.eventLink,
+                                        createdAt: DateTime.parse(
+                                          match['created_at'],
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              );
+                            },
                           );
                         },
-                        loading: () => const CircleAvatar(
-                          radius: 22,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                        error: (error, stack) => const CircleAvatar(
-                          radius: 22,
-                          child: Icon(Icons.person),
-                        ),
-                      ),
-                      title: otherProfileAsync.when(
-                        data: (profile) {
-                          final name =
-                              profile?.name.formatAsFirstNameLastInitial() ??
-                              l10n.getString('generalUnknown');
-                          final age = _calculateAge(profile?.dateOfBirth);
-                          if (age == null) {
-                            return Text(
-                              name,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            );
-                          }
-                          return Text(
-                            l10n.getString(
-                              'generalNameAge',
-                              params: {'name': name, 'age': age.toString()},
-                            ),
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          );
-                        },
-                        loading: () => Text(
-                          l10n.getString('generalLoading'),
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        error: (error, stack) => Text(
-                          l10n.getString('generalUnknown'),
-                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        loading: () =>
+                            const Center(child: CircularProgressIndicator()),
+                        error: (e, s) => AppEmptyState(
+                          icon: Icons.cloud_off,
+                          title: l10n.getString('eventLoadErrorTitle'),
+                          message: l10n.getString('eventLoadErrorMessage'),
+                          actionLabel: l10n.getString('generalRetry'),
+                          onAction: () =>
+                              ref.invalidate(eventMatchesProvider(event)),
                         ),
                       ),
-                      subtitle: Text(
-                        MatchReasonFormatter.formatMatchReasons(
-                          ref,
-                          matchedIntent,
-                          'event',
-                        ),
-                      ),
-                      onTap: () {
-                        // Resolve the cached name so the profile shows it offline.
-                        final cachedName =
-                            otherProfileAsync.asData?.value?.name
-                                .formatAsFirstNameLastInitial() ??
-                            l10n.getString('generalUnknown');
-                        // Navigate to existing MatchProfileScreen
-                        Navigator.of(context, rootNavigator: true).push(
-                          MaterialPageRoute(
-                            builder: (context) => MatchProfileScreen(
-                              matchId: matchId,
-                              otherUserId: otherUserId,
-                              otherUserName: cachedName,
-                              matchedIntent: matchedIntent,
-                              matchType: match['match_type'] ?? 'event',
-                              eventId: event.id,
-                              eventName: event.eventName,
-                              eventLink: event.eventLink,
-                              createdAt: DateTime.parse(match['created_at']),
-                            ),
-                          ),
-                        );
-                      },
-                    );
-                  },
-                );
-              },
-              loading: () => const Center(child: CircularProgressIndicator()),
-              error: (e, s) => AppEmptyState(
-                icon: Icons.cloud_off,
-                title: l10n.getString('eventLoadErrorTitle'),
-                message: l10n.getString('eventLoadErrorMessage'),
-                actionLabel: l10n.getString('generalRetry'),
-                onAction: () => ref.invalidate(eventMatchesProvider(event)),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

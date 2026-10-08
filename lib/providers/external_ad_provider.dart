@@ -10,6 +10,8 @@ import 'package:matchme/services/admob_service.dart';
 import 'package:matchme/services/external_ad_service.dart';
 import 'package:matchme/services/mobile_ad_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:matchme/providers/ad_provider.dart'
+    show adConfigEpochProvider, externalAdPollProvider;
 import 'package:matchme/services/supabase_realtime_manager.dart';
 import 'package:matchme/utils/offline_utils.dart';
 
@@ -93,12 +95,22 @@ final adConsentServiceProvider = Provider<AdConsentService>((ref) {
 /// Narrow config key so unrelated app_config changes do not refetch every placement.
 final _externalAdConfigKeyProvider = Provider<String>((ref) {
   final config = ref.watch(appConfigProvider);
+  // Poll tick (same 30s counter the internal ads use) as a backstop for when
+  // the realtime socket is down; the 60s reuse window still applies.
+  final pollTick = ref.watch(externalAdPollProvider);
+  // Bumps whenever the admin changes anything in the ad systems.
+  final adEpoch = ref.watch(adConfigEpochProvider);
   final enabled = config['ads.external.enabled'] ?? 'false';
   final placements = config['ads.external.allowed_placements'] ?? '[]';
   final tiers = config['ads.external.allowed_tiers'] ?? '[]';
   final platforms = config['ads.external.allowed_platforms'] ?? '[]';
-  return '$enabled|$placements|$tiers|$platforms';
+  return '$enabled|$placements|$tiers|$platforms|$pollTick|$adEpoch';
 });
+
+/// Last epoch counter seen by [externalAdProvider] — when [adConfigEpochProvider]
+/// increments (admin changed something), the external cache is wiped so the
+/// refetch cannot be short-circuited by the reuse windows.
+int _lastSeenExternalEpoch = -1;
 
 /// Provider for getting external ad for a placement.
 /// Mirrors [sponsoredAdProvider] debounce/cache so revisiting a tab does not refetch.
@@ -107,6 +119,21 @@ final externalAdProvider = FutureProvider.family<AdUnit?, String>((
   placement,
 ) async {
   final _ = ref.watch(_externalAdConfigKeyProvider);
+
+  // Admin changed the ad systems — drop every cached unit so the fetch below
+  // is guaranteed fresh (bypasses the 10s debounce and 60s reuse windows).
+  final adEpoch = ref.watch(adConfigEpochProvider);
+  if (_lastSeenExternalEpoch == -1) {
+    _lastSeenExternalEpoch = adEpoch;
+  } else if (adEpoch != _lastSeenExternalEpoch) {
+    _lastSeenExternalEpoch = adEpoch;
+    if (kDebugMode) {
+      print(
+        '[ExternalAdProvider] ad config changed (epoch=$adEpoch) - clearing external ad cache',
+      );
+    }
+    await clearAllExternalAdCache();
+  }
 
   // No ad SDK on Windows/macOS/Linux (google_mobile_ads implements Android, iOS
   // and web only). Skip the round trip rather than retrieving creatives this
@@ -176,14 +203,36 @@ final externalAdProvider = FutureProvider.family<AdUnit?, String>((
     return cached;
   }
 
-  final ad = await mediationService.getBestAdForPlacement(
-    placement: placement,
-    platform: platform,
-  );
+  AdUnit? ad;
+  try {
+    ad = await mediationService.getBestAdForPlacement(
+      placement: placement,
+      platform: platform,
+    );
+  } catch (e) {
+    // The call itself failed (network / RPC / permissions) — keep the last
+    // known unit so a transient outage doesn't blank the slot. A deliberate
+    // "no ad" answer is NOT an error and is handled below.
+    if (kDebugMode) {
+      print('[ExternalAdProvider] $cacheKey: fetch failed, serving cache: $e');
+    }
+    return peekCachedExternalAd(cacheKey) ?? await serveFromPersistentCache();
+  }
 
   if (ad == null) {
-    // Keep last known unit when mediation has no fill (same as internal ads).
-    return peekCachedExternalAd(cacheKey) ?? await serveFromPersistentCache();
+    // The server deliberately answered "no ad": global kill switch, admin
+    // placement/tier/platform filters, frequency cap, or genuine no-fill.
+    // Falling back to the cached unit here is what made admin filter changes
+    // appear to be ignored — drop the cached unit instead.
+    if (peekCachedExternalAd(cacheKey) != null) {
+      if (kDebugMode) {
+        print(
+          '[ExternalAdProvider] $cacheKey: server returned no ad, clearing cached unit',
+        );
+      }
+      await clearCachedExternalAd(cacheKey);
+    }
+    return null;
   }
 
   if (kDebugMode) {

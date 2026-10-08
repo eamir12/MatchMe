@@ -47,6 +47,8 @@ Map<String, dynamic> eventModelToStoredJson(EventModel event) {
     'externalProvider': event.externalProvider,
     'isAllDay': event.isAllDay,
     'description': event.description,
+    'markedPrivateInSource': event.markedPrivateInSource,
+    'importBlockReason': event.importBlockReason,
   };
 }
 
@@ -78,6 +80,8 @@ EventModel eventModelFromStoredJson(Map<String, dynamic> json) {
         (json['externalProvider'] ?? json['external_provider']) as String?,
     isAllDay: (json['isAllDay'] ?? json['is_all_day']) == true,
     description: json['description'] as String?,
+    markedPrivateInSource: (json['markedPrivateInSource'] as bool?) ?? false,
+    importBlockReason: json['importBlockReason'] as String?,
   );
 }
 

@@ -4,8 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/pinned_partner_provider.dart';
 
-/// Small "🏠 Home base" chip shown when the match partner currently matches
-/// from a pinned home-base location (i.e. they are physically elsewhere).
+/// Small "📌 Pinned location" chip shown when the match partner currently
+/// matches from a pinned home-base location (i.e. they are physically
+/// elsewhere). Styled as a uniform pill so it can sit inside the MatchBox
+/// signal-chips row (and still works standalone in the match profile).
 ///
 /// Realtime: watches the shared [pinnedPartnerProvider] (RPC) while keeping
 /// [pinnedPartnerRealtimeProvider] alive so pin/unpin/extend/expire broadcasts
@@ -24,26 +26,30 @@ class PinnedPartnerChip extends ConsumerWidget {
     // Keep the broadcast/poll subscription alive while any chip is visible.
     ref.watch(pinnedPartnerRealtimeProvider);
     final async = ref.watch(pinnedPartnerProvider(otherUserId));
+    final color = Theme.of(context).colorScheme.secondary;
     return async.maybeWhen(
       data: (pinned) => pinned
-          ? Padding(
-              padding: const EdgeInsets.only(top: 2),
+          ? Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(999),
+              ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
+                textDirection: Directionality.of(context),
                 children: [
-                  Icon(
-                    Icons.push_pin_outlined,
-                    size: 12,
-                    color: Theme.of(context).colorScheme.secondary,
-                  ),
+                  Icon(Icons.push_pin_outlined, size: 12, color: color),
                   const SizedBox(width: 4),
                   Flexible(
                     child: Text(
                       l10n.getString('pinnedPartnerBadge'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
-                        color: Theme.of(context).colorScheme.secondary,
+                        color: color,
                       ),
                     ),
                   ),

@@ -15,19 +15,54 @@ import 'photo_prescreen_web_stub.dart'
 class PhotoPrescreenResult {
   final bool passed;
   final PrescreenFailureReason? failureReason;
+
+  /// Every failed rule, in display order. [failureReason] is the first entry —
+  /// kept for non-UI callers; the failure dialog renders all of them so one
+  /// retake can fix everything at once.
+  final List<PrescreenFailureReason> failureReasons;
   final double confidence;
   final FaceAnalysis? faceAnalysis;
   final BodyAnalysis? bodyAnalysis;
+  final TextAnalysis? textAnalysis;
   final ImageQuality? imageQuality;
+
+  /// Text block overlapping the face region (native detectors only).
+  final bool textOverFace;
+
+  /// Object (hand/salient rectangle) overlapping the face region.
+  final bool objectOverFace;
+
+  /// Card/document visible near the face but not clearly covering it.
+  final bool documentNearFace;
+
+  /// Normalized top-left-origin box of the largest detected face, when the
+  /// native analyzer reported one. Used to draw the overlay in the failure
+  /// dialog.
+  final Map<String, double>? faceBox;
+
+  /// Normalized {x,y,w,h,label} boxes locating the problem regions (text
+  /// blocks or objects over the face), for the failure dialog overlay.
+  final List<Map<String, dynamic>> issueBoxes;
+
+  /// 64-bit dHash of the analyzed image, for perceptual duplicate checks.
+  final String perceptualHash;
   final String? errorMessage;
 
   const PhotoPrescreenResult({
     required this.passed,
     this.failureReason,
+    this.failureReasons = const [],
     required this.confidence,
     this.faceAnalysis,
     this.bodyAnalysis,
+    this.textAnalysis,
     this.imageQuality,
+    this.textOverFace = false,
+    this.objectOverFace = false,
+    this.documentNearFace = false,
+    this.faceBox,
+    this.issueBoxes = const [],
+    this.perceptualHash = '',
     this.errorMessage,
   });
 
@@ -35,29 +70,131 @@ class PhotoPrescreenResult {
     required double confidence,
     FaceAnalysis? faceAnalysis,
     BodyAnalysis? bodyAnalysis,
+    TextAnalysis? textAnalysis,
     ImageQuality? imageQuality,
+    bool textOverFace = false,
+    bool objectOverFace = false,
+    bool documentNearFace = false,
+    Map<String, double>? faceBox,
+    List<Map<String, dynamic>> issueBoxes = const [],
+    String perceptualHash = '',
   }) {
     return PhotoPrescreenResult(
       passed: true,
       confidence: confidence,
       faceAnalysis: faceAnalysis,
       bodyAnalysis: bodyAnalysis,
+      textAnalysis: textAnalysis,
       imageQuality: imageQuality,
+      textOverFace: textOverFace,
+      objectOverFace: objectOverFace,
+      documentNearFace: documentNearFace,
+      faceBox: faceBox,
+      issueBoxes: issueBoxes,
+      perceptualHash: perceptualHash,
     );
   }
 
   factory PhotoPrescreenResult.failed({
-    required PrescreenFailureReason reason,
+    required List<PrescreenFailureReason> reasons,
     String? errorMessage,
     double confidence = 0.0,
+    Map<String, double>? faceBox,
+    List<Map<String, dynamic>> issueBoxes = const [],
   }) {
+    final ordered = orderPrescreenFailures(reasons);
     return PhotoPrescreenResult(
       passed: false,
-      failureReason: reason,
+      failureReason: ordered.isEmpty ? null : ordered.first,
+      failureReasons: ordered,
       confidence: confidence,
+      faceBox: faceBox,
+      issueBoxes: issueBoxes,
       errorMessage: errorMessage,
     );
   }
+}
+
+/// Canonical display order for accumulated prescreen failures (most
+/// fundamental problem first).
+const List<PrescreenFailureReason> _prescreenFailureOrder = [
+  PrescreenFailureReason.duplicatePhoto,
+  PrescreenFailureReason.invalidFormat,
+  PrescreenFailureReason.fileTooLarge,
+  PrescreenFailureReason.fileTooSmall,
+  PrescreenFailureReason.resolutionTooLow,
+  PrescreenFailureReason.aspectRatioInvalid,
+  PrescreenFailureReason.imageCorrupted,
+  PrescreenFailureReason.noFaceOrBody,
+  PrescreenFailureReason.noFaceDetected,
+  PrescreenFailureReason.multipleFaces,
+  PrescreenFailureReason.bodyShotNotAllowed,
+  PrescreenFailureReason.faceNotVisible,
+  PrescreenFailureReason.faceTooSmall,
+  PrescreenFailureReason.eyesClosed,
+  PrescreenFailureReason.textOverFace,
+  PrescreenFailureReason.objectOverFace,
+  PrescreenFailureReason.documentDetected,
+  PrescreenFailureReason.textDetected,
+  PrescreenFailureReason.imageTooBlurry,
+  PrescreenFailureReason.imageTooDark,
+  PrescreenFailureReason.imageTooBright,
+];
+
+List<PrescreenFailureReason> orderPrescreenFailures(
+  Iterable<PrescreenFailureReason> reasons,
+) {
+  final seen = reasons.toSet();
+  final ordered = _prescreenFailureOrder.where(seen.contains).toList();
+  // Keep any reason not yet in the canonical list (defensive) at the end.
+  ordered.addAll(seen.difference(ordered.toSet()));
+  return ordered;
+}
+
+/// Hamming distance between two 64-char dHash bit strings. Returns a large
+/// sentinel when either hash is missing so comparisons fail closed.
+int perceptualHashDistance(String a, String b) {
+  if (a.isEmpty || b.isEmpty || a.length != b.length) return 64;
+  var distance = 0;
+  for (var i = 0; i < a.length; i++) {
+    if (a.codeUnitAt(i) != b.codeUnitAt(i)) distance++;
+  }
+  return distance;
+}
+
+/// On-device text analysis (ML Kit on Android, Apple Vision on iOS). Null
+/// when the native detector doesn't report text metrics — the web bridge and
+/// desktop have no local text detector, so those platforms defer to the
+/// server-side AI unchanged.
+class TextAnalysis {
+  final double textContentAreaRatio;
+  final double largestBlockAreaRatio;
+  final double largestBlockHeightRatio;
+  final double largestBlockWidthRatio;
+  final int largestBlockCharCount;
+
+  /// Normalized (0..1, top-left origin) bounding boxes of detected text
+  /// blocks, for optional highlighting in the editor.
+  final List<Map<String, double>> blocks;
+
+  const TextAnalysis({
+    required this.textContentAreaRatio,
+    required this.largestBlockAreaRatio,
+    required this.largestBlockHeightRatio,
+    required this.largestBlockWidthRatio,
+    required this.largestBlockCharCount,
+    this.blocks = const [],
+  });
+
+  /// Substantial text = a block big enough to be a card, sign, watermark, or
+  /// screenshot. Incidental text (shirt prints, distant background signs)
+  /// stays below these thresholds and is left to the server-side AI, which
+  /// judges context.
+  bool get hasSubstantialText =>
+      (largestBlockAreaRatio >= 0.05 && largestBlockCharCount >= 3) ||
+      (largestBlockHeightRatio >= 0.06 &&
+          largestBlockWidthRatio >= 0.15 &&
+          largestBlockCharCount >= 12);
 }
 
 /// Detailed face analysis results
@@ -76,6 +213,10 @@ class FaceAnalysis {
   final bool completeFaceDetected;
   final bool faceObstructed;
 
+  /// Both eyes of the largest face are confidently closed (Android ML Kit
+  /// eye classification). False on platforms without classification.
+  final bool bothEyesClosed;
+
   const FaceAnalysis({
     required this.faceDetected,
     required this.faceCount,
@@ -85,6 +226,7 @@ class FaceAnalysis {
     required this.faceTouchesImageEdge,
     required this.completeFaceDetected,
     required this.faceObstructed,
+    this.bothEyesClosed = false,
   });
 
   bool get hasSingleFace => faceDetected && faceCount == 1;
@@ -170,6 +312,16 @@ String prescreenFailureL10nKey(PrescreenFailureReason? reason) {
       return 'photoErrorImageTooDark';
     case PrescreenFailureReason.imageTooBright:
       return 'photoErrorImageTooBright';
+    case PrescreenFailureReason.textDetected:
+      return 'photoErrorTextDetected';
+    case PrescreenFailureReason.textOverFace:
+      return 'photoErrorTextOverFace';
+    case PrescreenFailureReason.objectOverFace:
+      return 'photoErrorObjectOverFace';
+    case PrescreenFailureReason.documentDetected:
+      return 'photoErrorDocumentDetected';
+    case PrescreenFailureReason.eyesClosed:
+      return 'photoErrorEyesClosed';
     case null:
       return 'photoErrorGeneral';
   }
@@ -191,6 +343,24 @@ enum PrescreenFailureReason {
   imageTooBlurry,
   imageTooDark,
   imageTooBright,
+  // A substantial text block (card, sign, watermark, screenshot) was detected
+  // on-device. Both photo kinds reject these: primary prompts forbid any
+  // visible text, and secondary rejects watermarks/screenshots.
+  textDetected,
+  // Text overlapping the face region — a card/sign held over the face. This
+  // is a fraud signal (documents held to the face) and an occlusion signal,
+  // so it rejects regardless of recognized character count or block size.
+  textOverFace,
+  // An object (hand holding something, salient rectangle) overlaps the face
+  // region — same fraud/occlusion reasoning as [textOverFace] but caught
+  // without OCR, so low-contrast unreadable cards are still rejected.
+  objectOverFace,
+  // A card/document is visible near the face but not clearly covering it.
+  // Documents are not allowed in photos regardless of position; the message
+  // reflects that instead of claiming the face is covered.
+  documentDetected,
+  // Both eyes of the primary subject are confidently closed.
+  eyesClosed,
   // Primary-photo-only reasons: the first photo must be a face-only selfie
   // with exactly one face. Body-only shots (e.g. someone laying on a beach)
   // must never pass the primary prescreen, even when a body is detected.
@@ -264,11 +434,16 @@ class _DecodedImageMetrics {
   final double blurScore;
   final double brightnessScore;
 
+  /// 64-bit dHash bit string ('0'/'1' chars) for perceptual duplicate
+  /// detection. Empty when hashing failed.
+  final String perceptualHash;
+
   const _DecodedImageMetrics({
     required this.width,
     required this.height,
     required this.blurScore,
     required this.brightnessScore,
+    this.perceptualHash = '',
   });
 }
 
@@ -297,7 +472,49 @@ _DecodedImageMetrics _computeImageMetricsIsolate(Uint8List bytes) {
     height: image.height,
     blurScore: _calculateBlurScoreSync(image),
     brightnessScore: _calculateBrightnessScoreSync(image),
+    perceptualHash: _calculatePerceptualHashSync(image),
   );
+}
+
+/// dHash: downscale to 9x8 and compare horizontally adjacent luminance,
+/// producing a 64-char bit string. Compared with a Hamming distance this
+/// survives re-encoding/resizing that would break the exact-byte MD5 check.
+/// Kept as a bit string (not an int) so JS builds behave identically to VM
+/// builds — 32-bit `<<` truncation in dart2js would silently fold the hash.
+String _calculatePerceptualHashSync(img.Image image) {
+  try {
+    final small = img.copyResize(image, width: 9, height: 8);
+    final bits = StringBuffer();
+    double luma(int x, int y) {
+      final p = small.getPixel(x, y);
+      return (p.r + p.g + p.b) / 3;
+    }
+
+    for (var y = 0; y < 8; y++) {
+      for (var x = 0; x < 8; x++) {
+        bits.write(luma(x, y) > luma(x + 1, y) ? '1' : '0');
+      }
+    }
+    return bits.toString();
+  } catch (_) {
+    return '';
+  }
+}
+
+/// Standalone perceptual hash for callers that only need the hash (e.g. the
+/// wizard recording a photo it just accepted).
+Future<String> computePerceptualHash(Uint8List bytes) async {
+  return compute(_computePerceptualHashIsolate, bytes);
+}
+
+String _computePerceptualHashIsolate(Uint8List bytes) {
+  try {
+    final image = img.decodeImage(bytes);
+    if (image == null) return '';
+    return _calculatePerceptualHashSync(image);
+  } catch (_) {
+    return '';
+  }
 }
 
 /// Blur heuristic: pixel-brightness variance sampled across a grayscale copy.
@@ -360,28 +577,42 @@ class PhotoPrescreenService {
   /// [bytes] - Image bytes to analyze
   /// [isPrimary] - True if this is a primary photo (stricter rules)
   /// [existingHashes] - Set of existing photo hashes to check for duplicates
+  /// [existingPerceptualHashes] - dHash bit strings of session photos; a
+  ///   Hamming distance of <= 10 flags a re-encoded duplicate of an already
+  ///   added photo (catches what the exact-byte MD5 check cannot).
+  ///
+  /// Every rule runs and all failures are reported together, so the user can
+  /// fix everything in a single retake instead of discovering issues one at a
+  /// time. Only structural failures (unreadable/oversized file) abort early.
   Future<PhotoPrescreenResult> prescreenPhoto(
     Uint8List bytes, {
     bool isPrimary = false,
     Set<String>? existingHashes,
+    Set<String>? existingPerceptualHashes,
   }) async {
     final config = isPrimary
         ? PrescreenConfig.primaryPhoto
         : PrescreenConfig.secondaryPhoto;
 
-    // 1. Basic file validation
+    // 1. Basic file validation — fail fast: nothing downstream is meaningful
+    //    for an unreadable or oversized file.
     final fileValidation = _validateFile(bytes, config);
     if (!fileValidation.passed) {
       return fileValidation;
     }
 
-    // 2. Duplicate check (exact-byte match)
-    if (existingHashes != null && existingHashes.isNotEmpty) {
-      final hash = await compute(_computeImageHashIsolate, bytes);
-      if (existingHashes.contains(hash)) {
-        return PhotoPrescreenResult.failed(
-          reason: PrescreenFailureReason.duplicatePhoto,
-        );
+    final failures = <PrescreenFailureReason>{};
+
+    // 2. Duplicate checks: exact-byte and perceptual.
+    String candidateHash = '';
+    if ((existingHashes != null && existingHashes.isNotEmpty) ||
+        (existingPerceptualHashes != null &&
+            existingPerceptualHashes.isNotEmpty)) {
+      candidateHash = await compute(_computeImageHashIsolate, bytes);
+      if (existingHashes != null &&
+          existingHashes.isNotEmpty &&
+          existingHashes.contains(candidateHash)) {
+        failures.add(PrescreenFailureReason.duplicatePhoto);
       }
     }
 
@@ -389,7 +620,7 @@ class PhotoPrescreenService {
     final metrics = await compute(_computeImageMetricsIsolate, bytes);
     if (metrics.width == 0 || metrics.height == 0) {
       return PhotoPrescreenResult.failed(
-        reason: PrescreenFailureReason.imageCorrupted,
+        reasons: const [PrescreenFailureReason.imageCorrupted],
       );
     }
 
@@ -405,34 +636,39 @@ class PhotoPrescreenService {
 
     if (metrics.width < config.minResolution ||
         metrics.height < config.minResolution) {
-      return PhotoPrescreenResult.failed(
-        reason: PrescreenFailureReason.resolutionTooLow,
-      );
+      failures.add(PrescreenFailureReason.resolutionTooLow);
     }
     if (quality.aspectRatio < config.minAspectRatio ||
         quality.aspectRatio > config.maxAspectRatio) {
-      return PhotoPrescreenResult.failed(
-        reason: PrescreenFailureReason.aspectRatioInvalid,
-      );
+      failures.add(PrescreenFailureReason.aspectRatioInvalid);
     }
     // The primary image is a clear face photo. Gallery images can be wide,
     // dark, distant, or intentionally stylized, so Gemini—not a coarse local
     // quality heuristic—is the authority for whether they are usable.
     if (isPrimary) {
       if (quality.blurScore < config.minBlurScore) {
-        return PhotoPrescreenResult.failed(
-          reason: PrescreenFailureReason.imageTooBlurry,
-        );
+        failures.add(PrescreenFailureReason.imageTooBlurry);
       }
       if (quality.brightnessScore < config.minBrightness) {
-        return PhotoPrescreenResult.failed(
-          reason: PrescreenFailureReason.imageTooDark,
-        );
+        failures.add(PrescreenFailureReason.imageTooDark);
       }
       if (quality.brightnessScore > config.maxBrightness) {
-        return PhotoPrescreenResult.failed(
-          reason: PrescreenFailureReason.imageTooBright,
-        );
+        failures.add(PrescreenFailureReason.imageTooBright);
+      }
+    }
+
+    // Perceptual duplicate: near-identical to a photo already added this
+    // session even after re-encoding, cropping to near-identical framing, or
+    // screenshotting.
+    if (existingPerceptualHashes != null &&
+        existingPerceptualHashes.isNotEmpty &&
+        metrics.perceptualHash.isNotEmpty &&
+        !failures.contains(PrescreenFailureReason.duplicatePhoto)) {
+      for (final existing in existingPerceptualHashes) {
+        if (perceptualHashDistance(metrics.perceptualHash, existing) <= 10) {
+          failures.add(PrescreenFailureReason.duplicatePhoto);
+          break;
+        }
       }
     }
 
@@ -442,38 +678,97 @@ class PhotoPrescreenService {
       return mlResult;
     }
 
-    // 5. Apply photo-type specific rules
-    if (isPrimary) {
-      return _applyPrimaryPhotoRules(mlResult, config);
-    } else {
-      return _applySecondaryPhotoRules(mlResult);
+    final faceAnalysis = mlResult.faceAnalysis;
+    final bodyAnalysis = mlResult.bodyAnalysis;
+    final hasNativeData = faceAnalysis != null && bodyAnalysis != null;
+
+    // 5. On-device text gate: cards, signs, watermarks, screenshots caught
+    // before upload — zero AI calls for the most common bad photo. Only runs
+    // when the native detector reported text metrics; web/desktop and older
+    // native builds have none, and anything below the thresholds is left to
+    // the server-side AI to judge in context.
+    final textAnalysis = mlResult.textAnalysis;
+    if (textAnalysis != null && textAnalysis.hasSubstantialText) {
+      failures.add(PrescreenFailureReason.textDetected);
     }
+
+    // 6. Text or objects overlapping the face: a card/document held over the
+    // face is both an occlusion and a fraud signal (unreadable low-contrast
+    // cards defeat OCR, so this must not depend on [hasSubstantialText]).
+    // Primary only — gallery photos defer these judgements to Gemini.
+    if (isPrimary && faceAnalysis != null && faceAnalysis.faceDetected) {
+      if (mlResult.textOverFace) {
+        failures.add(PrescreenFailureReason.textOverFace);
+      }
+      if (mlResult.objectOverFace) {
+        failures.add(PrescreenFailureReason.objectOverFace);
+      } else if (mlResult.documentNearFace) {
+        // The document is visible near the face but not clearly covering it.
+        // Still rejected — documents are not allowed in photos — but the
+        // message must not claim the face is covered.
+        failures.add(PrescreenFailureReason.documentDetected);
+      }
+      if (faceAnalysis.bothEyesClosed) {
+        failures.add(PrescreenFailureReason.eyesClosed);
+      }
+    }
+
+    // 7. Photo-type specific person rules.
+    if (hasNativeData) {
+      if (isPrimary) {
+        _collectPrimaryPhotoFailures(failures, faceAnalysis, bodyAnalysis, config);
+      } else {
+        _collectSecondaryPhotoFailures(failures, faceAnalysis, bodyAnalysis);
+      }
+    }
+
+    if (failures.isEmpty) {
+      return PhotoPrescreenResult.passedWithConfidence(
+        confidence: mlResult.confidence,
+        faceAnalysis: faceAnalysis,
+        bodyAnalysis: bodyAnalysis,
+        textAnalysis: textAnalysis,
+        imageQuality: quality,
+        textOverFace: mlResult.textOverFace,
+        objectOverFace: mlResult.objectOverFace,
+        perceptualHash: metrics.perceptualHash,
+      );
+    }
+
+    // Propagate the problem-region boxes so the failure dialog can draw the
+    // overlay on the exact spots (face + offending text/object regions).
+    return PhotoPrescreenResult.failed(
+      reasons: failures.toList(),
+      confidence: mlResult.confidence,
+      faceBox: mlResult.faceBox,
+      issueBoxes: mlResult.issueBoxes,
+    );
   }
 
   /// Validate basic file properties
   PhotoPrescreenResult _validateFile(Uint8List bytes, PrescreenConfig config) {
     if (bytes.isEmpty) {
       return PhotoPrescreenResult.failed(
-        reason: PrescreenFailureReason.fileTooSmall,
+        reasons: const [PrescreenFailureReason.fileTooSmall],
       );
     }
 
     if (bytes.length < config.minFileSize) {
       return PhotoPrescreenResult.failed(
-        reason: PrescreenFailureReason.fileTooSmall,
+        reasons: const [PrescreenFailureReason.fileTooSmall],
       );
     }
 
     if (bytes.length > config.maxFileSize) {
       return PhotoPrescreenResult.failed(
-        reason: PrescreenFailureReason.fileTooLarge,
+        reasons: const [PrescreenFailureReason.fileTooLarge],
       );
     }
 
     final format = _detectFormat(bytes);
     if (!_supportedFormats.contains(format)) {
       return PhotoPrescreenResult.failed(
-        reason: PrescreenFailureReason.invalidFormat,
+        reasons: const [PrescreenFailureReason.invalidFormat],
       );
     }
 
@@ -519,6 +814,12 @@ class PhotoPrescreenService {
       if (result == null) {
         return PhotoPrescreenResult.passedWithConfidence(confidence: 0.0);
       }
+
+      // Diagnostics: the native contract changes with app releases, but
+      // Kotlin/Swift never arrive via hot reload — log the version so a stale
+      // binary (all person/text checks silently absent) is visible in logs.
+      final nativeVersion = (result['prescreenVersion'] as num?)?.toInt() ?? 0;
+      debugPrint('[photoPrescreen] native analyzer version=$nativeVersion');
 
       return _parseNativeResult(result, config);
     } catch (_) {
@@ -577,6 +878,7 @@ class PhotoPrescreenService {
               faceTouchesImageEdge: result['faceTouchesImageEdge'] == true,
               completeFaceDetected: result['completeFaceDetected'] == true,
               faceObstructed: result['faceObstructed'] == true,
+              bothEyesClosed: result['bothEyesClosed'] == true,
             )
           : FaceAnalysis(
               faceDetected: false,
@@ -597,6 +899,40 @@ class PhotoPrescreenService {
         completeBodyDetected: result['completeBodyDetected'] == true,
       );
 
+      // Text metrics are optional: absent on the web bridge, desktop, and
+      // native builds older than the text-recognition rollout.
+      final textContentAreaRatio =
+          (result['textContentAreaRatio'] as num?)?.toDouble();
+      TextAnalysis? textAnalysis;
+      if (textContentAreaRatio != null) {
+        final rawBlocks = result['textBlocks'];
+        final blocks = <Map<String, double>>[];
+        if (rawBlocks is List) {
+          for (final entry in rawBlocks) {
+            if (entry is Map) {
+              blocks.add({
+                'x': (entry['x'] as num?)?.toDouble() ?? 0.0,
+                'y': (entry['y'] as num?)?.toDouble() ?? 0.0,
+                'w': (entry['w'] as num?)?.toDouble() ?? 0.0,
+                'h': (entry['h'] as num?)?.toDouble() ?? 0.0,
+              });
+            }
+          }
+        }
+        textAnalysis = TextAnalysis(
+          textContentAreaRatio: textContentAreaRatio,
+          largestBlockAreaRatio:
+              (result['largestTextAreaRatio'] as num?)?.toDouble() ?? 0.0,
+          largestBlockHeightRatio:
+              (result['largestTextHeightRatio'] as num?)?.toDouble() ?? 0.0,
+          largestBlockWidthRatio:
+              (result['largestTextWidthRatio'] as num?)?.toDouble() ?? 0.0,
+          largestBlockCharCount:
+              (result['largestTextCharCount'] as num?)?.toInt() ?? 0,
+          blocks: blocks,
+        );
+      }
+
       final confidence = _calculateOverallConfidence(
         faceAnalysis,
         bodyAnalysis,
@@ -606,10 +942,50 @@ class PhotoPrescreenService {
         confidence: confidence,
         faceAnalysis: faceAnalysis,
         bodyAnalysis: bodyAnalysis,
+        textAnalysis: textAnalysis,
+        textOverFace: result['textOverFace'] == true,
+        objectOverFace: result['objectOverFace'] == true,
+        documentNearFace: result['documentNearFace'] == true,
+        faceBox: _parseNormalizedBox(result['faceBox']),
+        issueBoxes: _parseIssueBoxes(result['issueBoxes']),
       );
     } catch (_) {
       return PhotoPrescreenResult.passedWithConfidence(confidence: 0.0);
     }
+  }
+
+  /// Parses a normalized {x,y,w,h} box from the native result.
+  static Map<String, double>? _parseNormalizedBox(Object? raw) {
+    if (raw is! Map) return null;
+    double? asDouble(Object? v) => (v is num) ? v.toDouble() : null;
+    final x = asDouble(raw['x']);
+    final y = asDouble(raw['y']);
+    final w = asDouble(raw['w']);
+    final h = asDouble(raw['h']);
+    if (x == null || y == null || w == null || h == null) return null;
+    if (w <= 0 || h <= 0) return null;
+    return {'x': x, 'y': y, 'w': w, 'h': h};
+  }
+
+  /// Parses normalized {x,y,w,h,label} boxes from the native result.
+  static List<Map<String, dynamic>> _parseIssueBoxes(Object? raw) {
+    if (raw is! List) return const [];
+    final boxes = <Map<String, dynamic>>[];
+    for (final entry in raw) {
+      if (entry is! Map) continue;
+      double? asDouble(Object? v) => (v is num) ? v.toDouble() : null;
+      final w = asDouble(entry['w']);
+      final h = asDouble(entry['h']);
+      if (w == null || h == null || w <= 0 || h <= 0) continue;
+      boxes.add({
+        'x': asDouble(entry['x']) ?? 0.0,
+        'y': asDouble(entry['y']) ?? 0.0,
+        'w': w,
+        'h': h,
+        'label': entry['label'] is String ? entry['label'] as String : 'text',
+      });
+    }
+    return boxes;
   }
 
   /// Calculate overall confidence from ML results
@@ -626,7 +1002,7 @@ class PhotoPrescreenService {
     return 0.0;
   }
 
-  /// Apply primary photo specific rules
+  /// Collect primary photo rule failures.
   ///
   /// The primary (first) photo must contain exactly one face — a face-only
   /// selfie. Body-only shots (e.g. someone laying on a beach) are rejected,
@@ -634,24 +1010,15 @@ class PhotoPrescreenService {
   /// result is available (detector unavailable/failed), person checks are
   /// skipped so Gemini remains the final validator instead of crashing on a
   /// null dereference.
-  PhotoPrescreenResult _applyPrimaryPhotoRules(
-    PhotoPrescreenResult mlResult,
+  void _collectPrimaryPhotoFailures(
+    Set<PrescreenFailureReason> failures,
+    FaceAnalysis faceAnalysis,
+    BodyAnalysis bodyAnalysis,
     PrescreenConfig config,
   ) {
-    final faceAnalysis = mlResult.faceAnalysis;
-    final bodyAnalysis = mlResult.bodyAnalysis;
-
-    // No local ML data: cannot enforce face-only locally; defer to Gemini.
-    if (faceAnalysis == null || bodyAnalysis == null) {
-      return mlResult;
-    }
-
     // Exactly one face is required — group shots are rejected.
     if (faceAnalysis.hasMultipleFaces) {
-      return PhotoPrescreenResult.failed(
-        reason: PrescreenFailureReason.multipleFaces,
-        confidence: mlResult.confidence,
-      );
+      failures.add(PrescreenFailureReason.multipleFaces);
     }
 
     // No face at all: a body (or nothing) is never acceptable for primary.
@@ -659,84 +1026,54 @@ class PhotoPrescreenService {
     // shot pass as the primary photo.
     if (!faceAnalysis.faceDetected) {
       if (bodyAnalysis.bodyDetected) {
-        return PhotoPrescreenResult.failed(
-          reason: PrescreenFailureReason.bodyShotNotAllowed,
-          confidence: mlResult.confidence,
-        );
+        failures.add(PrescreenFailureReason.bodyShotNotAllowed);
+      } else {
+        failures.add(PrescreenFailureReason.noFaceDetected);
       }
-      return PhotoPrescreenResult.failed(
-        reason: PrescreenFailureReason.noFaceDetected,
-        confidence: mlResult.confidence,
-      );
+      return;
     }
 
     // Defensive: exactly one face is required. Inconsistent native data
     // (faceDetected true but count != 1) is never valid for primary.
-    if (faceAnalysis.faceCount != 1) {
-      if (faceAnalysis.faceCount == 0) {
-        return PhotoPrescreenResult.failed(
-          reason: PrescreenFailureReason.noFaceDetected,
-          confidence: mlResult.confidence,
-        );
-      }
-      return PhotoPrescreenResult.failed(
-        reason: PrescreenFailureReason.multipleFaces,
-        confidence: mlResult.confidence,
-      );
+    if (faceAnalysis.faceCount == 0) {
+      failures.add(PrescreenFailureReason.noFaceDetected);
+      return;
+    }
+    if (faceAnalysis.faceCount > 1) {
+      failures.add(PrescreenFailureReason.multipleFaces);
     }
 
     if (faceAnalysis.faceConfidence < config.minFaceConfidence) {
-      return PhotoPrescreenResult.failed(
-        reason: PrescreenFailureReason.faceNotVisible,
-        confidence: mlResult.confidence,
-      );
+      failures.add(PrescreenFailureReason.faceNotVisible);
     }
 
     if (faceAnalysis.faceTouchesImageEdge || faceAnalysis.faceObstructed) {
-      return PhotoPrescreenResult.failed(
-        reason: PrescreenFailureReason.faceNotVisible,
-        confidence: mlResult.confidence,
-      );
+      failures.add(PrescreenFailureReason.faceNotVisible);
     }
 
     if (faceAnalysis.faceSizeRatio < config.minFaceSizeRatio) {
-      return PhotoPrescreenResult.failed(
-        reason: PrescreenFailureReason.faceTooSmall,
-        confidence: mlResult.confidence,
-      );
+      failures.add(PrescreenFailureReason.faceTooSmall);
     }
-
-    return mlResult;
   }
 
-  /// Apply secondary photo specific rules
-  PhotoPrescreenResult _applySecondaryPhotoRules(
-    PhotoPrescreenResult mlResult,
+  /// Collect secondary photo rule failures
+  void _collectSecondaryPhotoFailures(
+    Set<PrescreenFailureReason> failures,
+    FaceAnalysis faceAnalysis,
+    BodyAnalysis bodyAnalysis,
   ) {
-    final faceAnalysis = mlResult.faceAnalysis;
-    final bodyAnalysis = mlResult.bodyAnalysis;
-
-    // No local ML data: cannot enforce person checks locally; defer to Gemini.
-    if (faceAnalysis == null || bodyAnalysis == null) {
-      return mlResult;
-    }
-
     // A gallery photo needs at least one complete face or full body. This
     // deliberately allows groups and distant people, but not a fragment such
     // as a partial head in an otherwise empty room.
     if (!faceAnalysis.completeFaceDetected &&
         !bodyAnalysis.completeBodyDetected) {
-      return PhotoPrescreenResult.failed(
-        reason: PrescreenFailureReason.noFaceOrBody,
-        confidence: mlResult.confidence,
-      );
+      failures.add(PrescreenFailureReason.noFaceOrBody);
     }
 
     // Do not impose face count, size, position, crop, or confidence rules on
     // gallery photos. One detector-recognized person is enough, whether the
     // photo shows an individual or a group, faces/bodies, and near/far views.
     // Gemini performs the final content and authenticity review.
-    return mlResult;
   }
 }
 

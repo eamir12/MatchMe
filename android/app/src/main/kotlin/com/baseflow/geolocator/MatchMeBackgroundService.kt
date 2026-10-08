@@ -138,6 +138,22 @@ class MatchMeBackgroundService : Service() {
         }
     }
 
+    // True when the server FCM push for this match is already sitting in the
+    // tray. push-message sends match pushes with the tag "new_match_<matchId>",
+    // so the poll/realtime fallback can key off exactly that: the localized
+    // card the server posted is the notification, and buzzing here again would
+    // stack a second, hardcoded-English card for the same match (the RPC keeps
+    // reporting the match unread until the user actually opens it).
+    private fun isMatchPushInTray(matchId: String): Boolean {
+        if (matchId.isBlank()) return false
+        return try {
+            val tag = "new_match_$matchId"
+            notificationManager.activeNotifications.any { sbn -> sbn.tag == tag }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     // Location share state
     @Volatile private var lsMatchId: String? = null
     @Volatile private var lsOtherUserId: String? = null
@@ -164,6 +180,12 @@ class MatchMeBackgroundService : Service() {
     private var connectivityProbeJob: Job? = null
     @Volatile private var wasOffline: Boolean = false
     @Volatile private var wasPinnedSkipping: Boolean = false
+    // Last pinned state seen by the heartbeat loop (null until the first tick).
+    // Drives the pinned-transition re-evaluation below: while the Flutter
+    // engine is dead the UI cannot send ACTION_UPDATE_PINNED_STATE, so pin
+    // expiry while the UI is closed would otherwise leave GPS parked until
+    // some unrelated event (visibility/connectivity/config/restart).
+    @Volatile private var lastHeartbeatPinnedActive: Boolean? = null
 
     private class RealtimeDebugState {
         @Volatile var lastPostgresDebugAt: Long = 0
@@ -2851,14 +2873,22 @@ class MatchMeBackgroundService : Service() {
                             val effectiveMatchId = if (matchId.isNotEmpty()) matchId else matchName.hashCode().toString()
                             
                             if (!wasMatchBuzzed(effectiveMatchId)) {
-                                // Log.d(TAG, "Found new unread match: $matchName (ID: $effectiveMatchId)")
-                                // Use match name hash as ID to group match notifications.
-                                // senderName stays null: showNotification titles
-                                // sender-less (match/system) alerts with safeTitle
-                                // ("New Match!") instead of the firstTokenName
-                                // fallback ("Someone").
-                                showNotification("New Match!", "You matched with $matchName!", matchName.hashCode(), null, effectiveMatchId)
-                                recordMatchBuzzed(effectiveMatchId)
+                                if (isMatchPushInTray(effectiveMatchId)) {
+                                    // Server push already displayed this match
+                                    // — record it as buzzed so the poll, the
+                                    // realtime path and the WorkManager
+                                    // fallback never re-buzz it either.
+                                    recordMatchBuzzed(effectiveMatchId)
+                                } else {
+                                    // Log.d(TAG, "Found new unread match: $matchName (ID: $effectiveMatchId)")
+                                    // Use match name hash as ID to group match notifications.
+                                    // senderName stays null: showNotification titles
+                                    // sender-less (match/system) alerts with safeTitle
+                                    // ("New Match!") instead of the firstTokenName
+                                    // fallback ("Someone").
+                                    showNotification("New Match!", "You matched with $matchName!", matchName.hashCode(), null, effectiveMatchId)
+                                    recordMatchBuzzed(effectiveMatchId)
+                                }
                             } else {
                                 // Log.d(TAG, "Skipping duplicate match notification for ID: $effectiveMatchId")
                             }
@@ -3104,6 +3134,21 @@ class MatchMeBackgroundService : Service() {
                     ensureValidJwt()
                     updateUserActivity()
                     checkVisibilityFromDbIfNeeded()
+
+                    // Pinned-state transition watcher. isPinnedLocationActive()
+                    // is time-based, so this catches both scheduled expiry and
+                    // a pin cleared/activated server-side (e.g. set from
+                    // another device) while the UI is closed. Idempotent with
+                    // ACTION_UPDATE_PINNED_STATE: both just re-run
+                    // updateForegroundState + start/stopLocationUpdates.
+                    val pinnedNow = isPinnedLocationActive()
+                    val pinnedBefore = lastHeartbeatPinnedActive
+                    if (pinnedBefore != null && pinnedBefore != pinnedNow) {
+                        logEvent("📌 Pinned location transition ($pinnedBefore -> $pinnedNow) detected by heartbeat — re-evaluating foreground/GPS")
+                        updateForegroundState()
+                        if (isVisible && isOnline) startLocationUpdates() else stopLocationUpdates()
+                    }
+                    lastHeartbeatPinnedActive = pinnedNow
 
                     val hasRealtimeCredentials =
                         !userId.isNullOrBlank() &&

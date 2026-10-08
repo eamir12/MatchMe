@@ -509,7 +509,8 @@ class MobileLocationService implements LocationService {
 
   @override
   void stopLocationStream({bool keepLiveStream = false}) {
-    final hadWork = _isServiceRunning || _heartbeatMode || _liveStreamSub != null;
+    final hadWork =
+        _isServiceRunning || _heartbeatMode || _liveStreamSub != null;
     if (!hadWork) {
       return;
     }
@@ -541,6 +542,41 @@ class MobileLocationService implements LocationService {
     _lastLiveIngestAt = null;
   }
 
+  /// Platform-tuned settings for the live map stream. The generic
+  /// [LocationSettings] carries no time interval, and geolocator's Android
+  /// implementation then defaults the native interval to 5000 ms — while
+  /// driving, the map would move in one 5-second jump. Android therefore
+  /// gets an explicit 1 s interval; iOS paces itself via accuracy and
+  /// distanceFilter (no interval knob). Runs only while a map screen is in
+  /// the foreground, so the higher cadence is bounded by screen-on time.
+  static LocationSettings _liveMapStreamSettings() {
+    if (kIsWeb) {
+      return const LocationSettings(
+        accuracy: LocationAccuracy.best,
+        distanceFilter: 5,
+      );
+    }
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.android:
+        return AndroidSettings(
+          accuracy: LocationAccuracy.best,
+          distanceFilter: 5,
+          intervalDuration: const Duration(milliseconds: 1000),
+        );
+      case TargetPlatform.iOS:
+      case TargetPlatform.macOS:
+        return AppleSettings(
+          accuracy: LocationAccuracy.best,
+          distanceFilter: 5,
+        );
+      default:
+        return const LocationSettings(
+          accuracy: LocationAccuracy.best,
+          distanceFilter: 5,
+        );
+    }
+  }
+
   @override
   Future<bool> startMapLiveStream() async {
     if (supabase.auth.currentUser == null) {
@@ -563,39 +599,42 @@ class MobileLocationService implements LocationService {
       return true;
     }
     print(
-      '[${DateTime.now().toIso8601String()}] 📡 [MobileLoc] Live map stream starting (distanceFilter=15m) — timer will transmit latest fix',
+      '[${DateTime.now().toIso8601String()}] 📡 [MobileLoc] Live map stream starting (platform settings, ~1Hz fixes, distanceFilter=5m) — timer will transmit latest fix',
     );
-    _liveStreamSub = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.best,
-        distanceFilter: 15,
-      ),
-    ).listen((position) {
-      _latestLiveFix = position;
-      _latestLiveFixAt = DateTime.now();
-      // Push to the UI (map marker/camera + local cache) at most ~1Hz;
-      // high-speed movement can produce fixes far more often than the UI
-      // needs. Transmission is unaffected: the timer reads _latestLiveFix.
-      final now = DateTime.now();
-      if (_lastLiveIngestAt != null &&
-          now.difference(_lastLiveIngestAt!) < const Duration(seconds: 1)) {
-        return;
-      }
-      _lastLiveIngestAt = now;
-      _locationUpdateCallback?.call(position);
-    }, onError: (Object e) {
-      // Transient stream errors are logged (throttled) but the subscription
-      // is kept: if it truly died, _latestLiveFixAt goes stale and the timer
-      // falls back to one-shot GPS on its own.
-      final now = DateTime.now();
-      if (_lastLiveErrorLogAt == null ||
-          now.difference(_lastLiveErrorLogAt!) >= const Duration(minutes: 2)) {
-        _lastLiveErrorLogAt = now;
-        print(
-          '[${DateTime.now().toIso8601String()}] ❌ [MobileLoc] Live map stream error: $e',
+    _liveStreamSub =
+        Geolocator.getPositionStream(
+          locationSettings: _liveMapStreamSettings(),
+        ).listen(
+          (position) {
+            _latestLiveFix = position;
+            _latestLiveFixAt = DateTime.now();
+            // Push to the UI (map marker/camera + local cache) at most ~2Hz;
+            // high-speed movement can produce fixes far more often than the UI
+            // needs. Transmission is unaffected: the timer reads _latestLiveFix.
+            final now = DateTime.now();
+            if (_lastLiveIngestAt != null &&
+                now.difference(_lastLiveIngestAt!) <
+                    const Duration(milliseconds: 500)) {
+              return;
+            }
+            _lastLiveIngestAt = now;
+            _locationUpdateCallback?.call(position);
+          },
+          onError: (Object e) {
+            // Transient stream errors are logged (throttled) but the subscription
+            // is kept: if it truly died, _latestLiveFixAt goes stale and the timer
+            // falls back to one-shot GPS on its own.
+            final now = DateTime.now();
+            if (_lastLiveErrorLogAt == null ||
+                now.difference(_lastLiveErrorLogAt!) >=
+                    const Duration(minutes: 2)) {
+              _lastLiveErrorLogAt = now;
+              print(
+                '[${DateTime.now().toIso8601String()}] ❌ [MobileLoc] Live map stream error: $e',
+              );
+            }
+          },
         );
-      }
-    });
     return true;
   }
 

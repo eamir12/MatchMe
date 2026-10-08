@@ -50,15 +50,24 @@ class SupabaseRealtimeManager {
   /// [name] must be unique across the app (use the Supabase channel name).
   /// [factory] should create and *subscribe* the channel, returning it.
   ///
+  /// Set [activateNow] to false for channels that are subscribed by their own
+  /// provider (e.g. after a cold-start delay): the factory is only stored and
+  /// becomes active on the next [resumeAll] following a [pauseAll], so an
+  /// offline→online cycle re-creates the channel instead of leaving it dead.
+  ///
   /// Idempotent: if a live channel already exists for [name] it is kept as-is
   /// (only the factory is updated). This prevents screen off/on resume paths
   /// from tearing down healthy subscriptions and re-subscribing for no reason.
   /// Callers that really need a fresh channel must [unregister] first.
-  void register(String name, RealtimeChannel Function() factory) {
+  void register(
+    String name,
+    RealtimeChannel Function() factory, {
+    bool activateNow = true,
+  }) {
     final alreadyActive = _active.containsKey(name);
     _factories[name] = factory;
     if (_isPaused) return;
-    if (alreadyActive) return;
+    if (alreadyActive || !activateNow) return;
     _activate(name);
   }
 

@@ -9,6 +9,7 @@ import 'package:matchme/providers/event_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/services/event_data_service.dart';
 import 'package:matchme/services/error_localization_service.dart';
+import 'package:matchme/utils/event_import_classifier.dart';
 import 'package:matchme/widgets/please_wait_dialog.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -567,6 +568,34 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
     return confirmed == true;
   }
 
+  /// Shown when the local heuristic flags a manually-entered event as
+  /// personal. Returns true only if the user insists on adding it anyway.
+  Future<bool> _confirmLooksPersonal(LocalizationState l10n) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(l10n.getString('eventAddLooksPrivateTitle')),
+        content: Text(
+          l10n.getString(
+            'eventAddLooksPrivateBody',
+            params: {'title': _eventNameController.text.trim()},
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(l10n.getString('generalCancel')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(l10n.getString('eventAddLooksPrivateConfirmButton')),
+          ),
+        ],
+      ),
+    );
+    return confirmed == true;
+  }
+
   Future<void> _submitEvent() async {
     final l10n = ref.read(localizationProvider);
     if (!_formKey.currentState!.validate()) return;
@@ -586,6 +615,27 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
         ),
       );
       return;
+    }
+
+    // Same local privacy heuristic as the calendar import pickers: typed-in
+    // personal items ("doctor appointment", "meeting with the boss", ...)
+    // get one chance to be reconsidered before becoming public. Only the
+    // keyword signal applies here — no calendar metadata exists for manual
+    // entries, and missing venue/link is allowed (the save-time AI check
+    // still validates joinability).
+    if (widget.existingEvent == null) {
+      final looksPrivate =
+          classifyEventPrivacy(
+            markedPrivateInSource: false,
+            title: _eventNameController.text,
+            location: _venueController.text,
+            rawLink: _linkController.text,
+          ) ==
+          EventImportBlockReason.looksPrivate;
+      if (looksPrivate) {
+        final override = await _confirmLooksPersonal(l10n);
+        if (!override || !mounted) return;
+      }
     }
 
     if (widget.existingEvent == null) {
@@ -686,14 +736,13 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
     final isEditing = widget.existingEvent != null;
     final isNewEvent = !isEditing;
     final showForm =
-        isEditing ||
-        _inputMode == EventInputMode.manual ||
-        _hasExtractedData;
+        isEditing || _inputMode == EventInputMode.manual || _hasExtractedData;
     // In link mode the dedicated link input holds the URL before extraction,
     // so hide the form's link field to avoid showing the same link twice.
-    final showLinkField = !(isNewEvent &&
-        _inputMode == EventInputMode.link &&
-        !_hasExtractedData);
+    final showLinkField =
+        !(isNewEvent &&
+            _inputMode == EventInputMode.link &&
+            !_hasExtractedData);
 
     return Directionality(
       textDirection: isRtl ? ui.TextDirection.rtl : ui.TextDirection.ltr,
@@ -751,8 +800,7 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
                   const SizedBox(height: 10),
                   _buildModeCards(context, l10n),
                   const SizedBox(height: 20),
-                  if (_inputMode == EventInputMode.link &&
-                      !_hasExtractedData)
+                  if (_inputMode == EventInputMode.link && !_hasExtractedData)
                     _buildLinkInput(context, l10n, isProcessing)
                   else if (_inputMode == EventInputMode.image &&
                       !_hasExtractedData)
@@ -934,9 +982,9 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
         Expanded(
           child: Text(
             title,
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w700,
-            ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
           ),
         ),
       ],
@@ -1324,16 +1372,16 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
             const SizedBox(height: 12),
             Text(
               l10n.getString('eventTicketUploadButton'),
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 4),
             Text(
               l10n.getString('eventTicketUploadHelpText'),
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: colors.onSurfaceVariant,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: colors.onSurfaceVariant),
               textAlign: TextAlign.center,
             ),
           ],

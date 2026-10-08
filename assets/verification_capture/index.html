@@ -174,6 +174,9 @@
   var MODEL_LOAD_TIMEOUT_MS = 12000;
   var MAX_SNAPSHOT_DIM = 1280;
   var STUCK_REPORT_MS = 8000;
+  // How long the preview may deliver zero frames (models already loaded)
+  // before the page gives up with a retryable error instead of stalling.
+  var VIDEO_STALL_FATAL_MS = 8000;
   // Dual-cue handedness enforcement (see computeChirality/decideHandVerdict).
   // CHIRALITY_SIGN_FOR_RIGHT maps each canonical gesture class to the expected
   // sign of the display-space thumb-side test for an ANATOMICAL right hand
@@ -246,6 +249,15 @@
   window.setFaceOnlyInstructionsReady = function() {
     faceOnlyInstructionsReady = true;
   };
+  if (isFaceOnlyMode) {
+    // Hard fallback: the host signals readiness via
+    // window.setFaceOnlyInstructionsReady() once the spoken instructions
+    // finish. That signal can be lost (TTS finishes before the page's module
+    // script executes, WebView races) and the host may never retry, which
+    // used to block auto-capture forever with the oval green and the
+    // progress bar short of the end. Lift the gate after 20s no matter what.
+    setTimeout(function() { faceOnlyInstructionsReady = true; }, 20000);
+  }
   var requiredGesture = requirement.gesture;
   var requiredHand = requirement.hand || null;
   var gestureSymbols = {
@@ -342,6 +354,9 @@
   var stableFrames = 0;
   var lastStuckReportAt = 0;
   var firstTickAt = 0;
+  // Preview-stall watchdog state (see tick).
+  var videoStallWatchStart = 0;
+  var videoStallFatalShown = false;
   // Wall-clock origin for capture-timing telemetry (boot → ready → gate →
   // selection → photo posted). Reported via ValidationLog; no behaviour change.
   var bootStart = Date.now();
@@ -1368,7 +1383,28 @@
     // Guard against overlapping ticks: on slow devices inference can take
     // longer than the interval, and re-entrant MediaPipe VIDEO calls throw.
     if (tickInProgress) return;
-    if (!gestureRecognizer || !faceLandmarker || video.readyState < 2) return;
+    if (!gestureRecognizer || !faceLandmarker) return;
+    if (video.readyState < 2 || !video.videoWidth) {
+      // Models are loaded but the preview never started delivering frames
+      // (autoplay-policy race, wedged camera HAL). This used to stall the
+      // page silently forever; surface a retryable error instead.
+      if (!videoStallWatchStart) videoStallWatchStart = Date.now();
+      if (Date.now() - videoStallWatchStart > VIDEO_STALL_FATAL_MS && !videoStallFatalShown) {
+        videoStallFatalShown = true;
+        reportLog('stuck', {
+          stage: 'videoStalled',
+          readyState: video.readyState,
+          videoW: video.videoWidth || 0,
+          videoH: video.videoHeight || 0
+        }, true);
+        showFatalError(
+          t('verificationCaptureCameraOrModelError', 'Camera or model error: {error}').replace('{error}', 'Camera preview did not start'),
+          'Camera preview did not start (readyState ' + video.readyState + ')'
+        );
+      }
+      return;
+    }
+    videoStallWatchStart = 0;
     tickInProgress = true;
     var now = Date.now();
     if (!firstTickAt) firstTickAt = now;
@@ -1414,7 +1450,18 @@
       }
       pushScore({ frameScore: e.frameScore, faceOk: e.faceOk, gestureStrong: e.gestureStrong });
       var summary = summarizeWindow();
-      setProgress(summary.avg);
+      var stableFramesNeed = isFaceOnlyMode ? STABLE_FRAMES_REQUIRED_FACE_ONLY : STABLE_FRAMES_REQUIRED;
+      var stableMsNeed = isFaceOnlyMode ? READY_STABLE_MS_FACE_ONLY : READY_STABLE_MS;
+      var selectionMsNeed = isFaceOnlyMode ? CAPTURE_SELECTION_MS_FACE_ONLY : CAPTURE_SELECTION_MS;
+      var progressValue = summary.avg;
+      if (isFaceOnlyMode && readySince) {
+        // Primary selfie: show hold-steady progress toward auto-capture. The
+        // raw frame-quality average plateaus below 100% (centering/stability
+        // terms never max out), which users read as "the bar never finishes".
+        var holdProgress = Math.min(stableFrames / stableFramesNeed, (now - readySince) / stableMsNeed);
+        progressValue = Math.max(progressValue, clamp(holdProgress, 0, 1));
+      }
+      setProgress(progressValue);
       var visualHandReady = e.handPlacementOk || e.gestureStrong;
       setChecklistState(e.faceOk, visualHandReady, e.gestureChecklistReady);
       // The green oval lights up only while the face is inside it in
@@ -1459,9 +1506,6 @@
         }
       }
       var stableMs = readySince ? now - readySince : 0;
-      var stableFramesNeed = isFaceOnlyMode ? STABLE_FRAMES_REQUIRED_FACE_ONLY : STABLE_FRAMES_REQUIRED;
-      var stableMsNeed = isFaceOnlyMode ? READY_STABLE_MS_FACE_ONLY : READY_STABLE_MS;
-      var selectionMsNeed = isFaceOnlyMode ? CAPTURE_SELECTION_MS_FACE_ONLY : CAPTURE_SELECTION_MS;
       if (goodNow && stableFrames >= stableFramesNeed && stableMs >= stableMsNeed) {
         if (!ready) {
           ready = true;
@@ -1859,6 +1903,34 @@
     });
   }
 
+  // Waits (briefly) for the preview to deliver its first usable frame,
+  // re-issuing play() a few times for WebView autoplay-policy races. Resolves
+  // false when the preview never started so the caller can show a retryable
+  // error instead of stalling on a dead preview.
+  function ensureVideoPreviewUsable() {
+    return new Promise(function(resolve) {
+      var attempts = 0;
+      (function check() {
+        if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+          resolve(true);
+          return;
+        }
+        attempts++;
+        if (attempts > 40) {
+          resolve(false);
+          return;
+        }
+        if (attempts % 10 === 0) {
+          try {
+            var p = video.play();
+            if (p && typeof p.catch === 'function') p.catch(function() {});
+          } catch (_) {}
+        }
+        setTimeout(check, 100);
+      })();
+    });
+  }
+
   function importWithTimeout(url, ms) {
     return new Promise(function(resolve, reject) {
       var done = false;
@@ -1937,8 +2009,16 @@
     }).then(function(cameraStream) {
       return startCameraPreview(cameraStream);
     });
+    // getUserMedia can hang forever in some WebViews (permission dialog
+    // ignored, camera HAL wedged). Fail visibly after 25s instead of
+    // spinning on "Loading camera..." forever.
+    var cameraTimeoutPromise = new Promise(function(_, reject) {
+      setTimeout(function() { reject(new Error('Camera start timed out')); }, 25000);
+    });
+    cameraPromise.catch(function() {}); // late rejection must not be unhandled
+    var cameraReadyPromise = Promise.race([cameraPromise, cameraTimeoutPromise]);
 
-    Promise.all([resolverPromise, cameraPromise]).then(function(arr) {
+    Promise.all([resolverPromise, cameraReadyPromise]).then(function(arr) {
       var resolver = arr[0];
       return Promise.all([
         vision.GestureRecognizer.createFromOptions(resolver, {
@@ -1967,17 +2047,35 @@
     }).then(function(recognizer) {
       gestureRecognizer = recognizer[0];
       faceLandmarker = recognizer[1];
-      setInstruction(gestureLabel);
-      setStatus(isFaceOnlyMode
-        ? t('verificationCaptureStatusAlignFace', 'Center your face inside the guide')
-        : t('verificationCaptureStatusShowGesture', 'Show the required gesture'));
-      reportLog('ready', {
-        source: selectedMediaPipeSource ? selectedMediaPipeSource.moduleUrl : null,
-        videoW: video.videoWidth || 0,
-        videoH: video.videoHeight || 0,
-        bootMs: Date.now() - bootStart
+      // startCameraPreview resolves even when no frame ever arrived (its
+      // 1.5s wait is best-effort). Retry play() briefly, then show a
+      // retryable error instead of a dead gray preview with no message.
+      return ensureVideoPreviewUsable().then(function(usable) {
+        if (!usable) {
+          reportLog('stuck', {
+            stage: 'videoNeverStarted',
+            readyState: video.readyState,
+            videoW: video.videoWidth || 0,
+            videoH: video.videoHeight || 0
+          }, true);
+          showFatalError(
+            t('verificationCaptureCameraOrModelError', 'Camera or model error: {error}').replace('{error}', 'Camera preview did not start'),
+            'Camera preview did not start'
+          );
+          return;
+        }
+        setInstruction(gestureLabel);
+        setStatus(isFaceOnlyMode
+          ? t('verificationCaptureStatusAlignFace', 'Center your face inside the guide')
+          : t('verificationCaptureStatusShowGesture', 'Show the required gesture'));
+        reportLog('ready', {
+          source: selectedMediaPipeSource ? selectedMediaPipeSource.moduleUrl : null,
+          videoW: video.videoWidth || 0,
+          videoH: video.videoHeight || 0,
+          bootMs: Date.now() - bootStart
+        });
+        setTickRate(slowDevice ? FPS_SLOW : FPS);
       });
-      setTickRate(slowDevice ? FPS_SLOW : FPS);
     }).catch(function(err) {
       var msg = (err && (err.message || err)) || 'Unknown error';
       var cameraDenied = false;
@@ -2019,6 +2117,8 @@
       firstTickAt = 0;
       lastStuckReportAt = 0;
       tickInProgress = false;
+      videoStallWatchStart = 0;
+      videoStallFatalShown = false;
     }
     booted = true;
     hideFatalError();

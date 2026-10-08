@@ -80,7 +80,9 @@ final externalAdsEnabledProvider = Provider<bool>((ref) {
 /// Provider to check if internal ads are enabled (with realtime updates)
 final internalAdsEnabledProvider = Provider<bool>((ref) {
   final config = ref.watch(appConfigProvider);
-  final value = config['ads.internal.enabled']?.toLowerCase() ?? 'true';
+  // Default false to match the serving RPC (app_config_bool
+  // 'ads.internal.enabled', false).
+  final value = config['ads.internal.enabled']?.toLowerCase() ?? 'false';
   return value == 'true';
 });
 
@@ -116,7 +118,16 @@ class AppConfigNotifier extends Notifier<Map<String, String>>
     });
     _resumeDispose = onSupabaseResume(() {
       if (!ref.mounted) return;
+      // A real offline tore down the realtime socket and the vendored client
+      // does not rejoin stream channels on reconnect — the old subscription
+      // would stay silently dead. Drop it so a fresh one is created below;
+      // the REST refresh covers data in the meantime.
+      _clearRealtimeSubscription();
       _loadConfig();
+      Future<void>.delayed(const Duration(milliseconds: 200), () {
+        if (!ref.mounted) return;
+        _ensureRealtimeSubscription();
+      });
     });
 
     Map<String, String> initialState = _cachedAppConfig;
@@ -154,6 +165,15 @@ class AppConfigNotifier extends Notifier<Map<String, String>>
     _authSub = supabase.auth.onAuthStateChange.listen((authState) {
       if (authState.event == AuthChangeEvent.signedOut) {
         _clearRealtimeSubscription();
+      } else if (authState.event == AuthChangeEvent.initialSession ||
+          authState.event == AuthChangeEvent.signedIn) {
+        // The persisted session (or a fresh sign-in) often resolves AFTER the
+        // first subscription attempt above, which bails when no session exists
+        // yet. Attach the realtime stream now, and pull fresh config —
+        // otherwise ad/config changes would not arrive in realtime until the
+        // user happened to background and resume the app.
+        _ensureRealtimeSubscription();
+        unawaited(_loadConfig());
       }
     });
 

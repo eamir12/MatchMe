@@ -1,6 +1,8 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
 import { buildGeminiUrl, resolveTextModels } from "../_shared/gemini_config.ts";
+import { consumeAiRateLimit, getClientIp } from "../_shared/ai_rate_limit.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -72,6 +74,37 @@ serve(async (req) => {
     if (!bio) {
       console.log(`[moderate-bio:${requestId}] Empty bio, auto-allow`);
       return await jsonResponse({ allow: true, message: "OK" });
+    }
+
+    // AI rate limiting (app_config ai.rate_limit.bio_moderation.*). This
+    // function has no user context, so the limit is per hashed client IP.
+    {
+      const supabaseUrl = Deno.env.get("SUPABASE_URL");
+      const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+      if (supabaseUrl && serviceKey) {
+        const admin = createClient(supabaseUrl, serviceKey, {
+          auth: { persistSession: false },
+        });
+        const rateLimit = await consumeAiRateLimit(admin, {
+          task: "bio_moderation",
+          userId: null,
+          ip: getClientIp(req),
+          requestId,
+        });
+        if (!rateLimit.allowed) {
+          console.warn(
+            `[moderate-bio:${requestId}] Rate limited, retryAfter=${rateLimit.retryAfterSeconds}s`,
+          );
+          return await jsonResponse(
+            {
+              allow: false,
+              message: "Too many attempts. Please try again in a little while.",
+              retryAfterSeconds: rateLimit.retryAfterSeconds,
+            },
+            { success: false, errorType: "rate_limited" },
+          );
+        }
+      }
     }
 
     const bioForLog = bio.replace(/\s+/g, " ").trim();

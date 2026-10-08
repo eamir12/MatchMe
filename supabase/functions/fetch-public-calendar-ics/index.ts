@@ -122,6 +122,11 @@ function parseIcs(ics: string): { calendarName: string; events: Array<Record<str
         const location = findFirstValue(eventLines, 'LOCATION');
         const url = findFirstValue(eventLines, 'URL');
         const organizer = findFirstValue(eventLines, 'ORGANIZER');
+        // iCalendar privacy classification (PUBLIC/PRIVATE/CONFIDENTIAL).
+        // Even in a shared feed, individually-marked private events must
+        // not become importable public events in the app.
+        const icsClass = findFirstValue(eventLines, 'CLASS');
+        const rrule = findFirstValue(eventLines, 'RRULE');
         const startRaw = findFirstValue(eventLines, 'DTSTART');
         const endRaw = findFirstValue(eventLines, 'DTEND');
         if (startRaw != null) {
@@ -141,6 +146,8 @@ function parseIcs(ics: string): { calendarName: string; events: Array<Record<str
               location: location,
               url: url,
               organizer: organizer,
+              class: icsClass,
+              rrule: rrule,
             });
           }
         }

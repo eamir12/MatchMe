@@ -65,6 +65,12 @@ dependencies {
     implementation("com.google.android.gms:play-services-ads:22.6.0")
     implementation("com.google.mlkit:face-detection:16.1.7")
     implementation("com.google.mlkit:pose-detection:18.0.0-beta5")
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+    // Prominent-object detection: language-agnostic "held object over the
+    // face" signal. ML Kit has no Hebrew/RTL text recognizer (bundled v2
+    // covers Latin/CJK/Devanagari only), so cards in those scripts are caught
+    // here instead of by OCR.
+    implementation("com.google.mlkit:object-detection:17.0.2")
     implementation("androidx.security:security-crypto:1.1.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.work:work-runtime-ktx:2.11.1")

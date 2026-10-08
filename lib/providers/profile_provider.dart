@@ -2870,24 +2870,94 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     final hPx = decoded.height.toDouble();
     final faceW = fw * wPx;
     final faceH = fh * hPx;
-    final cx = (fx * wPx) + faceW / 2;
-    final cy = (fy * hPx) + faceH / 2;
 
-    final target = math.max(faceW, faceH) * 2.0;
-    final minTarget = math.min(wPx, hPx) * 0.45;
-    final cropSize = math.max(target, minTarget);
+    // Crop tightly to the face (face + 20% margin — a neck-up headshot), then
+    // trim further to exclude text regions where the geometry allows; anything
+    // still overlapping the crop is pixelated below. The old 2x-face rule kept
+    // offending cards in frame on close-up selfies, where the face was already
+    // so large that the "generous" crop equaled the whole image.
+    final facePadX = faceW * 0.2;
+    final facePadY = faceH * 0.2;
+    final minCropSide = math.min(wPx, hPx) * 0.35;
 
-    var cropLeft = (cx - cropSize / 2).round();
-    var cropTop = (cy - cropSize / 2).round();
-    var cropW = cropSize.round();
-    var cropH = cropSize.round();
+    var left = math.max(0.0, (fx - facePadX) * wPx);
+    var top = math.max(0.0, (fy - facePadY) * hPx);
+    var right = math.min(wPx, (fx + fw + facePadX) * wPx);
+    var bottom = math.min(hPx, (fy + fh + facePadY) * hPx);
 
-    if (cropW > decoded.width) cropW = decoded.width;
-    if (cropH > decoded.height) cropH = decoded.height;
-    if (cropLeft < 0) cropLeft = 0;
-    if (cropTop < 0) cropTop = 0;
-    if (cropLeft + cropW > decoded.width) cropLeft = decoded.width - cropW;
-    if (cropTop + cropH > decoded.height) cropTop = decoded.height - cropH;
+    // Never let the crop get absurdly small if the face box was tiny.
+    if (right - left < minCropSide) {
+      final c = (fx + fw / 2) * wPx;
+      left = math.max(0.0, c - minCropSide / 2);
+      right = math.min(wPx, c + minCropSide / 2);
+    }
+    if (bottom - top < minCropSide) {
+      final c = (fy + fh / 2) * hPx;
+      top = math.max(0.0, c - minCropSide / 2);
+      bottom = math.min(hPx, c + minCropSide / 2);
+    }
+
+    // Trim the crop to exclude text boxes, keeping the face fully inside.
+    // Whatever cannot be excluded without cutting into the face stays in the
+    // crop and is pixelated by the loop below.
+    final xGap = 0.01 * wPx;
+    final yGap = 0.01 * hPx;
+    final faceMinPadY = faceH * 0.05;
+    final faceTopPx = fy * hPx;
+    final faceBottomPx = (fy + fh) * hPx;
+    final faceLeftPx = fx * wPx;
+    final faceRightPx = (fx + fw) * wPx;
+    final faceCenterX = (fx + fw / 2) * wPx;
+    final faceCenterY = (fy + fh / 2) * hPx;
+
+    for (final tb in textBoxes) {
+      final tx = toD(tb['x']).clamp(0, 1);
+      final ty = toD(tb['y']).clamp(0, 1);
+      final tw = toD(tb['w']).clamp(0, 1);
+      final th = toD(tb['h']).clamp(0, 1);
+      if (tw <= 0 || th <= 0) continue;
+
+      final tLeft = tx * wPx;
+      final tTop = ty * hPx;
+      final tRight = tLeft + tw * wPx;
+      final tBottom = tTop + th * hPx;
+      if (tRight <= left || tLeft >= right || tBottom <= top || tTop >= bottom) {
+        continue; // already outside the crop
+      }
+
+      if (tTop >= faceCenterY) {
+        // Text below the face — pull the bottom edge up if the face still fits.
+        final candidate = math.min(bottom, tTop - yGap);
+        if (candidate >= faceBottomPx + faceMinPadY && candidate > top) {
+          bottom = candidate;
+        }
+      } else if (tBottom <= faceCenterY) {
+        // Text above the face — push the top edge down.
+        final candidate = math.max(top, tBottom + yGap);
+        if (candidate <= faceTopPx + 1 && candidate < bottom) {
+          top = candidate;
+        }
+      } else if (tLeft >= faceCenterX) {
+        // Text to the right of the face — pull the right edge in.
+        final candidate = math.max(left, tRight + xGap);
+        if (candidate <= faceLeftPx + 1 && candidate < right) {
+          right = candidate;
+        }
+      } else if (tRight <= faceCenterX) {
+        // Text to the left of the face — pull the left edge in.
+        final candidate = math.min(right, tLeft - xGap);
+        if (candidate >= faceRightPx - 1 && candidate > left) {
+          right = candidate;
+        }
+      }
+    }
+
+    var cropLeft = left.round().clamp(0, decoded.width);
+    var cropTop = top.round().clamp(0, decoded.height);
+    var cropW = (right - left).round().clamp(1, decoded.width);
+    var cropH = (bottom - top).round().clamp(1, decoded.height);
+    if (cropLeft + cropW > decoded.width) cropW = decoded.width - cropLeft;
+    if (cropTop + cropH > decoded.height) cropH = decoded.height - cropTop;
 
     var cropped = img.copyCrop(
       decoded,
@@ -2983,6 +3053,8 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     required dynamic data,
     required String? reasonCode,
     required String fallbackKey,
+    bool includeFaceBox = true,
+    String? photoPath,
   }) async {
     final locale = ref.read(localizationProvider);
     final serverKey = data is Map && data['translationKey'] is String
@@ -3077,11 +3149,28 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
           if (box != null) issueBoxes.add(box);
         }
       }
-      final faceBox = PhotoIssueBox.fromJson(
-        data is Map ? data['faceBox'] : null,
-        fallbackLabel: 'face',
-      );
-      if (faceBox != null) issueBoxes.add(faceBox);
+      // The face box is drawn only when the face is what the rejection is
+      // about, or when a reported issue region actually overlaps it (e.g.
+      // text on the face). A pure document rejection with the card elsewhere
+      // must not paint a perfectly fine face as if it were the problem.
+      const faceSubjectReasons = {
+        'NO_PERSON',
+        'FACE_NOT_VISIBLE',
+        'MULTIPLE_PEOPLE',
+        'VERIFIED_SELFIE_MISMATCH',
+      };
+      final faceBox = includeFaceBox
+          ? PhotoIssueBox.fromJson(
+              data is Map ? data['faceBox'] : null,
+              fallbackLabel: 'face',
+            )
+          : null;
+      if (faceBox != null) {
+        final faceInvolved =
+            faceSubjectReasons.contains(reasonCode) ||
+            issueBoxes.any((box) => _boxOverlapsFace(box, faceBox));
+        if (faceInvolved) issueBoxes.add(faceBox);
+      }
     }
 
     return PhotoModerationRejection(
@@ -3089,8 +3178,25 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
       translationKey: fixedKey,
       reasonCode: reasonCode,
       issueBoxes: issueBoxes,
+      photoPath: photoPath,
       fullImageIssue: isContentRejection,
     );
+  }
+
+  /// True when [box] overlaps enough of [face] to be "on the face" — either
+  /// a quarter of the issue box, or a visible slice of the face itself.
+  bool _boxOverlapsFace(PhotoIssueBox box, PhotoIssueBox face) {
+    final ix =
+        (box.x + box.w).clamp(0.0, face.x + face.w) -
+        box.x.clamp(face.x, face.x + face.w);
+    final iy =
+        (box.y + box.h).clamp(0.0, face.y + face.h) -
+        box.y.clamp(face.y, face.y + face.h);
+    final intersection = (ix <= 0 || iy <= 0) ? 0.0 : ix * iy;
+    final boxArea = box.w * box.h;
+    final faceArea = face.w * face.h;
+    if (boxArea <= 0 || faceArea <= 0) return false;
+    return intersection / boxArea >= 0.25 || intersection / faceArea >= 0.08;
   }
 
   Future<String> _ensurePrimaryPhotoAllowed(
@@ -3109,9 +3215,31 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
       }
       if (approved.contains(photoPath)) return photoPath;
 
-      final resp = await Supabase.instance.client.functions
-          .invoke('validate-primary-photo', body: {'photoPath': photoPath})
-          .timeout(const Duration(seconds: 30));
+      dynamic resp;
+      try {
+        resp = await Supabase.instance.client.functions
+            .invoke(
+              'validate-primary-photo',
+              body: {
+                'photoPath': photoPath,
+                // Capability flag: the server may sanitize the photo itself
+                // (crop out the flagged text) and approve the cleaned copy in
+                // the same call — no second AI round-trip.
+                'clientSupportsServerSanitize': true,
+              },
+            )
+            .timeout(const Duration(seconds: 30));
+      } catch (_) {
+        // TimeoutException (client gave up while the server retries its model
+        // chain) and FunctionsHttpException (the functions client throws on
+        // non-2xx, e.g. the 503 "Gemini unavailable" response) must both
+        // surface as the localized photo-system error — never raw exception
+        // text or a connectivity message.
+        final locale = ref.read(localizationProvider);
+        throw Exception(
+          locale.getString('primaryPhotoVerificationErrorSystem'),
+        );
+      }
 
       if (resp.status != 200) {
         final locale = ref.read(localizationProvider);
@@ -3127,6 +3255,17 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
         } catch (_) {}
       }
 
+      // Server-side sanitize: the function cropped the flagged text out of
+      // the photo itself and approved the cleaned copy — swap to its path.
+      if (data is Map && data['serverSanitized'] == true && data['photoPath'] is String) {
+        final sanitizedPath = data['photoPath'] as String;
+        if (sanitizedPath.isNotEmpty && sanitizedPath != photoPath) {
+          approved.add(sanitizedPath);
+          await localDb.setApprovedPrimaryPhotos(userId, approved);
+          return sanitizedPath;
+        }
+      }
+
       final allow = data is Map && data['allow'] == true;
       final reasonCode = data is Map && data['reasonCode'] is String
           ? data['reasonCode'] as String
@@ -3137,9 +3276,25 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
 
       if (action == 'SANITIZE' && !allow) {
         if (sanitizePass >= 1) {
-          final locale = ref.read(localizationProvider);
-          throw Exception(
-            locale.getString('primaryPhotoVerificationErrorBadContent'),
+          // The auto-crop/pixelate pipeline ran once and the validator still
+          // flags text. Throw the structured rejection so the wizard can show
+          // the uploaded photo with the remaining text regions highlighted.
+          // The server's generic SANITIZE translationKey is dropped so the
+          // StillText wording is the fixed baseline.
+          final stillTextData = data is Map
+              ? Map<String, dynamic>.from(data)
+              : <String, dynamic>{};
+          stillTextData['translationKey'] = null;
+          throw await _buildPhotoModerationRejection(
+            data: stillTextData,
+            reasonCode: 'STILL_TEXT',
+            fallbackKey: 'primaryPhotoVerificationErrorStillText',
+            // The issue is the leftover text, not the face — mark only the
+            // text regions.
+            includeFaceBox: false,
+            // The sanitized copy replaced the original upload in storage, so
+            // the dialog must render THESE bytes.
+            photoPath: photoPath,
           );
         }
 
@@ -3277,9 +3432,18 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
   }
 
   Future<String> _ensureSecondaryPhotoAllowed(String photoPath) async {
-    final resp = await Supabase.instance.client.functions
-        .invoke('validate-secondary-photo', body: {'photoPath': photoPath})
-        .timeout(const Duration(seconds: 120));
+    dynamic resp;
+    try {
+      resp = await Supabase.instance.client.functions
+          .invoke('validate-secondary-photo', body: {'photoPath': photoPath})
+          .timeout(const Duration(seconds: 120));
+    } catch (_) {
+      // TimeoutException or FunctionsHttpException (thrown by the functions
+      // client on non-2xx): show the photo-system error rather than raw
+      // exception text or a connectivity message. Thrown as a translation key
+      // (see ErrorLocalizationService).
+      throw Exception('secondaryPhotoVerificationErrorSystem');
+    }
 
     if (resp.status != 200) {
       throw Exception('secondaryPhotoVerificationErrorSystem');
@@ -3308,6 +3472,12 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
   Future<void> ensurePrimaryPhotoAllowedForWizard(String photoPath) async {
     final finalPath = await _ensurePrimaryPhotoAllowed(photoPath);
     if (finalPath == photoPath) return;
+    // The server-sanitize flow replaced the upload with a cleaned copy:
+    // track the new path for draft cleanup and drop stale caches.
+    _wizardUploadedPhotoPaths.remove(photoPath);
+    _wizardUploadedPhotoPaths.add(finalPath);
+    StorageHelper.evict(photoPath);
+    StorageHelper.evict(finalPath);
     final current = state.asData?.value;
     if (current == null) return;
     final photos = List<String>.from(current.photos);

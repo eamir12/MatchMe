@@ -48,6 +48,8 @@ class _AdminExternalAdsDashboardState extends State<AdminExternalAdsDashboard>
   bool _serverConfigHydrated = false;
   bool _isHandlingTabTransition = false;
   bool _isSubscribed = false;
+  final List<StreamSubscription<List<Map<String, dynamic>>>?> _realtimeSubs =
+      [];
   StreamSubscription<bool>? _availabilitySub;
   Timer? _dashboardReloadDebounce;
 
@@ -101,13 +103,15 @@ class _AdminExternalAdsDashboardState extends State<AdminExternalAdsDashboard>
     _ensureTabController();
     _setupRealtimeSubscription();
 
-    // Re-establish realtime subscriptions when connectivity is restored
+    // Re-establish realtime subscriptions when connectivity is restored.
+    // The stream channels don't survive an offline→online transition (the
+    // realtime client doesn't rejoin them), so tear down and re-create.
     _availabilitySub = adminOfflineCacheManager.availabilityStream.listen((
       available,
     ) {
       if (!mounted) return;
       if (available) {
-        _isSubscribed = false;
+        _teardownRealtimeSubscriptions();
         _setupRealtimeSubscription();
       }
     });
@@ -307,6 +311,7 @@ class _AdminExternalAdsDashboardState extends State<AdminExternalAdsDashboard>
   @override
   void dispose() {
     _availabilitySub?.cancel();
+    _teardownRealtimeSubscriptions();
     _dashboardReloadDebounce?.cancel();
     _tabController?.removeListener(_handleTabControllerChanged);
     _tabController?.dispose();
@@ -316,9 +321,10 @@ class _AdminExternalAdsDashboardState extends State<AdminExternalAdsDashboard>
   }
 
   void _setupRealtimeSubscription() {
-    // Skip realtime subscriptions when offline to avoid noisy connection errors
+    // Skip realtime subscriptions when offline to avoid noisy connection
+    // errors — the availability listener below re-runs this when Supabase
+    // is reachable again.
     if (adminOfflineCacheManager.shouldUseCachedData()) {
-      _isSubscribed = true;
       return;
     }
     if (_isSubscribed) return;
@@ -332,59 +338,83 @@ class _AdminExternalAdsDashboardState extends State<AdminExternalAdsDashboard>
       }
 
       // Listen to app_config changes (ad settings)
-      Supabase.instance.client
-          .from('app_config')
-          .stream(primaryKey: ['config_key'])
-          .listen((data) {
-            debugPrint('[ExternalAds] app_config realtime update received');
-            if (mounted) _refresh();
-          }, onError: (error) => logRealtimeError('app_config', error));
+      _realtimeSubs.add(
+        Supabase.instance.client
+            .from('app_config')
+            .stream(primaryKey: ['config_key'])
+            .listen((data) {
+              debugPrint('[ExternalAds] app_config realtime update received');
+              if (mounted) _refresh();
+            }, onError: (error) => logRealtimeError('app_config', error)),
+      );
 
       // Listen to ad_revenue_events changes (analytics updates)
-      Supabase.instance.client
-          .from('ad_revenue_events')
-          .stream(primaryKey: ['id'])
-          .listen(
-            (data) {
-              debugPrint(
-                '[ExternalAds] ad_revenue_events realtime update received: ${data.length} records',
-              );
-              // Clear local cache to ensure fresh data on mobile
-              _clearLocalCache();
-              // Apply local increment for immediate UI update (no full reload)
-              if (mounted) {
-                _applyRevenueEventIncrement(data.cast<Map<String, dynamic>>());
-              }
-            },
-            onError: (error) {
-              debugPrint(
-                '[ExternalAds] ad_revenue_events realtime error: $error',
-              );
-            },
-          );
+      _realtimeSubs.add(
+        Supabase.instance.client
+            .from('ad_revenue_events')
+            .stream(primaryKey: ['id'])
+            .listen(
+              (data) {
+                debugPrint(
+                  '[ExternalAds] ad_revenue_events realtime update received: ${data.length} records',
+                );
+                // Clear local cache to ensure fresh data on mobile
+                _clearLocalCache();
+                // Apply local increment for immediate UI update (no full reload)
+                if (mounted) {
+                  _applyRevenueEventIncrement(
+                    data.cast<Map<String, dynamic>>(),
+                  );
+                }
+              },
+              onError: (error) {
+                debugPrint(
+                  '[ExternalAds] ad_revenue_events realtime error: $error',
+                );
+              },
+            ),
+      );
 
       // Listen to ad_networks changes (network status updates)
-      Supabase.instance.client
-          .from('ad_networks')
-          .stream(primaryKey: ['id'])
-          .listen(
-            (data) {
-              debugPrint('[ExternalAds] ad_networks realtime update received');
-              if (mounted) {
-                _networksFuture = _loadNetworks();
-                setState(() {});
-              }
-            },
-            onError: (error) {
-              debugPrint('[ExternalAds] ad_networks realtime error: $error');
-            },
-          );
+      _realtimeSubs.add(
+        Supabase.instance.client
+            .from('ad_networks')
+            .stream(primaryKey: ['id'])
+            .listen(
+              (data) {
+                debugPrint('[ExternalAds] ad_networks realtime update received');
+                if (mounted) {
+                  _networksFuture = _loadNetworks();
+                  setState(() {});
+                }
+              },
+              onError: (error) {
+                debugPrint(
+                  '[ExternalAds] ad_networks realtime error: $error',
+                );
+              },
+            ),
+      );
 
       debugPrint('[ExternalAds] Realtime subscriptions established');
     } catch (e, stackTrace) {
       debugPrint('[ExternalAds] Failed to setup realtime subscriptions: $e');
       debugPrint('[ExternalAds] StackTrace: $stackTrace');
     }
+  }
+
+  /// Cancel the stream subscriptions so they can be re-created after an
+  /// offline→online cycle. The realtime client does not rejoin stream
+  /// channels after a socket disconnect, and re-subscribing without
+  /// cancelling would accumulate duplicate channels.
+  void _teardownRealtimeSubscriptions() {
+    for (final sub in _realtimeSubs) {
+      try {
+        sub?.cancel();
+      } catch (_) {}
+    }
+    _realtimeSubs.clear();
+    _isSubscribed = false;
   }
 
   // ==================== BUILD ====================
@@ -796,11 +826,26 @@ class _AdminExternalAdsDashboardState extends State<AdminExternalAdsDashboard>
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             SegmentedButton<String>(
+              // The default selected checkmark eats ~24px inside the segment,
+              // which is what wraps "30 days" onto a second row on
+              // phone-width screens.
+              showSelectedIcon: false,
               segments: [
-                ButtonSegment(value: '7d', label: Text(t('adminAdsRange7d'))),
-                ButtonSegment(value: '30d', label: Text(t('adminAdsRange30d'))),
-                ButtonSegment(value: '90d', label: Text(t('adminAdsRange90d'))),
-                ButtonSegment(value: 'all', label: Text(t('adminAdsRangeAll'))),
+                for (final entry in const {
+                  '7d': 'adminAdsRange7d',
+                  '30d': 'adminAdsRange30d',
+                  '90d': 'adminAdsRange90d',
+                  'all': 'adminAdsRangeAll',
+                }.entries)
+                  ButtonSegment(
+                    value: entry.key,
+                    label: Text(
+                      t(entry.value),
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
               ],
               selected: _rangePreset == 'custom' ? <String>{} : {_rangePreset},
               onSelectionChanged: (value) {
@@ -1704,6 +1749,7 @@ class _AdminExternalAdsDashboardState extends State<AdminExternalAdsDashboard>
       } catch (_) {}
 
       _showSuccess(t('adminSponsoredAdsConfigSaved'));
+      unawaited(_touchAdConfig());
       await _refresh();
     } catch (e) {
       _showError('${t('adminSponsoredAdsConfigSaveFailed')} $e');
@@ -1711,6 +1757,17 @@ class _AdminExternalAdsDashboardState extends State<AdminExternalAdsDashboard>
       if (mounted) {
         setState(() => _isSavingConfig = false);
       }
+    }
+  }
+
+  /// Bump ads.config_version in app_config after every ad write so the
+  /// MatchMe app hard-clears its ad caches in realtime instead of serving
+  /// cached units until its debounce/reuse windows expire.
+  Future<void> _touchAdConfig() async {
+    try {
+      await Supabase.instance.client.rpc('admin_touch_ad_config');
+    } catch (e) {
+      debugPrint('[ExternalAds] admin_touch_ad_config failed: $e');
     }
   }
 

@@ -40,6 +40,31 @@ class ExternalEvent {
   final Uri? url;
   final String? organizer;
 
+  /// Provider-native privacy/availability signals, used to keep private
+  /// items out of the import pickers. Null when the provider doesn't expose
+  /// the signal.
+  ///
+  /// - device: Availability enum name (busy/free/tentative/unavailable)
+  /// - outlook: event "showAs" value (free/busy/oof/workingElsewhere/…)
+  final String? availability;
+
+  /// Google only: "transparent" means the slot is shown as free.
+  final String? transparency;
+
+  /// Google / Apple ICS CLASS: default/public/private/confidential.
+  final String? visibility;
+
+  /// Outlook only: normal/personal/private/confidential.
+  final String? sensitivity;
+
+  /// Number of attendees on the event, when the provider exposes the
+  /// guest list. Drives the self-organized-small-meeting heuristic.
+  final int? attendeeCount;
+
+  /// Recurrence description (RRULE string for Google/device/ICS, Outlook
+  /// pattern type for Graph). Drives the routine-recurrence heuristic.
+  final String? recurrenceRule;
+
   const ExternalEvent({
     required this.calendarId,
     required this.id,
@@ -51,6 +76,12 @@ class ExternalEvent {
     required this.location,
     required this.url,
     required this.organizer,
+    this.availability,
+    this.transparency,
+    this.visibility,
+    this.sensitivity,
+    this.attendeeCount,
+    this.recurrenceRule,
   });
 }
 
@@ -832,6 +863,14 @@ class WebCalendarService {
                       ? Uri.tryParse(item.htmlLink!)
                       : null,
                   organizer: item.organizer?.email,
+                  transparency: item.transparency,
+                  visibility: item.visibility,
+                  attendeeCount: item.attendees?.isEmpty == false
+                      ? item.attendees!.length
+                      : null,
+                  recurrenceRule: item.recurrence?.isEmpty == false
+                      ? item.recurrence!.join(' ')
+                      : null,
                 );
               }).whereType<ExternalEvent>(),
             );
@@ -921,6 +960,14 @@ class WebCalendarService {
                     ? Uri.tryParse(item.htmlLink!)
                     : null,
                 organizer: item.organizer?.email,
+                transparency: item.transparency,
+                visibility: item.visibility,
+                attendeeCount: item.attendees?.isEmpty == false
+                    ? item.attendees!.length
+                    : null,
+                recurrenceRule: item.recurrence?.isEmpty == false
+                    ? item.recurrence!.join(' ')
+                    : null,
               );
             }).whereType<ExternalEvent>(),
           );
@@ -1001,6 +1048,14 @@ class WebCalendarService {
                           ? Uri.tryParse(item.htmlLink!)
                           : null,
                       organizer: item.organizer?.email,
+                      transparency: item.transparency,
+                      visibility: item.visibility,
+                      attendeeCount: item.attendees?.isEmpty == false
+                          ? item.attendees!.length
+                          : null,
+                      recurrenceRule: item.recurrence?.isEmpty == false
+                          ? item.recurrence!.join(' ')
+                          : null,
                     );
                   }).whereType<ExternalEvent>(),
                 );

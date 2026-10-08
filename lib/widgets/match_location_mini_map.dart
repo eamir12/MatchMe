@@ -4,7 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
+import 'package:latlong2/latlong.dart' hide Path;
 import 'package:intl/intl.dart';
 import 'package:matchme/models/match_model.dart';
 import 'package:matchme/providers/locale_provider.dart';
@@ -173,6 +173,7 @@ class MatchLocationMiniMap extends ConsumerWidget {
                     options: MapOptions(
                       initialCenter: center,
                       initialZoom: zoom,
+                      backgroundColor: const Color(0xFFF4F0E8),
                       interactionOptions: const InteractionOptions(
                         flags: InteractiveFlag.none,
                       ),
@@ -186,6 +187,7 @@ class MatchLocationMiniMap extends ConsumerWidget {
                       ), // ignore: unnecessary_underscores
                     ),
                     children: [
+                      const _OfflineMapBackgroundPattern(),
                       TileLayer(
                         urlTemplate:
                             'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -208,6 +210,32 @@ class MatchLocationMiniMap extends ConsumerWidget {
                               alpha: 0.35,
                             ),
                             borderStrokeWidth: 2,
+                          ),
+                        ],
+                      ),
+                      MarkerLayer(
+                        markers: [
+                          Marker(
+                            point: center,
+                            width: 22,
+                            height: 22,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Colors.blue.shade600
+                                    .withValues(alpha: 0.75),
+                                border: Border.all(
+                                  color: Colors.white,
+                                  width: 2,
+                                ),
+                                boxShadow: const [
+                                  BoxShadow(
+                                    color: Colors.black26,
+                                    blurRadius: 3,
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
                         ],
                       ),
@@ -321,6 +349,7 @@ class MatchLocationMiniMap extends ConsumerWidget {
                   options: MapOptions(
                     initialCenter: center,
                     initialZoom: zoom,
+                    backgroundColor: const Color(0xFFF4F0E8),
                     interactionOptions: const InteractionOptions(
                       flags: InteractiveFlag.none,
                     ),
@@ -334,6 +363,7 @@ class MatchLocationMiniMap extends ConsumerWidget {
                     ), // ignore: unnecessary_underscores
                   ),
                   children: [
+                    const _OfflineMapBackgroundPattern(),
                     TileLayer(
                       urlTemplate:
                           'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -798,6 +828,7 @@ class _MatchLocationFullMapScreenState
               initialZoom: zoom,
               minZoom: 1,
               maxZoom: 18,
+              backgroundColor: const Color(0xFFF4F0E8),
               cameraConstraint: CameraConstraint.contain(bounds: _worldBounds),
               interactionOptions: _interaction,
               onPositionChanged: (camera, hasGesture) {
@@ -806,6 +837,7 @@ class _MatchLocationFullMapScreenState
               },
             ),
             children: [
+              const _OfflineMapBackgroundPattern(),
               TileLayer(
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'matchme.app',
@@ -1098,4 +1130,127 @@ class _MatchMapZoomControls extends StatelessWidget {
       ),
     );
   }
+}
+
+class _OfflineMapBackgroundPattern extends StatelessWidget {
+  const _OfflineMapBackgroundPattern();
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned.fill(
+      child: CustomPaint(
+        painter: _OfflineMapBackgroundPainter(),
+      ),
+    );
+  }
+}
+
+class _OfflineMapBackgroundPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.width <= 0 || size.height <= 0) return;
+    // Warm cartographic land base (never gloomy gray)
+    final bgPaint = Paint()..color = const Color(0xFFF4F0E8);
+    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), bgPaint);
+
+    // Soft landscape patches
+    final parkPaint = Paint()
+      ..color = const Color(0xFFE9EEDD)
+      ..style = PaintingStyle.fill;
+    final park1 = Path()
+      ..moveTo(size.width * 0.05, size.height * 0.15)
+      ..cubicTo(
+        size.width * 0.25,
+        size.height * 0.05,
+        size.width * 0.35,
+        size.height * 0.35,
+        size.width * 0.2,
+        size.height * 0.5,
+      )
+      ..cubicTo(
+        size.width * 0.1,
+        size.height * 0.6,
+        size.width * 0.02,
+        size.height * 0.4,
+        size.width * 0.05,
+        size.height * 0.15,
+      );
+    canvas.drawPath(park1, parkPaint);
+
+    final park2 = Path()
+      ..moveTo(size.width * 0.7, size.height * 0.6)
+      ..cubicTo(
+        size.width * 0.9,
+        size.height * 0.45,
+        size.width * 0.98,
+        size.height * 0.8,
+        size.width * 0.85,
+        size.height * 0.95,
+      )
+      ..cubicTo(
+        size.width * 0.75,
+        size.height * 0.95,
+        size.width * 0.65,
+        size.height * 0.8,
+        size.width * 0.7,
+        size.height * 0.6,
+      );
+    canvas.drawPath(park2, parkPaint);
+
+    // Subtle road grid lines
+    final minorRoadPaint = Paint()
+      ..color = const Color(0xFFFFFFFF)
+      ..strokeWidth = 2.0
+      ..style = PaintingStyle.stroke;
+    final majorRoadBorder = Paint()
+      ..color = const Color(0xFFE5E0D4)
+      ..strokeWidth = 5.0
+      ..style = PaintingStyle.stroke;
+    final majorRoadPaint = Paint()
+      ..color = const Color(0xFFFFFFFF)
+      ..strokeWidth = 3.5
+      ..style = PaintingStyle.stroke;
+
+    // Arterial routes
+    final mainRoute = Path()
+      ..moveTo(0, size.height * 0.65)
+      ..cubicTo(
+        size.width * 0.35,
+        size.height * 0.6,
+        size.width * 0.65,
+        size.height * 0.4,
+        size.width,
+        size.height * 0.35,
+      );
+    canvas.drawPath(mainRoute, majorRoadBorder);
+    canvas.drawPath(mainRoute, majorRoadPaint);
+
+    final crossRoute = Path()
+      ..moveTo(size.width * 0.45, 0)
+      ..cubicTo(
+        size.width * 0.5,
+        size.height * 0.4,
+        size.width * 0.55,
+        size.height * 0.7,
+        size.width * 0.6,
+        size.height,
+      );
+    canvas.drawPath(crossRoute, majorRoadBorder);
+    canvas.drawPath(crossRoute, majorRoadPaint);
+
+    // Grid of secondary streets
+    final gridPath = Path();
+    for (double x = 40; x < size.width; x += 60) {
+      gridPath.moveTo(x, 0);
+      gridPath.lineTo(x, size.height);
+    }
+    for (double y = 30; y < size.height; y += 45) {
+      gridPath.moveTo(0, y);
+      gridPath.lineTo(size.width, y);
+    }
+    canvas.drawPath(gridPath, minorRoadPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

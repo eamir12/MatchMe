@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
@@ -113,7 +114,6 @@ class _BannerAdWidgetState extends ConsumerState<BannerAdWidget>
   bool _loadScheduled = false;
 
   static const int _maxRetries = 3;
-  bool _usingFallbackId = false;
   int _loadAttemptId = 0;
 
   _PlacementBannerEntry get _entry =>
@@ -155,7 +155,6 @@ class _BannerAdWidgetState extends ConsumerState<BannerAdWidget>
 
     if (shouldReload) {
       _didTrackImpression = false;
-      _usingFallbackId = false;
       _retryCount = 0;
       _loadScheduled = false;
       if (oldWidget.placement != widget.placement) {
@@ -195,10 +194,13 @@ class _BannerAdWidgetState extends ConsumerState<BannerAdWidget>
     });
   }
 
-  String _resolvedAdUnitId() {
-    return _usingFallbackId
-        ? 'ca-app-pub-3940256099942544/6300978111'
-        : (widget.adUnitId ?? 'ca-app-pub-3940256099942544/6300978111');
+  String? _resolvedAdUnitId() {
+    if (widget.adUnitId != null && widget.adUnitId!.trim().isNotEmpty) {
+      return widget.adUnitId;
+    }
+    // Google's public sample unit may only be used in debug builds — serving
+    // it to real users generates invalid-traffic risk for the AdMob account.
+    return kDebugMode ? 'ca-app-pub-3940256099942544/6300978111' : null;
   }
 
   void _loadBannerAd() {
@@ -217,6 +219,15 @@ class _BannerAdWidgetState extends ConsumerState<BannerAdWidget>
     if (BannerAdWidget._failedPlacements.contains(placementKey)) return;
 
     final adUnitId = _resolvedAdUnitId();
+    if (adUnitId == null) {
+      if (kDebugMode) {
+        print(
+          '[BannerAdWidget] ${widget.placement}: no ad unit id configured; '
+          'debug fallback disabled in release builds',
+        );
+      }
+      return;
+    }
 
     if (_entry.loading || _MobileBannerCoordinator.loadInFlight) {
       Future.delayed(const Duration(milliseconds: 300), () {
@@ -232,7 +243,8 @@ class _BannerAdWidgetState extends ConsumerState<BannerAdWidget>
     final bannerAd = BannerAd(
       adUnitId: adUnitId,
       size: AdSize(width: widget.width, height: widget.height),
-      request: const AdRequest(keywords: ['test']),
+      // No 'test' keywords: this is a real ad request in production builds.
+      request: const AdRequest(),
       listener: BannerAdListener(
         onAdLoaded: (ad) {
           _entry.loading = false;
@@ -259,7 +271,6 @@ class _BannerAdWidgetState extends ConsumerState<BannerAdWidget>
             widget.height,
           );
           _retryCount = 0;
-          _usingFallbackId = false;
           setState(() {
             _bannerAd = loaded;
             _isAdLoaded = true;
@@ -283,14 +294,6 @@ class _BannerAdWidgetState extends ConsumerState<BannerAdWidget>
             BannerAdWidget._adServiceUnavailable = true;
             BannerAdWidget._failedPlacements.add(placementKey);
             setState(() {});
-            return;
-          }
-
-          if (errorCode == 3 && !_usingFallbackId && widget.adUnitId != null) {
-            _usingFallbackId = true;
-            Future.delayed(const Duration(seconds: 1), () {
-              if (mounted) _loadBannerAd();
-            });
             return;
           }
 
@@ -392,7 +395,7 @@ class _BannerAdWidgetState extends ConsumerState<BannerAdWidget>
 
     final cached = _MobileBannerCoordinator.cachedAd(
       widget.placement,
-      _resolvedAdUnitId(),
+      _resolvedAdUnitId() ?? '',
       widget.width,
       widget.height,
     );

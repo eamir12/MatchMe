@@ -71,6 +71,8 @@ class _AdSlotState extends ConsumerState<AdSlot>
   Widget? _cachedSponsoredAdWidget; // Cache sponsored ad widget
   String?
   _cachedSponsoredCreativeId; // Creative id backing _cachedSponsoredAdWidget
+  int _lastSeenAdEpoch =
+      -1; // adConfigEpochProvider value backing the cached widgets above
   Timer? _retryTimer;
   Timer? _sponsoredRetryTimer;
   VoidCallback? _supabaseResumeDispose;
@@ -124,6 +126,21 @@ class _AdSlotState extends ConsumerState<AdSlot>
     final externalEnabled = ref.watch(externalAdsEnabledProvider);
     final internalEnabled = ref.watch(internalAdsEnabledProvider);
     final displayOrder = ref.watch(adDisplayOrderProvider);
+
+    // When the admin changes anything in the ad systems the epoch provider
+    // bumps (via the app_config realtime stream) — cached ad widgets must not
+    // outlive it, or a campaign/unit that was just toggled off would stay on
+    // screen indefinitely.
+    final adEpoch = ref.watch(adConfigEpochProvider);
+    if (_lastSeenAdEpoch == -1) {
+      _lastSeenAdEpoch = adEpoch;
+    } else if (adEpoch != _lastSeenAdEpoch) {
+      _lastSeenAdEpoch = adEpoch;
+      _cachedSponsoredAdWidget = null;
+      _cachedSponsoredCreativeId = null;
+      _cachedExternalAdWidget = null;
+      _cachedExternalAdUnitId = null;
+    }
 
     if (isCurrentTab) {
       _tabWasEverVisible = true;

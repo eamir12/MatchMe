@@ -1385,6 +1385,73 @@ async function handleBirthdayBroadcastAutomations(invocationId: string) {
 }
 
 /**
+ * Automatic "complete your profile" reminders — birthday-style automation.
+ * Enabled admin_broadcasts rows with automation_type 'profile_reminder' are
+ * processed every tick: queue_profile_reminder_broadcast_notifications()
+ * claims due users (incomplete profile, app closed per the intervals in
+ * app_config notifications.profile_reminder.*, stage-tracked in
+ * profile_reminder_state), personalizes {first_name}/{name} from the
+ * broadcast row's text, records an admin_broadcast_deliveries row, and
+ * queues the push — so text and the enable toggle are edited in the admin
+ * broadcasts composer, exactly like the birthday automation.
+ */
+async function handleProfileCompletionReminders(invocationId: string) {
+  log(invocationId, 'Queueing profile reminder automations...');
+  try {
+    const { data: broadcasts, error } = await supabase
+      .from('admin_broadcasts')
+      .select('id,title,automation_type,automation_enabled')
+      .eq('automation_enabled', true)
+      .eq('automation_type', 'profile_reminder')
+      .limit(200);
+
+    if (error) throw error;
+
+    const rows = (broadcasts ?? []) as Array<Record<string, unknown>>;
+    if (rows.length === 0) {
+      log(invocationId, 'No profile reminder automations are enabled.');
+      return;
+    }
+
+    let totalQueued = 0;
+    for (const row of rows) {
+      const broadcastId = String(row.id ?? '').trim();
+      if (!broadcastId) continue;
+
+      const { data, error: queueError } = await supabase.rpc(
+        'queue_profile_reminder_broadcast_notifications',
+        {
+          p_broadcast_id: broadcastId,
+        },
+      );
+      if (queueError) {
+        logError(invocationId, 'Profile reminder automation queue RPC failed', queueError, {
+          broadcastId,
+          title: String(row.title ?? '').trim() || null,
+        });
+        continue;
+      }
+
+      const queuedCount = typeof data === 'number' ? data : Number(data ?? 0);
+      totalQueued += Number.isFinite(queuedCount) ? queuedCount : 0;
+      log(invocationId, 'Profile reminder automation processed', {
+        broadcastId,
+        title: String(row.title ?? '').trim() || null,
+        queuedCount,
+      });
+    }
+
+    log(invocationId, 'Profile reminder automations completed.', {
+      broadcastCount: rows.length,
+      totalQueued,
+    });
+  } catch (error) {
+    logError(invocationId, 'Error during Profile Reminder Automations', error);
+    throw error;
+  }
+}
+
+/**
  * Task 4: Processes pending FCM notifications from the notification queue
  */
 async function handleNotificationQueueProcessing(invocationId: string) {
@@ -3094,12 +3161,25 @@ async function handleCleanupOrphanSponsoredAdImages(invocationId: string) {
     log(invocationId, 'Listed storage objects', { totalObjects: allStorageObjects.length, sample: allStorageObjects.slice(0, 5).map(o => o.name) });
 
     // Find orphan objects (not referenced by any ad creative)
+    //
+    // GRACE PERIOD — critical: between an admin uploading an image and
+    // clicking Save, the new file is intentionally unreferenced (creatives
+    // still point at the previous URL until the save lands). Without a grace
+    // period this task deleted freshly uploaded images in that window,
+    // leaving live campaigns pointing at dead URLs (404s). Only objects that
+    // stayed unreferenced for 24h are true orphans.
+    const orphanMinAgeMs = 24 * 60 * 60 * 1000;
+    const nowMs = Date.now();
     const orphanObjects = allStorageObjects.filter(obj => {
-      const isOrphan = !referencedImages.has(obj.name);
-      if (isOrphan) {
-        log(invocationId, 'Found orphan object', { name: obj.name, createdAt: obj.created_at });
+      if (referencedImages.has(obj.name)) {
+        return false;
       }
-      return isOrphan;
+      const createdAtMs = obj.created_at ? Date.parse(obj.created_at) : NaN;
+      if (Number.isNaN(createdAtMs) || nowMs - createdAtMs < orphanMinAgeMs) {
+        return false;
+      }
+      log(invocationId, 'Found orphan object', { name: obj.name, createdAt: obj.created_at });
+      return true;
     });
 
     if (orphanObjects.length === 0) {
@@ -3583,7 +3663,7 @@ serve(async (req) => {
 
   // Shared-secret gate: when MATCHME_INTERNAL_SECRET is configured (the
   // pg_cron/pg_net schedule passes it as the x-matchme-internal header),
-  // reject unauthenticated invocations — the function triggers all 27 tasks
+  // reject unauthenticated invocations — the function triggers all 28 tasks
   // and can send real FCM pushes. When the env var is unset, fall open so
   // legacy dashboard-configured schedules keep working.
   const internalSecret = (Deno.env.get("MATCHME_INTERNAL_SECRET") ?? "").trim();
@@ -3630,6 +3710,7 @@ serve(async (req) => {
       await runCronTask(invocationId, 'cleanup_orphan_sponsored_ad_images', () => handleCleanupOrphanSponsoredAdImages(invocationId)),
       await runCronTask(invocationId, 'scheduled_admin_broadcasts', () => handleScheduledAdminBroadcasts(invocationId)),
       await runCronTask(invocationId, 'birthday_broadcast_automations', () => handleBirthdayBroadcastAutomations(invocationId)),
+      await runCronTask(invocationId, 'profile_completion_reminders', () => handleProfileCompletionReminders(invocationId)),
       await runCronTask(invocationId, 'match_expiry_warnings', () => handleMatchExpiryWarnings(invocationId)),
       await runCronTask(invocationId, 'pinned_location_expiry_warnings', () => handlePinnedExpiryWarnings(invocationId)),
       await runCronTask(invocationId, 'notification_queue_processing', () => handleNotificationQueueProcessing(invocationId)),

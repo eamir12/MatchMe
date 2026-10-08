@@ -640,6 +640,37 @@ class LocalizationState {
     'calendarSyncAppleWebNotSupported':
         'Apple Calendar import on web is not available yet. Use iOS, macOS, or another device with Apple calendars enabled.',
     'calendarSyncCannotImportBadge': 'Can\'t import',
+    'calendarSyncCannotImportPrivateBadge': 'Private',
+    'calendarSyncCannotImportPrivateHint':
+        'This event is marked private or “free” in your calendar, so it can’t be shared publicly.',
+    'calendarSyncImportBlockedPrivate':
+        'Can’t import: this event is marked private in your calendar, so it can’t be shared with other users.',
+    'calendarSyncCannotImportPersonalBadge': 'Looks personal',
+    'calendarSyncCannotImportPersonalHint':
+        'This looks like a personal appointment rather than a public event others can join.',
+    'calendarSyncImportBlockedPersonal':
+        'Can’t import: this looks like a personal event rather than a public one other users can join.',
+    'importBlockSheetTitlePrivate': 'This event is marked private',
+    'importBlockSheetBodyPrivate':
+        'Your calendar marks this event as private or “free”. MatchMe events are shared with your matches, so private calendar entries can’t be imported.',
+    'importBlockSheetTitlePersonal': 'This looks like a personal event',
+    'importBlockSheetBodyPersonal':
+        '“{title}” looks like a personal appointment rather than a public event. MatchMe events are visible to your matches, so personal items can’t be imported.',
+    'importBlockSheetTitleContext': 'Nothing public to share',
+    'importBlockSheetBodyContext':
+        'This event has neither a public link nor a physical location, so there’s nothing here for other users to attend.',
+    'importBlockSheetWhatImportableTitle': 'What can I import?',
+    'importBlockSheetWhatImportableBody':
+        'Public events other users can join — concerts, meetups, exhibitions, public classes, parties — as long as they have a venue or a link.',
+    'importBlockSheetFeedbackButton': 'This event is actually public',
+    'importBlockSheetFeedbackThanks':
+        'Thanks — we’ll take a look at this decision.',
+    'importBlockSheetFeedbackAlreadyUsed':
+        'You’ve already sent feedback. Thanks for helping us improve!',
+    'eventAddLooksPrivateTitle': 'This looks personal',
+    'eventAddLooksPrivateBody':
+        '“{title}” looks like a personal appointment rather than a public event. MatchMe events are visible to your matches — consider sharing only events others can join.',
+    'eventAddLooksPrivateConfirmButton': 'Add anyway',
     'calendarSyncChangeCalendars': 'Change Calendars',
     'calendarSyncConnectApple': 'Connect Apple Calendar',
     'calendarSyncConnectDevice': 'Connect Device Calendar',
@@ -1779,6 +1810,8 @@ class LocalizationState {
     'matchChatStartExpiryWarningTitle': '{time} left',
     'matchedAt': 'Matched on',
     'matchedByProximityLabel': 'Proximity',
+    'matchedByCoMotionLabel': 'Shared movement',
+    'matchReasonMovingTogether': 'Moving together',
     'matchedOn': 'Matched on',
     'matches': 'Matches',
     'matchesScreenTitle': 'Matches',
@@ -1807,6 +1840,10 @@ class LocalizationState {
     'pinnedLocationManage': 'Manage',
     'pinnedLocationNoPosition':
         'No recent position to pin yet. Turn location on briefly, then try again.',
+    'pinNoObservedLocation':
+        'No recent GPS position on the server to pin. Open the map with location on, then try again.',
+    'pinLocationTooOld':
+        'Your last known position is too old to pin. Turn location on briefly to update it, then try again.',
     'pinnedLocationPinAction': 'Pin current location',
     'pinnedLocationPinned': 'Location pinned until {date}.',
     'pinnedLocationRemaining': '{duration} left',
@@ -1818,7 +1855,7 @@ class LocalizationState {
     'pinnedLocationSectionTitle': 'Home base (pinned location)',
     'pinnedLocationUnpin': 'Unpin now',
     'pinnedLocationUnpinned': 'Pin removed — live GPS resumed.',
-    'pinnedPartnerBadge': '🏠 Home base',
+    'pinnedPartnerBadge': 'Pinned location',
     'matchMatchedAtValue': '{date}, at {time}',
     'matchProfileBio': 'About',
     'matchProfileBusinessInterests': 'Business Interests',
@@ -1870,10 +1907,10 @@ class LocalizationState {
     'newMatchTitle_female': 'You have a new match',
     'newMatchTitle_male': 'You have a new match',
     'newMatchTitle_non_binary': 'You have a new match',
-    'matchExtendedBannerTitle': '{name} gave you more time',
-    'matchExtendedBannerTitle_female': '{name} gave you more time',
-    'matchExtendedBannerTitle_male': '{name} gave you more time',
-    'matchExtendedBannerTitle_non_binary': '{name} gave you more time',
+    'matchExtendedBannerTitle': 'Match extended!',
+    'matchExtendedBannerTitle_female': 'Match extended!',
+    'matchExtendedBannerTitle_male': 'Match extended!',
+    'matchExtendedBannerTitle_non_binary': 'Match extended!',
     'matchExtendedBannerBody': 'Say hi before this match runs out.',
     'matchExtendedPushTitle': '{name} gave you more time',
     'matchExtendedPushBody': 'Say hi before this match runs out.',
@@ -2091,6 +2128,16 @@ class LocalizationState {
         'No face found. Your first photo must be a clear selfie showing only your face.',
     'photoErrorBodyShotNotAllowed':
         'The first photo must be a face-only selfie. Body shots are not allowed.',
+    'photoErrorTextDetected':
+        'Please retake the photo without any cards, signs, or visible text.',
+    'photoErrorTextOverFace':
+        'A card or text is covering part of your face. Please retake the photo without covering your face.',
+    'photoErrorObjectOverFace':
+        'Something is covering part of your face. Please retake the photo with your face fully visible.',
+    'photoErrorDocumentDetected':
+        'ID cards and documents are not allowed in photos. Please retake the photo without them.',
+    'photoErrorEyesClosed':
+        'Your eyes appear closed. Please retake the photo with your eyes open.',
     'photoErrorResolutionTooLow':
         'Image resolution too low. Minimum resolution is 200x200 for secondary photos and 400x400 for primary photos.',
     'photoPrescreenAdjustPhoto': 'Adjust photo',
@@ -2116,6 +2163,8 @@ class LocalizationState {
         'Photo contains restricted content.',
     'primaryPhotoVerificationErrorBodyNotAllowed':
         'The first photo must be a face-only selfie.',
+    'primaryPhotoVerificationErrorDocument':
+        'ID cards and documents are not allowed in photos. Please retake it without them.',
     'primaryPhotoVerificationErrorFaceNotVisible':
         'Face not clearly visible. Please check lighting.',
     'primaryPhotoVerificationErrorGeneral':
@@ -2128,6 +2177,8 @@ class LocalizationState {
         'Please re-verify your profile before changing your primary photo.',
     'primaryPhotoVerificationErrorSystem':
         'Unable to verify your photo right now. Please try again.',
+    'primaryPhotoVerificationErrorStillText':
+        'We couldn’t remove the text from this photo automatically. Please retake it without any cards or text.',
     'primaryPhotoVerificationErrorVerifiedMismatch':
         'Your primary photo must match your verified identity.',
     'processingError': 'Something went wrong while processing your request',
@@ -2405,6 +2456,7 @@ class LocalizationState {
     'profileWizardPhotoUploadFailedWithReason':
         'We couldn\'t add that photo. {reason}',
     'profileWizardPhotoPreparing': 'Preparing your photo…',
+    'photoIssueDocument': 'ID card / document',
     'photoIssueFace': 'Face',
     'photoIssueMeme': 'Meme',
     'photoIssueScreenshot': 'Screenshot',
@@ -2553,6 +2605,8 @@ class LocalizationState {
     'saveEventButton': 'Save Event',
     'secondaryPhotoVerificationErrorBadContent':
         'Photo contains restricted content.',
+    'secondaryPhotoVerificationErrorDocument':
+        'ID cards and documents are not allowed in photos. Please use a photo without them.',
     'secondaryPhotoVerificationErrorGeneral':
         'Please use a clear photo of a real person.',
     'secondaryPhotoVerificationErrorNoFaceOrBody':
@@ -2835,7 +2889,7 @@ class LocalizationState {
     'settingsHighAccuracyModeDesc_android':
         'Keep matching even after closing the app. Your location updates periodically in the background so you stay visible to potential matches.\n• Requires a persistent notification so the system keeps the app running.',
     'settingsHighAccuracyModeDesc_ios':
-        'Keep matching even after closing the app. Your location updates periodically in the background so you stay visible to potential matches.\n• Updates approximately every ~10 minutes of movement (uses more battery).',
+        'Keep matching even after closing the app. Your location updates periodically in the background so you stay visible to potential matches.\n• Requires background location permission (Allow Always). If iOS fully stops the app, updates resume automatically when you move again.',
     'settingsHighAccuracyModeDesc_web':
         'Background matching is not supported on web. Matching only works while the app is open.',
     'settingsBackgroundMatchingTurnOff': 'Turn Off',
@@ -3172,17 +3226,25 @@ class LocalizationState {
     'settingsRadius': 'Radius',
     'settingsRadiusUpdateFailed': 'Failed to update search radius',
     'settingsRuleExpired': 'This rule has expired',
+    'settingsSectionAccount': 'Account',
+    'settingsSectionGeneral': 'General',
+    'settingsSectionMatching': 'Matching & discovery',
+    'settingsSectionPremium': 'Premium',
     'settingsSelectDate': 'Select Date',
     'settingsSelectEndDate': 'Select end date',
     'settingsSelectStartDate': 'Select start date',
     'settingsSensitiveActionRequiresMfaSetup':
         'Set up an authenticator app or a passkey before changing this security setting.',
     'settingsSharedEventMatching': 'Shared event matching',
+    'settingsSharedEventMatchingSubtitle':
+        'Get matched with people attending the same events as you.',
     'settingsSharedEventMatchingUpdateFailed':
         'Failed to update shared event matching',
     'settingsSharedEventMatchingUpdated':
         'Shared event matching preference updated',
     'settingsSharedMovementMatching': 'Shared movement matching',
+    'settingsSharedMovementMatchingSubtitle':
+        'When you and another person are detected moving together (similar direction and speed), matching may temporarily look slightly beyond your radius. It returns to normal once the shared movement ends.',
     'settingsSharedMovementMatchingUpdated':
         'Shared movement matching preference updated',
     'settingsRetroMatching': 'Find people you were near without internet',
@@ -3259,7 +3321,7 @@ class LocalizationState {
     'sortNewest': 'Newest',
     'sortSharedInterests': 'Shared interests',
     'sortTopRated': 'Top rated',
-    'sortExpiringSoon': 'Expiring soon',    'listFiltersTitle': 'Filters',
+    'sortExpiringSoon': 'Expiring soon', 'listFiltersTitle': 'Filters',
     'listFilterInterestSection': 'What they are looking for',
     'listFilterOptionsSection': 'Options',
     'listFilterShowResults': 'Show {count} results',

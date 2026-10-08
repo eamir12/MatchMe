@@ -140,7 +140,11 @@ class AdService {
       _sessionImpressionCount += 1;
       _lastImpressionAt = DateTime.now();
     } catch (e) {
-      // Silently ignore impression recording errors
+      // Never fully silent: a permissions failure here means campaign caps
+      // and pacing never engage and the same ad is re-served every interval.
+      if (kDebugMode) {
+        print('[AdService] record_ad_impression failed for ${ad.campaignId}: $e');
+      }
     }
   }
 
@@ -158,7 +162,9 @@ class AdService {
         },
       );
     } catch (e) {
-      // Silently ignore click recording errors
+      if (kDebugMode) {
+        print('[AdService] record_ad_click failed for ${ad.campaignId}: $e');
+      }
     }
   }
 
@@ -180,6 +186,9 @@ class AdService {
       );
       return true;
     } catch (e) {
+      if (kDebugMode) {
+        print('[AdService] report_ad failed: $e');
+      }
       return false;
     }
   }

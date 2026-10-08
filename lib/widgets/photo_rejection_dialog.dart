@@ -11,10 +11,10 @@ import 'package:flutter/material.dart';
 import 'package:matchme/models/photo_moderation_rejection.dart';
 import 'package:matchme/providers/locale_provider.dart';
 
-const Set<String> _knownIssueLabels = {'text', 'watermark', 'screenshot', 'meme', 'face'};
+const Set<String> _knownIssueLabels = {'text', 'watermark', 'screenshot', 'meme', 'face', 'document'};
 
 Color _issueColor(String label) =>
-    label == 'face' ? Colors.orange : Colors.red;
+    label == 'face' || label == 'document' ? Colors.orange : Colors.red;
 
 /// Decodes the photo dimensions, then shows the rejection dialog. Falls back
 /// to a plain message dialog when the image cannot be decoded.
@@ -73,8 +73,8 @@ Future<void> showPhotoRejectionDialog({
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: SizedBox(
-                    width: 260,
-                    height: 300,
+                    width: double.infinity,
+                    height: 360,
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
@@ -84,7 +84,7 @@ Future<void> showPhotoRejectionDialog({
                         ),
                         Positioned.fill(
                           child: CustomPaint(
-                            painter: _IssueBoxesPainter(
+                            painter: IssueBoxesPainter(
                               boxes: rejection.issueBoxes,
                               imageWidth: imageWidth,
                               imageHeight: imageHeight,
@@ -166,13 +166,14 @@ Future<void> showPhotoRejectionDialog({
 }
 
 /// Draws the rejection boxes over the photo, mapping normalized 0..1
-/// coordinates onto the BoxFit.contain rect of the rendered image.
-class _IssueBoxesPainter extends CustomPainter {
+/// coordinates onto the BoxFit.contain rect of the rendered image. Shared by
+/// the AI-moderation rejection dialog and the prescreen failure dialog.
+class IssueBoxesPainter extends CustomPainter {
   final List<PhotoIssueBox> boxes;
   final int imageWidth;
   final int imageHeight;
 
-  _IssueBoxesPainter({
+  IssueBoxesPainter({
     required this.boxes,
     required this.imageWidth,
     required this.imageHeight,
@@ -216,7 +217,7 @@ class _IssueBoxesPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _IssueBoxesPainter oldDelegate) =>
+  bool shouldRepaint(covariant IssueBoxesPainter oldDelegate) =>
       oldDelegate.boxes != boxes ||
       oldDelegate.imageWidth != imageWidth ||
       oldDelegate.imageHeight != imageHeight;

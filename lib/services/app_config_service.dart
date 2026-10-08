@@ -414,7 +414,10 @@ class AppConfigService {
   }
 
   Future<bool> areAdsEnabled() async {
-    return getBool('ads.internal.enabled', defaultValue: true);
+    // Must match the serving RPC's default (app_config_bool
+    // 'ads.internal.enabled', false) — when the config row is missing, the
+    // server will not serve ads, so the client must not think it will.
+    return getBool('ads.internal.enabled', defaultValue: false);
   }
 
   Future<List<String>> getAdAllowedTiers() async {
@@ -440,7 +443,13 @@ class AppConfigService {
   Future<List<String>> getAdAllowedPlacements() async {
     final values = await getList(
       'ads.internal.allowed_placements',
-      defaultValue: const ['home_inline', 'matches_inline'],
+      defaultValue: const [
+        'home_inline',
+        'matches_inline',
+        'chats_inline',
+        'events_inline',
+        'profile_inline',
+      ],
     );
     final result = <String>[];
     for (final value in values) {

@@ -623,6 +623,11 @@ class GlobalHomeSyncManager {
       // image bytes) in background so the next UI start renders instantly.
       // Fire-and-forget: never blocks sync.
       unawaited(_warmMatchedUsersCache(userId, transformedMatches));
+      unawaited(
+        MapTileCacheService.instance
+            .warmCachedMatchMinimaps()
+            .catchError((_) {}),
+      );
     } catch (e) {
       if (!isExpectedOfflineFailure(e) && !isAuthRateLimitFailure(e)) {
         debugPrint('⚠️ [SYNC] _syncMatches failed: $e');
@@ -948,6 +953,9 @@ class GlobalHomeSyncManager {
                     'last_message_edited_at': map['last_message_edited_at'],
                     'last_message_translated_source_edited_at':
                         map['last_message_translated_source_edited_at'],
+                    // Per-user archive marker. The chats list splits into
+                    // active/archived views on this; null = active chat.
+                    'archived_at': map['archived_at'],
                   });
                 }
               }
@@ -1441,6 +1449,11 @@ class GlobalHomeSyncManager {
             final mergedList = mergedById.values.toList();
             await localDb.saveMatches(userId, mergedList);
             unawaited(_warmMatchedUsersCache(userId, mergedList));
+            unawaited(
+              MapTileCacheService.instance
+                  .warmCachedMatchMinimaps()
+                  .catchError((_) {}),
+            );
             return;
           }
 
@@ -1645,6 +1658,11 @@ class GlobalHomeSyncManager {
             final mergedList2 = mergedById.values.toList();
             await localDb.saveMatches(userId, mergedList2);
             unawaited(_warmMatchedUsersCache(userId, mergedList2));
+            unawaited(
+              MapTileCacheService.instance
+                  .warmCachedMatchMinimaps()
+                  .catchError((_) {}),
+            );
             return;
           }
 

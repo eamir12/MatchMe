@@ -15,33 +15,31 @@ class AdMediationService {
 
   /// Get best ad for placement using mediation logic
   ///
-  /// Returns the ad unit with highest priority that has fill
+  /// Returns the ad unit with highest priority that has fill, or null when
+  /// the server answers "no ad" (disabled, filters exclude the request, or
+  /// no fill). Thrown exceptions mean the call itself failed — callers decide
+  /// whether to fall back to a cached unit.
   Future<AdUnit?> getBestAdForPlacement({
     required String placement,
     required String platform,
   }) async {
-    try {
-      // Try to get external ad with mediation
-      final externalAd = await _externalAdService.getExternalAdForPlacement(
-        placement: placement,
-        platform: platform,
-      );
+    // Try to get external ad with mediation
+    final externalAd = await _externalAdService.getExternalAdForPlacement(
+      placement: placement,
+      platform: platform,
+    );
 
-      if (externalAd != null) {
-        print(
-          '✓ [AdMediationService] Found external ad: ${externalAd.adFormat} from ${externalAd.networkId}',
-        );
-        return externalAd;
-      }
-
+    if (externalAd != null) {
       print(
-        '⚠️ [AdMediationService] No external ad fill for placement: $placement',
+        '✓ [AdMediationService] Found external ad: ${externalAd.adFormat} from ${externalAd.networkId}',
       );
-      return null;
-    } catch (e) {
-      print('⚠️ [AdMediationService] Mediation error: $e');
-      return null;
+      return externalAd;
     }
+
+    print(
+      '⚠️ [AdMediationService] No external ad fill for placement: $placement',
+    );
+    return null;
   }
 
   /// Record impression for mediated ad

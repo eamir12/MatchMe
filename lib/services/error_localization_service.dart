@@ -59,6 +59,18 @@ class ErrorLocalizationService {
       }
     }
 
+    // Pinned-location server rejections (see migration 20262087000000:
+    // pinning only the server-observed position)
+    if (error is Exception) {
+      final pinMsg = error.toString().toLowerCase();
+      if (pinMsg.contains('no observed location')) {
+        return 'pinNoObservedLocation';
+      }
+      if (pinMsg.contains('observed location too old')) {
+        return 'pinLocationTooOld';
+      }
+    }
+
     // Generic exception fallback
     return 'authUnexpectedError';
   }

@@ -70,6 +70,12 @@ class PhotoModerationRejection implements Exception {
   /// cannot be localized to a region.
   final List<PhotoIssueBox> issueBoxes;
 
+  /// Storage path of the photo this rejection refers to. Differs from the
+  /// path the caller uploaded when the auto-sanitize pipeline replaced the
+  /// original with a cleaned copy — callers must render THESE bytes, as the
+  /// original may already be deleted. Null when unknown.
+  final String? photoPath;
+
   /// True for photo-wide problems (restricted/suggestive content) where no
   /// single region is at fault; the dialog tints the whole image instead of
   /// drawing boxes.
@@ -80,6 +86,7 @@ class PhotoModerationRejection implements Exception {
     this.translationKey,
     this.reasonCode,
     this.issueBoxes = const [],
+    this.photoPath,
     this.fullImageIssue = false,
   });
 

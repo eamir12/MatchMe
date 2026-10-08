@@ -147,7 +147,12 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
             'No active session — skipping notification inbox subscription',
           );
         }
-        return _service.subscribeInbox(userId, _handleInsert);
+        return _service.subscribeInbox(
+          userId,
+          _handleInsert,
+          onUpdate: _handleUpdate,
+          onDelete: _handleDelete,
+        );
       });
       _channel = SupabaseRealtimeManager.instance.getChannel(channelName);
     } catch (e) {
@@ -170,6 +175,36 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
     if (item.deletedAt != null) return;
     if (state.items.any((n) => n.id == item.id)) return;
     final items = [item, ...state.items];
+    state = state.copyWith(
+      items: items,
+      unreadCount: _countUnread(items),
+    );
+  }
+
+  /// Cross-device reconciliation for read_at / deleted_at changes: replaces
+  /// the row in place, drops it when soft-deleted elsewhere, and recomputes
+  /// the unread badge. Rows we haven't loaded (beyond the first page) are
+  /// ignored — refresh() covers those.
+  void _handleUpdate(NotificationInboxItem item) {
+    if (!ref.mounted) return;
+    if (item.deletedAt != null) {
+      _handleDelete(item.id);
+      return;
+    }
+    final index = state.items.indexWhere((n) => n.id == item.id);
+    if (index == -1) return;
+    final items = [...state.items];
+    items[index] = item;
+    state = state.copyWith(
+      items: items,
+      unreadCount: _countUnread(items),
+    );
+  }
+
+  void _handleDelete(String id) {
+    if (!ref.mounted) return;
+    if (!state.items.any((n) => n.id == id)) return;
+    final items = state.items.where((n) => n.id != id).toList();
     state = state.copyWith(
       items: items,
       unreadCount: _countUnread(items),
@@ -218,20 +253,25 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
     }
   }
 
+  /// Returns [item] with [readAt] applied — the optimistic shape used by the
+  /// single and batch read/unread mutations below.
+  NotificationInboxItem _withReadAt(NotificationInboxItem item, DateTime? readAt) {
+    return NotificationInboxItem(
+      id: item.id,
+      type: item.type,
+      title: item.title,
+      body: item.body,
+      data: item.data,
+      createdAt: item.createdAt,
+      readAt: readAt,
+      deletedAt: item.deletedAt,
+    );
+  }
+
   Future<void> markRead(String id) async {
     final items = state.items
-        .map((n) => n.id == id && n.isUnread
-            ? NotificationInboxItem(
-                id: n.id,
-                type: n.type,
-                title: n.title,
-                body: n.body,
-                data: n.data,
-                createdAt: n.createdAt,
-                readAt: DateTime.now(),
-                deletedAt: n.deletedAt,
-              )
-            : n)
+        .map((n) =>
+            n.id == id && n.isUnread ? _withReadAt(n, DateTime.now()) : n)
         .toList();
     state = state.copyWith(items: items, unreadCount: _countUnread(items));
     try {
@@ -241,26 +281,30 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
     }
   }
 
-  Future<void> markAllRead() async {
+  Future<void> markReadMany(Set<String> ids) async {
+    if (ids.isEmpty) return;
     final items = state.items
-        .map((n) => n.isUnread
-            ? NotificationInboxItem(
-                id: n.id,
-                type: n.type,
-                title: n.title,
-                body: n.body,
-                data: n.data,
-                createdAt: n.createdAt,
-                readAt: DateTime.now(),
-                deletedAt: n.deletedAt,
-              )
-            : n)
+        .map((n) =>
+            ids.contains(n.id) && n.isUnread ? _withReadAt(n, DateTime.now()) : n)
         .toList();
-    state = state.copyWith(items: items, unreadCount: 0);
+    state = state.copyWith(items: items, unreadCount: _countUnread(items));
     try {
-      await _service.markAllRead();
+      await _service.markReadMany(ids);
     } catch (e) {
-      debugPrint('NotificationInbox: markAllRead failed: $e');
+      debugPrint('NotificationInbox: markReadMany failed: $e');
+    }
+  }
+
+  Future<void> markUnreadMany(Set<String> ids) async {
+    if (ids.isEmpty) return;
+    final items = state.items
+        .map((n) => ids.contains(n.id) && !n.isUnread ? _withReadAt(n, null) : n)
+        .toList();
+    state = state.copyWith(items: items, unreadCount: _countUnread(items));
+    try {
+      await _service.markUnreadMany(ids);
+    } catch (e) {
+      debugPrint('NotificationInbox: markUnreadMany failed: $e');
     }
   }
 
@@ -275,12 +319,16 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
     }
   }
 
-  Future<void> deleteAll() async {
-    state = state.copyWith(items: const [], unreadCount: 0);
+  Future<void> deleteMany(Set<String> ids) async {
+    if (ids.isEmpty) return;
+    final idSet = ids.toSet();
+    final items =
+        state.items.where((n) => !idSet.contains(n.id)).toList();
+    state = state.copyWith(items: items, unreadCount: _countUnread(items));
     try {
-      await _service.deleteAll();
+      await _service.deleteMany(idSet);
     } catch (e) {
-      debugPrint('NotificationInbox: deleteAll failed: $e');
+      debugPrint('NotificationInbox: deleteMany failed: $e');
       unawaited(refresh());
     }
   }

@@ -26,6 +26,7 @@ import 'package:matchme/utils/profile_wizard_page_map.dart';
 import 'package:matchme/utils/zodiac.dart';
 import 'package:matchme/screens/profile/request_change_dialog.dart';
 import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/services/photo_prescreen_service.dart';
 import 'package:matchme/services/photo_service.dart';
 import 'package:matchme/services/error_localization_service.dart';
 import 'package:matchme/services/global_sync_manager.dart';
@@ -267,6 +268,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
   // draft storage path. Used by the prescreen to block re-adding the exact
   // same photo; entries are released when the photo is removed or replaced.
   final Map<String, String> _sessionPhotoHashByPath = {};
+  // dHash bit strings for the same session photos: catches re-encoded /
+  // re-cropped re-uploads that the exact-byte MD5 check cannot see.
+  final Map<String, String> _sessionPhotoPHashByPath = {};
   bool _isInitialized = false;
   bool _wizardProfileLoading = false;
   int _profileLoadRetries = 0;
@@ -1528,6 +1532,35 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         if (!mounted) return;
         if (!showLoading) {
           final l10n = ref.read(localizationProvider);
+          if (!context.mounted) return;
+          if (e is PhotoModerationRejection) {
+            // Structured moderation rejection (REJECT reasons or the sanitize
+            // loop guard): show the uploaded photo with the flagged regions
+            // drawn on it, mirroring the add/edit rejection flows. Prefer the
+            // rejection's own photo path — after auto-sanitize the original
+            // upload was deleted from storage and replaced by a cleaned copy.
+            final bytesSource = (e.photoPath != null && e.photoPath!.isNotEmpty)
+                ? e.photoPath!
+                : photoPath;
+            Uint8List? rejectionBytes;
+            try {
+              final signed = await StorageHelper.getSignedUrl(
+                bytesSource,
+                ttlSeconds: 600,
+              );
+              if (signed != null && signed.isNotEmpty) {
+                rejectionBytes = await ref
+                    .read(photoServiceProvider)
+                    .downloadImageBytes(signed);
+              }
+            } catch (_) {}
+            if (!context.mounted) return;
+            _showPhotoRejection(e, photoBytes: rejectionBytes);
+            unawaited(
+              VoiceGuidanceService.instance.speakText(e.displayMessage),
+            );
+            return;
+          }
           final msg = e.toString();
           const geminiMarker = 'Exception: GEMINI_MSG:';
           final geminiIdx = msg.indexOf(geminiMarker);
@@ -7178,6 +7211,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         isPrimaryPhoto: isPrimaryPhoto,
         ref: ref,
         existingHashes: _sessionPhotoHashByPath.values.toSet(),
+        existingPerceptualHashes: _sessionPhotoPHashByPath.values.toSet(),
       );
     } catch (e) {
       if (mounted) {
@@ -7232,6 +7266,12 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
           _sessionPhotoHashByPath[photosAfter.last] = md5
               .convert(bytes)
               .toString();
+          // Record the perceptual hash too so re-encoding or screenshotting
+          // the same photo later is still caught by the prescreen.
+          final phash = await computePerceptualHash(bytes);
+          if (phash.isNotEmpty) {
+            _sessionPhotoPHashByPath[photosAfter.last] = phash;
+          }
         }
         if (photosAfter != null && photosAfter.length > photosBefore) {
           unawaited(
@@ -7283,9 +7323,6 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             }
           })(),
         );
-        if (imagePath == null) {
-          throw Exception('Failed to create signed URL for editing.');
-        }
       } else {
         final uri = Uri.tryParse(source);
         if (uri != null) {
@@ -7316,6 +7353,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
       }
 
       final photoService = ref.read(photoServiceProvider);
+      if (imagePath == null || imagePath.isEmpty) {
+        throw Exception('Failed to resolve image URL for editing.');
+      }
       final existing = await photoService.downloadImageBytes(imagePath);
       if (existing == null) {
         throw Exception('Failed to download image for editing.');
@@ -7333,6 +7373,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
           .read(profileEditProvider(widget.user.id).notifier)
           .replacePhotoAtIndexDraft(index, bytes: edited);
       _sessionPhotoHashByPath.remove(source);
+      _sessionPhotoPHashByPath.remove(source);
       final photosAfter = ref
           .read(profileEditProvider(widget.user.id))
           .asData
@@ -7342,6 +7383,10 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         _sessionPhotoHashByPath[photosAfter[index]] = md5
             .convert(edited)
             .toString();
+        final phash = await computePerceptualHash(edited);
+        if (phash.isNotEmpty) {
+          _sessionPhotoPHashByPath[photosAfter[index]] = phash;
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -7371,6 +7416,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
           .removePhotoAtDraft(index);
       if (photosBefore != null && index < photosBefore.length) {
         _sessionPhotoHashByPath.remove(photosBefore[index]);
+        _sessionPhotoPHashByPath.remove(photosBefore[index]);
         unawaited(
           VoiceGuidanceService.instance.speakKey('voiceGuidancePhotoRemoved'),
         );

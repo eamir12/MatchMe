@@ -7,6 +7,7 @@ import 'package:matchme/providers/user_preferences_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/utils/location_share_countdown.dart';
+import 'package:matchme/widgets/pinned_location_sheet.dart';
 
 class SystemNotificationOverlay extends ConsumerStatefulWidget {
   const SystemNotificationOverlay({super.key});
@@ -134,7 +135,10 @@ class _SystemNotificationOverlayState
     }
 
     final actionUrl = (n.actionUrl ?? '').trim();
-    final hasAction = actionUrl.isNotEmpty;
+    // The pinned-home-base banner's "Manage" action opens the in-app
+    // management sheet; every other notification action is an external URL.
+    final isPinnedManage = n.notificationType == 'pinned_location';
+    final hasAction = actionUrl.isNotEmpty || isPinnedManage;
 
     String displayText = n.text;
     if (n.countdownExpiresAt != null) {
@@ -185,6 +189,10 @@ class _SystemNotificationOverlayState
                               foregroundColor: Colors.white,
                             ),
                             onPressed: () async {
+                              if (isPinnedManage) {
+                                showPinnedLocationSheet(context, ref);
+                                return;
+                              }
                               try {
                                 final uri = Uri.parse(actionUrl);
                                 if (await canLaunchUrl(uri)) {

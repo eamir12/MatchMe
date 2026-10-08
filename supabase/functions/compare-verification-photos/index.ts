@@ -2,6 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
 import { buildGeminiUrl, resolveVisionModels } from "../_shared/gemini_config.ts";
+import { consumeAiRateLimit, getClientIp } from "../_shared/ai_rate_limit.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -456,6 +457,32 @@ serve(async (req) => {
     if (!userId) {
       console.log("❌ EDGE FUNCTION: userId is required but not provided");
       throw new Error("userId is required");
+    }
+
+    // AI rate limiting (app_config ai.rate_limit.verification_face_comparison.*).
+    const rateLimit = await consumeAiRateLimit(supabase, {
+      task: "verification_face_comparison",
+      userId,
+      ip: getClientIp(req),
+    });
+    if (!rateLimit.allowed) {
+      console.warn(
+        `⏳ EDGE FUNCTION: verification rate limited, retryAfter=${rateLimit.retryAfterSeconds}s`,
+      );
+      return await respond(
+        {
+          success: false,
+          error: "Too many verification attempts. Please try again later.",
+          retryAfterSeconds: rateLimit.retryAfterSeconds,
+        },
+        {
+          httpStatus: 429,
+          success: false,
+          errorType: "rate_limited",
+          errorMessage: "AI rate limit exceeded for verification_face_comparison",
+          userId,
+        },
+      );
     }
 
     if (typeof verificationPhotoPathInput === "string" && verificationPhotoPathInput.trim().length > 0) {

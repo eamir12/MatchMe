@@ -11,9 +11,11 @@ import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/services/calendar_sync_service.dart';
 import 'package:matchme/services/web_calendar_service.dart';
+import 'package:matchme/utils/event_import_classifier.dart';
 import 'package:matchme/utils/map_utils.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/time_format_utils.dart';
+import 'package:matchme/widgets/event_import_block_sheet.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -85,110 +87,104 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
     developer.log(message, name: 'CalendarSyncScreen');
   }
 
-  bool _isVirtualMeetingLocation(String raw) {
-    final s = raw.toLowerCase().trim();
-    if (s.isEmpty) {
-      return false;
-    }
-    if (s == 'online' || s == 'virtual') {
-      return true;
-    }
-    if (s.contains('http://') || s.contains('https://')) {
-      return true;
-    }
-    if (s.contains('zoom.us') || s.contains('zoom.com') || s.contains('zoom')) {
-      return true;
-    }
-    if (s.contains('meet.google.com') || s.contains('google meet')) {
-      return true;
-    }
-    if (s.contains('teams.microsoft.com') ||
-        s.contains('microsoft teams') ||
-        s.contains('ms teams')) {
-      return true;
-    }
-    if (s.contains('webex') ||
-        s.contains('gotomeeting') ||
-        s.contains('go to meeting') ||
-        s.contains('skype') ||
-        s.contains('hangouts') ||
-        s.contains('discord.gg') ||
-        s.contains('discord.com')) {
-      return true;
-    }
-    if (s.contains('online meeting') ||
-        s.contains('virtual meeting') ||
-        s.contains('video call') ||
-        s.contains('conference call')) {
-      return true;
-    }
-    return false;
-  }
-
-  bool _hasPhysicalImportLocation(String? rawLocation) {
-    final location = rawLocation?.trim();
-    return location != null &&
-        location.isNotEmpty &&
-        !_isVirtualMeetingLocation(location);
-  }
-
   String _currentImportProviderKey() {
     return _selectedSource == CalendarSource.api
         ? _selectedProvider.name
         : 'device';
   }
 
+  /// Email of the account whose calendar is being imported, resolved once
+  /// per fetch. Enables the self-organized-small-meeting signal (organizer
+  /// == the importing account).
+  String? _importOwnerEmail;
+
+  Future<String?> _resolveImportOwnerEmail() async {
+    try {
+      switch (_selectedProvider) {
+        case CalendarProvider.google:
+          return await CalendarSyncService.getCachedGoogleImportEmailFromPrefs();
+        case CalendarProvider.outlook:
+          final payload = await ref
+              .read(calendarSyncServiceProvider)
+              .getCachedOutlookImportPayload();
+          final email = (payload?['userEmail'] as String?)?.trim();
+          return email == null || email.isEmpty ? null : email;
+        case CalendarProvider.apple:
+        case CalendarProvider.device:
+          return null;
+      }
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Device calendars carry their owning account on the calendar record;
+  /// when it's an email we can use it as the organizer-comparison owner.
+  String? _deviceAccountEmailForEvent(ExternalEvent event) {
+    if (_selectedProvider != CalendarProvider.device) {
+      return null;
+    }
+    for (final calendar in _calendars) {
+      if (calendar.id == event.calendarId) {
+        final account = calendar.accountName?.trim();
+        return account != null && account.contains('@') ? account : null;
+      }
+    }
+    return null;
+  }
+
   String _usableImportLink(String? link, {String? provider}) {
-    final trimmed = link?.trim();
-    if (trimmed == null || trimmed.isEmpty) {
-      return '';
-    }
-    final uri = Uri.tryParse(trimmed);
-    if (uri == null) {
-      return trimmed;
-    }
-    final host = uri.host.toLowerCase();
-    final path = uri.path.toLowerCase();
-    final normalizedProvider = provider?.trim().toLowerCase() ?? '';
-    final isGoogleCalendarLink =
-        host.contains('calendar.google.') ||
-        (host.contains('google.') && path.contains('calendar'));
-    final isOutlookCalendarLink =
-        host.contains('outlook.') ||
-        host.contains('office.') ||
-        host.contains('live.') ||
-        (host.contains('microsoft.') && path.contains('calendar'));
-    final isAppleCalendarLink =
-        host.contains('icloud.') || path.endsWith('.ics');
-    final isProviderCalendarLink =
-        isGoogleCalendarLink ||
-        isOutlookCalendarLink ||
-        isAppleCalendarLink ||
-        (normalizedProvider == 'google' && isGoogleCalendarLink) ||
-        (normalizedProvider == 'outlook' && isOutlookCalendarLink) ||
-        (normalizedProvider == 'apple' && isAppleCalendarLink);
-    if (isProviderCalendarLink) {
-      return '';
-    }
-    return trimmed;
+    return usableImportLink(link, provider: provider);
+  }
+
+  EventImportBlockReason _blockReasonForEvent(ExternalEvent event) {
+    return classifyExternalEventImport(
+      event,
+      provider: _currentImportProviderKey(),
+      ownerEmail: _deviceAccountEmailForEvent(event) ?? _importOwnerEmail,
+    );
   }
 
   bool _isImportableEvent(ExternalEvent event) {
-    final hasLink = _usableImportLink(
-      event.url?.toString(),
-      provider: _currentImportProviderKey(),
-    ).isNotEmpty;
-    return hasLink || _hasPhysicalImportLocation(event.location);
+    return _blockReasonForEvent(event).importable;
   }
 
-  void _showImportRequirementsMessage(LocalizationState l10n) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          l10n.getString('calendarSyncImportRequiresLocationOrLink'),
-        ),
+  /// Scrubbed event fields captured at block time so an admin can later
+  /// review the feedback and import the event if deemed public. The link
+  /// is stored only when it's a usable public link — provider-calendar
+  /// deep-links (Outlook OWA, Google Calendar, ICS) are the user's private
+  /// calendar pointers and must never reach the feedback record.
+  Map<String, dynamic> _importSnapshotFor(ExternalEvent event) {
+    return {
+      'event_name': event.title,
+      'event_venue': event.location,
+      'event_link': usableImportLink(
+        event.url?.toString(),
+        provider: _currentImportProviderKey(),
       ),
+      'start_time': event.start?.toIso8601String(),
+      'end_time': event.end?.toIso8601String(),
+      'is_all_day': event.isAllDay,
+      'event_description': event.description,
+      'external_provider': _currentImportProviderKey(),
+      'external_calendar_id': event.calendarId,
+      'external_event_id': event.id,
+    };
+  }
+
+  void _showImportBlockedMessage(
+    LocalizationState l10n,
+    EventImportBlockReason reason,
+    ExternalEvent event,
+  ) {
+    if (!mounted || reason.importable) return;
+    showEventImportBlockSheet(
+      context,
+      l10n,
+      reason,
+      eventTitle: event.title,
+      provider: _currentImportProviderKey(),
+      eventSnapshot: _importSnapshotFor(event),
     );
   }
 
@@ -263,8 +259,9 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
         : l10n.getString('eventNoTitle');
     final location = event.location?.trim();
     final hasLocation = location != null && location.isNotEmpty;
-    final showMap = hasLocation && !_isVirtualMeetingLocation(location);
-    final isImportable = _isImportableEvent(event);
+    final showMap = hasLocation && !isVirtualMeetingLocation(location);
+    final blockReason = _blockReasonForEvent(event);
+    final isImportable = blockReason.importable;
 
     Widget content = Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -292,7 +289,7 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
         onTap: () {
           if (!enabled) {
             if (!isImportable) {
-              _showImportRequirementsMessage(l10n);
+              _showImportBlockedMessage(l10n, blockReason, event);
             }
             return;
           }
@@ -364,7 +361,7 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                               borderRadius: BorderRadius.circular(8),
                             ),
                             child: Text(
-                              l10n.getString('calendarSyncCannotImportBadge'),
+                              l10n.getString(blockReason.badgeKey),
                               style: Theme.of(context).textTheme.labelSmall,
                             ),
                           ),
@@ -381,7 +378,7 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                     if (!isImportable) ...[
                       const SizedBox(height: 8),
                       Text(
-                        l10n.getString('calendarSyncMissingLocationOrLinkHint'),
+                        l10n.getString(blockReason.hintKey),
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: Theme.of(context).colorScheme.onSurfaceVariant
                               .withValues(alpha: 0.85),
@@ -481,7 +478,11 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                           onPressed: () {
                             if (!enabled) {
                               if (!isImportable) {
-                                _showImportRequirementsMessage(l10n);
+                                _showImportBlockedMessage(
+                                  l10n,
+                                  blockReason,
+                                  event,
+                                );
                               }
                               return;
                             }
@@ -1490,6 +1491,7 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
     try {
       // Reload existing events to ensure we have the latest data
       await _loadExistingEvents();
+      _importOwnerEmail = await _resolveImportOwnerEmail();
 
       final service = ref.read(calendarSyncServiceProvider);
       final allEvents = <ExternalEvent>[];
@@ -1660,6 +1662,19 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
       }
 
       for (final deviceEvent in eventsToSync) {
+        // Defense-in-depth: the picker only allows selecting importable
+        // events, but re-verify here so nothing private slips through.
+        final blockReason = _blockReasonForEvent(deviceEvent);
+        if (!blockReason.importable) {
+          skippedCount++;
+          failedByReasonToken
+              .putIfAbsent(
+                'eventAddRejectedPersonalOrPrivate',
+                () => <String>[],
+              )
+              .add(deviceEvent.title);
+          continue;
+        }
         if (deviceEvent.start == null || deviceEvent.end == null) {
           skippedCount++;
           failedByReasonToken
@@ -1692,6 +1707,8 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
               : null,
           externalProvider: _currentImportProviderKey(),
           isAllDay: deviceEvent.isAllDay,
+          markedPrivateInSource:
+              blockReason == EventImportBlockReason.markedPrivate,
         );
 
         final result = await eventManager.addEventWithResult(newEvent);

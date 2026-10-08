@@ -15,6 +15,20 @@ class EventModel {
   final bool isAllDay; // Whether this is an all-day event
   final String? description; // Event description
 
+  /// True when the source calendar explicitly marked this event private
+  /// or non-busy (Google visibility/transparency, Outlook
+  /// sensitivity/showAs, device availability, Apple ICS CLASS). Used to
+  /// block imports of calendar-native private events even when they carry
+  /// a link; never persisted to the events table.
+  final bool markedPrivateInSource;
+
+  /// Pre-computed import-block reason for calendar-sourced events
+  /// (an [EventImportBlockReason.name]: 'markedPrivate', 'looksPrivate',
+  /// 'noPublicContext'; null when importable or unknown). Persisted in the
+  /// connected-accounts cache so signals that need provider data the model
+  /// doesn't hold (attendees, recurrence, organizer) survive restarts.
+  final String? importBlockReason;
+
   EventModel({
     required this.id,
     required this.eventName,
@@ -29,6 +43,8 @@ class EventModel {
     this.externalProvider,
     this.isAllDay = false,
     this.description,
+    this.markedPrivateInSource = false,
+    this.importBlockReason,
   });
 
   factory EventModel.fromJson(Map<String, dynamic> json) {
@@ -50,6 +66,8 @@ class EventModel {
       externalProvider: json['external_provider'],
       isAllDay: json['is_all_day'] ?? false,
       description: json['description'],
+      markedPrivateInSource: json['marked_private_in_source'] == true,
+      importBlockReason: json['import_block_reason'] as String?,
     );
   }
 

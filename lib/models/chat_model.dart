@@ -39,6 +39,14 @@ class ChatModel {
   /// match. See `previewTranslationIsCurrent` in the local DB service.
   final String? lastMessageTranslatedEditedAt;
 
+  /// ISO timestamp of when this user archived the chat, as reported by
+  /// `get_user_recent_chats` / the local message cache. Null means the chat
+  /// is active. Archiving is per-user and display-only: the chat still
+  /// receives notifications and its row keeps updating.
+  final String? archivedAt;
+
+  bool get isArchived => archivedAt != null;
+
   ChatModel({
     required this.matchId,
     required this.otherUserId,
@@ -59,6 +67,7 @@ class ChatModel {
     this.lastMessageEditedAt,
     this.lastMessageTranslatedEditedAt,
     this.matchType = '',
+    this.archivedAt,
   });
 
   factory ChatModel.fromJsonRpc(Map<String, dynamic> json) {
@@ -149,6 +158,7 @@ class ChatModel {
       lastMessageTranslatedEditedAt: _normalizeMarker(
         json['last_message_translated_edited_at'],
       ),
+      archivedAt: _normalizeMarker(json['archived_at']),
     );
   }
 
@@ -236,6 +246,7 @@ class ChatModel {
     String? matchedIntent,
     String? lastMessageEditedAt,
     String? lastMessageTranslatedEditedAt,
+    Object? archivedAt = _unset,
   }) {
     return ChatModel(
       matchId: matchId ?? this.matchId,
@@ -262,6 +273,9 @@ class ChatModel {
       lastMessageEditedAt: lastMessageEditedAt ?? this.lastMessageEditedAt,
       lastMessageTranslatedEditedAt:
           lastMessageTranslatedEditedAt ?? this.lastMessageTranslatedEditedAt,
+      archivedAt: identical(archivedAt, _unset)
+          ? this.archivedAt
+          : archivedAt as String?,
     );
   }
 
@@ -288,7 +302,8 @@ class ChatModel {
         other.lastMessageSourceLanguage == lastMessageSourceLanguage &&
         other.matchedIntent == matchedIntent &&
         other.lastMessageEditedAt == lastMessageEditedAt &&
-        other.lastMessageTranslatedEditedAt == lastMessageTranslatedEditedAt;
+        other.lastMessageTranslatedEditedAt == lastMessageTranslatedEditedAt &&
+        other.archivedAt == archivedAt;
   }
 
   @override
@@ -311,10 +326,11 @@ class ChatModel {
     matchedIntent,
     lastMessageEditedAt,
     lastMessageTranslatedEditedAt,
+    archivedAt,
   );
 
   @override
   String toString() {
-    return 'ChatModel(matchId: $matchId, otherUserId: $otherUserId, otherUserName: $otherUserName, lastMessage: $lastMessage, lastMessageTranslated: $lastMessageTranslated, lastMessageId: $lastMessageId, lastMessageSenderId: $lastMessageSenderId, lastMessageAt: $lastMessageAt, unreadCount: $unreadCount, eventId: $eventId, eventName: $eventName, eventLink: $eventLink, translationEnabled: $translationEnabled, translationLanguage: $translationLanguage, lastMessageSourceLanguage: $lastMessageSourceLanguage, matchedIntent: $matchedIntent, lastMessageEditedAt: $lastMessageEditedAt, lastMessageTranslatedEditedAt: $lastMessageTranslatedEditedAt)';
+    return 'ChatModel(matchId: $matchId, otherUserId: $otherUserId, otherUserName: $otherUserName, lastMessage: $lastMessage, lastMessageTranslated: $lastMessageTranslated, lastMessageId: $lastMessageId, lastMessageSenderId: $lastMessageSenderId, lastMessageAt: $lastMessageAt, unreadCount: $unreadCount, eventId: $eventId, eventName: $eventName, eventLink: $eventLink, translationEnabled: $translationEnabled, translationLanguage: $translationLanguage, lastMessageSourceLanguage: $lastMessageSourceLanguage, matchedIntent: $matchedIntent, lastMessageEditedAt: $lastMessageEditedAt, lastMessageTranslatedEditedAt: $lastMessageTranslatedEditedAt, archivedAt: $archivedAt)';
   }
 }

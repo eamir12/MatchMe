@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:http/http.dart' as http;
@@ -30,6 +31,7 @@ import 'package:matchme/providers/unit_provider.dart';
 import 'package:matchme/screens/settings/matching_settings_screen.dart';
 import 'package:matchme/widgets/app_empty_state.dart';
 import 'package:matchme/widgets/app_skeleton.dart';
+import 'package:matchme/widgets/pinned_location_sheet.dart';
 import 'package:matchme/widgets/pinned_map_status_banner.dart';
 import 'package:permission_handler/permission_handler.dart'
     show openAppSettings;
@@ -39,8 +41,28 @@ String _ts() => DateTime.now().toIso8601String();
 /// 1-2-5 sequence (meters) usable for scale bar distances, from close zoom
 /// up to world view on wide screens.
 const List<double> _scaleMagnitudes = <double>[
-  1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000,
-  50000, 100000, 200000, 500000, 1000000, 2000000, 5000000, 10000000,
+  1,
+  2,
+  5,
+  10,
+  20,
+  50,
+  100,
+  200,
+  500,
+  1000,
+  2000,
+  5000,
+  10000,
+  20000,
+  50000,
+  100000,
+  200000,
+  500000,
+  1000000,
+  2000000,
+  5000000,
+  10000000,
 ];
 
 /// Maximum rendered width of the scale bar's distance line, in logical px.
@@ -85,7 +107,7 @@ class NearbyMapScreen extends ConsumerStatefulWidget {
 }
 
 class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   static final LatLngBounds _worldBounds = LatLngBounds(
     const LatLng(-85, -180),
     const LatLng(85, 180),
@@ -137,6 +159,16 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
   // realtime UI, interval-cadence uploads).
   DateTime? _lastUserPanAt;
   static const Duration _followResumeDelay = Duration(seconds: 8);
+
+  // Animated camera follow: instead of jumping the camera to every new GPS
+  // fix, ease it toward the target so movement at driving speed looks
+  // continuous (Google-Maps-like) rather than a discrete hop per fix. A new
+  // fix mid-flight re-anchors the animation from the camera's current
+  // position, so successive fixes chain smoothly.
+  Ticker? _followTicker;
+  LatLng? _followAnimFrom;
+  LatLng? _followAnimTarget;
+  static const Duration _followAnimDuration = Duration(milliseconds: 900);
 
   /// Starts/stops the service-owned live stream according to the current
   /// gates. Both directions are idempotent, so it is safe to call from any
@@ -485,6 +517,7 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
     } catch (_) {}
     _cameraZoom.dispose();
     _cameraCenter.dispose();
+    _stopFollowAnimation();
     _pulseController.dispose();
     super.dispose();
   }
@@ -540,14 +573,71 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
   /// Moves the camera to [center] when it changed since the last applied
   /// center, so the map always stays centered around the user's last
   /// obtained location. No-op before the map is ready (onMapReady performs
-  /// the pending move) and cheap when nothing changed.
+  /// the pending move) and cheap when nothing changed. The move itself is
+  /// animated (see [_startFollowAnimation]) unless reduced motion is on.
   void _syncCameraToUserCenter(LatLng center) {
     if (_lastAppliedCenter == center) return;
     _lastAppliedCenter = center;
     if (!_mapReady) return;
+    if (_reduceMotion) {
+      _stopFollowAnimation();
+      try {
+        _mapController.move(center, _cameraZoom.value);
+      } catch (_) {}
+      return;
+    }
+    _startFollowAnimation(center);
+  }
+
+  void _startFollowAnimation(LatLng target) {
+    LatLng? from;
     try {
-      _mapController.move(center, _cameraZoom.value);
+      from = _mapController.camera.center;
+    } catch (_) {
+      return;
+    }
+    _followAnimFrom = from;
+    _followAnimTarget = target;
+    // Restart (not reuse) a running ticker so each new fix animates for the
+    // full duration from the camera's current position — chaining fixes
+    // produces continuous motion instead of an ever-shortening tail.
+    final ticker = _followTicker;
+    if (ticker != null) {
+      if (ticker.isActive) ticker.stop();
+      ticker.start();
+    } else {
+      _followTicker = createTicker(_onFollowTick)..start();
+    }
+  }
+
+  void _onFollowTick(Duration elapsed) {
+    final from = _followAnimFrom;
+    final target = _followAnimTarget;
+    if (!_mapReady || from == null || target == null) {
+      _stopFollowAnimation();
+      return;
+    }
+    final t = (elapsed.inMicroseconds / _followAnimDuration.inMicroseconds)
+        .clamp(0.0, 1.0);
+    final eased = Curves.easeOutCubic.transform(t);
+    final next = LatLng(
+      from.latitude + (target.latitude - from.latitude) * eased,
+      from.longitude + (target.longitude - from.longitude) * eased,
+    );
+    try {
+      _mapController.move(next, _cameraZoom.value);
     } catch (_) {}
+    if (t >= 1.0) {
+      _stopFollowAnimation();
+    }
+  }
+
+  void _stopFollowAnimation() {
+    _followTicker?.stop();
+    _followTicker?.dispose();
+    _followTicker = null;
+    _followAnimFrom = null;
+    _followAnimTarget = null;
   }
 
   void _ensurePolling({
@@ -1085,6 +1175,7 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                           if (!hasGesture) return;
                           // User panned: pause camera-follow so realtime
                           // fixes don't snap the view back mid-gesture.
+                          _stopFollowAnimation();
                           _lastUserPanAt = DateTime.now();
                           // Only refetch when the center position changes significantly (panning), not when just zooming
                           // This prevents markers from disappearing/reappearing when zooming
@@ -1116,10 +1207,7 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                           final pending = _lastAppliedCenter;
                           if (pending != null) {
                             try {
-                              _mapController.move(
-                                pending,
-                                _cameraZoom.value,
-                              );
+                              _mapController.move(pending, _cameraZoom.value);
                             } catch (_) {}
                           }
                           _scheduleFetch(
@@ -1147,9 +1235,7 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                         ),
                         RichAttributionWidget(
                           attributions: [
-                            TextSourceAttribution(
-                              'OpenStreetMap contributors',
-                            ),
+                            TextSourceAttribution('OpenStreetMap contributors'),
                           ],
                         ),
                         AnimatedBuilder(
@@ -1218,6 +1304,24 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                             );
                           },
                           child: const Icon(Icons.my_location),
+                        ),
+                      ),
+                    ),
+                    // Pinned home-base: open the shared management sheet
+                    // (start / extend / unpin). The server only ever pins a
+                    // position it has observed from live GPS — the map is a
+                    // control surface, never a point picker.
+                    Positioned(
+                      right: 12,
+                      bottom: 162,
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: FloatingActionButton.small(
+                          heroTag: null,
+                          tooltip: l10n.getString('pinnedLocationPinAction'),
+                          onPressed: () =>
+                              showPinnedLocationSheet(context, ref),
+                          child: const Icon(Icons.push_pin_outlined),
                         ),
                       ),
                     ),
@@ -1878,8 +1982,22 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
       // but fall back to the live session row: on first launch / a new
       // device the cache is empty, and without the fallback self would be
       // missing (RPC excludes self) so the map would show N-1 users.
+      // Self is only added when their own profile is complete — the RPC
+      // excludes incomplete profiles, so an account that has not finished
+      // onboarding must not sneak back in here.
+      bool selfCountsOnline = false;
       String? myCountry;
       if (userId != null) {
+        try {
+          final ownRow = await Supabase.instance.client
+              .from('users')
+              .select('is_profile_complete')
+              .eq('id', userId)
+              .maybeSingle();
+          selfCountsOnline = ownRow?['is_profile_complete'] == true;
+        } catch (_) {
+          selfCountsOnline = false;
+        }
         myCountry = await _readLastKnownCountry(userId);
         if (myCountry == null || myCountry.isEmpty) {
           myCountry = await _fetchOwnCountryFromSession(userId);
@@ -1888,7 +2006,7 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
             await _cacheLastKnownCountry(userId, myCountry);
           }
         }
-        if (myCountry != null && myCountry.isNotEmpty) {
+        if (selfCountsOnline && myCountry != null && myCountry.isNotEmpty) {
           final idx = parsed.indexWhere((e) => e.countryCode == myCountry);
           if (idx >= 0) {
             parsed[idx] = _CountryCount(
@@ -2925,8 +3043,7 @@ Widget _buildScaleIndicator(
   if (center == null) return const SizedBox.shrink();
 
   final safeZoom = zoom.isFinite ? zoom.clamp(1.0, 18.0).toDouble() : 16.0;
-  final mpp =
-      156543.03392 * cos(center.latitude * pi / 180) / pow(2, safeZoom);
+  final mpp = 156543.03392 * cos(center.latitude * pi / 180) / pow(2, safeZoom);
   if (mpp <= 0 || mpp.isNaN || mpp.isInfinite) return const SizedBox.shrink();
 
   final niceMeters = _niceScaleDistance(mpp);
@@ -2936,7 +3053,10 @@ Widget _buildScaleIndicator(
   final color = Theme.of(context).colorScheme.onSurface;
   final textScaler = MediaQuery.textScalerOf(context);
   final labelPainter = TextPainter(
-    text: TextSpan(text: label, style: TextStyle(fontSize: 10, color: color)),
+    text: TextSpan(
+      text: label,
+      style: TextStyle(fontSize: 10, color: color),
+    ),
     textDirection: TextDirection.ltr,
     textScaler: textScaler,
   )..layout();

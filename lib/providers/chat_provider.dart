@@ -269,9 +269,16 @@ class ChatSyncService {
           .eq('match_id', matchId)
           .order('created_at', ascending: true);
 
-      // debugPrint('ðŸ”„ SYNC: Retrieved ${data.length} messages from Supabase');
-      for (final _ in data) {
-        // debugPrint('   - Message ${_['id']}: delivered_at=${_['delivered_at']}, sender=${_['sender_id']}');
+      // Pre-warm peer public keys to persistent disk cache while online
+      final keyIds = <String>{};
+      for (final msg in (data as List)) {
+        final sk = msg['sender_key_id'] as String?;
+        if (sk != null && sk.isNotEmpty) keyIds.add(sk);
+        final rk = msg['recipient_key_id'] as String?;
+        if (rk != null && rk.isNotEmpty) keyIds.add(rk);
+      }
+      if (keyIds.isNotEmpty) {
+        unawaited(ChatKeyService.instance.warmPeerKeys(keyIds));
       }
 
       // Replace all messages for this match with the current database state
@@ -541,10 +548,21 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
           if (replyId == null) return m;
           final original = byIdPhase1[replyId];
           if (original == null) return m;
+          final originalText = original.contentOriginal.isNotEmpty
+              ? original.contentOriginal
+              : m.replyToContent;
+          final originalTrans = replyQuotedTranslatedText(original);
           return m.copyWith(
-            replyToSenderId: original.senderId,
-            replyToContent: original.contentOriginal,
-            replyToContentTranslated: replyQuotedTranslatedText(original),
+            replyToSenderId: (original.senderId.isNotEmpty)
+                ? original.senderId
+                : m.replyToSenderId,
+            replyToContent: (originalText != null && originalText.isNotEmpty)
+                ? originalText
+                : m.replyToContent,
+            replyToContentTranslated:
+                (originalTrans != null && originalTrans.isNotEmpty)
+                    ? originalTrans
+                    : m.replyToContentTranslated,
           );
         }).toList();
         debugPrint(
@@ -567,6 +585,20 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
             final locale = ref.read(localizationProvider);
             final uiLang = locale.currentLocale.languageCode;
             final normalizedTarget = normalizeLanguageCode(uiLang);
+
+            // Pre-warm peer public keys from disk / memory / network upfront
+            final keyIds = <String>{};
+            for (final m in models) {
+              if (m.senderKeyId != null && m.senderKeyId!.isNotEmpty) {
+                keyIds.add(m.senderKeyId!);
+              }
+              if (m.recipientKeyId != null && m.recipientKeyId!.isNotEmpty) {
+                keyIds.add(m.recipientKeyId!);
+              }
+            }
+            if (keyIds.isNotEmpty) {
+              await chatKeyService.warmPeerKeys(keyIds);
+            }
 
             // Phase 2 — Decrypt all v1 encrypted messages IN PARALLEL so
             // N messages take ~per_msg_time instead of N × per_msg_time.
@@ -896,10 +928,21 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
             if (replyId == null) return m;
             final original = byId[replyId];
             if (original == null) return m;
+            final originalText = original.contentOriginal.isNotEmpty
+                ? original.contentOriginal
+                : m.replyToContent;
+            final originalTrans = replyQuotedTranslatedText(original);
             return m.copyWith(
-              replyToSenderId: original.senderId,
-              replyToContent: original.contentOriginal,
-              replyToContentTranslated: replyQuotedTranslatedText(original),
+              replyToSenderId: (original.senderId.isNotEmpty)
+                  ? original.senderId
+                  : m.replyToSenderId,
+              replyToContent: (originalText != null && originalText.isNotEmpty)
+                  ? originalText
+                  : m.replyToContent,
+              replyToContentTranslated:
+                  (originalTrans != null && originalTrans.isNotEmpty)
+                      ? originalTrans
+                      : m.replyToContentTranslated,
             );
           }).toList();
 

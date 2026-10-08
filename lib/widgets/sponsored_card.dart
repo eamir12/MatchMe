@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/models/sponsored_ad.dart';
@@ -58,6 +59,12 @@ class _SponsoredCardState extends ConsumerState<SponsoredCard>
   bool _didTrackImpression = false;
   bool _isAppInForeground = true;
 
+  /// Minimum time the card must stay ≥50% visible before the impression
+  /// counts — matches industry viewability standards and stops drive-by
+  /// slot renders from inflating campaign counts (and burning caps).
+  static const Duration _minDwellTime = Duration(seconds: 1);
+  Timer? _dwellTimer;
+
   @override
   void initState() {
     super.initState();
@@ -74,20 +81,33 @@ class _SponsoredCardState extends ConsumerState<SponsoredCard>
   void didUpdateWidget(covariant SponsoredCard oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.ad.creativeId != widget.ad.creativeId) {
-      _didTrackImpression = false;
+      _resetImpressionTracking();
     }
   }
 
+  void _resetImpressionTracking() {
+    _didTrackImpression = false;
+    _dwellTimer?.cancel();
+    _dwellTimer = null;
+  }
+
   void _onVisibilityChanged(VisibilityInfo info) {
-    // Track impression only when:
-    // 1. Ad is at least 50% visible
-    // 2. App is in foreground
-    // 3. Not already tracked
-    if (!_didTrackImpression &&
-        _isAppInForeground &&
-        info.visibleFraction >= 0.5) {
-      _didTrackImpression = true;
-      unawaited(_recordImpression());
+    final isVisible = _isAppInForeground && info.visibleFraction >= 0.5;
+    if (!_didTrackImpression && isVisible) {
+      // Start (or keep) the dwell timer; the impression only counts if the
+      // card remains visible for the full dwell time.
+      _dwellTimer ??= Timer(_minDwellTime, () {
+        _dwellTimer = null;
+        if (!_didTrackImpression && _isAppInForeground && mounted) {
+          _didTrackImpression = true;
+          unawaited(_recordImpression());
+        }
+      });
+    } else if (!isVisible && _dwellTimer != null) {
+      // Card left the viewport (or app backgrounded) before the dwell
+      // elapsed — no impression.
+      _dwellTimer?.cancel();
+      _dwellTimer = null;
     }
   }
 
@@ -95,8 +115,29 @@ class _SponsoredCardState extends ConsumerState<SponsoredCard>
     try {
       await ref.read(adServiceProvider).recordImpression(widget.ad);
     } catch (e) {
-      // Silently ignore impression recording errors
+      if (kDebugMode) {
+        print('[SponsoredCard] impression recording failed: $e');
+      }
     }
+  }
+
+  /// Ad image loader with debug visibility: image load failures render as an
+  /// invisible blank (by design, no broken-image chrome), so without this log
+  /// a broken URL or blocked download is indistinguishable from "no image".
+  Widget _adImage() {
+    final url = widget.ad.imageUrl!.trim();
+    return CachedNetworkImage(
+      imageUrl: url,
+      fit: BoxFit.contain,
+      width: double.infinity,
+      placeholder: (context, url) => const SizedBox.shrink(),
+      errorWidget: (context, url, error) {
+        if (kDebugMode) {
+          print('[SponsoredCard] ad image FAILED to load: $url -> $error');
+        }
+        return const SizedBox.shrink();
+      },
+    );
   }
 
   bool _isOpeningLink = false;
@@ -295,14 +336,7 @@ class _SponsoredCardState extends ConsumerState<SponsoredCard>
                     child: Container(
                       constraints: const BoxConstraints(maxHeight: 200),
                       width: double.infinity,
-                      child: CachedNetworkImage(
-                        imageUrl: widget.ad.imageUrl!.trim(),
-                        fit: BoxFit.contain,
-                        width: double.infinity,
-                        placeholder: (context, url) => const SizedBox.shrink(),
-                        errorWidget: (context, url, error) =>
-                            const SizedBox.shrink(),
-                      ),
+                      child: _adImage(),
                     ),
                   ),
                 ),
@@ -313,14 +347,7 @@ class _SponsoredCardState extends ConsumerState<SponsoredCard>
                 child: Container(
                   constraints: const BoxConstraints(maxHeight: 200),
                   width: double.infinity,
-                  child: CachedNetworkImage(
-                    imageUrl: widget.ad.imageUrl!.trim(),
-                    fit: BoxFit.contain,
-                    width: double.infinity,
-                    placeholder: (context, url) => const SizedBox.shrink(),
-                    errorWidget: (context, url, error) =>
-                        const SizedBox.shrink(),
-                  ),
+                  child: _adImage(),
                 ),
               ),
           ],
@@ -376,6 +403,7 @@ class _SponsoredCardState extends ConsumerState<SponsoredCard>
 
   @override
   void dispose() {
+    _dwellTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }

@@ -9,6 +9,7 @@ import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/visibility_provider.dart';
 import 'package:matchme/providers/unit_provider.dart';
 import 'package:matchme/providers/user_preferences_provider.dart';
+import 'package:matchme/widgets/pinned_location_sheet.dart';
 
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/error_localization_service.dart';
@@ -638,13 +639,30 @@ class _MatchingSettingsScreenState extends ConsumerState<MatchingSettingsScreen>
                     Row(
                       children: [
                         Expanded(
-                          child: Text(
-                            l10n.getString('settingsSharedEventMatching'),
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w500,
-                              color: colors.onSurface,
-                            ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                l10n.getString('settingsSharedEventMatching'),
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w500,
+                                  color: colors.onSurface,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                l10n.getString(
+                                  'settingsSharedEventMatchingSubtitle',
+                                ),
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: colors.onSurface.withAlpha(
+                                    (0.6 * 255).round(),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                         Switch(
@@ -700,13 +718,30 @@ class _MatchingSettingsScreenState extends ConsumerState<MatchingSettingsScreen>
                     Row(
                       children: [
                         Expanded(
-                          child: Text(
-                            l10n.getString('settingsSharedMovementMatching'),
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w500,
-                              color: colors.onSurface,
-                            ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                l10n.getString('settingsSharedMovementMatching'),
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w500,
+                                  color: colors.onSurface,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                l10n.getString(
+                                  'settingsSharedMovementMatchingSubtitle',
+                                ),
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: colors.onSurface.withAlpha(
+                                    (0.6 * 255).round(),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                         Switch(
@@ -1127,240 +1162,6 @@ class _RetroPendingCounterState extends ConsumerState<_RetroPendingCounter> {
 class _PinnedLocationCard extends ConsumerWidget {
   const _PinnedLocationCard();
 
-  static const _durations = <Duration>[
-    Duration(hours: 24),
-    Duration(days: 3),
-    Duration(days: 7),
-    Duration(days: 14),
-    Duration(days: 30),
-  ];
-
-  String _durationLabel(Duration d, LocalizationState l10n) {
-    if (d == const Duration(hours: 24)) {
-      return l10n.getString('pinnedLocationDur24h');
-    }
-    if (d == const Duration(days: 3)) {
-      return l10n.getString('pinnedLocationDur3d');
-    }
-    if (d == const Duration(days: 7)) {
-      return l10n.getString('pinnedLocationDur7d');
-    }
-    if (d == const Duration(days: 14)) {
-      return l10n.getString('pinnedLocationDur14d');
-    }
-    return l10n.getString('pinnedLocationDur30d');
-  }
-
-  String _formatExpiry(DateTime exp) {
-    final l = exp.toLocal();
-    final min = l.minute.toString().padLeft(2, '0');
-    return '${l.day}.${l.month}.${l.year} ${l.hour}:$min';
-  }
-
-  String _remainingText(Duration remaining, LocalizationState l10n) {
-    if (remaining.inMinutes < 1) {
-      return l10n.getString(
-        'pinnedLocationRemaining',
-        params: {
-          'duration': l10n.getString(
-            'pinnedLocationRemainingMinutes',
-            params: {'count': '1'},
-          ),
-        },
-      );
-    }
-    if (remaining.inHours < 1) {
-      return l10n.getString(
-        'pinnedLocationRemaining',
-        params: {
-          'duration': l10n.getString(
-            'pinnedLocationRemainingMinutes',
-            params: {'count': '${remaining.inMinutes}'},
-          ),
-        },
-      );
-    }
-    if (remaining.inHours < 48) {
-      return l10n.getString(
-        'pinnedLocationRemaining',
-        params: {
-          'duration': l10n.getString(
-            'pinnedLocationRemainingHours',
-            params: {'count': '${remaining.inHours}'},
-          ),
-        },
-      );
-    }
-    final days = (remaining.inHours / 24).ceil();
-    return l10n.getString(
-      'pinnedLocationRemaining',
-      params: {
-        'duration': l10n.getString(
-          'pinnedLocationRemainingDays',
-          params: {'count': '$days'},
-        ),
-      },
-    );
-  }
-
-  Future<void> _showPinDialog(BuildContext context, WidgetRef ref) async {
-    final l10n = ref.read(localizationProvider);
-    final labelCtrl = TextEditingController();
-    Duration chosen = const Duration(days: 7);
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setState) => AlertDialog(
-          title: Text(l10n.getString('pinnedLocationPinAction')),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                TextField(
-                  controller: labelCtrl,
-                  decoration: InputDecoration(
-                    hintText: l10n.getString('pinnedLocationLabelHint'),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Text(l10n.getString('pinnedLocationDuration')),
-                RadioGroup<Duration>(
-                  groupValue: chosen,
-                  onChanged: (v) {
-                    if (v != null) setState(() => chosen = v);
-                  },
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: _durations
-                        .map(
-                          (d) => RadioListTile<Duration>(
-                            value: d,
-                            title: Text(_durationLabel(d, l10n)),
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                          ),
-                        )
-                        .toList(),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(false),
-              child: Text(l10n.getString('cancel')),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(true),
-              child: Text(l10n.getString('pinnedLocationPinAction')),
-            ),
-          ],
-        ),
-      ),
-    );
-    labelCtrl.dispose();
-    if (confirmed != true || !context.mounted) return;
-    try {
-      await ref
-          .read(pinnedLocationProvider.notifier)
-          .pinCurrent(duration: chosen, label: labelCtrl.text);
-      if (!context.mounted) return;
-      final exp = ref.read(pinnedLocationProvider).expiresAt;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            l10n.getString(
-              'pinnedLocationPinned',
-              params: {'date': exp == null ? '' : _formatExpiry(exp)},
-            ),
-          ),
-          backgroundColor: Colors.green,
-        ),
-      );
-    } catch (e) {
-      if (!context.mounted) return;
-      final msg = e.toString().contains('no cached position')
-          ? l10n.getString('pinnedLocationNoPosition')
-          : l10n.getString(ErrorLocalizationService.getErrorTranslationKey(e));
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(msg), backgroundColor: Colors.red));
-    }
-  }
-
-  Future<void> _showExtendDialog(BuildContext context, WidgetRef ref) async {
-    final l10n = ref.read(localizationProvider);
-    Duration chosen = const Duration(days: 7);
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setState) => AlertDialog(
-          title: Text(l10n.getString('pinnedLocationExtend')),
-          content: SingleChildScrollView(
-            child: RadioGroup<Duration>(
-              groupValue: chosen,
-              onChanged: (v) {
-                if (v != null) setState(() => chosen = v);
-              },
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: _durations
-                    .map(
-                      (d) => RadioListTile<Duration>(
-                        value: d,
-                        title: Text(_durationLabel(d, l10n)),
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                      ),
-                    )
-                    .toList(),
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(false),
-              child: Text(l10n.getString('cancel')),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(true),
-              child: Text(l10n.getString('pinnedLocationExtend')),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (confirmed != true || !context.mounted) return;
-    try {
-      await ref.read(pinnedLocationProvider.notifier).extend(extra: chosen);
-      if (!context.mounted) return;
-      final exp = ref.read(pinnedLocationProvider).expiresAt;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            l10n.getString(
-              'pinnedLocationExtended',
-              params: {'date': exp == null ? '' : _formatExpiry(exp)},
-            ),
-          ),
-          backgroundColor: Colors.green,
-        ),
-      );
-    } catch (e) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            l10n.getString(ErrorLocalizationService.getErrorTranslationKey(e)),
-          ),
-          backgroundColor: Colors.red,
-        ),
-      );
-    }
-  }
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final l10n = ref.watch(localizationProvider);
@@ -1413,7 +1214,7 @@ class _PinnedLocationCard extends ConsumerWidget {
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
-                    _remainingText(remaining, l10n),
+                    pinnedRemainingText(remaining, l10n),
                     style: const TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
@@ -1445,7 +1246,7 @@ class _PinnedLocationCard extends ConsumerWidget {
               child: ElevatedButton.icon(
                 onPressed: pin.isLoading
                     ? null
-                    : () => _showPinDialog(context, ref),
+                    : () => showPinnedLocationSheet(context, ref),
                 icon: const Icon(Icons.push_pin_outlined),
                 label: Text(l10n.getString('pinnedLocationPinAction')),
               ),
@@ -1460,7 +1261,7 @@ class _PinnedLocationCard extends ConsumerWidget {
                       : ' "${pin.label}"',
                   'date': pin.expiresAt == null
                       ? ''
-                      : _formatExpiry(pin.expiresAt!),
+                      : pinnedFormatExpiry(pin.expiresAt!),
                 },
               ),
               style: TextStyle(fontSize: 13, color: colors.onSurface),
@@ -1473,7 +1274,7 @@ class _PinnedLocationCard extends ConsumerWidget {
                   child: OutlinedButton(
                     onPressed: pin.isLoading
                         ? null
-                        : () => _showExtendDialog(context, ref),
+                        : () => showPinnedLocationSheet(context, ref),
                     child: Text(l10n.getString('pinnedLocationExtend')),
                   ),
                 ),

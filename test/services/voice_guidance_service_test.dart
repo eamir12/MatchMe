@@ -9,9 +9,6 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     await VoiceGuidanceService.instance.loadEnabledFromPrefs();
     await VoiceGuidanceService.instance.setEnabled(true);
-    if (VoiceGuidanceService.instance.muted) {
-      await VoiceGuidanceService.instance.toggleMute();
-    }
     await VoiceGuidanceService.instance.stop();
   });
 
@@ -25,19 +22,6 @@ void main() {
     });
 
     test('waitUntilCurrentSpeechFinished completes immediately when idle', () async {
-      final sw = Stopwatch()..start();
-      await VoiceGuidanceService.instance.waitUntilCurrentSpeechFinished(
-        timeout: const Duration(seconds: 5),
-      );
-      sw.stop();
-      expect(sw.elapsedMilliseconds, lessThan(100));
-    });
-
-    test('waitUntilCurrentSpeechFinished completes immediately when muted', () async {
-      await VoiceGuidanceService.instance.toggleMute();
-      expect(VoiceGuidanceService.instance.muted, isTrue);
-      expect(VoiceGuidanceService.instance.isSpeaking, isFalse);
-
       final sw = Stopwatch()..start();
       await VoiceGuidanceService.instance.waitUntilCurrentSpeechFinished(
         timeout: const Duration(seconds: 5),

@@ -43,6 +43,9 @@ class VoiceGuidanceService {
   }
 
   static const String _prefsEnabledKey = 'voice_guidance_enabled';
+
+  /// Legacy key from when onboarding had a separate mute toggle; read once
+  /// during load so users who muted there keep their intent (voice off).
   static const String _prefsMutedKey = 'voice_guidance_muted';
 
   /// Minimum delay between two different spoken messages. New speech always
@@ -60,7 +63,6 @@ class VoiceGuidanceService {
   bool _loadedFromPrefs = false;
 
   bool _enabled = true;
-  bool _muted = false;
   DateTime _lastSpeakAt = DateTime.fromMillisecondsSinceEpoch(0);
   String? _lastSpokenKey;
   DateTime _lastSpokenKeyAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -90,10 +92,6 @@ class VoiceGuidanceService {
   /// preference; the settings provider keeps this in sync via [setEnabled].
   bool get enabled => _enabled;
 
-  /// Whether audio is muted. When muted, speakAndWait returns false without
-  /// speaking. Can be toggled independently of enabled/disabled.
-  bool get muted => _muted;
-
   /// True once we know the platform has no usable TTS voice for the current
   /// language AND not for the English fallback. Used purely to skip work.
   bool get isAvailable => !_initFailed;
@@ -101,18 +99,17 @@ class VoiceGuidanceService {
   /// Whether an utterance is currently being spoken and has not finished yet.
   bool get isSpeaking =>
       _enabled &&
-      !_muted &&
       _speechDoneCompleter != null &&
       !_speechDoneCompleter!.isCompleted;
 
   /// Waits until the current spoken utterance finishes.
-  /// If nothing is currently speaking, or if voice guidance is disabled or
-  /// muted, completes immediately.
+  /// If nothing is currently speaking, or if voice guidance is disabled,
+  /// completes immediately.
   /// Includes a safety timeout so it will never stall indefinitely.
   Future<void> waitUntilCurrentSpeechFinished({
     Duration timeout = const Duration(seconds: 25),
   }) async {
-    if (!_enabled || _muted) return;
+    if (!_enabled) return;
     final completer = _speechDoneCompleter;
     if (completer == null || completer.isCompleted) return;
     try {
@@ -129,14 +126,16 @@ class VoiceGuidanceService {
     _loadedFromPrefs = true;
     try {
       final prefs = await SharedPreferences.getInstance();
-      _enabled = prefs.getBool(_prefsEnabledKey) ?? true;
-      _muted = prefs.getBool(_prefsMutedKey) ?? false;
-      print('[VOICE_GUIDANCE] loadEnabledFromPrefs: enabled=$_enabled, muted=$_muted');
+      // Legacy onboarding muted via a separate flag; when no explicit enabled
+      // value was ever stored, a legacy mute means the user wanted voice off.
+      final explicit = prefs.getBool(_prefsEnabledKey);
+      final legacyMuted = prefs.getBool(_prefsMutedKey) ?? false;
+      _enabled = explicit ?? !legacyMuted;
+      print('[VOICE_GUIDANCE] loadEnabledFromPrefs: enabled=$_enabled (explicit=$explicit, legacyMuted=$legacyMuted)');
     } catch (_) {
-      // Default to enabled and unmuted when storage is unavailable.
+      // Default to enabled when storage is unavailable.
       _enabled = true;
-      _muted = false;
-      print('[VOICE_GUIDANCE] loadEnabledFromPrefs: using defaults (enabled=$_enabled, muted=$_muted)');
+      print('[VOICE_GUIDANCE] loadEnabledFromPrefs: using default (enabled=true)');
     }
   }
 
@@ -147,20 +146,11 @@ class VoiceGuidanceService {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_prefsEnabledKey, value);
+      // The separate mute toggle is gone; clear the legacy key so a later
+      // defaulting pass can't resurrect a stale mute.
+      await prefs.remove(_prefsMutedKey);
     } catch (_) {}
     if (!value) {
-      await stop();
-    }
-  }
-
-  /// Toggles the mute state and persists it.
-  Future<void> toggleMute() async {
-    _muted = !_muted;
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool(_prefsMutedKey, _muted);
-    } catch (_) {}
-    if (_muted) {
       await stop();
     }
   }
@@ -266,10 +256,6 @@ class VoiceGuidanceService {
       print('[VOICE_GUIDANCE] speakAndWait aborted - voice guidance disabled');
       return false;
     }
-    if (_muted) {
-      print('[VOICE_GUIDANCE] speakAndWait aborted - muted');
-      return false;
-    }
     if (trimmed.isEmpty) {
       print('[VOICE_GUIDANCE] speakAndWait aborted - empty text');
       return false;
@@ -339,8 +325,8 @@ class VoiceGuidanceService {
       return;
     }
 
-    if (!_enabled || _muted) {
-      print('[VOICE_GUIDANCE] Speak aborted - disabled or muted');
+    if (!_enabled) {
+      print('[VOICE_GUIDANCE] Speak aborted - disabled');
       return;
     }
 
@@ -358,8 +344,8 @@ class VoiceGuidanceService {
     try {
       // Interrupt whatever is currently spoken so guidance never queues up
       // and lags behind the user's actions.
-      if (_muted || !_enabled) {
-        print('[VOICE_GUIDANCE] Speak aborted - muted or disabled');
+      if (!_enabled) {
+        print('[VOICE_GUIDANCE] Speak aborted - disabled');
         _completeSpeechDone();
         return;
       }

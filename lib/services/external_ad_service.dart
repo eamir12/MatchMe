@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -10,14 +11,47 @@ final Map<String, DateTime> _lastExternalAdFetch = <String, DateTime>{};
 const String _externalAdCacheKey = 'cached_external_ads';
 const String _externalAdFetchTimestampsKey = 'cached_external_ad_timestamps';
 
+/// How long a cached ad unit may be served without a successful refetch.
+/// Without this a cached unit survives config changes and app restarts
+/// forever, which is how admin filter changes appeared to be ignored.
+const Duration externalAdCacheTtl = Duration(hours: 24);
+
 /// Read cached external ad for a placement/platform key (e.g. `home_inline_web`).
-AdUnit? peekCachedExternalAd(String cacheKey) => _externalAdCache[cacheKey];
+/// Returns null for entries older than [externalAdCacheTtl].
+AdUnit? peekCachedExternalAd(String cacheKey) {
+  final ad = _externalAdCache[cacheKey];
+  if (ad == null) return null;
+  final fetchedAt = _lastExternalAdFetch[cacheKey];
+  if (fetchedAt != null &&
+      DateTime.now().difference(fetchedAt) > externalAdCacheTtl) {
+    return null;
+  }
+  return ad;
+}
 
 DateTime? peekExternalAdFetchTime(String cacheKey) =>
     _lastExternalAdFetch[cacheKey];
 
 void recordExternalAdCacheHit(String cacheKey) {
   _lastExternalAdFetch[cacheKey] = DateTime.now();
+}
+
+/// Drop a cached ad unit (memory + persistent storage). Called when the
+/// server answers "no ad" so admin filter changes take effect immediately
+/// instead of being overridden by the previous unit.
+Future<void> clearCachedExternalAd(String cacheKey) async {
+  _externalAdCache.remove(cacheKey);
+  _lastExternalAdFetch.remove(cacheKey);
+  await _saveExternalAdCache();
+}
+
+/// Drop ALL cached external ad units (memory + persistent storage). Called
+/// when the admin changes anything in the ad systems so the next fetch is
+/// guaranteed to be fresh instead of serving a cached unit.
+Future<void> clearAllExternalAdCache() async {
+  _externalAdCache.clear();
+  _lastExternalAdFetch.clear();
+  await _saveExternalAdCache();
 }
 
 /// Model for external ad network configuration
@@ -193,15 +227,30 @@ class AdRevenueEvent {
   }
 }
 
-/// Load external ad cache from persistent storage
+/// Load external ad cache from persistent storage.
+/// Entries older than [externalAdCacheTtl] are dropped on load.
 Future<void> loadExternalAdCache() async {
   try {
     final prefs = await SharedPreferences.getInstance();
+    // Load timestamps FIRST so TTL checks below can use them.
+    final timestampsJson = prefs.getString(_externalAdFetchTimestampsKey);
+    if (timestampsJson != null) {
+      final Map<String, dynamic> timestamps = jsonDecode(timestampsJson);
+      timestamps.forEach((key, value) {
+        if (value is String) {
+          _lastExternalAdFetch[key] = DateTime.parse(value);
+        }
+      });
+    }
     final cacheJson = prefs.getString(_externalAdCacheKey);
     if (cacheJson != null) {
       final Map<String, dynamic> cacheData = jsonDecode(cacheJson);
       cacheData.forEach((key, value) {
         if (value != null) {
+          final fetchedAt = _lastExternalAdFetch[key];
+          final isStale = fetchedAt != null &&
+              DateTime.now().difference(fetchedAt) > externalAdCacheTtl;
+          if (isStale) return;
           _externalAdCache[key] = AdUnit.fromJson(
             value as Map<String, dynamic>,
           );
@@ -212,15 +261,6 @@ Future<void> loadExternalAdCache() async {
           '[ExternalAdService] Loaded ${_externalAdCache.length} ads from persistent cache',
         );
       }
-    }
-    final timestampsJson = prefs.getString(_externalAdFetchTimestampsKey);
-    if (timestampsJson != null) {
-      final Map<String, dynamic> timestamps = jsonDecode(timestampsJson);
-      timestamps.forEach((key, value) {
-        if (value is String) {
-          _lastExternalAdFetch[key] = DateTime.parse(value);
-        }
-      });
     }
   } catch (e) {
     if (kDebugMode) {
@@ -291,8 +331,9 @@ class ExternalAdService {
 
     // If offline, return cached ad immediately
     if (shouldSkipSupabaseCalls()) {
-      if (_externalAdCache.containsKey(cacheKey)) {
-        return _externalAdCache[cacheKey];
+      final cached = peekCachedExternalAd(cacheKey);
+      if (cached != null) {
+        return cached;
       }
       // If no cached ad, try to load from persistent storage
       if (kDebugMode) {
@@ -301,13 +342,14 @@ class ExternalAdService {
         );
       }
       await loadExternalAdCache();
-      if (_externalAdCache.containsKey(cacheKey)) {
+      final persisted = peekCachedExternalAd(cacheKey);
+      if (persisted != null) {
         if (kDebugMode) {
           print(
             '[ExternalAdService] $cacheKey: using ad from persistent cache',
           );
         }
-        return _externalAdCache[cacheKey];
+        return persisted;
       }
       if (kDebugMode) {
         print(
@@ -337,6 +379,8 @@ class ExternalAdService {
         print('✓ [ExternalAdService] Found ad in map response');
         ad = AdUnit.fromMap(response);
       } else {
+        // A genuine "no ad" answer (disabled, filters exclude this
+        // placement/tier/platform, or no fill) — NOT an error.
         print('⚠️ [ExternalAdService] No ad found for placement=$placement');
         return null;
       }
@@ -349,7 +393,9 @@ class ExternalAdService {
       return ad;
     } catch (e) {
       print('⚠️ [ExternalAdService] Failed to load external ad: $e');
-      return null;
+      // Rethrow so callers can distinguish "server said no" (handled above)
+      // from a failed call. Callers decide whether to serve the cached unit.
+      rethrow;
     }
   }
 

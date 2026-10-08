@@ -47,38 +47,65 @@ class _IntegratedAdDashboardState extends State<IntegratedAdDashboard>
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
     return Directionality(
       textDirection: widget.textDirection,
       child: Column(
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-            child: Container(
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: TabBar(
-                controller: _tabController,
-                dividerColor: Colors.transparent,
-                padding: EdgeInsets.zero,
-                labelPadding: const EdgeInsets.symmetric(horizontal: 8),
-                indicatorSize: TabBarIndicatorSize.tab,
-                indicator: BoxDecoration(
-                  color: theme.colorScheme.surface,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                tabs: [
-                  Tab(
-                    icon: const Icon(Icons.ad_units_outlined),
-                    text: widget.t('adminInternalSystemTab'),
+            child: AnimatedBuilder(
+              animation: _tabController,
+              builder: (context, _) {
+                final internalSelected = _tabController.index == 0;
+                return Container(
+                  decoration: BoxDecoration(
+                    color: colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(16),
                   ),
-                  Tab(
-                    icon: const Icon(Icons.public_outlined),
-                    text: widget.t('adminExternalSystemTab'),
+                  child: TabBar(
+                    controller: _tabController,
+                    dividerColor: Colors.transparent,
+                    padding: EdgeInsets.zero,
+                    labelPadding: const EdgeInsets.symmetric(horizontal: 8),
+                    labelColor: internalSelected
+                        ? colorScheme.onPrimary
+                        : colorScheme.onTertiary,
+                    labelStyle: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                    unselectedLabelColor: colorScheme.onSurfaceVariant,
+                    unselectedLabelStyle: theme.textTheme.titleSmall,
+                    indicatorSize: TabBarIndicatorSize.tab,
+                    indicator: BoxDecoration(
+                      // Distinct hue per system so the active tab is obvious
+                      // at a glance: primary = Internal, tertiary = External.
+                      color: internalSelected
+                          ? colorScheme.primary
+                          : colorScheme.tertiary,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    tabs: [
+                      Tab(
+                        icon: Icon(
+                          internalSelected
+                              ? Icons.ad_units
+                              : Icons.ad_units_outlined,
+                        ),
+                        text: widget.t('adminInternalSystemTab'),
+                      ),
+                      Tab(
+                        icon: Icon(
+                          internalSelected
+                              ? Icons.public_outlined
+                              : Icons.public,
+                        ),
+                        text: widget.t('adminExternalSystemTab'),
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                );
+              },
             ),
           ),
           const SizedBox(height: 12),

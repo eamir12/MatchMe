@@ -8,6 +8,7 @@ import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/offline_cache_manager.dart';
 import 'package:matchme/services/session_service.dart';
+import 'package:matchme/utils/offline_utils.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -50,6 +51,57 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
   Timer? initialEventTimeout;
   DateTime? lastLanguageSyncScheduledAt;
   DateTime? lastOfflineFallbackLogAt;
+
+  // ---- Deleted-account detection -------------------------------------------
+  // A device whose persisted session predates the account's deletion (admin
+  // or self-delete on another device) recovers that session offline-only and
+  // lands on the home screen, where every query fails. The permissive
+  // session policy suppresses the SDK's signedOut events, so nothing would
+  // ever clear the dead session. This probe asks the server once — at
+  // startup and whenever connectivity is restored — whether the account
+  // still exists, and performs a REAL sign-out (login screen) when it
+  // doesn't. Ambiguous failures (offline, expired JWT, token-rotation race)
+  // never sign out.
+  bool accountExistenceChecked = false;
+  DateTime? lastAccountExistenceCheckAt;
+
+  Future<void> runAccountExistenceCheck(String source, {bool force = false}) async {
+    if (disposed) return;
+    final now = DateTime.now();
+    if (lastAccountExistenceCheckAt != null &&
+        now.difference(lastAccountExistenceCheckAt!) <
+            const Duration(seconds: 60)) {
+      return;
+    }
+    if (!force && accountExistenceChecked) return;
+    if (auth.currentSession == null) return;
+    // Only probe when we actually have a path to the server; offline use of
+    // a cached session stays valid until connectivity returns (the
+    // onSupabaseResume hook below re-runs the check then).
+    if (!offlineCacheManager.isSupabaseAvailable) return;
+    if (offlineCacheManager.shouldUseCachedData()) return;
+    lastAccountExistenceCheckAt = now;
+    try {
+      final deleted = await SessionService.confirmAccountDeleted();
+      if (disposed) return;
+      if (deleted) {
+        accountExistenceChecked = true;
+        await SessionService.signOutDeletedAccount(
+          'Account deleted on server (probe source: $source)',
+        );
+      } else {
+        // Inconclusive or confirmed alive: don't re-probe on every auth
+        // event. The resume hook re-runs it after the next
+        // offline → online transition.
+        accountExistenceChecked = true;
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('[AUTH] Account existence check failed (suppressed): $e');
+      }
+    }
+  }
+
   void syncLanguageForAuthenticatedSession() {
     if (!offlineCacheManager.isSupabaseAvailable) {
       if (kDebugMode) {
@@ -258,6 +310,17 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
         AuthState(AuthChangeEvent.initialSession, auth.currentSession),
       );
     }
+    // Deleted-account probe: skipped while offline, so re-arm it for when
+    // connectivity returns — that may be the first chance this launch gets
+    // to learn the account no longer exists.
+    ref.onDispose(
+      onSupabaseResume(() {
+        if (disposed) return;
+        if (!accountExistenceChecked) {
+          unawaited(runAccountExistenceCheck('connectivityRestoredOfflineStart'));
+        }
+      }),
+    );
     ref.onDispose(() => controller.close());
     unawaited(() async {
       try {
@@ -402,6 +465,17 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
               '🔄 [AUTH] Suppressed non-explicit sign-out — keeping recovered session',
             );
           }
+          // The SDK only fires signedOut on its own when its background
+          // token refresh failed. Most causes are tolerated races, but an
+          // account deleted on the server (admin or self-delete on another
+          // device) produces the same event. Probe the server once so a
+          // deleted account lands on the login screen instead of an
+          // error-ridden home screen. Debounced inside the check.
+          unawaited(
+            Future<void>.delayed(const Duration(seconds: 2), () {
+              runAccountExistenceCheck('nonExplicitSignedOut', force: true);
+            }),
+          );
         }
       } else if (effectiveAuthState.session != null) {
         unawaited(SessionService.persistCurrentSupabaseSessionSnapshot());
@@ -515,6 +589,23 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
   initialEventTimeout = Timer(
     const Duration(seconds: 1),
     () => unawaited(emitInitialEvent()),
+  );
+
+  // Deleted-account probe: shortly after startup (deferred so it never
+  // delays the cold-start paint), and re-armed on every connectivity
+  // restore — a cold start that began offline learns about a deleted
+  // account the moment the device comes back online.
+  Timer(const Duration(seconds: 5), () {
+    if (disposed) return;
+    unawaited(runAccountExistenceCheck('startup'));
+  });
+  ref.onDispose(
+    onSupabaseResume(() {
+      if (disposed) return;
+      if (!accountExistenceChecked) {
+        unawaited(runAccountExistenceCheck('connectivityRestored'));
+      }
+    }),
   );
 
   ref.onDispose(() {

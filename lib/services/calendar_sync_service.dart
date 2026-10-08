@@ -12,6 +12,7 @@ import 'package:matchme/main.dart' show navigatorKey;
 import 'package:matchme/services/web_calendar_service.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/models/event_model.dart';
+import 'package:matchme/utils/event_import_classifier.dart';
 import 'package:msal_auth/msal_auth.dart';
 import 'package:aad_oauth/aad_oauth.dart';
 import 'package:aad_oauth/model/config.dart';
@@ -3414,6 +3415,11 @@ class CalendarSyncService {
           location: e.location,
           url: null,
           organizer: null,
+          availability: e.availability.name,
+          attendeeCount: e.attendees?.isEmpty == false
+              ? e.attendees!.length
+              : null,
+          recurrenceRule: e.isRecurring ? e.recurrenceRule?.rruleString : null,
         );
       }).toList();
     } catch (e) {
@@ -3584,6 +3590,8 @@ class CalendarSyncService {
           location: (item['location'] as String?)?.trim(),
           url: Uri.tryParse((item['url'] as String?) ?? ''),
           organizer: (item['organizer'] as String?)?.trim(),
+          visibility: (item['class'] as String?)?.trim(),
+          recurrenceRule: (item['rrule'] as String?)?.trim(),
         ),
       );
     }
@@ -3832,6 +3840,12 @@ class CalendarSyncService {
             externalCalendarId: calendar.id,
             externalEventId: externalEvent.id,
             externalProvider: _calendarProviderToString(calendar.accountType),
+            markedPrivateInSource: isMarkedPrivateInSourceCalendar(
+              availability: externalEvent.availability,
+              transparency: externalEvent.transparency,
+              visibility: externalEvent.visibility,
+              sensitivity: externalEvent.sensitivity,
+            ),
           );
           allEvents.add(event);
         }
@@ -3989,6 +4003,15 @@ class CalendarSyncService {
               organizer:
                   ((map['organizer'] as Map<String, dynamic>?)?['emailAddress']
                           as Map<String, dynamic>?)?['address']
+                      as String?,
+              sensitivity: map['sensitivity'] as String?,
+              availability: map['showAs'] as String?,
+              attendeeCount: (map['attendees'] as List<dynamic>?)
+                  ?.whereType<Map<String, dynamic>>()
+                  .length,
+              recurrenceRule:
+                  ((map['recurrence'] as Map<String, dynamic>?)?['pattern']
+                          as Map<String, dynamic>?)?['type']
                       as String?,
             );
           }).whereType<ExternalEvent>(),
@@ -4154,6 +4177,15 @@ class CalendarSyncService {
               organizer:
                   ((map['organizer'] as Map<String, dynamic>?)?['emailAddress']
                           as Map<String, dynamic>?)?['address']
+                      as String?,
+              sensitivity: map['sensitivity'] as String?,
+              availability: map['showAs'] as String?,
+              attendeeCount: (map['attendees'] as List<dynamic>?)
+                  ?.whereType<Map<String, dynamic>>()
+                  .length,
+              recurrenceRule:
+                  ((map['recurrence'] as Map<String, dynamic>?)?['pattern']
+                          as Map<String, dynamic>?)?['type']
                       as String?,
             );
           }).whereType<ExternalEvent>(),

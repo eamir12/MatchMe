@@ -132,9 +132,12 @@ class _WindowsMediaPipeCapturePageState
   bool _isWaitingForSpeech = false;
 
   /// Primary-selfie (FACE_ONLY) instruction gate: the capture page holds
-  /// auto-capture until the spoken instructions finish.
+  /// auto-capture until the spoken instructions finish. The readiness signal
+  /// must be acknowledged by the page (it can be dropped while the page is
+  /// still loading); retried until then, with a page-side 20s fallback.
   bool _faceOnlyInstructionsSignaled = false;
   bool _faceOnlyInstructionsSpoken = false;
+  int _faceOnlySignalAttempts = 0;
 
   bool get _isFaceOnlyCapture => widget.gestureCode == 'FACE_ONLY';
 
@@ -161,12 +164,31 @@ class _WindowsMediaPipeCapturePageState
   Future<void> _signalFaceOnlyReadyToPage() async {
     if (_faceOnlyInstructionsSignaled) return;
     if (!_ready) return;
+    // Probe for the function: before the page's module script executes,
+    // window.setFaceOnlyInstructionsReady is undefined and the call would
+    // be silently dropped, blocking auto-capture forever. Retry until the
+    // page answers (the page also lifts the gate itself after 20s).
+    const probe =
+        '(typeof window.setFaceOnlyInstructionsReady === "function" ? '
+        '(window.setFaceOnlyInstructionsReady(), "ok") : "pending")';
+    var result = '';
     try {
-      await _controller.executeScript(
-        'window.setFaceOnlyInstructionsReady && window.setFaceOnlyInstructionsReady()',
-      );
+      final res = await _controller.executeScript(probe);
+      result = res?.toString() ?? '';
+    } catch (_) {
+      result = '';
+    }
+    if (result.contains('ok')) {
       _faceOnlyInstructionsSignaled = true;
-    } catch (_) {}
+      return;
+    }
+    _faceOnlySignalAttempts++;
+    if (_faceOnlySignalAttempts > 120 || !mounted) return;
+    Timer(const Duration(milliseconds: 500), () {
+      if (!_faceOnlyInstructionsSignaled) {
+        unawaited(_signalFaceOnlyReadyToPage());
+      }
+    });
   }
 
   Future<void> _onPhotoReceived(Uint8List? bytes) async {

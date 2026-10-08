@@ -53,6 +53,21 @@ class LocationWorker(
         return applicationContext.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
     }
 
+    // True when the server FCM push for this match is already in the tray
+    // (push-message tags match pushes "new_match_<matchId>"). Mirrors the
+    // foreground service check so the WorkManager fallback never stacks a
+    // second, hardcoded-English card on top of the server's localized one.
+    private fun isMatchPushInTray(matchId: String): Boolean {
+        if (matchId.isBlank()) return false
+        return try {
+            val nm = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            val tag = "new_match_$matchId"
+            nm?.activeNotifications?.any { sbn -> sbn.tag == tag } ?: false
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     // Sensitive keys are read through SecurePrefsHelper (encrypted-first,
     // legacy plain fallback) so tokens never sit in plaintext at rest.
     private fun sensitiveRead(primaryKey: String, fallbackKey: String): String? {
@@ -414,6 +429,17 @@ class LocationWorker(
                         prefs.getString("flutter.worker_last_notified_key", null) == "match:$matchId"
                     } catch (_: Exception) { false }
                     if (alreadyBuzzed) return
+                    if (isMatchPushInTray(matchId)) {
+                        // The server FCM push already displayed this match —
+                        // share the service's dedup key so no path re-buzzes it.
+                        try {
+                            prefs.edit()
+                                .putString("flutter.last_notified_match_id", matchId)
+                                .putString("flutter.worker_last_notified_key", "match:$matchId")
+                                .apply()
+                        } catch (_: Exception) {}
+                        return
+                    }
                     try {
                         prefs.edit().putString("flutter.last_notified_match_id", matchId).apply()
                     } catch (_: Exception) {}

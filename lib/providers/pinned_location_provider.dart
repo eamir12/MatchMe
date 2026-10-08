@@ -216,13 +216,17 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
         } catch (_) {}
         pos = ref.read(currentLocationProvider);
       }
-      if (pos == null) throw Exception('no cached position to pin');
+      // Anti-fraud (migration 20262087000000): the server pins the position
+      // IT has observed from live GPS and ignores the coordinates sent
+      // here (kept for signature compatibility). A missing local cached fix
+      // is therefore not fatal — the server decides whether its own
+      // observation is fresh enough to pin.
       final res = await Supabase.instance.client.rpc(
         'pin_current_location',
         params: {
           'p_user_id': Supabase.instance.client.auth.currentUser!.id,
-          'p_latitude': pos.latitude,
-          'p_longitude': pos.longitude,
+          'p_latitude': pos?.latitude,
+          'p_longitude': pos?.longitude,
           'p_label': (label ?? '').trim().isEmpty ? null : label!.trim(),
           'p_duration_seconds': duration.inSeconds,
         },
@@ -237,10 +241,14 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
         isActive: true,
         expiresAt: expiresAt,
         label: (label ?? '').trim().isEmpty ? null : label!.trim(),
-        latitude: pos.latitude,
-        longitude: pos.longitude,
+        latitude: pos?.latitude,
+        longitude: pos?.longitude,
         initialized: true,
       );
+      if (pos == null) {
+        // Hydrate the pinned coordinates from server truth.
+        unawaited(refresh());
+      }
       _lastNoticedExpiryMs = null;
       await _postBanner();
       // Park the Dart GPS timer NOW (no 5s wakeups/log spam while pinned;
@@ -256,7 +264,7 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
       // chat notifications still arrive via FCM).
       await _notifyNativePinnedStateChanged();
       print(
-        '[${DateTime.now().toIso8601String()}] 📌 [PinnedLoc] Pinned location SET (${pos.latitude}, ${pos.longitude}) label=${(label ?? '').trim().isEmpty ? '-' : label!.trim()} expires=$expiresAt — GPS paused, GPS not accessed anymore',
+        '[${DateTime.now().toIso8601String()}] 📌 [PinnedLoc] Pinned location SET (${pos?.latitude}, ${pos?.longitude}) label=${(label ?? '').trim().isEmpty ? '-' : label!.trim()} expires=$expiresAt — GPS paused, GPS not accessed anymore',
       );
       // Realtime: tell every match partner immediately (match row + profile).
       _broadcastOwnPinned(isPinned: true, expiresAt: expiresAt);

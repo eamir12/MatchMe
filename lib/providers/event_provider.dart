@@ -8,6 +8,7 @@ import 'package:matchme/services/offline_cache_manager.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:matchme/models/event_model.dart';
 import 'package:matchme/services/local_db_service.dart';
+import 'package:matchme/services/supabase_realtime_manager.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/utils/offline_utils.dart';
 
@@ -50,6 +51,14 @@ class EventManager extends _$EventManager {
   // UI toggle stored in the notifier - defaults to hiding past events
   bool _showPastEvents = false;
 
+  // Realtime: keeps the events list live when new events come in (a new
+  // event_attendees row for this user, e.g. an admin-imported event) or
+  // when an attended event's details/status change.
+  RealtimeChannel? _eventsChannel;
+  String? _eventsChannelUserId;
+  Timer? _realtimeRefreshDebounce;
+  Timer? _realtimePollTimer;
+
   bool get showPastEvents => _showPastEvents;
 
   List<EventModel> _filterVisibleEvents(List<EventModel> events) {
@@ -91,6 +100,7 @@ class EventManager extends _$EventManager {
 
   @override
   AsyncValue<List<EventModel>> build() {
+    ref.onDispose(_teardownRealtime);
     // Initialize user preference and events after first frame
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       // Check if provider is still mounted before proceeding
@@ -113,14 +123,158 @@ class EventManager extends _$EventManager {
     return const AsyncValue.loading();
   }
 
+  // --- Realtime ------------------------------------------------------------
+
+  void _teardownRealtime() {
+    _realtimeRefreshDebounce?.cancel();
+    _realtimeRefreshDebounce = null;
+    _realtimePollTimer?.cancel();
+    _realtimePollTimer = null;
+    final uid = _eventsChannelUserId;
+    _eventsChannel = null;
+    _eventsChannelUserId = null;
+    if (uid != null) {
+      try {
+        SupabaseRealtimeManager.instance.unregister('user_events_$uid');
+      } catch (_) {}
+    }
+  }
+
+  /// Fallback for when realtime delivery is unavailable (publication
+  /// membership off, socket drop the reconnect manager can't recover):
+  /// the events list still refreshes on a quiet interval so admin-approved
+  /// imports and other changes appear without user action. Realtime makes
+  /// them instant when it works.
+  void _startRealtimePoll() {
+    _realtimePollTimer ??= Timer.periodic(const Duration(minutes: 1), (_) {
+      if (!ref.mounted) return;
+      if (supabase.auth.currentUser?.id == null) return;
+      // The poll is the only heartbeat that can notice OTHER users joining
+      // (this user's realtime filter can't see their attendance rows), so
+      // also drop the matched-attendees cache here.
+      unawaited(ref.read(localDbProvider).clearEventAttendeesCache());
+      unawaited(fetchUserEvents());
+    });
+  }
+
+  void _scheduleRealtimeRefresh() {
+    _realtimeRefreshDebounce?.cancel();
+    _realtimeRefreshDebounce = Timer(const Duration(milliseconds: 500), () {
+      if (ref.mounted) {
+        // Attendance changed → matched-attendee info may have changed too;
+        // drop the per-event attendees cache so widgets refetch.
+        unawaited(ref.read(localDbProvider).clearEventAttendeesCache());
+        unawaited(fetchUserEvents());
+      }
+    });
+  }
+
+  void _ensureEventsRealtime() {
+    final uid = supabase.auth.currentUser?.id;
+    if (uid == null || uid.isEmpty) {
+      _teardownRealtime();
+      return;
+    }
+    _startRealtimePoll();
+    if (_eventsChannel != null && _eventsChannelUserId == uid) return;
+    _teardownRealtime();
+    final channelName = 'user_events_$uid';
+    try {
+      SupabaseRealtimeManager.instance.register(channelName, () {
+        _eventsChannel = supabase
+            .channel(channelName)
+            .onPostgresChanges(
+              event: PostgresChangeEvent.all,
+              schema: 'public',
+              table: 'event_attendees',
+              filter: PostgresChangeFilter(
+                type: PostgresChangeFilterType.eq,
+                column: 'user_id',
+                value: uid,
+              ),
+              callback: (_) {
+                if (!ref.mounted) return;
+                // New/removed attendance rows = events entering/leaving
+                // the user's list (own joins, admin imports, deletions).
+                _scheduleRealtimeRefresh();
+              },
+            )
+            .onPostgresChanges(
+              event: PostgresChangeEvent.update,
+              schema: 'public',
+              table: 'events',
+              callback: (payload) {
+                if (!ref.mounted) return;
+                // Only refetch when the changed event is one the user
+                // attends — the payload arrives for every event update
+                // the user can select app-wide.
+                final eventId = payload.newRecord['id']?.toString();
+                final known = state.value?.any((e) => e.id == eventId) ?? false;
+                if (known) {
+                  _scheduleRealtimeRefresh();
+                }
+              },
+            )
+            .onPostgresChanges(
+              event: PostgresChangeEvent.delete,
+              schema: 'public',
+              table: 'events',
+              callback: (payload) {
+                if (!ref.mounted) return;
+                final eventId = payload.oldRecord['id']?.toString();
+                final known = state.value?.any((e) => e.id == eventId) ?? false;
+                if (known) {
+                  _scheduleRealtimeRefresh();
+                }
+              },
+            )
+            .onPostgresChanges(
+              event: PostgresChangeEvent.insert,
+              schema: 'public',
+              table: 'event_match_attendance_pings',
+              filter: PostgresChangeFilter(
+                type: PostgresChangeFilterType.eq,
+                column: 'target_user_id',
+                value: uid,
+              ),
+              callback: (payload) {
+                if (!ref.mounted) return;
+                // A match of this user just joined (or was matched into) an
+                // event they attend. Written by a DB trigger because the
+                // user's own-RLS-filtered event_attendees subscription
+                // can't see other users' rows — this ping is the instant
+                // signal.
+                _scheduleRealtimeRefresh();
+              },
+            )
+            .subscribe((status, error) {
+              // SUBSCRIBED = live; CHANNEL_ERROR/TIMED_OUT = the 60s poll
+              // fallback covers us. Logged so subscription problems are
+              // observable in the field.
+              debugPrint(
+                '[EVENT_REALTIME] user_events subscribe status=$status '
+                'error=$error',
+              );
+            });
+        _eventsChannelUserId = uid;
+        return _eventsChannel!;
+      });
+    } catch (e) {
+      // Realtime is an enhancement; list refresh paths still work without it.
+      debugPrint('[EVENT_REALTIME] failed to subscribe: $e');
+    }
+  }
+
   Future<void> fetchUserEvents({bool forceRemote = false}) async {
     final userId = supabase.auth.currentUser?.id;
     if (userId == null) {
       if (ref.mounted) {
         state = const AsyncValue.data([]);
       }
+      _teardownRealtime();
       return;
     }
+    _ensureEventsRealtime();
 
     final localDb = ref.read(localDbProvider);
 
@@ -406,6 +560,9 @@ class EventManager extends _$EventManager {
       }
 
       try {
+        // Attendance just changed (join/re-import) — the per-event matched
+        // attendees cache may hold a pre-join snapshot.
+        await ref.read(localDbProvider).clearEventAttendeesCache();
         await fetchUserEvents();
         print(
           '[EVENT_IMPORT] addEventWithResult refreshed event list successfully',
@@ -503,6 +660,10 @@ class EventManager extends _$EventManager {
           .delete()
           .eq('event_id', eventId)
           .eq('user_id', userId);
+
+      // Attendance changed — drop the matched-attendees cache so the
+      // display refetches instead of serving the pre-leave snapshot.
+      await ref.read(localDbProvider).clearEventAttendeesCache();
 
       await fetchUserEvents(); // Refresh the list
       return true;
@@ -737,6 +898,7 @@ class EventManager extends _$EventManager {
         isAllDay: event.isAllDay,
         startTime: event.startTime,
         endTime: event.endTime,
+        markedPrivateInSource: event.markedPrivateInSource,
       );
       if (!validation.allowed) {
         return _SanitizedEventResult(null, validation.errorKey);
@@ -758,6 +920,7 @@ class EventManager extends _$EventManager {
         externalProvider: event.externalProvider,
         isAllDay: event.isAllDay,
         description: description,
+        markedPrivateInSource: event.markedPrivateInSource,
       ),
       null,
     );
@@ -858,7 +1021,17 @@ class EventManager extends _$EventManager {
     required bool isAllDay,
     required DateTime startTime,
     required DateTime endTime,
+    bool markedPrivateInSource = false,
   }) async {
+    // The source calendar explicitly flagged this event private/non-busy —
+    // that wins even if it carries a public-looking link.
+    if (markedPrivateInSource) {
+      return const _JoinabilityValidationResult(
+        allowed: false,
+        errorKey: 'eventAddRejectedPrivateEvent',
+      );
+    }
+
     final hasPublicUrl =
         eventLink != null &&
         eventLink.isNotEmpty &&

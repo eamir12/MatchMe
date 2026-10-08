@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
+import { consumeAiRateLimit } from "../_shared/ai_rate_limit.ts";
 
 const DEEPL_BASE_URL = "https://api-free.deepl.com/v2";
 const DEEPL_API_KEY = Deno.env.get("DEEPL_API_KEY") || "";
@@ -838,6 +839,24 @@ async function handleClientAssistedTranslation(
   const requestWrappedKey = body.request_wrapped_key;
   const items: Array<{ message_id: string; source_ciphertext: string; source_nonce: string; source_aad: string }> = body.items || [];
 
+  // AI rate limiting (app_config ai.rate_limit.translation.*) — client-initiated
+  // DeepL usage counts against the requesting user; the server-driven webhook
+  // path is not limited here.
+  const rateLimit = await consumeAiRateLimit(supabase, {
+    task: "translation",
+    userId: currentUserId,
+    requestId,
+  });
+  if (!rateLimit.allowed) {
+    console.warn(
+      `[translate-proxy] client-assisted rate limited, retryAfter=${rateLimit.retryAfterSeconds}s`,
+    );
+    return new Response(
+      JSON.stringify({ error: "Too many translation requests. Please try again later.", retryAfterSeconds: rateLimit.retryAfterSeconds }),
+      { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+
   if (!matchId || !targetLanguage || !requestWrappedKey || items.length === 0) {
     return new Response(
       JSON.stringify({ error: "Invalid request" }),
@@ -1026,6 +1045,22 @@ async function handleDirectClientTranslation(
   startedAt: number,
 ): Promise<Response> {
   try {
+    // AI rate limiting (app_config ai.rate_limit.translation.*).
+    const rateLimit = await consumeAiRateLimit(supabase, {
+      task: "translation",
+      userId: currentUserId,
+      requestId,
+    });
+    if (!rateLimit.allowed) {
+      console.warn(
+        `[translate-proxy] direct rate limited, retryAfter=${rateLimit.retryAfterSeconds}s`,
+      );
+      return new Response(
+        JSON.stringify({ error: "Too many translation requests. Please try again later.", retryAfterSeconds: rateLimit.retryAfterSeconds }),
+        { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
     // ── Single text translation (for real-time display; profile
     // bio/occupation use this path) ──
     // Gender steering (DeepL-only): a ready-made `context` string or
