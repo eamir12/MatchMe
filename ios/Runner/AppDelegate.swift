@@ -334,7 +334,7 @@ import Vision
         rectangleRequest.maximumAspectRatio = 3.0
         rectangleRequest.minimumSize = 0.08
         rectangleRequest.minimumConfidence = 0.5
-        rectangleRequest.minimumQuadratureConfidence = 0.25
+        rectangleRequest.quadratureTolerance = 20.0
         rectangleRequest.maximumObservations = 5
 
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
