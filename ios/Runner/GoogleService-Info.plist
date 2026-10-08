@@ -11,7 +11,7 @@
 	<key>PLIST_VERSION</key>
 	<string>1</string>
 	<key>BUNDLE_ID</key>
-	<string>com.matchme.app</string>
+	<string>com.app.matchme</string>
 	<key>PROJECT_ID</key>
 	<string>matchme-17775</string>
 	<key>STORAGE_BUCKET</key>
@@ -27,6 +27,6 @@
 	<key>IS_SIGNIN_ENABLED</key>
 	<true></true>
 	<key>GOOGLE_APP_ID</key>
-	<string>1:988596890235:ios:0bac3447e5861e89e5d0de</string>
+	<string>1:988596890235:ios:5db59307b9615fb4e5d0de</string>
 </dict>
 </plist>

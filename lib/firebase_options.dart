@@ -60,11 +60,11 @@ class DefaultFirebaseOptions {
 
   static const FirebaseOptions ios = FirebaseOptions(
     apiKey: 'AIzaSyAWwrTOJphHWZer3RxrMzUB2MJGxwWL7GI',
-    appId: '1:988596890235:ios:0bac3447e5861e89e5d0de',
+    appId: '1:988596890235:ios:5db59307b9615fb4e5d0de',
     messagingSenderId: '988596890235',
     projectId: 'matchme-17775',
     storageBucket: 'matchme-17775.firebasestorage.app',
-    iosBundleId: 'com.matchme.app',
+    iosBundleId: 'com.app.matchme',
   );
 
   static const FirebaseOptions macos = FirebaseOptions(
