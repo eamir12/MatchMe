@@ -1,5 +1,7 @@
 // lib/providers/connectivity_provider.dart
 import 'dart:async';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -77,6 +79,7 @@ class ConnectivityHealth {
 
 class ConnectivityMonitorConfig {
   final Duration probeTimeout;
+  final Duration backgroundProbeTimeout;
   final Duration healthyProbeInterval;
   final Duration suspectProbeInterval;
   final Duration offlineReprobeInterval;
@@ -90,6 +93,7 @@ class ConnectivityMonitorConfig {
 
   const ConnectivityMonitorConfig({
     this.probeTimeout = kSupabaseProbeTimeout,
+    this.backgroundProbeTimeout = const Duration(seconds: 15),
     this.healthyProbeInterval = const Duration(seconds: 10),
     this.suspectProbeInterval = const Duration(seconds: 2),
     this.offlineReprobeInterval = const Duration(seconds: 5),
@@ -105,6 +109,25 @@ class ConnectivityMonitorConfig {
 
 void _connectivityLog(String message) =>
     debugPrint('🌐 [CONNECTIVITY] $message');
+
+const _backgroundServiceChannel = MethodChannel('matchme/background_service');
+
+/// LocationWorker updates [flutter.workmanager_last_success_ms] natively.
+/// Flutter's SharedPreferences cache does not see those writes — read via
+/// platform channel on Android so Doze DNS failures can trust recent heartbeats.
+Future<int> _readWorkManagerLastSuccessMsFresh() async {
+  if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+    return 0;
+  }
+  try {
+    final v = await _backgroundServiceChannel.invokeMethod<num>(
+      'getWorkManagerLastSuccessMs',
+    );
+    return v?.toInt() ?? 0;
+  } catch (_) {
+    return 0;
+  }
+}
 
 Future<ConnectivityHealth> getCurrentConnectivityHealth({
   ConnectivityMonitorConfig config = const ConnectivityMonitorConfig(),
@@ -202,6 +225,9 @@ Stream<ConnectivityHealth> createConnectivityHealthStream({
         lastResumeAt != null &&
         now.difference(lastResumeAt!) < config.resumeGracePeriod &&
         !backendReachable;
+    // In background mode, use a longer grace period to account for the first
+    // probe taking longer due to Doze/App Standby restrictions. The device may
+    // have been in deep sleep and Flutter execution can be significantly slower.
     final offlineGrace = backgroundMode
         ? config.backgroundOfflineGracePeriod
         : config.offlineGracePeriod;
@@ -250,7 +276,7 @@ Stream<ConnectivityHealth> createConnectivityHealthStream({
 
   Future<void> sample() async {
     debugPrint(
-      '🌐 [CONNECTIVITY] sample() called (disposed=$disposed probing=$probing background=$backgroundMode)',
+      '🌐 [CONNECTIVITY] sample() called (disposed=$disposed probing=$probing background=$backgroundMode failureStreak=$failureStreak)',
     );
     if (disposed || probing) return;
     probing = true;
@@ -261,12 +287,43 @@ Stream<ConnectivityHealth> createConnectivityHealthStream({
       // must not be turned into a cached-mode app. Later samples in the same
       // streak skip the confirmation (a genuine outage is already established
       // and the extra request only doubles the cost while Supabase is down).
+      // Use a longer timeout in background mode to account for Doze/App Standby
+      // restrictions that slow down Flutter execution even when the network is fine.
+      final effectiveTimeout = backgroundMode
+          ? config.backgroundProbeTimeout
+          : config.probeTimeout;
       final probe = await probeSupabaseReachability(
-        timeout: config.probeTimeout,
+        timeout: effectiveTimeout,
         confirm: failureStreak == 0,
         log: _connectivityLog,
       );
-      final backendReachable = probe.isReachable;
+      debugPrint(
+        '🌐 [CONNECTIVITY] Probe result: ${probe.toString()} (background=$backgroundMode timeout=${effectiveTimeout.inSeconds}s)',
+      );
+      var backendReachable = probe.isReachable;
+
+      // In background mode, Android Doze can block DNS resolution for Flutter's HTTP client
+      // even when the network is fine. WorkManager (native Android) bypasses this restriction
+      // and successfully reaches Supabase. If WorkManager has succeeded recently, trust that
+      // as evidence of connectivity despite Flutter's DNS failure.
+      if (backgroundMode && !backendReachable) {
+        final workManagerLastSuccessMs =
+            await _readWorkManagerLastSuccessMsFresh();
+        final now = DateTime.now().millisecondsSinceEpoch;
+        final timeSinceSuccess = now - workManagerLastSuccessMs;
+        debugPrint(
+          '🌐 [CONNECTIVITY] WorkManager last success: $workManagerLastSuccessMs, '
+          'time since: ${timeSinceSuccess}ms (native read)',
+        );
+
+        // Heartbeat chain runs about every 55–60s; allow two missed cycles + Doze jitter.
+        if (workManagerLastSuccessMs > 0 && timeSinceSuccess < 150000) {
+          debugPrint(
+            '🌐 [CONNECTIVITY] Flutter probe failed but WorkManager succeeded ${timeSinceSuccess}ms ago - treating as reachable',
+          );
+          backendReachable = true;
+        }
+      }
 
       // Feed every probe into OfflineCacheManager, success AND failure.
       // safeAdd dedups on the status signature, so doing this only there
@@ -369,22 +426,31 @@ Stream<ConnectivityHealth> createConnectivityHealthStream({
   connectivitySubscription = listenConnectivityChanged((_) {
     // A transport change is only a reason to probe now; the probe itself
     // still has the last word on online/offline.
-    sample();
+    // Ignore transport events in background mode - WorkManager's network
+    // state tracking can report stale/incorrect initial states when the screen
+    // is off, causing false offline transitions. Background probes run on their
+    // own timer and will detect real connectivity changes.
+    if (!backgroundMode) {
+      sample();
+    }
   });
 
   appLifecycleListener = AppLifecycleListener(
     onPause: () {
       backgroundMode = true;
       debugPrint(
-        '🌐 [CONNECTIVITY] App paused (screen off/background) - slower probes, staying active',
+        '🌐 [CONNECTIVITY] App paused (screen off/background) - ignoring transport events, slower probes, staying active',
       );
       probeTimer?.cancel();
+      // Probe immediately to establish true connectivity state before
+      // switching to slower background interval. This prevents false offline
+      // transitions from WorkManager's stale network state.
       unawaited(sample());
     },
     onHide: () {
       backgroundMode = true;
       debugPrint(
-        '🌐 [CONNECTIVITY] App hidden - slower probes, staying active',
+        '🌐 [CONNECTIVITY] App hidden - ignoring transport events, slower probes, staying active',
       );
       probeTimer?.cancel();
       unawaited(sample());

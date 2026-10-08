@@ -348,7 +348,8 @@ void _mainSync() {
         !lower.contains('hivecrypto') &&
         !lower.contains('profileedit') &&
         !lower.contains('[settings]') &&
-        !lower.contains('profilesyncservice')) {
+        !lower.contains('profilesyncservice') &&
+        !lower.contains('connectivity')) {
       return;
     }
     originalDebugPrint(message, wrapWidth: wrapWidth);

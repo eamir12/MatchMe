@@ -119,6 +119,10 @@ class LocationWorker(
         val backgroundMatchingMode = readBool("flutter.background_matching_mode", "high_accuracy_mode", true)
         val isVisible = readBool("flutter.manual_visibility", "manual_visibility", true)
         val isOnline = readBool("flutter.is_online", "is_online", true)
+
+        // Write timestamp immediately to indicate WorkManager is running and network is believed connected
+        // This happens before any early returns, so Flutter can use this as evidence of connectivity
+        securePrefs.edit().putString("flutter.workmanager_last_success_ms", System.currentTimeMillis().toString()).apply()
         // Read user's Settings rate and throttling flag - canonical flutter.* key first, legacy fallback
         val gpsIntervalSeconds = run {
             val v = if (securePrefs.contains("flutter.gps_interval")) securePrefs.getInt("flutter.gps_interval", 5)
@@ -281,7 +285,7 @@ class LocationWorker(
             }
         } catch (_: Exception) { false }
         if (pinnedActive) {
-            try { updateUserActivity(userId, supabaseUrl, supabaseKey, userToken) } catch (_: Exception) {}
+            try { updateUserActivity(userId, supabaseUrl, supabaseKey, userToken, securePrefs) } catch (_: Exception) {}
             chainOneTimeHeartbeat()
             return Result.success()
         }
@@ -296,7 +300,7 @@ class LocationWorker(
             // logged-in users regardless of visibility, so keep is_online /
             // last_activity fresh with a heartbeat-only ping. Never touch GPS
             // or location upload here (mirrors the pinned path above).
-            try { updateUserActivity(userId, supabaseUrl, supabaseKey, userToken) } catch (_: Exception) {}
+            try { updateUserActivity(userId, supabaseUrl, supabaseKey, userToken, securePrefs) } catch (_: Exception) {}
             chainOneTimeHeartbeat()
             return Result.success()
         }
@@ -325,10 +329,10 @@ class LocationWorker(
             ).await()
             if (location != null) {
                 try { persistWorkerLocation(location) } catch (_: Exception) {}
-                updateLocationInSupabase(userId, supabaseUrl, supabaseKey, userToken, location)
+                updateLocationInSupabase(userId, supabaseUrl, supabaseKey, userToken, location, securePrefs)
             }
         } catch (_: Exception) {}
-        updateUserActivity(userId, supabaseUrl, supabaseKey, userToken)
+        updateUserActivity(userId, supabaseUrl, supabaseKey, userToken, securePrefs)
         chainOneTimeHeartbeat()
         return Result.success()
 
@@ -346,10 +350,10 @@ class LocationWorker(
                 // Log.d(TAG, "Got location: ${location.latitude}, ${location.longitude}")
 
                 // 3. Send to Supabase
-                updateLocationInSupabase(userId, supabaseUrl, supabaseKey, userToken, location)
+                updateLocationInSupabase(userId, supabaseUrl, supabaseKey, userToken, location, securePrefs)
 
                 // 4. Update user activity to keep online status current (fixes nearby count issue in Standard Mode)
-                updateUserActivity(userId, supabaseUrl, supabaseKey, userToken)
+                updateUserActivity(userId, supabaseUrl, supabaseKey, userToken, securePrefs)
 
                 // 5. Trigger Match Engine
                 triggerMatchEngine(userId, supabaseUrl, supabaseKey, userToken, location)
@@ -630,7 +634,8 @@ class LocationWorker(
         supabaseUrl: String,
         supabaseKey: String,
         userToken: String?,
-        location: Location
+        location: Location,
+        securePrefs: SharedPreferences
     ) {
         val url = "$supabaseUrl/rest/v1/rpc/update_user_location"
         val jsonBody = JSONObject().apply {
@@ -660,6 +665,8 @@ class LocationWorker(
                 // Log.e(TAG, "Failed to update location: ${response.code}")
             } else {
                 // Log.d(TAG, "Successfully updated location in Supabase")
+                // Write timestamp for Flutter to read as evidence of connectivity
+                securePrefs.edit().putString("flutter.workmanager_last_success_ms", System.currentTimeMillis().toString()).apply()
             }
             response.close()
         } catch (e: Exception) {
@@ -671,7 +678,8 @@ class LocationWorker(
         userId: String,
         supabaseUrl: String,
         supabaseKey: String,
-        userToken: String?
+        userToken: String?,
+        securePrefs: SharedPreferences
     ) {
         val url = "$supabaseUrl/rest/v1/rpc/update_user_activity"
         val jsonBody = JSONObject().apply {
@@ -697,6 +705,8 @@ class LocationWorker(
                 // Log.e(TAG, "Failed to update user activity: ${response.code}")
             } else {
                 // Log.d(TAG, "Successfully updated user activity in Supabase")
+                // Write timestamp for Flutter to read as evidence of connectivity
+                securePrefs.edit().putString("flutter.workmanager_last_success_ms", System.currentTimeMillis().toString()).apply()
             }
             response.close()
         } catch (e: Exception) {

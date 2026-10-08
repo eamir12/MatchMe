@@ -347,6 +347,17 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 // Actually, we can't easily get the intent here without ActivityAware.
                 result.success(null)
             }
+            "getWorkManagerLastSuccessMs" -> {
+                // Read directly from disk — Flutter SharedPreferences caches in
+                // memory and does not see writes from LocationWorker.
+                val prefs = context.getSharedPreferences(
+                    "FlutterSharedPreferences",
+                    MODE_PRIVATE,
+                )
+                val raw = prefs.getString("flutter.workmanager_last_success_ms", null)
+                val ms = raw?.toLongOrNull() ?: 0L
+                result.success(if (ms > 0L) ms else null)
+            }
             "refreshBackgroundNotification" -> {
                 MatchMeBackgroundService.refreshNotification(context)
                 result.success(true)

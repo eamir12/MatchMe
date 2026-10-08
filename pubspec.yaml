@@ -127,6 +127,10 @@ dev_dependencies:
   # riverpod_annotation: ^3.0.3
 
 dependency_overrides:
+  # camera 0.12.x still constrains its iOS implementation to 0.10.x. Use the
+  # current Darwin implementation, which matches this app's camera platform
+  # interface and Flutter SDK.
+  camera_avfoundation: 0.11.0
   passkeys_android:
     path: third_party/passkeys_android
   realtime_client:
