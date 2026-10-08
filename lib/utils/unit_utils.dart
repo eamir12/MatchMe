@@ -229,7 +229,9 @@ String formatDistanceWithImperial(
     // Use meters for small distances and kilometers for larger ones.
     if (metersValue >= 1000) {
       final km = metersValue / 1000.0;
-      final kmStr = km.toStringAsFixed(km < 10 ? 1 : 0);
+      final kmStr = km == km.roundToDouble()
+          ? km.toStringAsFixed(0)
+          : km.toStringAsFixed(km < 10 ? 1 : 0);
       return '$kmStr ${l10n.getString('unitKilometers')}';
     }
     return '${metersValue.round()} ${l10n.getString('unitMeters')}';

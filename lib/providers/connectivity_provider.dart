@@ -268,6 +268,13 @@ Stream<ConnectivityHealth> createConnectivityHealthStream({
       );
       final backendReachable = probe.isReachable;
 
+      // Feed every probe into OfflineCacheManager, success AND failure.
+      // safeAdd dedups on the status signature, so doing this only there
+      // meant consecutive successful probes did NOT reset the manager's
+      // unavailable-signal counter — a burst of realtime channel errors
+      // could then flip the app offline while probes were succeeding.
+      OfflineCacheManager.instance.setSupabaseAvailability(backendReachable);
+
       if (backendReachable) {
         failureStreak = 0;
         probeSuccessStreak += 1;

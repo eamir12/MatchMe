@@ -345,7 +345,10 @@ void _mainSync() {
         !lower.contains('resume-diag') &&
         !lower.contains('bootstrap') &&
         !lower.contains('maptiles') &&
-        !lower.contains('hivecrypto')) {
+        !lower.contains('hivecrypto') &&
+        !lower.contains('profileedit') &&
+        !lower.contains('[settings]') &&
+        !lower.contains('profilesyncservice')) {
       return;
     }
     originalDebugPrint(message, wrapWidth: wrapWidth);

@@ -68,15 +68,15 @@ bool isAuthRateLimitFailure(Object error) {
       s.contains('statuscode: 403');
 }
 
-/// Apply the app-wide offline transition for a network/realtime failure.
+/// Report whether an error looks like a transport/realtime failure.
 ///
-/// Realtime close callbacks can arrive before Connectivity has emitted its
-/// offline state. Marking Supabase unavailable here prevents the short race
-/// where REST providers still attempt requests and print SocketException logs.
+/// It does NOT flip the app offline: realtime channel error callbacks fire
+/// during routine socket reconnects, so treating them as an outage signal
+/// forced offline on healthy connections. Online/offline is decided by the
+/// Supabase reachability probe (connectivity_provider) and fed to
+/// OfflineCacheManager there.
 bool handleExpectedSupabaseOfflineFailure(Object? error) {
   if (error == null || !isExpectedOfflineFailure(error)) return false;
-  if (!OfflineCacheManager.instance.isSupabaseAvailable) return true;
-  OfflineCacheManager.instance.setSupabaseAvailability(false);
   return true;
 }
 

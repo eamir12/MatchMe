@@ -346,6 +346,7 @@ class _MatchingSettingsScreenState extends ConsumerState<MatchingSettingsScreen>
                                     )
                                     .updateRadius(value);
                               } catch (e) {
+                                debugPrint('[Settings] updateRadius failed: $e');
                                 if (!mounted) return;
                                 final errorKey =
                                     ErrorLocalizationService.getErrorTranslationKey(
