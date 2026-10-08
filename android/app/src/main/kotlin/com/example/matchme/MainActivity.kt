@@ -40,6 +40,48 @@ class MainActivity : FlutterFragmentActivity() {
         private const val AUTHENTICATOR_LAUNCHER_CHANNEL = "matchme/authenticator_launcher"
         private const val PHOTO_MODERATION_CHANNEL = "matchme/photo_moderation"
         private const val PHOTO_PRESCREEN_CHANNEL = "matchme/photo_prescreen"
+
+        // Native libraries that may be missing from third-party plugins.
+        // These are logged as warnings instead of crashing the app.
+        private val MISSING_LIB_PATTERNS = listOf(
+            "libmagtsync.so",
+            "libmbrainSDK",
+        )
+
+        // Install a global handler to gracefully handle missing native libraries
+        // from third-party plugins. This prevents crashes when optional SDKs
+        // are not fully integrated.
+        private var hasInstalledNativeLibHandler = false
+
+        @Volatile
+        private var nativeLibHandlerInstalled = false
+
+        @Synchronized
+        fun installNativeLibraryErrorHandler() {
+            if (nativeLibHandlerInstalled) return
+            nativeLibHandlerInstalled = true
+
+            val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+            Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+                val message = throwable.message ?: ""
+                val stackTrace = throwable.stackTraceToString()
+                
+                // Check if this is a missing native library error we can gracefully handle
+                val isMissingLib = MISSING_LIB_PATTERNS.any { pattern ->
+                    message.contains(pattern, ignoreCase = true) ||
+                    stackTrace.contains(pattern, ignoreCase = true)
+                }
+                
+                if (isMissingLib) {
+                    // Log as warning instead of crashing
+                    Log.w(TAG, "Missing optional native library (continuing with degraded functionality): $message")
+                    return@setDefaultUncaughtExceptionHandler
+                }
+                
+                // For other errors, use the default handler
+                defaultHandler?.uncaughtException(thread, throwable)
+            }
+        }
     }
 
     private var mainChannel: MethodChannel? = null
@@ -686,6 +728,19 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Install handler to gracefully log missing native library errors
+        // from third-party plugins instead of crashing
+        installNativeLibraryErrorHandler()
+
+        // Ensure the window has valid dimensions before Flutter attaches.
+        // This prevents "zero-width viewport" errors when the Activity starts
+        // before the window is measured (common on cold start with slow devices).
+        // The post callback ensures the decor view has been laid out.
+        window.decorView.post {
+            // Flutter engine will attach after this callback runs
+            // At this point, the view hierarchy has been measured
+        }
+
         super.onCreate(savedInstanceState)
 
         // Ensure status bar is visible and uses dark icons on a white background

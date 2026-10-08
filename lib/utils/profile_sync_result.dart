@@ -7,6 +7,7 @@ enum ProfileSyncStatus {
   failed,
   cancelled,
   invalidUser,
+  skipped, // Debounced or duplicate sync request
 }
 
 class ProfileSyncResult {
@@ -27,7 +28,8 @@ class ProfileSyncResult {
   bool get isSuccess =>
       status == ProfileSyncStatus.synced ||
       status == ProfileSyncStatus.supersededByLocalSave ||
-      status == ProfileSyncStatus.cancelled;
+      status == ProfileSyncStatus.cancelled ||
+      status == ProfileSyncStatus.skipped;
 
   bool get requiresRefresh =>
       status == ProfileSyncStatus.offline ||

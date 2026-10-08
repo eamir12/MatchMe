@@ -1373,6 +1373,12 @@ class ProfileSyncService {
 
   final Map<String, int> _syncGenerations = <String, int>{};
   final Map<String, Future<ProfileSyncResult>> _inFlight = {};
+  
+  // Debounce: track last successful sync time to prevent rapid redundant calls
+  DateTime? _lastSuccessfulSyncAt;
+  static const _debounceWindow = Duration(seconds: 5);
+  // Sources that should bypass debounce (explicit user actions)
+  static const _debounceBypassSources = {'manual-review-request', 'admin-review-change'};
 
   int _beginSync(String userId) {
     final generation = (_syncGenerations[userId] ?? 0) + 1;
@@ -1507,6 +1513,19 @@ class ProfileSyncService {
     final existing = _inFlight[userId];
     if (existing != null) return existing;
 
+    // Debounce: skip if a sync succeeded within the last 5 seconds
+    // This prevents rapid redundant syncs from bootstrap + realtime + settings-open etc.
+    final now = DateTime.now();
+    if (_lastSuccessfulSyncAt != null &&
+        now.difference(_lastSuccessfulSyncAt!) < _debounceWindow &&
+        !_debounceBypassSources.contains(source)) {
+      debugPrint('ProfileSyncService.syncProfile SKIP debounced source=$source');
+      return Future.value(ProfileSyncResult(
+        status: ProfileSyncStatus.skipped,
+        cacheAvailable: false,
+      ));
+    }
+
     final future = _syncProfileInternal(userId, source: source);
     _inFlight[userId] = future;
     unawaited(
@@ -1514,6 +1533,13 @@ class ProfileSyncService {
         if (identical(_inFlight[userId], future)) {
           _inFlight.remove(userId);
         }
+        // Update last successful sync time for debounce
+        // Note: We check the result asynchronously to avoid blocking
+        future.then((result) {
+          if (result.status == ProfileSyncStatus.synced) {
+            _lastSuccessfulSyncAt = DateTime.now();
+          }
+        });
       }),
     );
     return future;
@@ -2043,6 +2069,21 @@ class ProfileSyncService {
               generation,
               ProfileSyncStatus.cancelled,
               cacheAvailable: previousMap != null,
+            );
+          }
+          // A local edit (radius, GPS rate, settings, …) landed very recently.
+          // The server snapshot for this fetch may predate that edit (stale
+          // replica or in-flight write), so do not let it overwrite the
+          // local DB / state — otherwise the setting visibly reverts.
+          if (_hasVeryRecentLocalSave(userId, const Duration(minutes: 2))) {
+            debugPrint(
+              'ProfileSyncService.syncProfile SKIP overwrite (very recent local save)',
+            );
+            return await _finishSync(
+              userId,
+              generation,
+              ProfileSyncStatus.supersededByLocalSave,
+              cacheAvailable: true,
             );
           }
           final localMap = profile.toMap();
@@ -2696,6 +2737,7 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
   DateTime? _lastBasicFieldEditAt;
   List<String>? _editableFieldsBeforeRecentEdit;
   int _profileLoadCount = 0;
+  DateTime? _lastRadiusChangeAt;
 
   @override
   AsyncValue<UserProfile?> build(String userId) {
@@ -2729,9 +2771,14 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
         return;
       }
 
+      final hasRecentRadiusChange =
+          _lastRadiusChangeAt != null &&
+          DateTime.now().difference(_lastRadiusChangeAt!) <
+              const Duration(seconds: 10);
       final shouldApplyRealtimeSettings =
-          currentProfile.matchRadiusDefault !=
-              remoteProfile.matchRadiusDefault ||
+          (!hasRecentRadiusChange &&
+                  currentProfile.matchRadiusDefault !=
+                      remoteProfile.matchRadiusDefault) ||
           currentProfile.gpsIntervalDefault !=
               remoteProfile.gpsIntervalDefault ||
           currentProfile.smartGpsThrottlingEnabled !=
@@ -2784,7 +2831,9 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
 
       state = AsyncData(
         currentProfile.copyWith(
-          matchRadiusDefault: remoteProfile.matchRadiusDefault,
+          matchRadiusDefault: hasRecentRadiusChange
+              ? currentProfile.matchRadiusDefault
+              : remoteProfile.matchRadiusDefault,
           gpsIntervalDefault: remoteProfile.gpsIntervalDefault,
           smartGpsThrottlingEnabled: remoteProfile.smartGpsThrottlingEnabled,
           sharedEventMatchingEnabled: remoteProfile.sharedEventMatchingEnabled,
@@ -3833,29 +3882,41 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     if (!state.hasValue || state.value == null) return;
     final updatedProfile = state.value!.copyWith(matchRadiusDefault: radius);
     state = AsyncData(updatedProfile);
+    _lastRadiusChangeAt = DateTime.now();
 
     // Save to local cache first
     final localDb = ref.read(localDbProvider);
     await localDb.saveLocalProfile(userId, updatedProfile.toMap());
+    _markProfileLocalSave(userId);
 
-    // Invalidate the userProfileProvider to ensure immediate update
-    ref.invalidate(userProfileProvider(userId));
-    // Invalidate the visibility provider to ensure the listener is set up with the correct userId
-    ref.invalidate(isVisibleProvider);
-
-    // Try to sync to backend
+    // Try to sync to backend before invalidating, so a refetch can't
+    // pull the pre-update value and revert the local change.
+    var synced = false;
     try {
       await supabase
           .from('users')
           .update({'match_radius_default': radius})
           .eq('id', userId);
+      synced = true;
     } catch (e) {
+      debugPrint('[ProfileEdit] radius server update failed, queued to outbox: $e');
       // If offline or error, add to outbox for later sync
       await localDb.saveProfileUpdateToOutbox(userId, {
         'userId': userId,
         'updates': {'match_radius_default': radius},
       });
       // Do not revert state, keep the local change
+    }
+
+    // Invalidate the userProfileProvider to ensure immediate update
+    ref.invalidate(userProfileProvider(userId));
+    // Note: Removed ref.invalidate(isVisibleProvider) to break circular dependency.
+    // The visibility provider already listens to profileEditProvider changes via ref.listen,
+    // so explicit invalidation here was unnecessary and caused a rebuild cycle.
+    if (!synced) {
+      // Keep the guard window fresh while the outbox is pending so a later
+      // refetch of the stale server value doesn't revert the local radius.
+      _lastRadiusChangeAt = DateTime.now();
     }
   }
 
