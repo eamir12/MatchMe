@@ -426,8 +426,8 @@ import Vision
         // coarse merged person+card box) mean "document visible" — still a
         // violation, but the face is not occluded and the message must not
         // claim it is.
-        let coreFaceZone = largestFaceObservation.map { expandedBox($0.boundingBox, fraction: 0.1) }
-        let nearFaceZone = largestFaceObservation.map { expandedBox($0.boundingBox, fraction: 0.5) }
+        let coreFaceZone = largestFaceObservation.map { self.expandedBox($0.boundingBox, fraction: 0.1) }
+        let nearFaceZone = largestFaceObservation.map { self.expandedBox($0.boundingBox, fraction: 0.5) }
         var textOverFace = false
         var objectOverFace = false
         var documentNearFace = false
@@ -458,7 +458,7 @@ import Vision
           guard let candidate = observation.topCandidates(1).first else { continue }
           let charCount = candidate.string.count
           if let coreZone = coreFaceZone, charCount >= 2,
-            intersectionRatio(observation.boundingBox, coreZone) >= 0.25 {
+            self.intersectionRatio(observation.boundingBox, coreZone) >= 0.25 {
             textOverFace = true
             issueBoxes.append(normalizedIssueBox(observation.boundingBox, label: "text"))
           }
@@ -490,12 +490,12 @@ import Vision
             faceObservation.boundingBox.width * faceObservation.boundingBox.height)
           for rectangle in rectangleObservations {
             let rectBox = rectangle.boundingBox
-            let overlapCore = coreFaceZone.map { intersectionRatio(rectBox, $0) } ?? 0
-            let overlapNear = intersectionRatio(rectBox, nearZone)
+            let overlapCore = coreFaceZone.map { self.intersectionRatio(rectBox, $0) } ?? 0
+            let overlapNear = self.intersectionRatio(rectBox, nearZone)
             guard overlapCore >= 0.25 || overlapNear >= 0.25 else { continue }
             let rectArea = Double(rectBox.width * rectBox.height)
             let ratioToFace = faceArea > 0 ? rectArea / faceArea : 0
-            let overlapWithFace = intersectionRatio(rectBox, faceObservation.boundingBox)
+            let overlapWithFace = self.intersectionRatio(rectBox, faceObservation.boundingBox)
             // The detected face itself: high overlap at a comparable size.
             if overlapWithFace >= 0.7 && ratioToFace >= 0.4 && ratioToFace <= 3.0 {
               continue
