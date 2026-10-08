@@ -1659,16 +1659,6 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
               );
             }
 
-            // If a network/WebSocket error caused the disconnect, force offline to prevent reconnection loops
-            if (err != null &&
-                (isExpectedOfflineFailure(err) ||
-                    err.toString().toLowerCase().contains('closeevent'))) {
-              offlineCacheManager.setSupabaseAvailability(false, force: true);
-              debugPrint(
-                '⏸️ [REALTIME] Network/WebSocket disconnect detected, forcing offline',
-              );
-              return;
-            }
 
             // Prevent reconnect loop if app is in background
             if (WidgetsBinding.instance.lifecycleState ==
@@ -1829,16 +1819,6 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
               );
             }
 
-            // If a network/WebSocket error caused the disconnect, force offline to prevent reconnection loops
-            if (err != null &&
-                (isExpectedOfflineFailure(err) ||
-                    err.toString().toLowerCase().contains('closeevent'))) {
-              offlineCacheManager.setSupabaseAvailability(false, force: true);
-              debugPrint(
-                '⏸️ [REALTIME] Network/WebSocket disconnect detected, forcing offline',
-              );
-              return;
-            }
 
             // Prevent reconnect loop if app is in background
             if (WidgetsBinding.instance.lifecycleState ==
@@ -2127,16 +2107,6 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
               );
             }
 
-            // If a network/WebSocket error caused the disconnect, force offline to prevent reconnection loops
-            if (err != null &&
-                (isExpectedOfflineFailure(err) ||
-                    err.toString().toLowerCase().contains('closeevent'))) {
-              offlineCacheManager.setSupabaseAvailability(false, force: true);
-              debugPrint(
-                '⏸️ [REALTIME] Network/WebSocket disconnect detected, forcing offline',
-              );
-              return;
-            }
 
             // Prevent reconnect loop if app is in background
             if (WidgetsBinding.instance.lifecycleState ==

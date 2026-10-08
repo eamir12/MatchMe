@@ -7,7 +7,6 @@ import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/services/approval_required_fields.dart';
 import 'package:matchme/services/connectivity_restore_coordinator.dart';
 import 'package:matchme/services/offline_cache_manager.dart';
-import 'package:matchme/services/supabase_realtime_manager.dart';
 
 /// True while the Flutter UI is in the foreground (resumed or briefly inactive).
 /// Screen-off and backgrounding move to [AppLifecycleState.paused]/[AppLifecycleState.hidden].
@@ -77,10 +76,7 @@ bool isAuthRateLimitFailure(Object error) {
 bool handleExpectedSupabaseOfflineFailure(Object? error) {
   if (error == null || !isExpectedOfflineFailure(error)) return false;
   if (!OfflineCacheManager.instance.isSupabaseAvailable) return true;
-  OfflineCacheManager.instance.setSupabaseAvailability(false, force: true);
-  try {
-    SupabaseRealtimeManager.instance.pauseAll();
-  } catch (_) {}
+  OfflineCacheManager.instance.setSupabaseAvailability(false);
   return true;
 }
 

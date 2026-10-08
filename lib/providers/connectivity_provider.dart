@@ -178,6 +178,12 @@ Stream<ConnectivityHealth> createConnectivityHealthStream({
       }
       lastEmittedStatus = value.status;
       controller.add(value);
+      // Symmetric, probe-driven recovery: a completed Supabase round trip is
+      // proof of life, so flip OfflineCacheManager back online immediately
+      // instead of waiting for a health-stream transition + sync round.
+      if (value.backendReachable) {
+        OfflineCacheManager.instance.setSupabaseAvailability(true);
+      }
     } catch (_) {}
   }
 
@@ -380,6 +386,7 @@ Stream<ConnectivityHealth> createConnectivityHealthStream({
       if (disposed) return;
       backgroundMode = false;
       lastResumeAt = DateTime.now();
+      OfflineCacheManager.instance.noteAppResumed();
       debugPrint(
         '🌐 [CONNECTIVITY] App resumed - immediate reachability probe',
       );
@@ -399,9 +406,38 @@ final connectivityHealthProvider = StreamProvider<ConnectivityHealth>((ref) {
   return createConnectivityHealthStream();
 });
 
+/// Bumped whenever OfflineCacheManager.isSupabaseAvailable flips, so
+/// connectivityProvider recomputes even when the health stream itself did
+/// not emit (e.g. forks caused by a forced offline elsewhere).
+class _AvailabilityVersionNotifier extends Notifier<int> {
+  @override
+  int build() => 0;
+  void bump() => state += 1;
+}
+
+final availabilityVersionProvider =
+    NotifierProvider<_AvailabilityVersionNotifier, int>(
+  _AvailabilityVersionNotifier.new,
+);
+
+final _availabilityBridgeProvider = Provider<void>((ref) {
+  void bump(bool _) {
+    ref.read(availabilityVersionProvider.notifier).bump();
+  }
+
+  OfflineCacheManager.instance.onAvailabilityChanged = bump;
+  ref.onDispose(() {
+    if (OfflineCacheManager.instance.onAvailabilityChanged == bump) {
+      OfflineCacheManager.instance.onAvailabilityChanged = null;
+    }
+  });
+});
+
 final connectivityProvider = Provider<AsyncValue<bool>>((ref) {
   final prefs = ref.watch(userPreferencesProvider);
   OfflineCacheManager.instance.setForceOnline(prefs.backgroundMatchingMode);
+  ref.watch(_availabilityBridgeProvider);
+  ref.watch(availabilityVersionProvider);
   final healthAsync = ref.watch(connectivityHealthProvider);
   return healthAsync.whenData(
     (health) =>

@@ -34,6 +34,20 @@ class OfflineCacheManager {
   DateTime? _lastSupabaseAvailableAt = DateTime.now();
   DateTime? _pendingUnavailableSince;
   int _consecutiveUnavailableSignals = 0;
+  DateTime? _lastResumedAt;
+
+  /// Fired when availability actually flips (true <-> false). Lets providers
+  /// rebuild without polling the non-reactive singleton.
+  void Function(bool available)? onAvailabilityChanged;
+
+  /// Resume grace window: a forced offline verdict arriving right after the
+  /// app returns to the foreground is almost always a half-dead socket or a
+  /// cold DNS/TLS handshake, not a real outage.
+  static const Duration _resumeGracePeriod = Duration(seconds: 12);
+
+  void noteAppResumed() {
+    _lastResumedAt = DateTime.now();
+  }
 
   /// Check if Supabase is currently available
   bool get isSupabaseAvailable => _forceOnline || _isSupabaseAvailable;
@@ -86,10 +100,23 @@ class OfflineCacheManager {
     );
 
     if (force) {
-      _pendingUnavailableSince = null;
-      _consecutiveUnavailableSignals = 0;
-      _applyAvailability(available, now);
-      return;
+      // Guard: forced offline during the resume grace window is converted to a
+      // normal (grace + streak) signal so one realtime/HTTP error on wake
+      // cannot flip the app offline.
+      if (!available &&
+          _lastResumedAt != null &&
+          now.difference(_lastResumedAt!) < _resumeGracePeriod) {
+        debugPrint(
+          '🌐 [OFFLINE] Suppressing forced-offline during resume grace '
+          '(${now.difference(_lastResumedAt!).inSeconds}s since resume)',
+        );
+        force = false;
+      } else {
+        _pendingUnavailableSince = null;
+        _consecutiveUnavailableSignals = 0;
+        _applyAvailability(available, now);
+        return;
+      }
     }
 
     if (available) {
@@ -141,6 +168,11 @@ class OfflineCacheManager {
       debugPrint(
         '⏱️ [BOOTSTRAP] OFFLINE availability $oldValue -> $available (forceOnline=$_forceOnline)',
       );
+      try {
+        onAvailabilityChanged?.call(available);
+      } catch (e) {
+        debugPrint('⚠️ [OFFLINE] onAvailabilityChanged error: $e');
+      }
     }
     _isSupabaseAvailable = available;
     _lastSupabaseCheckTime = timestamp;
