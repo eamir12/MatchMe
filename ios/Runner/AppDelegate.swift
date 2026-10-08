@@ -389,7 +389,7 @@ import Vision
         // Check for face obstruction (using roll/yaw if available)
         let faceObstructed = faceObservations.contains { face in
           if let roll = face.roll, let yaw = face.yaw {
-            return abs(roll) > 0.5 || abs(yaw) > 0.5
+            return abs(roll.doubleValue) > 0.5 || abs(yaw.doubleValue) > 0.5
           }
           return false
         }
