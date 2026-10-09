@@ -3,13 +3,14 @@ import 'dart:convert';
 import 'dart:developer' as developer;
 import 'dart:math';
 
+import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
 import 'package:googleapis/calendar/v3.dart' as google_calendar;
 import 'package:http/http.dart' as http;
 import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/utils/google_sign_in_nonce.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ExternalCalendar {
@@ -100,7 +101,7 @@ class WebCalendarService {
   static Future<void>? _sharedGoogleSignInInitFuture;
   static String? _lastInitializedClientId;
   static String? _lastInitializedServerClientId;
-  static String? _googleSignInNonce;
+  static String? _googleSignInRawNonce;
 
   static String _createGoogleSignInNonce() {
     final random = Random.secure();
@@ -160,14 +161,17 @@ class WebCalendarService {
   }) async {
     final normalizedClientId = clientId.trim();
     final normalizedServerClientId = serverClientId?.trim() ?? '';
-    final nonce = _googleSignInNonce ??= _createGoogleSignInNonce();
+    final rawNonce = _googleSignInRawNonce ??= _createGoogleSignInNonce();
+    // Google embeds the hash in its ID token; Supabase verifies that claim
+    // against the raw nonce passed to signInWithIdToken.
+    final hashedNonce = hashGoogleSignInNonce(rawNonce);
 
     if (_lastInitializedClientId == normalizedClientId &&
         _lastInitializedServerClientId == normalizedServerClientId) {
       print(
         'WebCalendarService.ensureGoogleSignInInitialized: already initialized with same client IDs',
       );
-      return nonce;
+      return rawNonce;
     }
 
     print(
@@ -177,18 +181,18 @@ class WebCalendarService {
       print(
         'WebCalendarService.ensureGoogleSignInInitialized: ABORTING - clientId is empty on Web',
       );
-      return nonce;
+      return rawNonce;
     }
     final pendingInit = _sharedGoogleSignInInitFuture;
     if (pendingInit != null) {
       await pendingInit;
-      return nonce;
+      return rawNonce;
     }
     final Future<void> initFuture = () async {
       if (kIsWeb) {
         await GoogleSignIn.instance.initialize(
           clientId: normalizedClientId,
-          nonce: nonce,
+          nonce: hashedNonce,
         );
         return;
       }
@@ -196,7 +200,7 @@ class WebCalendarService {
         await GoogleSignIn.instance.initialize(
           clientId: normalizedClientId,
           serverClientId: normalizedServerClientId,
-          nonce: nonce,
+          nonce: hashedNonce,
         );
         return;
       }
@@ -204,10 +208,10 @@ class WebCalendarService {
         await GoogleSignIn.instance.initialize(
           clientId: normalizedClientId,
           serverClientId: normalizedClientId,
-          nonce: nonce,
+          nonce: hashedNonce,
         );
       } else {
-        await GoogleSignIn.instance.initialize(nonce: nonce);
+        await GoogleSignIn.instance.initialize(nonce: hashedNonce);
       }
     }();
     _sharedGoogleSignInInitFuture = initFuture;
@@ -215,7 +219,7 @@ class WebCalendarService {
       await initFuture;
       _lastInitializedClientId = normalizedClientId;
       _lastInitializedServerClientId = normalizedServerClientId;
-      return nonce;
+      return rawNonce;
     } catch (_) {
       _sharedGoogleSignInInitFuture = null;
       rethrow;

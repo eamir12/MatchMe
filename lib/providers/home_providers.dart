@@ -433,7 +433,6 @@ Future<void> _warmMatchedUsersAfterHomeSync(Ref ref, String userId) async {
       final u2 = (m['user2_id'] ?? '').toString().trim();
       final other = u1 == userId ? u2 : (u2 == userId ? u1 : '');
       if (other.isNotEmpty) otherIds.add(other);
-      if (otherIds.length >= 30) break;
     }
     if (otherIds.isEmpty) return;
 
@@ -454,11 +453,9 @@ Future<void> _warmMatchedUsersAfterHomeSync(Ref ref, String userId) async {
             for (final p in photos) {
               final s = p.toString().trim();
               if (s.isNotEmpty) sources.add(s);
-              if (sources.length >= 60) break;
             }
           }
         } catch (_) {}
-        if (sources.length >= 60) break;
       }
       try {
         final chats = await localDb.loadChats(userId);
@@ -469,10 +466,8 @@ Future<void> _warmMatchedUsersAfterHomeSync(Ref ref, String userId) async {
               for (final p in photos) {
                 final s = p.toString().trim();
                 if (s.isNotEmpty) sources.add(s);
-                if (sources.length >= 60) break;
               }
             }
-            if (sources.length >= 60) break;
           }
         }
       } catch (_) {}

@@ -628,7 +628,7 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
       // Receiver joining: view map only (do not start sharing back immediately)
       // Read the same realtime source the display watches (local-DB stream).
       final otherProfileAsync = ref.read(
-        userProfileProvider(widget.otherUserId),
+        otherUserProfileProvider(widget.otherUserId),
       );
       final otherPhoto =
           otherProfileAsync.asData?.value?.photos.isNotEmpty == true
@@ -682,7 +682,7 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
         : duration;
 
     // Same realtime source the display watches (local-DB stream).
-    final otherProfileAsync = ref.read(userProfileProvider(widget.otherUserId));
+    final otherProfileAsync = ref.read(otherUserProfileProvider(widget.otherUserId));
     final otherPhoto =
         otherProfileAsync.asData?.value?.photos.isNotEmpty == true
         ? otherProfileAsync.asData!.value!.photos[0]
@@ -1045,7 +1045,7 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
 
       // Same realtime source the display watches (local-DB stream).
       final otherProfileAsync = ref.read(
-        userProfileProvider(widget.otherUserId),
+        otherUserProfileProvider(widget.otherUserId),
       );
       final otherPhoto =
           otherProfileAsync.asData?.value?.photos.isNotEmpty == true
@@ -1177,7 +1177,7 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
 
     // aggregated local profiles (fast, from local DB)
     final otherProfileAsync = ref.watch(
-      userProfileProvider(widget.otherUserId),
+      otherUserProfileProvider(widget.otherUserId),
     );
     final currentProfileAsync = ref.watch(userProfileProvider(currentUserId));
 

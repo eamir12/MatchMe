@@ -24,6 +24,8 @@ import 'package:matchme/models/photo_moderation_rejection.dart';
 import 'package:matchme/providers/visibility_provider.dart';
 import 'package:matchme/providers/new_options_provider.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
+import 'package:matchme/providers/home_providers.dart'
+    show dashboardStatsProvider, warmDashboardStatsForUser;
 import 'package:matchme/utils/resume_diagnostics.dart';
 import 'package:matchme/utils/profile_sync_result.dart';
 import 'package:matchme/services/referral_service.dart';
@@ -3953,6 +3955,11 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
 
     // Invalidate the userProfileProvider to ensure immediate update
     ref.invalidate(userProfileProvider(userId));
+    // Radius is an input to the Nearby count. Refresh active dashboard/map
+    // listeners immediately and warm the persisted snapshot even if neither
+    // screen is currently mounted.
+    ref.invalidate(dashboardStatsProvider);
+    unawaited(warmDashboardStatsForUser(userId));
     // Note: Removed ref.invalidate(isVisibleProvider) to break circular dependency.
     // The visibility provider already listens to profileEditProvider changes via ref.listen,
     // so explicit invalidation here was unnecessary and caused a rebuild cycle.

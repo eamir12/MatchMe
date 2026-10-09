@@ -35,6 +35,7 @@ import 'package:matchme/providers/payment_provider.dart';
 import 'package:matchme/providers/new_options_provider.dart';
 import 'package:matchme/providers/theme_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
+import 'package:matchme/providers/user_preferences_provider.dart';
 import 'package:matchme/providers/visibility_provider.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/utils/resume_diagnostics.dart';
@@ -3589,6 +3590,23 @@ Future<void> _runDeferredTasks({
           } catch (_) {}
         } catch (_) {}
         continue;
+      }
+      if (authState.event == AuthChangeEvent.signedIn ||
+          authState.event == AuthChangeEvent.initialSession) {
+        try {
+          unawaited(
+            container
+                .read(userPreferencesProvider.notifier)
+                .refresh()
+                .catchError((error) {
+                  debugPrint(
+                    '[AUTH] Failed to refresh cached user preferences: $error',
+                  );
+                }),
+          );
+        } catch (error) {
+          debugPrint('[AUTH] Could not start user-preference refresh: $error');
+        }
       }
       try {
         await EncryptedCacheService.instance.initialize(userId);

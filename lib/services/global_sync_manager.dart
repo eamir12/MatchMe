@@ -654,7 +654,6 @@ class GlobalHomeSyncManager {
         final u2 = (m['user2_id'] ?? '').toString().trim();
         final other = u1 == userId ? u2 : (u2 == userId ? u1 : '');
         if (other.isNotEmpty) otherIds.add(other);
-        if (otherIds.length >= 30) break;
       }
       if (otherIds.isEmpty) return;
 
@@ -675,11 +674,9 @@ class GlobalHomeSyncManager {
               for (final p in photos) {
                 final s = p.toString().trim();
                 if (s.isNotEmpty) sources.add(s);
-                if (sources.length >= 60) break;
               }
             }
           } catch (_) {}
-          if (sources.length >= 60) break;
         }
         try {
           final chats = await localDb.loadChats(userId);
@@ -690,10 +687,8 @@ class GlobalHomeSyncManager {
                 for (final p in photos) {
                   final s = p.toString().trim();
                   if (s.isNotEmpty) sources.add(s);
-                  if (sources.length >= 60) break;
                 }
               }
-              if (sources.length >= 60) break;
             }
           }
         } catch (_) {}
@@ -1750,16 +1745,26 @@ class GlobalHomeSyncManager {
     try {
       final localDb = _ref.read(localDbProvider);
 
-      // 1. Get all match IDs the user is currently in
-      final matchesResponse = await supabase
-          .from('matches')
-          .select('id')
-          .or('user1_id.eq.$userId,user2_id.eq.$userId');
-
-      final allMatchIds = (matchesResponse as List)
-          .map((e) => e['id'] as String)
-          .where((id) => id.isNotEmpty)
-          .toList();
+      // 1. Get all match IDs the user is currently in. Page this query too,
+      // since users with a long history can exceed the REST response limit.
+      const pageSize = 1000;
+      final allMatchIds = <String>[];
+      var matchOffset = 0;
+      while (true) {
+        final matchesResponse = await supabase
+            .from('matches')
+            .select('id')
+            .or('user1_id.eq.$userId,user2_id.eq.$userId')
+            .order('id', ascending: true)
+            .range(matchOffset, matchOffset + pageSize - 1);
+        final matchPage = (matchesResponse as List)
+            .map((e) => e['id'] as String)
+            .where((id) => id.isNotEmpty)
+            .toList();
+        allMatchIds.addAll(matchPage);
+        if (matchPage.length < pageSize) break;
+        matchOffset += pageSize;
+      }
 
       if (allMatchIds.isEmpty) return;
 
@@ -1771,35 +1776,40 @@ class GlobalHomeSyncManager {
             matchId,
           );
 
-          // 4. Build the query
-          var query = supabase
-              .from('chat_messages')
-              .select(
-                'id, match_id, sender_id, created_at, edited_at, delivered_at, read_at, '
-                'reaction_summary, reply_to_message_id, '
-                'encryption_scheme, sender_key_id, recipient_key_id, recipient_id, '
-                'content_original_encrypted, content_original_nonce, '
-                'content_translated_encrypted, content_translated_nonce, '
-                'wrapped_keys, translation_capable, detected_source_language, translated_target_language',
-              )
-              .eq('match_id', matchId);
+          // Supabase/PostgREST limits each response page. Fetch every page so
+          // long-running conversations are fully available from local storage.
+          var offset = 0;
+          while (true) {
+            var query = supabase
+                .from('chat_messages')
+                .select(
+                  'id, match_id, sender_id, created_at, edited_at, delivered_at, read_at, '
+                  'reaction_summary, reply_to_message_id, '
+                  'encryption_scheme, sender_key_id, recipient_key_id, recipient_id, '
+                  'content_original_encrypted, content_original_nonce, '
+                  'content_translated_encrypted, content_translated_nonce, '
+                  'wrapped_keys, translation_capable, detected_source_language, translated_target_language',
+                )
+                .eq('match_id', matchId);
 
-          // 5. If we have a timestamp, only ask for messages *after* it
-          if (latestTimestamp != null) {
-            query = query.gt('created_at', latestTimestamp);
-          }
+            // Re-fetch the newest cached timestamp too, so messages sharing
+            // that timestamp are not skipped; localDb deduplicates by ID.
+            if (latestTimestamp != null) {
+              query = query.gte('created_at', latestTimestamp);
+            }
 
-          final newMessages = await query;
+            final newMessages = await query
+                .order('created_at', ascending: true)
+                .order('id', ascending: true)
+                .range(offset, offset + pageSize - 1);
 
-          // 6. Add the new messages to the local cache and get messages to deliver
-          if (newMessages.isNotEmpty) {
+            if (newMessages.isEmpty) break;
             final messagesToDeliver = await localDb.addMessages(
               matchId,
               newMessages.cast<Map<String, dynamic>>(),
               currentUserId: userId,
             );
 
-            // 7. Mark messages as delivered to server (non-blocking, batch RPC calls)
             if (messagesToDeliver.isNotEmpty) {
               debugPrint(
                 '🔄 GLOBAL_SYNC: Marking ${messagesToDeliver.length} messages as delivered for match $matchId',
@@ -1827,6 +1837,9 @@ class GlobalHomeSyncManager {
                 ),
               );
             }
+
+            if (newMessages.length < pageSize) break;
+            offset += pageSize;
           }
         } catch (_) {
           // suppressed error logging per-match to avoid noisy logs
