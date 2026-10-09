@@ -25,10 +25,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/map_tile_cache_service.dart';
 import 'package:matchme/services/user_activity_service.dart';
+import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/utils/country_localized_names.dart';
 import 'package:matchme/utils/unit_utils.dart';
+import 'package:matchme/utils/nearby_map_camera.dart';
 import 'package:matchme/providers/unit_provider.dart';
-import 'package:matchme/screens/settings/matching_settings_screen.dart';
 import 'package:matchme/widgets/app_empty_state.dart';
 import 'package:matchme/widgets/app_skeleton.dart';
 import 'package:matchme/widgets/pinned_location_sheet.dart';
@@ -73,7 +74,7 @@ final Crs _noWrap3857Crs = () {
   const tileSize = 256.0;
   final scaleFactor = 0.5 / (pi * SphericalMercator.r);
   final scales = List<double>.generate(
-    19,
+    25,
     (z) => tileSize * pow(2, z).toDouble() * scaleFactor,
     growable: false,
   );
@@ -151,6 +152,12 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
   bool _reduceMotion = false;
   bool _motionInitialized = false;
   bool _locationLoading = true;
+  final AppConfigService _appConfigService = AppConfigService();
+  late final Future<List<int>> _matchRadiusOptionsFuture = _appConfigService
+      .getIntList(
+        'profile.match_radius_options_meters',
+        defaultValue: [5, 10, 20, 50, 100],
+      );
 
   // Live follow mode: while the gates allow it (visible + online + no pin),
   // a continuous position stream runs for this screen so the map follows
@@ -545,17 +552,12 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
     return (radiusMeters ~/ 4).clamp(11, 5000);
   }
 
-  double _initialZoomForRadiusKm(double radiusKm) {
-    if (radiusKm <= 0.1) return 17;
-    if (radiusKm <= 0.3) return 16;
-    if (radiusKm <= 0.8) return 15;
-    if (radiusKm <= 2) return 14;
-    if (radiusKm <= 5) return 13;
-    if (radiusKm <= 12) return 12;
-    if (radiusKm <= 30) return 11;
-    if (radiusKm <= 80) return 10;
-    if (radiusKm <= 200) return 9;
-    return 3;
+  double _zoomForRadiusKm(double radiusKm, LatLng center, Size viewportSize) {
+    return nearbyMapZoomForRadius(
+      radiusMeters: radiusKm * 1000,
+      latitude: center.latitude,
+      viewportSize: viewportSize,
+    );
   }
 
   void _scheduleFetch({
@@ -587,6 +589,52 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
       return;
     }
     _startFollowAnimation(center);
+  }
+
+  Future<void> _updateMatchRadius({
+    required int radiusMeters,
+    required String userId,
+    required LatLng? center,
+    required LocalizationState l10n,
+  }) async {
+    try {
+      await ref
+          .read(profileEditProvider(userId).notifier)
+          .updateRadius(radiusMeters);
+      if (!mounted) return;
+
+      final radiusKm = radiusMeters / 1000.0;
+      if (center != null) {
+        _lastDefaultRadiusKm = radiusKm;
+        _lastUserPanAt = null;
+        _stopFollowAnimation();
+        if (_mapReady) {
+          try {
+            _mapController.move(
+              center,
+              _zoomForRadiusKm(radiusKm, center, _mapController.camera.size),
+            );
+            _lastAppliedCenter = center;
+          } catch (error) {
+            debugPrint('[NearbyMap] Failed to refocus after radius change: $error');
+          }
+        }
+        setState(() => _selectedCell = null);
+        _scheduleFetch(userCenter: center, defaultRadiusKm: radiusKm);
+      }
+    } catch (error) {
+      debugPrint('[NearbyMap] Failed to update match radius: $error');
+      if (!mounted) return;
+      final errorKey = ErrorLocalizationService.getErrorTranslationKey(error);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${l10n.getString('settingsRadiusUpdateFailed')}: '
+            '${l10n.getString(errorKey)}',
+          ),
+        ),
+      );
+    }
   }
 
   void _startFollowAnimation(LatLng target) {
@@ -1013,6 +1061,14 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
         final defaultRadiusMeters = (profile?.matchRadiusDefault ?? 50)
             .toDouble();
         final defaultRadiusKm = defaultRadiusMeters / 1000.0;
+        final pinLabel = pin.label?.trim();
+        final pinnedLocationLabel = pinLabel == null || pinLabel.isEmpty
+            ? ''
+            : ' ${l10n.getString('homeNearbyMapPinnedToLabel')} $pinLabel';
+        final pinnedLocationText = l10n.getString(
+          'homeNearbyMapPinnedLocation',
+          params: {'label': pinnedLocationLabel},
+        );
 
         final pinnedLatLng = pin.latitude != null && pin.longitude != null
             ? LatLng(pin.latitude!, pin.longitude!)
@@ -1053,7 +1109,7 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
 
         return Scaffold(
           appBar: AppBar(
-            toolbarHeight: 84,
+            toolbarHeight: 144,
             title: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
@@ -1074,41 +1130,39 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                   overflow: TextOverflow.visible,
                 ),
                 const SizedBox(height: 2),
-                Semantics(
-                  button: true,
-                  label: l10n.getString(
-                    'homeNearbyMapRadius',
-                    params: {
-                      'radius': formatDistanceWithImperial(
-                        defaultRadiusMeters,
-                        _usesImperial,
-                        l10n,
-                      ),
-                    },
-                  ),
-                  child: TextButton(
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const MatchingSettingsScreen(),
+                FutureBuilder<List<int>>(
+                  future: _matchRadiusOptionsFuture,
+                  builder: (context, snapshot) {
+                    final availableRadii = {
+                      ...(snapshot.data ?? const [5, 10, 20, 50, 100]),
+                      defaultRadiusMeters.round(),
+                    }.toList()..sort();
+                    return PopupMenuButton<int>(
+                      tooltip: l10n.getString('settingsRadius'),
+                      onSelected: (radius) => unawaited(
+                        _updateMatchRadius(
+                          radiusMeters: radius,
+                          userId: userId,
+                          center: userLatLng,
+                          l10n: l10n,
                         ),
-                      );
-                    },
-                    style: TextButton.styleFrom(
-                      foregroundColor: Theme.of(context).colorScheme.primary,
-                      minimumSize: const Size(48, 48),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
                       ),
-                      tapTargetSize: MaterialTapTargetSize.padded,
-                      shape: const StadiumBorder(),
-                    ),
-                    child: Align(
-                      alignment: AlignmentDirectional.centerStart,
-                      child: Text(
-                        l10n.getString(
+                      itemBuilder: (context) => [
+                        for (final radius in availableRadii)
+                          PopupMenuItem<int>(
+                            value: radius,
+                            child: Text(
+                              formatDistanceWithImperial(
+                                radius.toDouble(),
+                                _usesImperial,
+                                l10n,
+                              ),
+                            ),
+                          ),
+                      ],
+                      child: Semantics(
+                        button: true,
+                        label: l10n.getString(
                           'homeNearbyMapRadius',
                           params: {
                             'radius': formatDistanceWithImperial(
@@ -1118,13 +1172,56 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                             ),
                           },
                         ),
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.primary,
-                          fontWeight: FontWeight.w500,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Text(
+                            l10n.getString(
+                              'homeNearbyMapRadius',
+                              params: {
+                                'radius': formatDistanceWithImperial(
+                                  defaultRadiusMeters,
+                                  _usesImperial,
+                                  l10n,
+                                ),
+                              },
+                            ),
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.primary,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                            maxLines: 2,
+                            overflow: TextOverflow.visible,
+                          ),
                         ),
-                        maxLines: 2,
-                        overflow: TextOverflow.visible,
                       ),
+                    );
+                  },
+                ),
+                Semantics(
+                  button: true,
+                  label: pin.isActive
+                      ? pinnedLocationText
+                      : l10n.getString('homeNearbyMapPinAction'),
+                  child: TextButton.icon(
+                    onPressed: () => showPinnedLocationSheet(context, ref),
+                    icon: const Icon(Icons.push_pin_outlined, size: 18),
+                    label: Text(
+                      pin.isActive
+                          ? pinnedLocationText
+                          : l10n.getString('homeNearbyMapPinAction'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    style: TextButton.styleFrom(
+                      alignment: AlignmentDirectional.centerStart,
+                      foregroundColor: Theme.of(context).colorScheme.primary,
+                      minimumSize: const Size(48, 48),
+                      padding: EdgeInsets.zero,
+                      tapTargetSize: MaterialTapTargetSize.padded,
+                      shape: const StadiumBorder(),
                     ),
                   ),
                 ),
@@ -1157,14 +1254,21 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                         right: 150,
                         child: PinnedMapStatusBanner(pin: pin, l10n: l10n),
                       ),
-                    FlutterMap(
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final viewportSize = constraints.biggest;
+                        return FlutterMap(
                       mapController: _mapController,
                       options: MapOptions(
                         crs: _noWrap3857Crs,
                         initialCenter: userLatLng,
-                        initialZoom: _initialZoomForRadiusKm(defaultRadiusKm),
+                        initialZoom: _zoomForRadiusKm(
+                          defaultRadiusKm,
+                          userLatLng,
+                          viewportSize,
+                        ),
                         minZoom: 1,
-                        maxZoom: 18,
+                        maxZoom: nearbyMapMaxZoom,
                         cameraConstraint: CameraConstraint.contain(
                           bounds: _worldBounds,
                         ),
@@ -1232,6 +1336,7 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                           userAgentPackageName: 'matchme.app',
                           tileProvider: CachedMapTileProvider(),
                           tileBounds: _worldBounds,
+                          maxNativeZoom: 19,
                         ),
                         RichAttributionWidget(
                           attributions: [
@@ -1284,6 +1389,8 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                         ),
                         MarkerLayer(markers: [_buildUserMarker(userLatLng)]),
                       ],
+                    );
+                      },
                     ),
                     Positioned(
                       right: 12,
@@ -1296,8 +1403,14 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                           onPressed: () {
                             _mapController.move(
                               userLatLng,
-                              _initialZoomForRadiusKm(defaultRadiusKm),
+                              _zoomForRadiusKm(
+                                defaultRadiusKm,
+                                userLatLng,
+                                _mapController.camera.size,
+                              ),
                             );
+                            _lastUserPanAt = null;
+                            _lastAppliedCenter = userLatLng;
                             _scheduleFetch(
                               userCenter: userLatLng,
                               defaultRadiusKm: defaultRadiusKm,
@@ -1307,31 +1420,13 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                         ),
                       ),
                     ),
-                    // Pinned home-base: open the shared management sheet
-                    // (start / extend / unpin). The server only ever pins a
-                    // position it has observed from live GPS — the map is a
-                    // control surface, never a point picker.
-                    Positioned(
-                      right: 12,
-                      bottom: 162,
-                      child: Padding(
-                        padding: const EdgeInsets.all(4),
-                        child: FloatingActionButton.small(
-                          heroTag: null,
-                          tooltip: l10n.getString('pinnedLocationPinAction'),
-                          onPressed: () =>
-                              showPinnedLocationSheet(context, ref),
-                          child: const Icon(Icons.push_pin_outlined),
-                        ),
-                      ),
-                    ),
                     Positioned(
                       right: 12,
                       bottom: 12,
                       child: _MapZoomControls(
                         controller: _mapController,
                         minZoom: 1,
-                        maxZoom: 18,
+                        maxZoom: nearbyMapMaxZoom,
                         l10n: l10n,
                       ),
                     ),

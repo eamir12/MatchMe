@@ -714,7 +714,7 @@ class LocalizationState {
     'importBlockSheetFeedbackThanks':
         'Thanks — we’ll take a look at this decision.',
     'importBlockSheetFeedbackAlreadyUsed':
-        'You’ve already sent feedback for this event. Thanks for helping us improve!',
+        'You’ve already sent feedback. Thanks for helping us improve!',
     'eventAddLooksPrivateTitle': 'This looks personal',
     'eventAddLooksPrivateBody':
         '“{title}” looks like a personal appointment rather than a public event. MatchMe events are visible to your matches — consider sharing only events others can join.',
@@ -1357,6 +1357,10 @@ class LocalizationState {
     'homeNearbyMap': 'Nearby Map',
     'homeNearbyMapDesc': 'See who is around you within your match radius.',
     'homeNearbyMapRadius': 'Your currently selected radius: {radius}',
+    'homeNearbyMapPinAction': 'Pin current location',
+    'homeNearbyMapPinnedLocation':
+        'Your location is currently pinned{label}.',
+    'homeNearbyMapPinnedToLabel': 'to',
     'homeNoChats': 'No recent chats',
     'homeNoMatches': 'No recent matches',
     'homeOnline': 'Online',
