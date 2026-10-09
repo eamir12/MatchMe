@@ -111,6 +111,14 @@
 				<string>com.example.matchme</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.988596890235-q4jdj3eu4r74tik21dlstolgsco2oel7</string>
+			</array>
+		</dict>
 	</array>
 
     <key>CFBundleDocumentTypes</key>

@@ -1,8 +1,35 @@
+import 'package:flutter/foundation.dart' show TargetPlatform;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/material.dart' show Locale, TextDirection;
+import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/utils/passkey_device_capability.dart';
 import 'package:matchme/utils/passkey_suggestion.dart';
 
 void main() {
+  group('passkey setup text fallback', () {
+    test('uses bundled English copy when no database translations are loaded', () {
+      final localization = LocalizationState(
+        currentLocale: const Locale('en'),
+        textDirection: TextDirection.ltr,
+        strings: const {},
+        supportedLanguages: const [],
+      );
+
+      for (final key in [
+        'authPasskeySetupIosTitle',
+        'authPasskeySetupIosBody',
+        'authPasskeySetupIosButton',
+        'authPasskeySetupIosInstructionsTitle',
+        'authPasskeySetupIosInstructionsBody',
+        'authPasskeySetupAndroidTitle',
+        'authPasskeySetupWindowsTitle',
+      ]) {
+        expect(localization.getString(key), isNot(key));
+        expect(localization.getString(key), isNotEmpty);
+      }
+    });
+  });
+
   group('resolvePasskeyDeviceCapability', () {
     test('maps the two reported flags onto a capability', () {
       expect(
@@ -57,26 +84,57 @@ void main() {
         // passkey ceremony at all.
         final presentation = resolvePasskeyCardPresentation(
           PasskeyDeviceCapability.noPlatformAuthenticator,
+          platform: TargetPlatform.windows,
         );
         expect(presentation.showActionButton, isFalse);
-        expect(presentation.titleKey, 'authPasskeyNoAuthenticatorTitle');
-        expect(presentation.bodyKey, 'authPasskeyNoAuthenticatorBody');
+        expect(presentation.titleKey, 'authPasskeySetupWindowsTitle');
+        expect(presentation.bodyKey, 'authPasskeySetupWindowsBody');
+        expect(
+          presentation.setupAction,
+          PasskeySetupAction.openWindowsSignInOptions,
+        );
+        expect(
+          presentation.setupButtonLabelKey,
+          'authPasskeySetupWindowsButton',
+        );
       },
     );
 
-    test('never reuses the skip-the-password hint when unavailable', () {
+    test('uses iPhone-specific setup guidance and an instructions action', () {
       final presentation = resolvePasskeyCardPresentation(
         PasskeyDeviceCapability.noPlatformAuthenticator,
+        platform: TargetPlatform.iOS,
       );
       expect(presentation.titleKey, isNot('authPasskeyInlineHintTitle'));
       expect(presentation.bodyKey, isNot('authPasskeyInlineHintBody'));
+      expect(presentation.titleKey, 'authPasskeySetupIosTitle');
+      expect(presentation.setupAction, PasskeySetupAction.showInstructions);
+      expect(presentation.setupButtonLabelKey, 'authPasskeySetupIosButton');
+      expect(
+        presentation.setupInstructionsBodyKey,
+        'authPasskeySetupIosInstructionsBody',
+      );
+    });
+
+    test('opens Android security settings when setup is needed', () {
+      final presentation = resolvePasskeyCardPresentation(
+        PasskeyDeviceCapability.noPlatformAuthenticator,
+        platform: TargetPlatform.android,
+      );
+      expect(presentation.titleKey, 'authPasskeySetupAndroidTitle');
+      expect(
+        presentation.setupAction,
+        PasskeySetupAction.openAndroidSecuritySettings,
+      );
     });
 
     test('offers the passkey action when an authenticator is ready', () {
       final presentation = resolvePasskeyCardPresentation(
         PasskeyDeviceCapability.platformAuthenticatorReady,
+        platform: TargetPlatform.iOS,
       );
       expect(presentation.showActionButton, isTrue);
+      expect(presentation.setupAction, isNull);
       expect(presentation.titleKey, 'authPasskeyInlineHintTitle');
       expect(presentation.bodyKey, 'authPasskeyInlineHintBody');
     });

@@ -20,6 +20,7 @@ workflows:
           /usr/libexec/PlistBuddy -c "Print :UILaunchStoryboardName" ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Print :UISupportedInterfaceOrientations" ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Print :UIApplicationSceneManifest:UISceneConfigurations:UIWindowSceneSessionRoleApplication:0:UISceneDelegateClassName" ios/Runner/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes:1:CFBundleURLSchemes:0" ios/Runner/Info.plist | grep -Fx "com.googleusercontent.apps.988596890235-q4jdj3eu4r74tik21dlstolgsco2oel7"
       - name: Install CocoaPods
         script: |
           cd ios

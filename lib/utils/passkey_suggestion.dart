@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart' show TargetPlatform;
+
 import 'package:matchme/utils/passkey_device_capability.dart';
 
 export 'package:matchme/utils/passkey_device_capability.dart'
@@ -9,6 +11,10 @@ class PasskeyCardPresentation {
     required this.titleKey,
     required this.bodyKey,
     required this.showActionButton,
+    this.setupAction,
+    this.setupButtonLabelKey,
+    this.setupInstructionsTitleKey,
+    this.setupInstructionsBodyKey,
   });
 
   final String titleKey;
@@ -18,23 +24,80 @@ class PasskeyCardPresentation {
   /// action would only fail, and the copy must not point at a button that
   /// isn't there.
   final bool showActionButton;
+  final PasskeySetupAction? setupAction;
+  final String? setupButtonLabelKey;
+  final String? setupInstructionsTitleKey;
+  final String? setupInstructionsBodyKey;
+}
+
+enum PasskeySetupAction {
+  openAndroidSecuritySettings,
+  openWindowsSignInOptions,
+  showInstructions,
 }
 
 /// Chooses the passkey card's copy and whether to offer the passkey action.
 ///
 /// When no platform authenticator is enrolled the card explains the situation
-/// *instead of* advertising sign-in: telling someone to "use the passkey button
-/// below", or showing a button that cannot succeed, is worse than an honest
-/// explanation.
+/// and provides device-specific setup help instead of advertising a passkey
+/// action that cannot currently succeed.
 PasskeyCardPresentation resolvePasskeyCardPresentation(
-  PasskeyDeviceCapability capability,
+  PasskeyDeviceCapability capability, {
+  required TargetPlatform platform,
+}
 ) {
   switch (capability) {
     case PasskeyDeviceCapability.noPlatformAuthenticator:
-      return const PasskeyCardPresentation(
-        titleKey: 'authPasskeyNoAuthenticatorTitle',
-        bodyKey: 'authPasskeyNoAuthenticatorBody',
+      final configuration = switch (platform) {
+        TargetPlatform.iOS => (
+          title: 'authPasskeySetupIosTitle',
+          body: 'authPasskeySetupIosBody',
+          button: 'authPasskeySetupIosButton',
+          action: PasskeySetupAction.showInstructions,
+          instructionsTitle: 'authPasskeySetupIosInstructionsTitle',
+          instructionsBody: 'authPasskeySetupIosInstructionsBody',
+        ),
+        TargetPlatform.android => (
+          title: 'authPasskeySetupAndroidTitle',
+          body: 'authPasskeySetupAndroidBody',
+          button: 'authPasskeySetupAndroidButton',
+          action: PasskeySetupAction.openAndroidSecuritySettings,
+          instructionsTitle: 'authPasskeySetupAndroidInstructionsTitle',
+          instructionsBody: 'authPasskeySetupAndroidInstructionsBody',
+        ),
+        TargetPlatform.windows => (
+          title: 'authPasskeySetupWindowsTitle',
+          body: 'authPasskeySetupWindowsBody',
+          button: 'authPasskeySetupWindowsButton',
+          action: PasskeySetupAction.openWindowsSignInOptions,
+          instructionsTitle: 'authPasskeySetupWindowsInstructionsTitle',
+          instructionsBody: 'authPasskeySetupWindowsInstructionsBody',
+        ),
+        TargetPlatform.macOS => (
+          title: 'authPasskeySetupMacTitle',
+          body: 'authPasskeySetupMacBody',
+          button: 'authPasskeySetupMacButton',
+          action: PasskeySetupAction.showInstructions,
+          instructionsTitle: 'authPasskeySetupMacInstructionsTitle',
+          instructionsBody: 'authPasskeySetupMacInstructionsBody',
+        ),
+        _ => (
+          title: 'authPasskeySetupOtherTitle',
+          body: 'authPasskeySetupOtherBody',
+          button: 'authPasskeySetupOtherButton',
+          action: PasskeySetupAction.showInstructions,
+          instructionsTitle: 'authPasskeySetupOtherInstructionsTitle',
+          instructionsBody: 'authPasskeySetupOtherInstructionsBody',
+        ),
+      };
+      return PasskeyCardPresentation(
+        titleKey: configuration.title,
+        bodyKey: configuration.body,
         showActionButton: false,
+        setupAction: configuration.action,
+        setupButtonLabelKey: configuration.button,
+        setupInstructionsTitleKey: configuration.instructionsTitle,
+        setupInstructionsBodyKey: configuration.instructionsBody,
       );
     case PasskeyDeviceCapability.platformAuthenticatorReady:
     case PasskeyDeviceCapability.unsupported:

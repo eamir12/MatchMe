@@ -436,9 +436,43 @@ class LocalizationState {
     'authPasskeyInlineHintBody':
         'You can skip the password field and use the passkey button below.',
     'authPasskeyInlineHintTitle': 'Already using passkeys for this email?',
-    'authPasskeyNoAuthenticatorBody':
-        'This PC has no fingerprint, face or PIN sign-in set up, so the passkey can’t be checked here. Use your password, plug in a security key, or sign in on the device where you created the passkey (for example, your phone).',
-    'authPasskeyNoAuthenticatorTitle': 'Passkey not set up on this PC',
+    'authPasskeySetupAndroidBody':
+        'Passkeys on Android need a screen lock such as a PIN, pattern, password, fingerprint, or face unlock. Set one up in your device security settings, then try again.',
+    'authPasskeySetupAndroidButton': 'Open screen lock settings',
+    'authPasskeySetupAndroidInstructionsBody':
+        'Open Settings, then Security & privacy (the name can vary by device) and set up a screen lock. Passkeys may also require Google Password Manager to be enabled.',
+    'authPasskeySetupAndroidInstructionsTitle':
+        'Set up a screen lock for passkeys',
+    'authPasskeySetupAndroidTitle': 'Set up passkeys on this Android device',
+    'authPasskeySetupIosBody':
+        'Passkeys on iPhone use your device passcode and iCloud Passwords & Keychain. Turn on these features in Settings, then try again.',
+    'authPasskeySetupIosButton': 'View iPhone setup steps',
+    'authPasskeySetupIosInstructionsBody':
+        '1. In Settings, set a passcode under Face ID & Passcode or Touch ID & Passcode.\n\n2. Tap your name, then iCloud > Passwords & Keychain, and turn on Sync this iPhone.\n\nMenu names can vary slightly by iOS version. After setup, return here and try the passkey again.',
+    'authPasskeySetupIosInstructionsTitle': 'Set up passkeys on iPhone',
+    'authPasskeySetupIosTitle': 'Set up passkeys on this iPhone',
+    'authPasskeySetupMacBody':
+        'Passkeys on Mac use Touch ID or your Mac login password and may sync through iCloud Passwords & Keychain. Use the setup steps for your Mac.',
+    'authPasskeySetupMacButton': 'View Mac setup steps',
+    'authPasskeySetupMacInstructionsBody':
+        'In System Settings, check Touch ID or your login password, then open your Apple Account > iCloud > Passwords & Keychain and enable syncing. Menu names vary by macOS version.',
+    'authPasskeySetupMacInstructionsTitle': 'Set up passkeys on Mac',
+    'authPasskeySetupMacTitle': 'Set up passkeys on this Mac',
+    'authPasskeySetupOtherBody':
+        'This device does not currently report a ready platform authenticator. Check the device or browser security settings for passkey, screen-lock, or biometric setup.',
+    'authPasskeySetupOtherButton': 'View setup steps',
+    'authPasskeySetupOtherInstructionsBody':
+        'Passkey setup depends on your device and browser. Enable a device screen lock or biometric unlock, and make sure a passkey provider is available. You can also use a passkey saved on another device.',
+    'authPasskeySetupOtherInstructionsTitle': 'Set up passkeys on this device',
+    'authPasskeySetupOtherTitle': 'Set up passkeys on this device',
+    'authPasskeySetupWindowsBody':
+        'Passkeys on Windows use Windows Hello. Set up a PIN, fingerprint, or face sign-in in Windows Settings, then try again.',
+    'authPasskeySetupWindowsButton': 'Open Windows Hello settings',
+    'authPasskeySetupWindowsInstructionsBody':
+        'Open Settings > Accounts > Sign-in options, then set up a Windows Hello PIN, fingerprint, or face sign-in. Return here and try the passkey again.',
+    'authPasskeySetupWindowsInstructionsTitle':
+        'Set up Windows Hello for passkeys',
+    'authPasskeySetupWindowsTitle': 'Set up passkeys on this PC',
     'authPasskeyNoPasswordNeeded': 'No password needed on supported devices.',
     'authPasskeyNotAvailable':
         'This account does not have a passkey registered',

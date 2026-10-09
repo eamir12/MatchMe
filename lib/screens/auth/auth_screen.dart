@@ -3,6 +3,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:matchme/providers/auth_provider.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/widgets/language_picker_list.dart';
@@ -29,6 +30,7 @@ import 'package:matchme/services/web_calendar_service.dart';
 import 'package:matchme/services/oauth_loopback_server.dart';
 import 'package:matchme/utils/desktop_window_focus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 final supabase = Supabase.instance.client;
 
@@ -156,6 +158,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
   PasskeyCardPresentation get _passkeyCardPresentation =>
       resolvePasskeyCardPresentation(
         _passkeyCapability ?? PasskeyDeviceCapability.unsupported,
+        platform: defaultTargetPlatform,
       );
 
   static const double _oauthProviderIconSize = 20;
@@ -509,7 +512,24 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
                 ),
               ],
             ),
-            if (_passkeyCardPresentation.showActionButton) ...[
+            if (_passkeyCardPresentation.setupAction != null) ...[
+              const SizedBox(height: 14),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: authInteractionBlocked
+                      ? null
+                      : _handlePasskeySetup,
+                  icon: const Icon(Icons.settings_outlined),
+                  label: Text(
+                    getString(_passkeyCardPresentation.setupButtonLabelKey!),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size.fromHeight(50),
+                  ),
+                ),
+              ),
+            ] else if (_passkeyCardPresentation.showActionButton) ...[
               const SizedBox(height: 14),
               SizedBox(
                 width: double.infinity,
@@ -525,6 +545,60 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
             ],
           ],
         ),
+      ),
+    );
+  }
+
+  Future<void> _handlePasskeySetup() async {
+    final presentation = _passkeyCardPresentation;
+    switch (presentation.setupAction) {
+      case PasskeySetupAction.openAndroidSecuritySettings:
+        try {
+          final opened = await const MethodChannel(
+            'matchme/passkey_setup',
+          ).invokeMethod<bool>('openSecuritySettings');
+          if (opened == true || !mounted) return;
+        } on PlatformException catch (error) {
+          debugPrint('[Passkey] Could not open Android security settings: $error');
+        } on MissingPluginException catch (error) {
+          debugPrint('[Passkey] Android settings bridge is unavailable: $error');
+        }
+        break;
+      case PasskeySetupAction.openWindowsSignInOptions:
+        try {
+          final opened = await launchUrl(
+            Uri.parse('ms-settings:signinoptions'),
+            mode: LaunchMode.externalApplication,
+          );
+          if (opened || !mounted) return;
+        } catch (error) {
+          debugPrint('[Passkey] Could not open Windows sign-in settings: $error');
+        }
+        break;
+      case PasskeySetupAction.showInstructions:
+      case null:
+        break;
+    }
+
+    if (!mounted) return;
+    final l10n = ref.read(localizationProvider);
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(
+          l10n.getString(presentation.setupInstructionsTitleKey!),
+        ),
+        content: SingleChildScrollView(
+          child: Text(
+            l10n.getString(presentation.setupInstructionsBodyKey!),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: Text(l10n.getString('done')),
+          ),
+        ],
       ),
     );
   }

@@ -10,6 +10,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.util.Log
 import android.provider.OpenableColumns
+import android.provider.Settings
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -37,6 +38,7 @@ class MainActivity : FlutterFragmentActivity() {
         private const val CHANNEL = "matchme/main_activity"
         private const val APP_INFO_CHANNEL = "matchme/app_info"
         private const val APP_CHECK_CHANNEL = "com.example.matchme/app_check"
+        private const val PASSKEY_SETUP_CHANNEL = "matchme/passkey_setup"
         private const val AUTHENTICATOR_LAUNCHER_CHANNEL = "matchme/authenticator_launcher"
         private const val PHOTO_MODERATION_CHANNEL = "matchme/photo_moderation"
         private const val PHOTO_PRESCREEN_CHANNEL = "matchme/photo_prescreen"
@@ -376,6 +378,28 @@ class MainActivity : FlutterFragmentActivity() {
                         "version" to null,
                         "buildNumber" to null
                     )
+                )
+            }
+        }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            PASSKEY_SETUP_CHANNEL
+        ).setMethodCallHandler { call, result ->
+            if (call.method != "openSecuritySettings") {
+                result.notImplemented()
+                return@setMethodCallHandler
+            }
+
+            try {
+                startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS))
+                result.success(true)
+            } catch (error: Exception) {
+                Log.e(TAG, "Could not open Android security settings", error)
+                result.error(
+                    "SETTINGS_UNAVAILABLE",
+                    "Android security settings could not be opened.",
+                    error.message
                 )
             }
         }
