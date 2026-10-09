@@ -58,6 +58,27 @@ void main() {
 
       expect(find.text('Alex M.'), findsOneWidget);
       expect(find.text('Hello there'), findsOneWidget);
+      final preview = tester.widget<RichText>(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is RichText && widget.text.toPlainText() == 'Hello there',
+        ),
+      );
+      final previewSpan = preview.text as TextSpan;
+      final styledMessageSpans = <TextSpan>[];
+      previewSpan.visitChildren((span) {
+        if (span is TextSpan &&
+            span.text?.contains('Hello there') == true &&
+            span.style != null) {
+          styledMessageSpans.add(span);
+        }
+        return true;
+      });
+      expect(styledMessageSpans, isNotEmpty);
+      final messageStyle = styledMessageSpans.first.style!;
+      expect(messageStyle.letterSpacing, 0);
+      expect(messageStyle.wordSpacing, 0);
+      expect(messageStyle.inherit, isFalse);
       expect(find.text('Loading'), findsNothing);
       expect(tester.takeException(), isNull);
     },

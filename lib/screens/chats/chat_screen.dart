@@ -1907,7 +1907,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // RichText with native-first emoji runs: 2026 system designs win per
     // platform (Apple/Noto/Segoe), Twemoji bundled only as fallback.
     final qualified = ensureEmojiPresentation(text);
-    final base = withEmojiFallback(style);
+    final base = withEmojiFallback(
+      style.copyWith(
+        inherit: false,
+        letterSpacing: 0,
+        wordSpacing: 0,
+      ),
+    );
     return RichText(
       text: TextSpan(children: emojiAwareSpans(qualified, base)),
       textDirection: isOriginalRtl

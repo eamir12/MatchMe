@@ -132,6 +132,10 @@ class WebCalendarService {
         'GOOGLE_ANDROID_CLIENT_ID',
         defaultValue: '',
       ).trim(),
+      'GOOGLE_IOS_CLIENT_ID' => const String.fromEnvironment(
+        'GOOGLE_IOS_CLIENT_ID',
+        defaultValue: '',
+      ).trim(),
       _ => '',
     };
     if (defineValue.isNotEmpty) {
@@ -232,6 +236,7 @@ class WebCalendarService {
           ? _envValue('GOOGLE_SERVER_CLIENT_ID')
           : clientId;
       final androidClientId = _envValue('GOOGLE_ANDROID_CLIENT_ID');
+      final iosClientId = _envValue('GOOGLE_IOS_CLIENT_ID');
 
       print('WebCalendarService._init: GOOGLE_CLIENT_ID=$clientId');
       print(
@@ -240,6 +245,7 @@ class WebCalendarService {
       print(
         'WebCalendarService._init: GOOGLE_ANDROID_CLIENT_ID=$androidClientId',
       );
+      print('WebCalendarService._init: GOOGLE_IOS_CLIENT_ID=$iosClientId');
 
       if (kIsWeb && clientId.isEmpty) {
         print(
@@ -248,9 +254,14 @@ class WebCalendarService {
         return;
       }
 
+      final platformClientId = switch (defaultTargetPlatform) {
+        TargetPlatform.android => androidClientId,
+        TargetPlatform.iOS => iosClientId,
+        _ => clientId,
+      };
       await ensureGoogleSignInInitialized(
-        clientId: !kIsWeb && androidClientId.isNotEmpty
-            ? androidClientId
+        clientId: !kIsWeb && platformClientId.isNotEmpty
+            ? platformClientId
             : clientId,
         serverClientId: serverClientId,
       );

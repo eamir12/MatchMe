@@ -451,12 +451,15 @@ class ChatListItem extends ConsumerWidget {
                             // transparent on Android).
                             final base = withEmojiFallback(
                               TextStyle(
+                                inherit: false,
                                 fontSize: 14,
                                 color: chat.unreadCount > 0
                                     ? Theme.of(context).colorScheme.onSurface
                                     : Theme.of(context).colorScheme.onSurface
                                           .withValues(alpha: 0.7),
                                 fontWeight: FontWeight.normal,
+                                letterSpacing: 0,
+                                wordSpacing: 0,
                               ),
                             );
                             final List<InlineSpan> previewSpans;
