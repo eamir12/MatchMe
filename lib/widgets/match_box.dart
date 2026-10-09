@@ -25,8 +25,6 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:ui' as ui;
 
 final supabase = Supabase.instance.client;
-final Map<String, DateTime> _lastMatchBoxProfileSyncAt = <String, DateTime>{};
-final DateTime _matchBoxSyncProcessStartedAt = DateTime.now();
 
 /// Wrapper that flashes/blinks its child when [enabled] is true (<=15m remaining).
 class _FlashingCountdown extends StatefulWidget {
@@ -226,7 +224,7 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
   Future<void> _handleExtend(LocalizationState l10n) async {
     if (_isExtending) return;
     final otherProfile = ref
-        .read(userProfileProvider(widget.match.otherUserId))
+        .read(otherUserProfileProvider(widget.match.otherUserId))
         .asData
         ?.value;
     final otherName =
@@ -337,64 +335,38 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
   }
 
   @override
-  void initState() {
-    super.initState();
-    _scheduleOtherProfileSync();
-  }
-
-  void _scheduleOtherProfileSync() {
-    final otherUserId = widget.match.otherUserId.trim();
-    if (otherUserId.isEmpty) return;
-    final now = DateTime.now();
-    final lastSyncedAt = _lastMatchBoxProfileSyncAt[otherUserId];
-    if (lastSyncedAt != null &&
-        now.difference(lastSyncedAt) < const Duration(minutes: 3)) {
-      return;
-    }
-    _lastMatchBoxProfileSyncAt[otherUserId] = now;
-
-    final processAge = now.difference(_matchBoxSyncProcessStartedAt);
-    final baseDelayMs = processAge < const Duration(seconds: 12) ? 2200 : 500;
-    final spreadDelayMs = otherUserId.hashCode.abs() % 600;
-    Future.delayed(Duration(milliseconds: baseDelayMs + spreadDelayMs), () {
-      if (!mounted) return;
-      ref
-          .read(profileSyncProvider)
-          .syncProfile(otherUserId, source: 'match-box-mounted');
-    });
-  }
-
-  @override
   Widget build(BuildContext context) {
     final currentUserId = supabase.auth.currentUser?.id;
     if (currentUserId == null) return const SizedBox.shrink();
 
     final l10n = ref.watch(localizationProvider);
     final textDir = Directionality.of(context);
-    ref.listen<
-      AsyncValue<UserProfile?>
-    >(userProfileProvider(widget.match.otherUserId), (previous, next) {
-      final prevPhotos = previous?.asData?.value?.photos ?? const <String>[];
-      final nextPhotos = next.asData?.value?.photos ?? const <String>[];
-      if (listEquals(prevPhotos, nextPhotos)) return;
-      developer.log(
-        '🏠 MatchBox profile change: otherUserId=${widget.match.otherUserId}, prev=${prevPhotos.length}, next=${nextPhotos.length}',
-        name: 'MatchMeTrace',
-      );
-      if (nextPhotos.isNotEmpty) {
+    ref.listen<AsyncValue<UserProfile?>>(
+      otherUserProfileProvider(widget.match.otherUserId),
+      (previous, next) {
+        final prevPhotos =
+            previous?.asData?.value?.photos ?? const <String>[];
+        final nextPhotos = next.asData?.value?.photos ?? const <String>[];
+        if (listEquals(prevPhotos, nextPhotos)) return;
         developer.log(
-          '🏠 MatchBox new first photo: ${nextPhotos.first}',
+          '🏠 MatchBox profile change: otherUserId=${widget.match.otherUserId}, prev=${prevPhotos.length}, next=${nextPhotos.length}',
           name: 'MatchMeTrace',
         );
-      }
-      final allPhotos = <String>{...prevPhotos, ...nextPhotos};
-      for (final path in allPhotos) {
-        if (path.isEmpty) continue;
-        StorageHelper.evictImageCache(path);
-      }
-    });
+        if (nextPhotos.isNotEmpty) {
+          developer.log(
+            '🏠 MatchBox new first photo: ${nextPhotos.first}',
+            name: 'MatchMeTrace',
+          );
+        }
+        final allPhotos = <String>{...prevPhotos, ...nextPhotos};
+        for (final path in allPhotos) {
+          if (path.isEmpty) continue;
+          StorageHelper.evictImageCache(path);
+        }
+      },
+    );
     final otherProfileAsync = ref.watch(
-      userProfileProvider(widget.match.otherUserId),
+      otherUserProfileProvider(widget.match.otherUserId),
     );
     final currentProfileAsync = ref.watch(userProfileProvider(currentUserId));
 

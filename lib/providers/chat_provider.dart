@@ -242,6 +242,19 @@ class _TranslationCacheEntry {
 // gap; the local stream will replace it as soon as fresh data arrives.
 final Map<String, List<ChatMessageModel>> _lastEmittedMessages = {};
 
+/// Drops process-lifetime chat content and timers when an account session ends.
+void clearUserScopedChatMemoryCaches() {
+  for (final timer in _reactionDebouncer.values) {
+    timer.cancel();
+  }
+  _reactionDebouncer.clear();
+  _startupTranslationSyncInFlight = null;
+  _languageDetectionCache.clear();
+  _translationResultCache.clear();
+  _lastEmittedMessages.clear();
+  _messagesWithPendingTranslations.clear();
+}
+
 // --- ChatSyncService (Modified to take localDb as parameter) ---
 class ChatSyncService {
   final LocalDbService localDb;

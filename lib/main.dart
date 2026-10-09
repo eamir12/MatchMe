@@ -88,7 +88,10 @@ import 'package:quick_actions/quick_actions.dart';
 import 'package:matchme/screens/chats/chat_screen.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/chat_provider.dart'
-    show pendingMessageTranslationProvider, migrateLegacyTranslationPrefs;
+    show
+        clearUserScopedChatMemoryCaches,
+        pendingMessageTranslationProvider,
+        migrateLegacyTranslationPrefs;
 import 'package:matchme/providers/match_notification_provider.dart'
     show matchNotificationProvider;
 import 'package:matchme/services/global_sync_manager.dart';
@@ -3528,8 +3531,31 @@ Future<void> _runDeferredTasks({
 
       if (userId == null) {
         debugPrint('⏱️ [AUTH] Signed out — resetting chat key provider');
-        final signedOutUserId = authKeyInitializedUserId;
+        var signedOutUserId = authKeyInitializedUserId;
         authKeyInitializedUserId = null;
+        if (signedOutUserId == null || signedOutUserId.isEmpty) {
+          try {
+            signedOutUserId = (await SharedPreferences.getInstance())
+                .getString('user_id');
+          } catch (error) {
+            debugPrint('[AUTH] Could not read cached outgoing user ID: $error');
+          }
+        }
+        clearUserScopedHomeMemoryCaches();
+        clearUserScopedChatMemoryCaches();
+        if (signedOutUserId != null && signedOutUserId.isNotEmpty) {
+          clearUserScopedProfileMemoryCaches(signedOutUserId);
+          try {
+            await OfflineCacheManager.instance.clearAllOfflineCache(
+              userId: signedOutUserId,
+            );
+          } catch (error) {
+            debugPrint(
+              '[AUTH] Failed to clear signed-out user cache '
+              '$signedOutUserId: $error',
+            );
+          }
+        }
         try {
           container.invalidate(chatKeyProvider);
           ChatKeyService.instance.clearMemoryCaches();
@@ -3581,24 +3607,19 @@ Future<void> _runDeferredTasks({
             // (matches/chats/messages/profile/minimap snapshots) so the new
             // account's device holds only its own data — same privacy rules
             // as an explicit logout.
+            clearUserScopedHomeMemoryCaches();
+            clearUserScopedChatMemoryCaches();
+            clearUserScopedProfileMemoryCaches(previousUserId);
             try {
-              final localDb = await LocalDbService.instance;
-              await localDb.clearUserData(previousUserId);
-            } catch (_) {}
-            try {
-              final prefs = await SharedPreferences.getInstance();
-              final staleKeys = prefs
-                  .getKeys()
-                  .where((k) => k.startsWith('chat_translation:'))
-                  .toList();
-              // The outgoing user's per-user translation-toggle map.
-              staleKeys.add('translation_states_$previousUserId');
-              for (final key in staleKeys) {
-                try {
-                  await prefs.remove(key);
-                } catch (_) {}
-              }
-            } catch (_) {}
+              await OfflineCacheManager.instance.clearAllOfflineCache(
+                userId: previousUserId,
+              );
+            } catch (error) {
+              debugPrint(
+                '[AUTH] Failed to clear switched-from user cache '
+                '$previousUserId: $error',
+              );
+            }
             try {
               container
                   .read(profileSyncStateProvider(previousUserId).notifier)

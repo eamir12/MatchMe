@@ -30,9 +30,7 @@ import 'package:matchme/services/background_service.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/providers/location_share_provider.dart';
 import 'package:matchme/services/session_service.dart';
-import 'package:matchme/services/secure_storage_service.dart';
-import 'package:matchme/services/hive_encryption_service.dart';
-import 'package:matchme/services/calendar_sync_service.dart';
+import 'package:matchme/services/offline_cache_manager.dart';
 import 'package:matchme/providers/chat_key_provider.dart';
 import 'package:matchme/services/chat_key_service.dart';
 import 'package:matchme/utils/resume_route_restore.dart';
@@ -781,32 +779,15 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
         await ref.read(locationShareProvider.notifier).stopSharing();
       }
 
-      ref.read(globalSyncManagerProvider).dispose();
-      clearInitialSyncKickedAt();
-      try {
-        // Keep the per-user chat/matches/messages caches (they are keyed by
-        // userId) so ANY account that logs in on this device shows its
-        // existing chats immediately from local storage. Only the signed-out
-        // user's session-scoped data (outboxes, profile, location, events,
-        // per-user settings) is removed. Previously this wiped the whole
-        // database, which forced every re-login to wait for a network sync —
-        // chats appeared late (or not at all) when that sync was throttled.
-        final userId = supabase.auth.currentUser?.id;
-        if (userId != null && userId.isNotEmpty) {
-          await ref.read(localDbProvider).clearUserData(userId);
-          // Wipe user-scoped SecureStorage keys so the signed-out user's
-          // offline cache encryption key and other secrets don't persist.
-          try {
-            await SecureStorageService.instance.delete(
-              'chat_cache_key:$userId',
-            );
-          } catch (_) {}
-        }
-        // Wipe in-memory Hive cipher copy; next session reloads the same key.
-        HiveEncryptionService.instance.clearCache();
-      } catch (e) {
-        print('Failed to clear user data on logout: $e');
+      final userId = supabase.auth.currentUser?.id;
+      if (userId == null || userId.isEmpty) {
+        throw StateError('Cannot log out without identifying the active user.');
       }
+      // Keep the session active if a privacy wipe fails. The shared-device
+      // cleanup must complete before sign-out, not continue as a success.
+      await OfflineCacheManager.instance.clearAllOfflineCache(userId: userId);
+      clearUserScopedHomeMemoryCaches();
+      ref.read(globalSyncManagerProvider).dispose();
       await clearLoginState();
       // Immediately mark the user offline on the server BEFORE the session is
       // invalidated, so the online count drops right away. This is a direct,
@@ -881,11 +862,6 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
           } catch (_) {}
         }
       } catch (_) {}
-      // Wipe persisted calendar OAuth tokens so the next account on this
-      // device never inherits them.
-      try {
-        await CalendarSyncService.clearPersistedCalendarCredentials();
-      } catch (_) {}
       await supabase.auth.signOut();
       // Awaited (the auth listener also fires this, unawaited): if the app is
       // killed right after logout, an unfinished wipe leaves recoverable
@@ -926,13 +902,19 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
         '[AUTH] User logged out: id=${loggedOutUser?.id}, email=${loggedOutUser?.email}',
       );
     } catch (e) {
-      print('Logout error: $e');
+      debugPrint('[AUTH] Logout aborted: $e');
       if (mounted) {
-        ref.read(globalSyncManagerProvider).dispose();
+        setState(() => _isLoggingOut = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              ref
+                  .read(localizationProvider)
+                  .getString('authLogoutCleanupFailed'),
+            ),
+          ),
+        );
       }
-      await BackgroundService.stop();
-      await clearLoginState();
-      if (mounted) setState(() => _isLoggingOut = false);
     }
   }
 

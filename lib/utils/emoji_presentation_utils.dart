@@ -257,6 +257,8 @@ bool _isEmojiCluster(String cluster) {
 /// [emojiStyle], text runs keep [base]. Standards: UAX #29 clusters, UTS #51
 /// ZWJ/flags/skin-tones preserved as single runs.
 List<TextSpan> emojiAwareSpans(String text, TextStyle base) {
+  text = normalizeChatDisplayWhitespace(text);
+  base = base.copyWith(letterSpacing: 0, wordSpacing: 0);
   if (text.isEmpty) return [TextSpan(text: text, style: base)];
   final eStyle = emojiRunStyle(base);
   final out = <TextSpan>[];
@@ -296,6 +298,14 @@ List<TextSpan> emojiAwareSpans(String text, TextStyle base) {
   }
   flush();
   return out;
+}
+
+/// Collapses accidental repeated horizontal whitespace in displayed chat
+/// content while preserving intentional line breaks.
+String normalizeChatDisplayWhitespace(String text) {
+  return text
+      .replaceAll(RegExp(r'[ \t\f\v\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]+'), ' ')
+      .replaceAll(RegExp(r' *\r?\n *'), '\n');
 }
 
 /// Platform-aware color emoji order for best native experience.

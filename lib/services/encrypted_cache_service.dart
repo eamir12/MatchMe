@@ -42,6 +42,13 @@ class EncryptedCacheService {
     await _storeDck(userId, _currentDck!);
   }
 
+  void clearMemoryCache({required String userId}) {
+    if (_currentUserId != userId) return;
+    _currentUserId = null;
+    _currentDck = null;
+    _initialized = false;
+  }
+
   Future<Uint8List?> _loadDck(String userId) async {
     final encoded = await _secureStorage.read('$_dckPrefix$userId');
     if (encoded == null || encoded.isEmpty) return null;

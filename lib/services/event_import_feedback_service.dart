@@ -6,13 +6,16 @@
 // block reason, provider, locale — so an admin can later verify the event
 // is public and import it into the user's MatchMe events.
 //
-// Each user can send at most one feedback report. The sheet checks
-// `event_import_feedback_has_reported()` before offering the action and
-// the database enforces it with a unique constraint (23505 handled here).
+// Each user can send at most one feedback report per external calendar event.
+// The sheet checks the event fingerprint before offering the action and the
+// database enforces it with a unique constraint (23505 handled here).
 //
 // Titles/venues/descriptions are scrubbed (emails and phone numbers
 // stripped) before anything is stored.
 
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -20,7 +23,7 @@ enum EventImportFeedbackStatus {
   /// Report stored successfully.
   sent,
 
-  /// The user already used their single feedback slot.
+  /// The user already reported this event.
   alreadyReported,
 
   /// The user is not signed in.
@@ -62,16 +65,52 @@ class EventImportFeedbackService {
     return trimmed.length > 600 ? trimmed.substring(0, 600) : trimmed;
   }
 
-  /// True when the current user already used their one feedback report.
+  /// Stable, privacy-preserving identity for one external calendar event.
+  /// Provider IDs are hashed and never added to the feedback table as a key.
+  static String eventKey({
+    required String? provider,
+    required String eventTitle,
+    required Map<String, dynamic>? eventSnapshot,
+  }) {
+    final snapshot = eventSnapshot ?? const <String, dynamic>{};
+    final normalizedProvider = (provider ?? '').trim().toLowerCase();
+    final calendarId = (snapshot['external_calendar_id'] ?? '')
+        .toString()
+        .trim();
+    final externalEventId = (snapshot['external_event_id'] ?? '')
+        .toString()
+        .trim();
+    final identity = externalEventId.isNotEmpty
+        ? [
+            normalizedProvider,
+            calendarId,
+            externalEventId,
+          ].join('|')
+        : [
+            normalizedProvider,
+            eventTitle.trim().toLowerCase(),
+            (snapshot['start_time'] ?? '').toString().trim(),
+            (snapshot['end_time'] ?? '').toString().trim(),
+            (snapshot['event_venue'] ?? '').toString().trim().toLowerCase(),
+          ].join('|');
+    return md5.convert(utf8.encode(identity)).toString();
+  }
+
+  /// True when the current user already reported this specific event.
   /// Best-effort: on any error we optimistically return false and let the
   /// insert (or its unique-violation) decide.
-  static Future<bool> hasAlreadyReported() async {
+  static Future<bool> hasAlreadyReported({
+    required String eventKey,
+  }) async {
     try {
       if (Supabase.instance.client.auth.currentUser == null) {
         return false;
       }
       final result = await Supabase.instance.client
-          .rpc('event_import_feedback_has_reported')
+          .rpc(
+            'event_import_feedback_has_reported',
+            params: {'p_event_key': eventKey},
+          )
           .timeout(const Duration(seconds: 6));
       return result == true;
     } catch (e) {
@@ -124,6 +163,11 @@ class EventImportFeedbackService {
           .from('event_import_feedback')
           .insert({
             'user_id': userId,
+            'event_key': eventKey(
+              provider: provider,
+              eventTitle: eventTitle,
+              eventSnapshot: eventSnapshot,
+            ),
             'block_reason': blockReason,
             'event_title': _scrubText(eventTitle),
             'provider':

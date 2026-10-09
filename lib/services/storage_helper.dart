@@ -41,6 +41,7 @@ class StorageHelper {
   static final Map<String, _CacheEntry> _cache = {};
   static final Map<String, DateTime> _missingUntil = {};
   static final Map<String, int> _cacheBustVersions = {};
+  static final Set<String> _knownImageCacheKeys = {};
   static const String _bucket = 'profile-photos';
   static const Duration _missingTtl = Duration(minutes: 10);
 
@@ -52,6 +53,31 @@ class StorageHelper {
   static const String _persistPrefix = 'signed_url_v1:';
   static bool _persistWarmupStarted = false;
   static Future<void>? _persistWarmupFuture;
+
+  /// Removes signed URL state when the current account session ends.
+  static Future<void> clearSessionCache() async {
+    _cache.clear();
+    _missingUntil.clear();
+    if (!kIsWeb) {
+      for (final raw in _knownImageCacheKeys) {
+        final version = _cacheBustVersions[raw] ?? 0;
+        final key = _sanitizeCacheKey(raw) + (version > 0 ? '_v$version' : '');
+        await clearDiskCachedImage(key);
+      }
+    }
+    _knownImageCacheKeys.clear();
+    _cacheBustVersions.clear();
+    _persistWarmupStarted = false;
+    _persistWarmupFuture = null;
+    final prefs = await SharedPreferences.getInstance();
+    final keys = prefs
+        .getKeys()
+        .where((key) => key.startsWith(_persistPrefix))
+        .toList();
+    for (final key in keys) {
+      await prefs.remove(key);
+    }
+  }
 
   static String _persistKey(String cacheKey) => '$_persistPrefix$cacheKey';
 
@@ -355,6 +381,7 @@ class StorageHelper {
     if (urlOrPath.isEmpty) return '';
     final raw = _cacheBaseKeyRaw(urlOrPath);
     if (raw.isEmpty) return '';
+    _knownImageCacheKeys.add(raw);
     final baseKey = _sanitizeCacheKey(raw);
     final version = _cacheBustVersions[raw] ?? 0;
     if (version <= 0) return baseKey;

@@ -8,8 +8,11 @@ import 'package:flutter/painting.dart' show imageCache;
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/secure_storage_service.dart';
 import 'package:matchme/services/hive_encryption_service.dart';
+import 'package:matchme/services/encrypted_cache_service.dart';
+import 'package:matchme/services/calendar_sync_service.dart';
 import 'package:matchme/services/offline_mutation_queue.dart';
 import 'package:matchme/services/supabase_realtime_manager.dart';
+import 'package:matchme/services/storage_helper.dart';
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -409,68 +412,74 @@ class OfflineCacheManager {
   /// LocalDbService.clearUserData, clears in-memory image cache, and removes
   /// sensitive SharedPreferences keys. Server data is untouched and re-syncs
   /// on next login. Pass [wipeAllUsers] (account deletion) to clearDatabase().
-  Future<void> clearAllOfflineCache({bool wipeAllUsers = false}) async {
+  Future<void> clearAllOfflineCache({
+    bool wipeAllUsers = false,
+    String? userId,
+  }) async {
     try {
-      final userId = _supabase.auth.currentUser?.id;
+      final outgoingUserId = userId ?? _supabase.auth.currentUser?.id;
       final localDb = await LocalDbService.instance;
       if (wipeAllUsers) {
         await localDb.clearDatabase();
-      } else if (userId != null && userId.isNotEmpty) {
-        await localDb.clearUserData(userId);
+      } else if (outgoingUserId != null && outgoingUserId.isNotEmpty) {
+        await localDb.clearUserData(outgoingUserId);
       } else {
-        await localDb.clearDatabase();
+        throw StateError(
+          'Cannot clear account cache without the outgoing user ID.',
+        );
       }
       // In-memory image cache (profile photos) must not survive logout.
-      try {
-        imageCache.clear();
-        imageCache.clearLiveImages();
-      } catch (_) {}
+      imageCache.clear();
+      imageCache.clearLiveImages();
       // Sensitive prefs shim for native service (tokens/location key).
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.remove('flutter.user_token');
-        await prefs.remove('flutter.refresh_token');
-        await prefs.remove('flutter.location_share_session_key');
-        await prefs.remove('flutter.location_share_match_id');
-        await prefs.remove('flutter.location_share_other_user_id');
-        await prefs.remove('flutter.location_share_interval');
-        await prefs.remove('flutter.location_share_expires_at');
-        await prefs.remove('oauth_original_session_json');
-        await prefs.remove('oauth_original_user_id');
-        // Encrypted chat-translation mirrors are message content: they are
-        // keyed by messageId (not attributable to a user), so wipe all of
-        // them on sign-out. They re-generate from Hive/re-translation.
-        final chatTranslationKeys = prefs
-            .getKeys()
-            .where((k) => k.startsWith('chat_translation:'))
-            .toList();
-        for (final key in chatTranslationKeys) {
-          await prefs.remove(key);
-        }
-        // Per-user translation-toggle maps (matchId -> language) belong to
-        // the signed-out account; re-synced on next login.
-        final translationStateKeys = prefs
-            .getKeys()
-            .where((k) => k.startsWith('translation_states'))
-            .toList();
-        for (final key in translationStateKeys) {
-          await prefs.remove(key);
-        }
-      } catch (_) {}
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('user_id');
+      await prefs.remove('was_logged_in');
+      await prefs.remove('flutter.user_token');
+      await prefs.remove('flutter.refresh_token');
+      await prefs.remove('flutter.location_share_session_key');
+      await prefs.remove('flutter.location_share_match_id');
+      await prefs.remove('flutter.location_share_other_user_id');
+      await prefs.remove('flutter.location_share_interval');
+      await prefs.remove('flutter.location_share_expires_at');
+      await prefs.remove('oauth_original_session_json');
+      await prefs.remove('oauth_original_user_id');
+      // Translation mirrors are keyed by message ID, not account.
+      final chatTranslationKeys = prefs
+          .getKeys()
+          .where((key) => key.startsWith('chat_translation:'))
+          .toList();
+      for (final key in chatTranslationKeys) {
+        await prefs.remove(key);
+      }
+      final translationStateKeys = prefs
+          .getKeys()
+          .where((key) => key.startsWith('translation_states'))
+          .toList();
+      for (final key in translationStateKeys) {
+        await prefs.remove(key);
+      }
+      await StorageHelper.clearSessionCache();
+      await CalendarSyncService.clearPersistedCalendarCredentials();
       // Wipe user-scoped SecureStorage keys (offline chat-cache DCK, native
       // encrypted copies) so the signed-out user's secrets don't persist.
-      try {
-        final secure = SecureStorageService.instance;
-        if (userId != null && userId.isNotEmpty) {
-          await secure.delete('chat_cache_key:$userId');
-        }
-        await secure.delete('oauth_original_session_json');
-        await secure.delete('oauth_original_user_id');
-      } catch (_) {}
+      final secure = SecureStorageService.instance;
+      if (outgoingUserId != null && outgoingUserId.isNotEmpty) {
+        EncryptedCacheService.instance.clearMemoryCache(
+          userId: outgoingUserId,
+        );
+        await secure.delete('chat_cache_key:$outgoingUserId');
+      }
+      await secure.delete('oauth_original_session_json');
+      await secure.delete('oauth_original_user_id');
       HiveEncryptionService.instance.clearCache();
-      debugPrint('✅ [OFFLINE] Cleared offline cache for logout');
+      debugPrint(
+        '[OFFLINE] Cleared offline cache for user '
+        '${outgoingUserId ?? 'all users'}',
+      );
     } catch (e) {
-      debugPrint('⚠️ [OFFLINE] Failed to clear offline cache: $e');
+      debugPrint('[OFFLINE] Failed to clear offline cache: $e');
+      rethrow;
     }
   }
 

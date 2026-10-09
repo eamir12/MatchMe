@@ -393,6 +393,8 @@ class LocalizationState {
     'authLoginServiceError':
         'Login is temporarily unavailable. Please try again in a moment.',
     'authLogout': 'Log Out',
+    'authLogoutCleanupFailed':
+        'Your data could not be cleared safely. You are still signed in; please try again.',
     'authLogoutConfirmTitle': 'Log out?',
     'authLogoutConfirmBody':
         'You’ll need to sign in again to access your account.',
@@ -712,7 +714,7 @@ class LocalizationState {
     'importBlockSheetFeedbackThanks':
         'Thanks — we’ll take a look at this decision.',
     'importBlockSheetFeedbackAlreadyUsed':
-        'You’ve already sent feedback. Thanks for helping us improve!',
+        'You’ve already sent feedback for this event. Thanks for helping us improve!',
     'eventAddLooksPrivateTitle': 'This looks personal',
     'eventAddLooksPrivateBody':
         '“{title}” looks like a personal appointment rather than a public event. MatchMe events are visible to your matches — consider sharing only events others can join.',

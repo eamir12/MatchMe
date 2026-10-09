@@ -1389,6 +1389,7 @@ class ProfileSyncService {
   void invalidateUser(String userId) {
     _inFlight.remove(userId);
     _syncGenerations[userId] = (_syncGenerations[userId] ?? 0) + 1;
+    _lastSuccessfulSyncAt = null;
   }
 
   void _publishStarted(String userId, int generation) {
@@ -2307,6 +2308,15 @@ final Map<String, DateTime> _otherUserProfileRefreshAttemptAt = {};
 /// + `currentUserUsersTableProvider` (guarded reads).
 final Map<String, DateTime> _lastProfileLocalSaveAt = {};
 
+/// Resets sync throttles after an account session ends. Otherwise a fast
+/// logout/login of the same account can be incorrectly treated as a duplicate
+/// sync even though its local profile cache has just been wiped.
+void clearUserScopedProfileMemoryCaches(String userId) {
+  _profileSyncAttemptAt.remove(userId);
+  _lastProfileLocalSaveAt.remove(userId);
+  _otherUserProfileRefreshAttemptAt.clear();
+}
+
 void _markProfileLocalSave(String userId) {
   _lastProfileLocalSaveAt[userId] = DateTime.now();
 }
@@ -2345,6 +2355,30 @@ bool _shouldAttemptOtherUserProfileRefresh(
   if (last != null && now.difference(last) < minInterval) return false;
   _otherUserProfileRefreshAttemptAt[userId] = now;
   return true;
+}
+
+bool _hasCompleteOtherUserProfileForHome(UserProfile profile) {
+  final name = profile.name.trim();
+  final hasName =
+      name.isNotEmpty &&
+      name.toLowerCase() != 'unnamed' &&
+      name.toLowerCase() != 'unknown user';
+  final hasInterests = profile.interests.values.any(
+    (interests) => interests.isNotEmpty,
+  );
+  return hasName && profile.photos.isNotEmpty && hasInterests;
+}
+
+Map<String, dynamic> _mergeOtherUserProfileData(
+  Map<String, dynamic> cached,
+  Map<String, dynamic> remote,
+) {
+  final merged = Map<String, dynamic>.from(cached)..remove('cached_at');
+  for (final entry in remote.entries) {
+    if (entry.value == null && merged.containsKey(entry.key)) continue;
+    merged[entry.key] = entry.value;
+  }
+  return merged;
 }
 
 final localUserProfileProvider = StreamProvider.family<UserProfile?, String>((
@@ -2512,6 +2546,7 @@ final otherUserProfileProvider = FutureProvider.family<UserProfile?, String>((
   final localDb = ref.read(localDbProvider);
 
   try {
+    final isOnline = ref.read(connectivityProvider).value ?? true;
     // Try cached profile first
     final cachedProfileWithMeta = await localDb
         .getOtherUserProfileWithCacheMeta(userId);
@@ -2532,7 +2567,10 @@ final otherUserProfileProvider = FutureProvider.family<UserProfile?, String>((
       final isStale =
           cachedAt == null ||
           DateTime.now().difference(cachedAt) > const Duration(minutes: 1);
-      if (isStale &&
+      final isIncompleteForHome =
+          !_hasCompleteOtherUserProfileForHome(cached);
+      if (isOnline &&
+          (isStale || isIncompleteForHome) &&
           _shouldAttemptOtherUserProfileRefresh(
             userId,
             const Duration(seconds: 30),
@@ -2558,7 +2596,10 @@ final otherUserProfileProvider = FutureProvider.family<UserProfile?, String>((
             if (profileRow != null) {
               response.addAll(Map<String, dynamic>.from(profileRow));
             }
-            await localDb.saveOtherUserProfile(userId, response);
+            await localDb.saveOtherUserProfile(
+              userId,
+              _mergeOtherUserProfileData(clean, response),
+            );
             if (ref.mounted) {
               ref.invalidateSelf();
             }
@@ -2568,6 +2609,8 @@ final otherUserProfileProvider = FutureProvider.family<UserProfile?, String>((
 
       return cached;
     }
+
+    if (!isOnline) return null;
 
     if (kIsWeb) {
       debugPrint('🔍 [WEB] otherUserProfileProvider - Fetching fresh profile');

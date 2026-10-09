@@ -67,7 +67,9 @@ class ChatListItem extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final l10n = ref.watch(localizationProvider);
     final textDir = ref.watch(localizationProvider).textDirection;
-    final otherProfileAsync = ref.watch(userProfileProvider(chat.otherUserId));
+    final otherProfileAsync = ref.watch(
+      otherUserProfileProvider(chat.otherUserId),
+    );
 
     final fallbackName = chat.otherUserName.trim().isNotEmpty
         ? chat.otherUserName

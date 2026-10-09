@@ -294,6 +294,23 @@ final Set<String> _initialSyncKickedAt = <String>{};
 /// Called during logout to prevent stale state from leaking across sessions.
 void clearInitialSyncKickedAt() => _initialSyncKickedAt.clear();
 
+/// Clears process-lifetime chat/home snapshots when an account session ends.
+void clearUserScopedHomeMemoryCaches() {
+  _previousChatUnreadCounts.clear();
+  _pendingTranslatedNotificationMessageIds.clear();
+  _notifiedMessageIds.clear();
+  _sessionAddedMessageIds.clear();
+  _recentChatSnapshots.clear();
+  _inFlightPreviewTranslationKeys.clear();
+  _previewTranslationAttempts.clear();
+  for (final timer in _pendingTranslationTimeoutTimers.values) {
+    timer.cancel();
+  }
+  _pendingTranslationTimeoutTimers.clear();
+  _previewRefreshInFlight.clear();
+  _initialSyncKickedAt.clear();
+}
+
 // --- fast-follow for a translated preview that is not ready yet ---
 //
 // syncChatsNow is normally driven by the 15s global timer and further gated by

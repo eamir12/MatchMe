@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -5,6 +7,7 @@ import 'package:matchme/models/chat_model.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/widgets/chat_list_item.dart';
+import 'package:matchme/widgets/signed_image.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -29,7 +32,7 @@ void main() {
         matchId: 'match-1',
         otherUserId: 'other-user',
         otherUserName: 'Alex M.',
-        lastMessage: 'Hello there',
+        lastMessage: 'Hello     there',
         lastMessageId: 'message-1',
         lastMessageAt: DateTime(2026, 1, 1),
         unreadCount: 0,
@@ -45,9 +48,9 @@ void main() {
         ProviderScope(
           overrides: [
             localizationProvider.overrideWithValue(l10n),
-            userProfileProvider(
+            otherUserProfileProvider(
               chat.otherUserId,
-            ).overrideWith((ref) => Stream.value(null)),
+            ).overrideWith((ref) => Future<UserProfile?>.value(null)),
           ],
           child: MaterialApp(
             home: Scaffold(body: ChatListItem(chat: chat)),
@@ -105,9 +108,9 @@ void main() {
       ProviderScope(
         overrides: [
           localizationProvider.overrideWithValue(l10n),
-          userProfileProvider(
+          otherUserProfileProvider(
             chat.otherUserId,
-          ).overrideWith((ref) => Stream.value(null)),
+          ).overrideWith((ref) => Future<UserProfile?>.value(null)),
         ],
         child: MaterialApp(
           home: Scaffold(body: ChatListItem(chat: chat)),
@@ -152,9 +155,9 @@ void main() {
       ProviderScope(
         overrides: [
           localizationProvider.overrideWithValue(l10n),
-          userProfileProvider(
+          otherUserProfileProvider(
             chat.otherUserId,
-          ).overrideWith((ref) => Stream.value(null)),
+          ).overrideWith((ref) => Future<UserProfile?>.value(null)),
         ],
         child: MaterialApp(
           home: Scaffold(body: ChatListItem(chat: chat)),
@@ -189,9 +192,9 @@ void main() {
       ProviderScope(
         overrides: [
           localizationProvider.overrideWithValue(l10n),
-          userProfileProvider(
+          otherUserProfileProvider(
             chat.otherUserId,
-          ).overrideWith((ref) => Stream.value(null)),
+          ).overrideWith((ref) => Future<UserProfile?>.value(null)),
         ],
         child: MaterialApp(
           home: Scaffold(body: ChatListItem(chat: chat)),
@@ -242,4 +245,61 @@ void main() {
 
     expect(find.text('How are you?'), findsOneWidget);
   });
+
+  testWidgets(
+    'chat row renders hydrated profile name and photo after initial fallback',
+    (tester) async {
+      final chat = ChatModel(
+        matchId: 'match-hydrated',
+        otherUserId: 'other-user-hydrated',
+        otherUserName: 'Alex M.',
+        lastMessage: 'Hello',
+        lastMessageId: 'message-hydrated',
+        lastMessageAt: DateTime(2026, 1, 1),
+        unreadCount: 0,
+      );
+      final gate = Completer<UserProfile?>();
+      final l10n = LocalizationState(
+        currentLocale: const Locale('en'),
+        textDirection: TextDirection.ltr,
+        strings: const {},
+        supportedLanguages: const [],
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            localizationProvider.overrideWithValue(l10n),
+            otherUserProfileProvider(
+              chat.otherUserId,
+            ).overrideWith((ref) => gate.future),
+          ],
+          child: MaterialApp(
+            home: Scaffold(body: ChatListItem(chat: chat)),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('Alex M.'), findsOneWidget);
+      expect(find.byType(SignedImage), findsNothing);
+
+      gate.complete(
+        UserProfile.fromMap({
+          'id': chat.otherUserId,
+          'name': 'Alexandra Example',
+          'photos': ['https://example.com/avatar.jpg?token=valid'],
+          'personal_interests': {
+            'friendship': ['hiking'],
+          },
+        }),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Alexandra E.'), findsOneWidget);
+      expect(find.byType(SignedImage), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pump(const Duration(seconds: 11));
+    },
+  );
 }

@@ -3326,197 +3326,63 @@ class LocalDbService {
     } catch (_) {}
   }
 
-  /// Explicit-logout wipe for ONE user (strict privacy, non-breaking).
+  /// Explicit-logout wipe for ONE user.
   ///
-  /// Previously this PRESERVED `recent_chats_<userId>`, `recent_matches_<userId>`
-  /// and all message rows so re-login rendered instantly. That leaks one
-  /// account's chats to the next account on a shared device, so we now remove
-  /// the signed-out user's own chat/match/message cache too.
-  ///
-  /// Other users' per-user keys are left intact (device is still encrypted at
-  /// rest via Hive AES), but the signed-out user's data is gone and will
-  /// re-sync from Supabase on next login. Functionality is preserved (slower
-  /// first paint after re-login, no data loss server-side).
-  ///
-  /// Removed here: pending offline mutations (outboxes), the user's cached
-  /// profile/location, events, per-user settings, AND the user's own
-  /// chats/matches/messages.
+  /// Data keyed by matchId or another user's id cannot safely be assigned to
+  /// one account after the fact. Remove those shared profile/message caches
+  /// as well as this user's own lists so no account data remains visible after
+  /// sign-out. The next account repopulates its own cache from Supabase.
   Future<void> clearUserData(String userId) async {
     final trimmedId = userId.trim();
-    try {
-      // 1) Pending offline mutations are session-scoped: they must never
-      //    leak into the next account's session on this device.
-      final outboxBox = await _getOutboxBox();
-      await outboxBox.clear();
-      final chatOutboxBox = await _getChatOutboxBox();
-      await chatOutboxBox.clear();
-      final profileOutboxBox = await _getProfileOutboxBox();
-      await profileOutboxBox.clear();
-      final visibilityOutboxBox = await _getVisibilityOutboxBox();
-      await visibilityOutboxBox.clear();
-      final invisibilityRulesOutboxBox = await _getInvisibilityRulesOutboxBox();
-      await invisibilityRulesOutboxBox.clear();
+    // Pending offline mutations must not be replayed under the next session.
+    await (await _getOutboxBox()).clear();
+    await (await _getChatOutboxBox()).clear();
+    await (await _getProfileOutboxBox()).clear();
+    await (await _getVisibilityOutboxBox()).clear();
+    await (await _getInvisibilityRulesOutboxBox()).clear();
 
-      // 2) The legacy session-agnostic 'recent_chats' key is not attributed
-      //    to a user, so drop it to avoid surfacing another user's previews.
-      final chatsBox = await _getChatsBox();
-      await chatsBox.delete('recent_chats');
-
-      if (trimmedId.isEmpty) return;
-
-      // 3) Profile box: the user's own profile row and cached location.
-      final profileBox = await _getProfileBox();
-      await profileBox.delete(trimmedId);
-      await profileBox.delete('${trimmedId}_location');
-
-      // 3b) Offline trail is sensitive: never leak into the next session.
-      try {
-        await clearOfflineTrail(trimmedId);
-      } catch (_) {}
-
-      // 4) Events cache is keyed by user id.
-      final eventsBox = await _getEventsBox();
-      await eventsBox.delete(trimmedId);
-
-      // 5) Per-user settings keys (e.g. referral_code_<id>,
-      //    approved_primary_photos_<id>, show_past_events_<id>).
-      final settingsBox = await _getSettingsBox();
-      final settingsKeys = settingsBox.keys.toList();
-      for (final key in settingsKeys) {
-        final k = key.toString();
-        if (k.endsWith('_$trimmedId') || k.startsWith('${trimmedId}_')) {
-          await settingsBox.delete(key);
-        }
-      }
-
-      // 6) Privacy fix: remove the signed-out user's own chats/matches.
-      //    Other users' per-user keys are preserved. First collect the ids
-      //    scoped to this user's matches/chats — needed below BEFORE the
-      //    lists themselves are deleted.
-      final ownedMatchIds = <String>{};
-      final otherUserIds = <String>{};
-      try {
-        final matchesBox = await _getMatchesBox();
-        final rawMatches = matchesBox.get('recent_matches_$trimmedId');
-        if (rawMatches != null && rawMatches.toString().isNotEmpty) {
-          final list = (jsonDecode(rawMatches.toString()) as List)
-              .cast<Map<String, dynamic>>();
-          for (final m in list) {
-            final mid = m['match_id']?.toString();
-            if (mid != null && mid.isNotEmpty) ownedMatchIds.add(mid);
-            final u1 = m['user1_id']?.toString();
-            final u2 = m['user2_id']?.toString();
-            final oid = u1 == trimmedId ? u2 : u1;
-            if (oid != null && oid.isNotEmpty) otherUserIds.add(oid);
-          }
-        }
-      } catch (_) {}
-      try {
-        final chatsBox = await _getChatsBox();
-        final rawChats = chatsBox.get('recent_chats_$trimmedId');
-        if (rawChats != null && rawChats.toString().isNotEmpty) {
-          final list = (jsonDecode(rawChats.toString()) as List)
-              .cast<Map<String, dynamic>>();
-          for (final c in list) {
-            final mid = c['match_id']?.toString();
-            if (mid != null && mid.isNotEmpty) ownedMatchIds.add(mid);
-            final oid = c['other_user_id']?.toString();
-            if (oid != null && oid.isNotEmpty) otherUserIds.add(oid);
-          }
-        }
-      } catch (_) {}
-      try {
-        await chatsBox.delete('recent_chats_$trimmedId');
-      } catch (_) {}
-      try {
-        final matchesBox = await _getMatchesBox();
-        await matchesBox.delete('recent_matches_$trimmedId');
-      } catch (_) {}
-
-      // 6b) Minimap snapshots hold the matched user's location history for
-      //     this user's matches: sensitive, must not leak to the next
-      //     account on a shared device.
-      try {
-        final settingsBox = await _getSettingsBox();
-        final keysToDelete = settingsBox.keys
-            .map((k) => k.toString())
-            .where((k) => k.startsWith('match_minimap_'))
-            .where(
-              (k) =>
-                  ownedMatchIds.contains(k.substring('match_minimap_'.length)),
-            )
-            .toList();
-        for (final key in keysToDelete) {
-          await settingsBox.delete(key);
-        }
-      } catch (_) {}
-
-      // 6c) Cached other-user profiles and their translated profile text,
-      //     scoped to this user's matches, plus this user's own profile
-      //     translation cache.
-      try {
-        final profileBox = await _getProfileBox();
-        for (final oid in otherUserIds) {
-          await profileBox.delete('other_user_$oid');
-          await profileBox.delete('profile_translation_$oid');
-        }
-        await profileBox.delete('profile_translation_$trimmedId');
-      } catch (_) {}
-      // 7) Message rows are keyed by matchId (not userId), so we cannot
-      //    attribute them cheaply here. The chats/matches deletion above
-      //    already detaches them from the UI; full message purge happens in
-      //    clearDatabase() (account deletion) and via per-match deleteChat().
-      //    To avoid unbounded growth after many logins, delete message rows
-      //    for matches that no longer have any cached chat/match reference.
-      try {
-        await _purgeOrphanedMessageRows();
-      } catch (_) {}
-    } catch (e) {
-      // print('LocalDb.clearUserData failed: $e');
+    final chatsBox = await _getChatsBox();
+    final matchesBox = await _getMatchesBox();
+    final messagesBox = await _getMessagesBox();
+    await chatsBox.delete('recent_chats');
+    if (trimmedId.isEmpty) {
+      await messagesBox.clear();
+      return;
     }
-  }
 
-  /// Delete message-box rows whose matchId is not referenced by any cached
-  /// chat or match entry. Best-effort storage hygiene after logout.
-  Future<void> _purgeOrphanedMessageRows() async {
-    try {
-      final chatsBox = await _getChatsBox();
-      final matchesBox = await _getMatchesBox();
-      final messagesBox = await _getMessagesBox();
-      final referenced = <String>{};
-      for (final k in chatsBox.keys) {
-        final v = chatsBox.get(k);
-        if (v is! String) continue;
-        try {
-          final list = (jsonDecode(v) as List).cast<Map<String, dynamic>>();
-          for (final c in list) {
-            final id = c['match_id']?.toString();
-            if (id != null && id.isNotEmpty) referenced.add(id);
-          }
-        } catch (_) {}
+    final profileBox = await _getProfileBox();
+    await profileBox.delete(trimmedId);
+    await profileBox.delete('${trimmedId}_location');
+    await clearOfflineTrail(trimmedId);
+    await (await _getEventsBox()).delete(trimmedId);
+
+    final settingsBox = await _getSettingsBox();
+    for (final key in settingsBox.keys.toList()) {
+      final value = key.toString();
+      if (value.endsWith('_$trimmedId') ||
+          value.startsWith('${trimmedId}_') ||
+          value.startsWith('match_minimap_')) {
+        await settingsBox.delete(key);
       }
-      for (final k in matchesBox.keys) {
-        final v = matchesBox.get(k);
-        if (v is! String) continue;
-        try {
-          final list = (jsonDecode(v) as List).cast<Map<String, dynamic>>();
-          for (final m in list) {
-            final id = (m['match_id'] ?? m['id'])?.toString();
-            if (id != null && id.isNotEmpty) referenced.add(id);
-          }
-        } catch (_) {}
+    }
+
+    await chatsBox.delete('recent_chats_$trimmedId');
+    await matchesBox.delete('recent_matches_$trimmedId');
+
+    // Profile caches are keyed by the profile owner, not by the signed-in
+    // viewer. There is no safe way to attribute every cached profile to one
+    // viewer, so drop them all and repopulate for the next session.
+    for (final key in profileBox.keys.toList()) {
+      final value = key.toString();
+      if (value.startsWith('other_user_') ||
+          value.startsWith('profile_translation_')) {
+        await profileBox.delete(key);
       }
-      final toDelete = <dynamic>[];
-      for (final k in messagesBox.keys) {
-        if (!referenced.contains(k.toString())) toDelete.add(k);
-      }
-      // Safety cap: never delete more than 500 rows in one logout.
-      for (final k in toDelete.take(500)) {
-        try {
-          await messagesBox.delete(k);
-        } catch (_) {}
-      }
-    } catch (_) {}
+    }
+
+    // Messages are keyed only by matchId; leftovers cannot be reliably
+    // attributed to the outgoing account, so never retain them across logout.
+    await messagesBox.clear();
   }
 
   // --- NEW OPTION HIERARCHY CACHE HELPERS ---
@@ -4492,17 +4358,15 @@ class LocalDbService {
   }
 
   Future<void> clearOfflineTrail(String userId) async {
-    try {
-      final box = await _getOfflineTrailBox();
-      final prefix = '${userId}_';
-      final keys = box.keys
-          .whereType<String>()
-          .where((k) => k.startsWith(prefix))
-          .toList();
-      for (final k in keys) {
-        await box.delete(k);
-      }
-    } catch (_) {}
+    final box = await _getOfflineTrailBox();
+    final prefix = '${userId}_';
+    final keys = box.keys
+        .whereType<String>()
+        .where((key) => key.startsWith(prefix))
+        .toList();
+    for (final key in keys) {
+      await box.delete(key);
+    }
   }
 
   // --- Events Caching ---

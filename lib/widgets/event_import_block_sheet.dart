@@ -5,7 +5,8 @@
 // event. Includes a false-positive report action ("This event is actually
 // public") — one report per user, with appropriate messaging once used —
 // that logs the decision inputs (scrubbed title + event snapshot) for
-// admin review and classifier tuning.
+// admin review and classifier tuning. Feedback is limited per event, not
+// globally per user.
 
 import 'package:flutter/material.dart';
 import 'package:matchme/providers/locale_provider.dart';
@@ -118,6 +119,11 @@ Future<void> showEventImportBlockSheet(
                   eventTitle: eventTitle,
                   provider: provider,
                   eventSnapshot: eventSnapshot,
+                  eventKey: EventImportFeedbackService.eventKey(
+                    provider: provider,
+                    eventTitle: eventTitle ?? '',
+                    eventSnapshot: eventSnapshot,
+                  ),
                 ),
               ],
             ),
@@ -137,6 +143,7 @@ class _FeedbackAction extends StatelessWidget {
     required this.eventTitle,
     required this.provider,
     required this.eventSnapshot,
+    required this.eventKey,
   });
 
   final LocalizationState l10n;
@@ -146,6 +153,7 @@ class _FeedbackAction extends StatelessWidget {
   final String? eventTitle;
   final String? provider;
   final Map<String, dynamic>? eventSnapshot;
+  final String eventKey;
 
   Future<void> _onPressed() async {
     final status = await EventImportFeedbackService.reportFalsePositive(
@@ -171,7 +179,9 @@ class _FeedbackAction extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<bool>(
-      future: EventImportFeedbackService.hasAlreadyReported(),
+      future: EventImportFeedbackService.hasAlreadyReported(
+        eventKey: eventKey,
+      ),
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done &&
             !snapshot.hasData) {
