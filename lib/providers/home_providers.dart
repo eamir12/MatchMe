@@ -24,6 +24,7 @@ import 'package:matchme/utils/encrypted_text_guard.dart';
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:matchme/utils/translation_edit_marker.dart';
 import 'package:matchme/utils/notification_limits.dart';
+import 'package:matchme/utils/nearby_radius_utils.dart';
 import 'package:matchme/services/offline_cache_manager.dart';
 import 'package:matchme/services/encrypted_notification_preview_service.dart';
 import 'package:matchme/services/supabase_realtime_manager.dart';
@@ -3261,9 +3262,6 @@ _fetchLiveDashboardStats(String userId) async {
       return 100;
     }
   })();
-  // Convert meters to km for the RPC call - use exact precision
-  final userRadiusKm = userRadiusMeters / 1000.0;
-
   // Self only inflates the online count when their own profile is complete;
   // the RPC already excludes incomplete profiles for everyone else.
   bool selfProfileComplete = false;
@@ -3273,8 +3271,10 @@ _fetchLiveDashboardStats(String userId) async {
         .select('match_radius_default, is_profile_complete')
         .eq('id', userId)
         .single();
-    userRadiusMeters =
-        (userResponse['match_radius_default'] as int?) ?? userRadiusMeters;
+    userRadiusMeters = resolveNearbyRadiusMeters(
+      userRadiusMeters,
+      userResponse['match_radius_default'],
+    );
     selfProfileComplete = userResponse['is_profile_complete'] == true;
   } catch (e) {
     if (!isExpectedOfflineFailure(e)) {
@@ -3282,6 +3282,9 @@ _fetchLiveDashboardStats(String userId) async {
     }
   }
 
+  // Resolve after fetching the profile: the nearby RPC must use the user's
+  // selected radius, not the app-wide default loaded before the profile.
+  final userRadiusKm = nearbyRadiusKilometers(userRadiusMeters);
   final nearbyFuture = supabase.rpc(
     'get_nearby_users_count',
     params: {'p_user_id': userId, 'p_radius_km': userRadiusKm},

@@ -31,6 +31,7 @@ import 'package:matchme/utils/offline_utils.dart';
 class PinnedLocationState {
   final bool isActive;
   final DateTime? expiresAt;
+  final DateTime? createdAt;
   final String? label;
   final double? latitude;
   final double? longitude;
@@ -41,6 +42,7 @@ class PinnedLocationState {
   const PinnedLocationState({
     this.isActive = false,
     this.expiresAt,
+    this.createdAt,
     this.label,
     this.latitude,
     this.longitude,
@@ -58,6 +60,7 @@ class PinnedLocationState {
   PinnedLocationState copyWith({
     bool? isActive,
     DateTime? expiresAt,
+    DateTime? createdAt,
     String? label,
     double? latitude,
     double? longitude,
@@ -68,6 +71,7 @@ class PinnedLocationState {
     return PinnedLocationState(
       isActive: isActive ?? this.isActive,
       expiresAt: expiresAt ?? this.expiresAt,
+      createdAt: createdAt ?? this.createdAt,
       label: label ?? this.label,
       latitude: latitude ?? this.latitude,
       longitude: longitude ?? this.longitude,
@@ -148,6 +152,7 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
         state = PinnedLocationState(
           isActive: true,
           expiresAt: prefs.expiresAt,
+          createdAt: prefs.createdAt,
           label: prefs.label,
           initialized: true,
         );
@@ -159,12 +164,17 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
   }
 
   /// Read label/expiry from the gate's SharedPreferences cache (no network).
-  Future<({DateTime? expiresAt, String? label})> _readGatePrefs() async {
+  Future<({DateTime? expiresAt, DateTime? createdAt, String? label})>
+  _readGatePrefs() async {
     try {
       final prefs = await PinnedLocationGate.readCachePrefs();
-      return (expiresAt: prefs.expiresAt, label: prefs.label);
+      return (
+        expiresAt: prefs.expiresAt,
+        createdAt: prefs.createdAt,
+        label: prefs.label,
+      );
     } catch (_) {
-      return (expiresAt: null, label: null);
+      return (expiresAt: null, createdAt: null, label: null);
     }
   }
 
@@ -185,12 +195,14 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
 
     await PinnedLocationGate.writePinCache(
       expiresAt: pending.expiresAt,
+      createdAt: pending.createdAt,
       label: pending.label,
     );
     if (!ref.mounted) return;
     state = PinnedLocationState(
       isActive: true,
       expiresAt: pending.expiresAt,
+      createdAt: pending.createdAt,
       label: pending.label,
       initialized: true,
     );
@@ -238,11 +250,13 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
       if (server.active && server.expiresAt != null) {
         await PinnedLocationGate.writePinCache(
           expiresAt: server.expiresAt!,
+          createdAt: server.createdAt,
           label: server.label,
         );
         state = PinnedLocationState(
           isActive: true,
           expiresAt: server.expiresAt,
+          createdAt: server.createdAt,
           label: server.label,
           latitude: server.lat,
           longitude: server.lng,
@@ -278,6 +292,13 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
   /// if nothing is cached yet, one single refresh is attempted.
   Future<void> pinCurrent({required Duration duration, String? label}) async {
     if (state.isLoading) return;
+    if (duration <= Duration.zero || duration > const Duration(days: 14)) {
+      throw ArgumentError.value(
+        duration,
+        'duration',
+        'Pinned location duration must be 14 days or less',
+      );
+    }
     state = state.copyWith(isLoading: true, error: null);
     var savingOfflineIntent = false;
     try {
@@ -322,6 +343,7 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
       final expiresAt = DateTime.parse(res.toString()).toUtc();
       await PinnedLocationGate.writePinCache(
         expiresAt: expiresAt,
+        createdAt: expiresAt.subtract(duration),
         label: normalizedLabel,
       );
       await PinnedLocationGate.clearPendingPin();
@@ -329,6 +351,7 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
       state = PinnedLocationState(
         isActive: true,
         expiresAt: expiresAt,
+        createdAt: expiresAt.subtract(duration),
         label: normalizedLabel.isEmpty ? null : normalizedLabel,
         latitude: pos?.latitude,
         longitude: pos?.longitude,
@@ -394,10 +417,12 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
       await PinnedLocationGate.writePendingPin(
         userId: userId,
         expiresAt: expiresAt,
+        createdAt: now,
         label: normalizedLabel,
       );
       await PinnedLocationGate.writePinCache(
         expiresAt: expiresAt,
+        createdAt: now,
         label: normalizedLabel,
       );
     } catch (error) {
@@ -410,6 +435,7 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
     state = PinnedLocationState(
       isActive: true,
       expiresAt: expiresAt,
+      createdAt: now,
       label: normalizedLabel,
       latitude: position?.latitude,
       longitude: position?.longitude,
@@ -476,6 +502,10 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
         final extraSeconds = pending.expiresAt
             .difference(server.expiresAt!)
             .inSeconds;
+        final maxExpiry = server.createdAt?.add(const Duration(days: 14));
+        if (maxExpiry == null || pending.expiresAt.isAfter(maxExpiry)) {
+          throw StateError('Pinned location cannot exceed 14 days total');
+        }
         var expiresAt = server.expiresAt!;
         if (extraSeconds >= 60) {
           final result = await client.rpc(
@@ -486,12 +516,14 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
         }
         await PinnedLocationGate.writePinCache(
           expiresAt: expiresAt,
+          createdAt: server.createdAt,
           label: pending.label ?? server.label,
         );
         if (ref.mounted) {
           state = PinnedLocationState(
             isActive: true,
             expiresAt: expiresAt,
+            createdAt: server.createdAt,
             label: pending.label ?? server.label,
             latitude: server.lat,
             longitude: server.lng,
@@ -509,7 +541,7 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
       final params = {
         'p_user_id': userId,
         'p_label': pending.label,
-        'p_duration_seconds': remainingSeconds,
+        'p_duration_seconds': remainingSeconds.clamp(60, 1209600),
       };
       var result = await client.rpc(
         'pin_current_location_from_observation',
@@ -543,12 +575,14 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
       final longitude = (result['longitude'] as num).toDouble();
       await PinnedLocationGate.writePinCache(
         expiresAt: expiresAt,
+        createdAt: DateTime.parse(result['created_at'].toString()).toUtc(),
         label: pending.label,
       );
       if (ref.mounted) {
         state = PinnedLocationState(
           isActive: true,
           expiresAt: expiresAt,
+          createdAt: DateTime.parse(result['created_at'].toString()).toUtc(),
           label: pending.label,
           latitude: latitude,
           longitude: longitude,
@@ -599,6 +633,15 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
       if (userId == null) {
         throw StateError('Authentication is required to extend a pin');
       }
+      final createdAt = state.createdAt;
+      final currentExpiry = state.expiresAt;
+      if (createdAt == null ||
+          currentExpiry == null ||
+          currentExpiry.add(extra).isAfter(
+            createdAt.add(const Duration(days: 14)),
+          )) {
+        throw StateError('Pinned location cannot exceed 14 days total');
+      }
       if (shouldSkipSupabaseCalls()) {
         savingOfflineIntent = true;
         await _saveOfflineExtension(userId: userId, extra: extra);
@@ -618,6 +661,7 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
       await PinnedLocationGate.clearPendingPin();
       await PinnedLocationGate.writePinCache(
         expiresAt: expiresAt,
+        createdAt: state.createdAt,
         label: state.label,
       );
       if (!ref.mounted) return;
@@ -651,20 +695,27 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
     required Duration extra,
   }) async {
     final currentExpiry = state.expiresAt;
+    final createdAt = state.createdAt;
     if (currentExpiry == null ||
+        createdAt == null ||
         !currentExpiry.isAfter(DateTime.now().toUtc())) {
       throw StateError('There is no active pinned location to extend');
     }
     final requestedExpiry = currentExpiry.add(extra);
+    if (requestedExpiry.isAfter(createdAt.add(const Duration(days: 14)))) {
+      throw StateError('Pinned location cannot exceed 14 days total');
+    }
     try {
       await PinnedLocationGate.writePendingExtension(
         userId: userId,
         expiresAt: requestedExpiry,
+        createdAt: createdAt,
         extra: extra,
         label: state.label,
       );
       await PinnedLocationGate.writePinCache(
         expiresAt: requestedExpiry,
+        createdAt: createdAt,
         label: state.label,
       );
     } catch (error) {

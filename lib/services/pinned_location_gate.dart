@@ -34,6 +34,7 @@ class PinnedLocationGate {
   static const String prefsActiveKey = 'pinned_location_active';
   static const String prefsExpiresAtMsKey = 'pinned_location_expires_at_ms';
   static const String prefsLabelKey = 'pinned_location_label';
+  static const String _prefsCreatedAtMsKey = 'pinned_location_created_at_ms';
   static const String _pendingPinKey = 'pinned_location_pending_sync';
 
   // Key arguments understood by pre-migration builds. Passed through the
@@ -137,6 +138,7 @@ class PinnedLocationGate {
 
   static Future<void> writePinCache({
     required DateTime expiresAt,
+    DateTime? createdAt,
     String? label,
   }) async {
     _cachedActive = true;
@@ -145,6 +147,14 @@ class PinnedLocationGate {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(prefsActiveKey, true);
       await prefs.setInt(prefsExpiresAtMsKey, _cachedExpiresMs!);
+      if (createdAt != null) {
+        await prefs.setInt(
+          _prefsCreatedAtMsKey,
+          createdAt.toUtc().millisecondsSinceEpoch,
+        );
+      } else {
+        await prefs.remove(_prefsCreatedAtMsKey);
+      }
       if (label != null && label.trim().isNotEmpty) {
         await prefs.setString(prefsLabelKey, label.trim());
       } else {
@@ -163,6 +173,7 @@ class PinnedLocationGate {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(prefsActiveKey, false);
       await prefs.remove(prefsExpiresAtMsKey);
+      await prefs.remove(_prefsCreatedAtMsKey);
       await prefs.remove(prefsLabelKey);
       await prefs.remove('pinned_location_latitude');
       await prefs.remove('pinned_location_longitude');
@@ -178,6 +189,7 @@ class PinnedLocationGate {
     ({
       bool active,
       DateTime? expiresAt,
+      DateTime? createdAt,
       String? label,
       double? lat,
       double? lng,
@@ -189,13 +201,14 @@ class PinnedLocationGate {
       if (uid == null) return null;
       final row = await Supabase.instance.client
           .from('user_locations')
-          .select('is_pinned,pinned_expires_at,pinned_label,latitude,longitude')
+          .select('is_pinned,pinned_expires_at,pinned_created_at,pinned_label,latitude,longitude')
           .eq('user_id', uid)
           .maybeSingle();
       if (row == null) {
         return (
           active: false,
           expiresAt: null,
+          createdAt: null,
           label: null,
           lat: null,
           lng: null,
@@ -204,6 +217,9 @@ class PinnedLocationGate {
       final exp = DateTime.tryParse(
         (row['pinned_expires_at'] ?? '').toString(),
       );
+      final created = DateTime.tryParse(
+        (row['pinned_created_at'] ?? '').toString(),
+      );
       final active =
           (row['is_pinned'] == true) &&
           exp != null &&
@@ -211,6 +227,7 @@ class PinnedLocationGate {
       return (
         active: active,
         expiresAt: exp,
+        createdAt: created,
         label: (row['pinned_label'] as String?)?.trim().isEmpty == true
             ? null
             : (row['pinned_label'] as String?)?.trim(),
@@ -224,11 +241,13 @@ class PinnedLocationGate {
 
   /// Read the locally cached pin label/expiry (memory + disk, no network).
   /// Used for instant UI startup; [isActive] should be checked first.
-  static Future<({DateTime? expiresAt, String? label})> readCachePrefs() async {
+  static Future<({DateTime? expiresAt, DateTime? createdAt, String? label})>
+  readCachePrefs() async {
     try {
       await _migrateLegacyKeysIfNeeded();
       final prefs = await SharedPreferences.getInstance();
       final expMs = prefs.getInt(prefsExpiresAtMsKey);
+      final createdMs = prefs.getInt(_prefsCreatedAtMsKey);
       final label = prefs.getString(prefsLabelKey);
       DateTime? expiresAt;
       if (expMs != null && expMs > 0) {
@@ -236,10 +255,13 @@ class PinnedLocationGate {
       }
       return (
         expiresAt: expiresAt,
+        createdAt: createdMs == null
+            ? null
+            : DateTime.fromMillisecondsSinceEpoch(createdMs, isUtc: true),
         label: label?.trim().isEmpty == true ? null : label?.trim(),
       );
     } catch (_) {
-      return (expiresAt: null, label: null);
+      return (expiresAt: null, createdAt: null, label: null);
     }
   }
 
@@ -248,6 +270,7 @@ class PinnedLocationGate {
   static Future<void> writePendingPin({
     required String userId,
     required DateTime expiresAt,
+    required DateTime createdAt,
     String? label,
   }) async {
     final prefs = await SharedPreferences.getInstance();
@@ -257,6 +280,7 @@ class PinnedLocationGate {
         'action': 'pin',
         'user_id': userId,
         'expires_at': expiresAt.toUtc().toIso8601String(),
+        'created_at': createdAt.toUtc().toIso8601String(),
         'label': label?.trim().isEmpty == true ? null : label?.trim(),
       }),
     );
@@ -267,6 +291,7 @@ class PinnedLocationGate {
   static Future<void> writePendingExtension({
     required String userId,
     required DateTime expiresAt,
+    required DateTime createdAt,
     required Duration extra,
     String? label,
   }) async {
@@ -275,6 +300,7 @@ class PinnedLocationGate {
       await writePendingPin(
         userId: userId,
         expiresAt: expiresAt,
+        createdAt: existing.createdAt,
         label: label,
       );
       return;
@@ -289,6 +315,7 @@ class PinnedLocationGate {
         'action': 'extend',
         'user_id': userId,
         'expires_at': expiresAt.toUtc().toIso8601String(),
+        'created_at': createdAt.toUtc().toIso8601String(),
         'extra_seconds': totalExtra,
         'label': label?.trim().isEmpty == true ? null : label?.trim(),
       }),
@@ -299,6 +326,7 @@ class PinnedLocationGate {
     String userId,
     String action,
     DateTime expiresAt,
+    DateTime createdAt,
     String? label,
     int extraSeconds,
   })?> readPendingPin() async {
@@ -311,7 +339,12 @@ class PinnedLocationGate {
     }
     final userId = json['user_id'];
     final expiresAt = DateTime.tryParse(json['expires_at']?.toString() ?? '');
-    if (userId is! String || userId.isEmpty || expiresAt == null) {
+    final parsedCreatedAt = DateTime.tryParse(
+      json['created_at']?.toString() ?? '',
+    );
+    if (userId is! String ||
+        userId.isEmpty ||
+        expiresAt == null) {
       throw const FormatException('Invalid pending pinned-location request');
     }
     final action = json['action']?.toString() ?? 'pin';
@@ -328,6 +361,9 @@ class PinnedLocationGate {
       userId: userId,
       action: action,
       expiresAt: expiresAt.toUtc(),
+      createdAt:
+          parsedCreatedAt?.toUtc() ??
+          expiresAt.toUtc().subtract(const Duration(days: 14)),
       label: rawLabel is String && rawLabel.trim().isNotEmpty
           ? rawLabel.trim()
           : null,

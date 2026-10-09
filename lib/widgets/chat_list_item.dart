@@ -498,9 +498,7 @@ class ChatListItem extends ConsumerWidget {
                             return Text.rich(
                               TextSpan(children: previewSpans),
                               textDirection: messageDir,
-                              textAlign: textDir == ui.TextDirection.rtl
-                                  ? TextAlign.right
-                                  : TextAlign.left,
+                              textAlign: TextAlign.start,
                               maxLines: 2,
                               overflow: TextOverflow.visible,
                             );

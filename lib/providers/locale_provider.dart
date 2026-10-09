@@ -1880,15 +1880,17 @@ class LocalizationState {
     'pinnedLocationActiveUntil': 'Pinned{label} until {date}',
     'pinnedLocationBanner': '📍 Matching from pinned spot{label} — GPS paused',
     'pinnedLocationDur14d': '14 days',
-    'pinnedLocationDur30d': '30 days',
     'pinnedLocationDur3d': '3 days',
     'pinnedLocationDur24h': '24 hours',
     'pinnedLocationDur7d': '7 days',
     'pinnedLocationDuration': 'Pin for',
+    'pinnedLocationExtensionDuration': 'Add time',
     'pinnedLocationExpired': 'Pinned location expired — live GPS resumed.',
     'pinnedLocationExtend': 'Add time',
     'pinnedLocationExtended': 'Pinned time extended until {date}.',
     'pinnedLocationLabelHint': 'Label (optional, e.g. Home)',
+    'pinnedLocationMaxDurationReached':
+        'The maximum total pinned time is 14 days.',
     'pinnedLocationManage': 'Manage',
     'pinnedLocationNoPosition':
         'No recent position to pin yet. Turn location on briefly, then try again.',

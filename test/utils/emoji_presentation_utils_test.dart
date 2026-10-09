@@ -6,8 +6,10 @@ void main() {
   group('chat display whitespace', () {
     test('collapses repeated spaces, tabs, and non-breaking spaces', () {
       expect(
-        normalizeChatDisplayWhitespace('I    like\t\tto\u00a0\u00a0drink!'),
-        'I like to drink!',
+        normalizeChatDisplayWhitespace(
+          'I    like\t\tto\u00a0\u00a0drink!\u2800fried',
+        ),
+        'I like to drink! fried',
       );
     });
 

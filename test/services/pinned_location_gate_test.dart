@@ -77,6 +77,7 @@ void main() {
       await PinnedLocationGate.writePendingPin(
         userId: 'user-1',
         expiresAt: expiry,
+        createdAt: expiry.subtract(const Duration(days: 7)),
         label: 'Home',
       );
 
@@ -98,11 +99,13 @@ void main() {
     await PinnedLocationGate.writePendingPin(
       userId: 'user-1',
       expiresAt: originalExpiry,
+      createdAt: originalExpiry.subtract(const Duration(days: 3)),
       label: 'Home',
     );
     await PinnedLocationGate.writePendingExtension(
       userId: 'user-1',
       expiresAt: extendedExpiry,
+      createdAt: originalExpiry.subtract(const Duration(days: 3)),
       extra: const Duration(days: 7),
       label: 'Home',
     );
@@ -112,37 +115,38 @@ void main() {
     expect(pending?.expiresAt, extendedExpiry);
   });
 
-  test('offline duration change persists as an idempotent extension target',
-      () async {
-    SharedPreferences.setMockInitialValues({});
-    final initialExpiry = DateTime.now().toUtc().add(const Duration(days: 3));
-    final targetExpiry = initialExpiry.add(const Duration(days: 7));
+  test(
+    'offline duration change persists as an idempotent extension target',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final initialExpiry = DateTime.now().toUtc().add(const Duration(days: 3));
+      final targetExpiry = initialExpiry.add(const Duration(days: 7));
 
-    await PinnedLocationGate.writePendingExtension(
-      userId: 'user-1',
-      expiresAt: targetExpiry,
-      extra: const Duration(days: 7),
-      label: 'Home',
-    );
+      await PinnedLocationGate.writePendingExtension(
+        userId: 'user-1',
+        expiresAt: targetExpiry,
+        createdAt: initialExpiry.subtract(const Duration(days: 3)),
+        extra: const Duration(days: 7),
+        label: 'Home',
+      );
 
-    final pending = await PinnedLocationGate.readPendingPin();
-    expect(pending?.action, 'extend');
-    expect(pending?.userId, 'user-1');
-    expect(pending?.expiresAt, targetExpiry);
-    expect(pending?.extraSeconds, const Duration(days: 7).inSeconds);
-    expect(pending?.label, 'Home');
+      final pending = await PinnedLocationGate.readPendingPin();
+      expect(pending?.action, 'extend');
+      expect(pending?.userId, 'user-1');
+      expect(pending?.expiresAt, targetExpiry);
+      expect(pending?.extraSeconds, const Duration(days: 7).inSeconds);
+      expect(pending?.label, 'Home');
 
-    await PinnedLocationGate.writePendingExtension(
-      userId: 'user-1',
-      expiresAt: targetExpiry.add(const Duration(days: 3)),
-      extra: const Duration(days: 3),
-      label: 'Home',
-    );
-    final updated = await PinnedLocationGate.readPendingPin();
-    expect(updated?.extraSeconds, const Duration(days: 10).inSeconds);
-    expect(
-      updated?.expiresAt,
-      targetExpiry.add(const Duration(days: 3)),
-    );
-  });
+      await PinnedLocationGate.writePendingExtension(
+        userId: 'user-1',
+        expiresAt: targetExpiry.add(const Duration(days: 3)),
+        createdAt: initialExpiry.subtract(const Duration(days: 3)),
+        extra: const Duration(days: 3),
+        label: 'Home',
+      );
+      final updated = await PinnedLocationGate.readPendingPin();
+      expect(updated?.extraSeconds, const Duration(days: 10).inSeconds);
+      expect(updated?.expiresAt, targetExpiry.add(const Duration(days: 3)));
+    },
+  );
 }

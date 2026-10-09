@@ -24,15 +24,27 @@ const List<Duration> kPinnedLocationDurations = <Duration>[
   Duration(days: 3),
   Duration(days: 7),
   Duration(days: 14),
-  Duration(days: 30),
 ];
 
 String pinnedDurationLabel(Duration d, LocalizationState l10n) {
   if (d == const Duration(hours: 24)) return l10n.getString('pinnedLocationDur24h');
   if (d == const Duration(days: 3)) return l10n.getString('pinnedLocationDur3d');
   if (d == const Duration(days: 7)) return l10n.getString('pinnedLocationDur7d');
-  if (d == const Duration(days: 14)) return l10n.getString('pinnedLocationDur14d');
-  return l10n.getString('pinnedLocationDur30d');
+  return l10n.getString('pinnedLocationDur14d');
+}
+
+const Duration kMaximumPinnedLocationDuration = Duration(days: 14);
+
+List<Duration> pinnedExtensionDurations(PinnedLocationState pin) {
+  final createdAt = pin.createdAt;
+  final expiresAt = pin.expiresAt;
+  if (createdAt == null || expiresAt == null) return const [];
+  final remainingAllowance = createdAt
+      .add(kMaximumPinnedLocationDuration)
+      .difference(expiresAt);
+  return kPinnedLocationDurations
+      .where((duration) => duration <= remainingAllowance)
+      .toList(growable: false);
 }
 
 String pinnedFormatExpiry(DateTime exp) {
@@ -92,6 +104,10 @@ String pinnedRemainingText(Duration remaining, LocalizationState l10n) {
 /// through to the generic error mapping.
 String pinnedErrorText(Object e, LocalizationState l10n) {
   final msg = e.toString().toLowerCase();
+  if (msg.contains('14 days total') ||
+      msg.contains('user_locations_pinned_duration_max_14_days')) {
+    return l10n.getString('pinnedLocationMaxDurationReached');
+  }
   if (msg.contains('no observed location')) {
     return l10n.getString('pinNoObservedLocation');
   }
@@ -107,13 +123,17 @@ String pinnedErrorText(Object e, LocalizationState l10n) {
 /// Opens the pinned-location management sheet. Pops with one of
 /// 'pinned' | 'extended' | 'unpinned' on success so the caller can toast on
 /// the underlying screen.
-Future<void> showPinnedLocationSheet(BuildContext context, WidgetRef ref) {
+Future<void> showPinnedLocationSheet(
+  BuildContext context,
+  WidgetRef ref, {
+  bool extensionOnly = false,
+}) {
   return showModalBottomSheet<String>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
     showDragHandle: true,
-    builder: (_) => const _PinnedLocationSheetBody(),
+    builder: (_) => _PinnedLocationSheetBody(extensionOnly: extensionOnly),
   ).then((result) async {
     if (result == null || !context.mounted) return;
     final l10n = ref.read(localizationProvider);
@@ -146,7 +166,9 @@ Future<void> showPinnedLocationSheet(BuildContext context, WidgetRef ref) {
 }
 
 class _PinnedLocationSheetBody extends ConsumerStatefulWidget {
-  const _PinnedLocationSheetBody();
+  const _PinnedLocationSheetBody({this.extensionOnly = false});
+
+  final bool extensionOnly;
 
   @override
   ConsumerState<_PinnedLocationSheetBody> createState() =>
@@ -158,6 +180,16 @@ class _PinnedLocationSheetBodyState
   final TextEditingController _labelCtrl = TextEditingController();
   Duration _chosen = const Duration(days: 7);
   bool _extending = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final pin = ref.read(pinnedLocationProvider);
+    if (pin.isActive) {
+      final durations = pinnedExtensionDurations(pin);
+      if (durations.isNotEmpty) _chosen = durations.first;
+    }
+  }
 
   @override
   void dispose() {
@@ -219,7 +251,10 @@ class _PinnedLocationSheetBodyState
     }
   }
 
-  Widget _durationPicker(LocalizationState l10n) {
+  Widget _durationPicker(
+    LocalizationState l10n, {
+    required List<Duration> durations,
+  }) {
     return RadioGroup<Duration>(
       groupValue: _chosen,
       onChanged: (v) {
@@ -227,7 +262,7 @@ class _PinnedLocationSheetBodyState
       },
       child: Column(
         mainAxisSize: MainAxisSize.min,
-        children: kPinnedLocationDurations
+        children: durations
             .map(
               (d) => RadioListTile<Duration>(
                 value: d,
@@ -247,6 +282,48 @@ class _PinnedLocationSheetBodyState
     final pin = ref.watch(pinnedLocationProvider);
     final colors = Theme.of(context).colorScheme;
     final remaining = pin.remainingFrom(DateTime.now().toUtc());
+    final durations = pin.isActive
+        ? pinnedExtensionDurations(pin)
+        : kPinnedLocationDurations;
+
+    if (widget.extensionOnly) {
+      final hasSelectedDuration = durations.contains(_chosen);
+      return Padding(
+        padding: EdgeInsets.only(
+          left: 16,
+          right: 16,
+          bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              l10n.getString('pinnedLocationExtend'),
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 12),
+            if (durations.isEmpty)
+              Text(l10n.getString('pinnedLocationMaxDurationReached'))
+            else ...[
+              Text(l10n.getString('pinnedLocationExtensionDuration')),
+              _durationPicker(l10n, durations: durations),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: pin.isLoading || !hasSelectedDuration
+                      ? null
+                      : _extend,
+                  child: Text(l10n.getString('pinnedLocationExtend')),
+                ),
+              ),
+            ],
+          ],
+        ),
+      );
+    }
 
     return Padding(
       padding: EdgeInsets.only(
@@ -295,7 +372,7 @@ class _PinnedLocationSheetBodyState
             ),
             const SizedBox(height: 8),
             Text(l10n.getString('pinnedLocationDuration')),
-            _durationPicker(l10n),
+            _durationPicker(l10n, durations: kPinnedLocationDurations),
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
@@ -346,14 +423,25 @@ class _PinnedLocationSheetBodyState
             const SizedBox(height: 12),
             if (pin.isLoading) const LinearProgressIndicator(),
             if (_extending) ...[
-              Text(l10n.getString('pinnedLocationDuration')),
-              _durationPicker(l10n),
+              if (durations.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Text(l10n.getString('pinnedLocationMaxDurationReached')),
+                )
+              else ...[
+                Text(l10n.getString('pinnedLocationExtensionDuration')),
+                _durationPicker(l10n, durations: durations),
+              ],
             ],
             Row(
               children: [
                 Expanded(
                   child: OutlinedButton(
-                    onPressed: pin.isLoading
+                    onPressed:
+                        pin.isLoading ||
+                            (_extending &&
+                                (durations.isEmpty ||
+                                    !durations.contains(_chosen)))
                         ? null
                         : () {
                             if (_extending) {

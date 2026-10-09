@@ -43,6 +43,14 @@ void main() {
     );
     await tester.pump();
 
+    final messageText = tester.widget<RichText>(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is RichText && widget.text.toPlainText() == 'Hello there',
+      ),
+    );
+    expect(messageText.textAlign, TextAlign.start);
+
     final semantics = tester.getSemantics(find.bySemanticsLabel('Hello there'));
     expect(semantics.getSemanticsData().hasAction(SemanticsAction.tap), isTrue);
     expect(

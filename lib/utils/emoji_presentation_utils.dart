@@ -304,7 +304,10 @@ List<TextSpan> emojiAwareSpans(String text, TextStyle base) {
 /// content while preserving intentional line breaks.
 String normalizeChatDisplayWhitespace(String text) {
   return text
-      .replaceAll(RegExp(r'[ \t\f\v\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]+'), ' ')
+      .replaceAll(
+        RegExp(r'[ \t\f\v\u00A0\u1680\u2000-\u200A\u202F\u205F\u2800\u3000]+'),
+        ' ',
+      )
       .replaceAll(RegExp(r' *\r?\n *'), '\n');
 }
 

@@ -346,7 +346,9 @@ class _MatchingSettingsScreenState extends ConsumerState<MatchingSettingsScreen>
                                     )
                                     .updateRadius(value);
                               } catch (e) {
-                                debugPrint('[Settings] updateRadius failed: $e');
+                                debugPrint(
+                                  '[Settings] updateRadius failed: $e',
+                                );
                                 if (!mounted) return;
                                 final errorKey =
                                     ErrorLocalizationService.getErrorTranslationKey(
@@ -723,7 +725,9 @@ class _MatchingSettingsScreenState extends ConsumerState<MatchingSettingsScreen>
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                l10n.getString('settingsSharedMovementMatching'),
+                                l10n.getString(
+                                  'settingsSharedMovementMatching',
+                                ),
                                 style: TextStyle(
                                   fontSize: 14,
                                   fontWeight: FontWeight.w500,
@@ -1275,7 +1279,11 @@ class _PinnedLocationCard extends ConsumerWidget {
                   child: OutlinedButton(
                     onPressed: pin.isLoading
                         ? null
-                        : () => showPinnedLocationSheet(context, ref),
+                        : () => showPinnedLocationSheet(
+                            context,
+                            ref,
+                            extensionOnly: true,
+                          ),
                     child: Text(l10n.getString('pinnedLocationExtend')),
                   ),
                 ),

@@ -1916,6 +1916,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
     return RichText(
       text: TextSpan(children: emojiAwareSpans(qualified, base)),
+      textAlign: TextAlign.start,
       textDirection: isOriginalRtl
           ? ui.TextDirection.rtl
           : ui.TextDirection.ltr,
@@ -3144,6 +3145,7 @@ class _MessageBubble extends ConsumerWidget {
                 TextSpan(children: emojiAwareSpans(primaryText, base)),
                 maxLines: 2,
                 overflow: TextOverflow.visible,
+                textAlign: TextAlign.start,
                 textDirection: primaryRtl
                     ? ui.TextDirection.rtl
                     : ui.TextDirection.ltr,
@@ -3173,6 +3175,7 @@ class _MessageBubble extends ConsumerWidget {
                   TextSpan(children: emojiAwareSpans(secondaryText, base)),
                   maxLines: 2,
                   overflow: TextOverflow.visible,
+                  textAlign: TextAlign.start,
                   textDirection: _isRtl(secondaryText)
                       ? ui.TextDirection.rtl
                       : ui.TextDirection.ltr,
@@ -3208,6 +3211,7 @@ class _MessageBubble extends ConsumerWidget {
       }
       return RichText(
         text: TextSpan(children: emojiAwareSpans(text, effectiveStyle)),
+        textAlign: TextAlign.start,
         textDirection: isRtl ? ui.TextDirection.rtl : ui.TextDirection.ltr,
       );
     }
@@ -3216,6 +3220,7 @@ class _MessageBubble extends ConsumerWidget {
         : Colors.yellow.withValues(alpha: 0.65);
     final spans = chatSearchSplitMatches(text, query);
     return RichText(
+      textAlign: TextAlign.start,
       textDirection: isRtl ? ui.TextDirection.rtl : ui.TextDirection.ltr,
       text: TextSpan(
         children: [

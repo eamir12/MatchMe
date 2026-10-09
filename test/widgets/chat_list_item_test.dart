@@ -32,7 +32,7 @@ void main() {
         matchId: 'match-1',
         otherUserId: 'other-user',
         otherUserName: 'Alex M.',
-        lastMessage: 'Hello     there',
+        lastMessage: 'Hello\u2800there',
         lastMessageId: 'message-1',
         lastMessageAt: DateTime(2026, 1, 1),
         unreadCount: 0,
@@ -82,6 +82,8 @@ void main() {
       expect(messageStyle.letterSpacing, 0);
       expect(messageStyle.wordSpacing, 0);
       expect(messageStyle.inherit, isFalse);
+      expect(preview.textAlign, TextAlign.start);
+      expect(preview.textDirection, TextDirection.ltr);
       expect(find.text('Loading'), findsNothing);
       expect(tester.takeException(), isNull);
     },
