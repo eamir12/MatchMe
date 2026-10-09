@@ -12,7 +12,10 @@ import CoreLocation
 import BackgroundTasks
 import CryptoKit
 
-public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManagerDelegate {
+public class MatchMeBackgroundService: NSObject, FlutterPlugin, FlutterSceneLifeCycleDelegate, CLLocationManagerDelegate {
+    private static var backgroundTaskService: MatchMeBackgroundService?
+    private static var pendingBackgroundTasks: [(task: BGTask, isLocationUpdate: Bool)] = []
+
     private let channel: FlutterMethodChannel
     private let locationManager = CLLocationManager()
     private var userId: String?
@@ -25,6 +28,7 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
     private var gpsInterval = 5
     private var smartThrottlingEnabled = true
     private var appInForeground = UIApplication.shared.applicationState == .active
+    private var lifecycleIsBackgrounded: Bool?
     private var heartbeatTimer: Timer?
     private var backgroundTaskIdentifier: UIBackgroundTaskIdentifier = .invalid
     private var backgroundTaskTimeoutTimer: Timer?
@@ -104,12 +108,16 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
         // Restore an active location share across app restarts.
         restoreLocationShareState()
 
-        // Register background tasks
-        registerBackgroundTasks()
-
         // Resume service if we have state
         if userId != nil {
             startBackgroundService()
+        }
+
+        Self.backgroundTaskService = self
+        let pendingTasks = Self.pendingBackgroundTasks
+        Self.pendingBackgroundTasks.removeAll()
+        for pendingTask in pendingTasks {
+            handleBackgroundTask(pendingTask.task, isLocationUpdate: pendingTask.isLocationUpdate)
         }
     }
 
@@ -118,6 +126,44 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
         let instance = MatchMeBackgroundService(channel: channel)
         registrar.addMethodCallDelegate(instance, channel: channel)
         registrar.addApplicationDelegate(instance)
+        registrar.addSceneDelegate(instance)
+    }
+
+    public static func registerBackgroundTaskHandlers() {
+        let syncRegistered = BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: "com.matchme.backgroundsync",
+            using: nil
+        ) { task in
+            dispatchBackgroundTask(task, isLocationUpdate: false)
+        }
+        let locationRegistered = BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: "com.matchme.locationupdate",
+            using: nil
+        ) { task in
+            dispatchBackgroundTask(task, isLocationUpdate: true)
+        }
+
+        if !syncRegistered || !locationRegistered {
+            print("MatchMeBackgroundService: failed to register one or more background task handlers")
+        }
+    }
+
+    private static func dispatchBackgroundTask(_ task: BGTask, isLocationUpdate: Bool) {
+        guard let service = backgroundTaskService else {
+            pendingBackgroundTasks.append((task: task, isLocationUpdate: isLocationUpdate))
+            return
+        }
+        service.handleBackgroundTask(task, isLocationUpdate: isLocationUpdate)
+    }
+
+    private func handleBackgroundTask(_ task: BGTask, isLocationUpdate: Bool) {
+        if isLocationUpdate, let locationTask = task as? BGAppRefreshTask {
+            handleLocationUpdate(task: locationTask)
+        } else if !isLocationUpdate, let syncTask = task as? BGProcessingTask {
+            handleBackgroundSync(task: syncTask)
+        } else {
+            task.setTaskCompleted(success: false)
+        }
     }
 
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -361,16 +407,6 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
         }
         if recentMatchingLocations.count > 5 {
             recentMatchingLocations = Array(recentMatchingLocations.suffix(5))
-        }
-    }
-
-    private func registerBackgroundTasks() {
-        BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.matchme.backgroundsync", using: nil) { task in
-            self.handleBackgroundSync(task: task as! BGProcessingTask)
-        }
-
-        BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.matchme.locationupdate", using: nil) { task in
-            self.handleLocationUpdate(task: task as! BGAppRefreshTask)
         }
     }
 
@@ -807,12 +843,32 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, CLLocationManage
     // MARK: - UIApplicationDelegate
 
     public func applicationDidEnterBackground(_ application: UIApplication) {
+        enterBackground()
+    }
+
+    public func applicationWillEnterForeground(_ application: UIApplication) {
+        enterForeground()
+    }
+
+    public func sceneDidEnterBackground(_ scene: UIScene) {
+        enterBackground()
+    }
+
+    public func sceneWillEnterForeground(_ scene: UIScene) {
+        enterForeground()
+    }
+
+    private func enterBackground() {
+        guard lifecycleIsBackgrounded != true else { return }
+        lifecycleIsBackgrounded = true
         appInForeground = false
         beginBackgroundTask()
         updateLocationTracking()
     }
 
-    public func applicationWillEnterForeground(_ application: UIApplication) {
+    private func enterForeground() {
+        guard lifecycleIsBackgrounded != false else { return }
+        lifecycleIsBackgrounded = false
         appInForeground = true
         endBackgroundTask()
         updateLocationTracking()

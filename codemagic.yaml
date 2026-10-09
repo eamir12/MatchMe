@@ -15,10 +15,11 @@ workflows:
         script: |
           flutter clean
           flutter pub get
-      - name: Verify iOS fullscreen keys
+      - name: Verify iOS launch configuration
         script: |
           /usr/libexec/PlistBuddy -c "Print :UILaunchStoryboardName" ios/Runner/Info.plist
           /usr/libexec/PlistBuddy -c "Print :UISupportedInterfaceOrientations" ios/Runner/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :UIApplicationSceneManifest:UISceneConfigurations:UIWindowSceneSessionRoleApplication:0:UISceneDelegateClassName" ios/Runner/Info.plist
       - name: Install CocoaPods
         script: |
           cd ios
