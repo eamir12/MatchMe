@@ -2366,6 +2366,13 @@ Future<void> _processWebOAuthCodeDuringBootstrap() async {
 Future<_BootstrapInitResult> _bootstrapInitialize(
   ProviderContainer container,
 ) async {
+  void traceBootstrap(String checkpoint) {
+    debugPrint(
+      '[BOOTSTRAP_TRACE] $checkpoint at ${DateTime.now().millisecondsSinceEpoch}',
+    );
+  }
+
+  traceBootstrap('start');
   // Yield immediately so main() can call runApp and the first frame (loading indicator) paints before heavy work.
   await Future.delayed(Duration.zero);
   try {
@@ -2403,8 +2410,10 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
   }
 
   await ensurePluginsReady();
+  traceBootstrap('plugins_ready');
 
   await initializeAppConfigCache();
+  traceBootstrap('app_config_cache_ready');
 
   // NOTE: there is deliberately no connectivity/internet pre-check here.
   // The app's online/offline status is Supabase reachability and nothing else
@@ -2517,6 +2526,7 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
   );
 
   final restoreTarget = await ResumeRouteRestore.peekPendingRouteName();
+  traceBootstrap('restore_route_checked');
   final prefersImmediateAppReveal =
       restoreTarget != null && restoreTarget.isNotEmpty;
   if (prefersImmediateAppReveal) {
@@ -2605,7 +2615,9 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
     // re-probes within seconds and restores the online state automatically, so
     // a false negative only costs a cached-data splash, not a stuck app.
     if (offlineCacheManager.isSupabaseAvailable) {
+      traceBootstrap('before_reachability_gate');
       final reachable = await _applySupabaseReachabilityGate();
+      traceBootstrap('after_reachability_gate reachable=$reachable');
       if (!reachable) {
         debugPrint(
           '⏱️ [BOOTSTRAP] Forced offline after the Supabase reachability gate failed',
@@ -2617,6 +2629,7 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
     // If the restored session has an invalid/expired JWT, clear it and force re-login.
     // Previously this was Web-only — moved to universal so mobile also catches stale JWTs.
     final recoveredSession = Supabase.instance.client.auth.currentSession;
+    traceBootstrap('session_check hasSession=${recoveredSession != null}');
     if (recoveredSession != null) {
       debugPrint('⏱️ [BOOTSTRAP] Session recovered, validating JWT...');
 
@@ -2637,9 +2650,11 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
           bool refreshSucceeded = false;
           for (int attempt = 1; attempt <= 3; attempt++) {
             try {
+              traceBootstrap('refresh_session_start attempt=$attempt');
               await SessionService.safeRefreshSession(
                 timeout: const Duration(milliseconds: 1200),
               ).timeout(const Duration(milliseconds: 1200));
+              traceBootstrap('refresh_session_complete attempt=$attempt');
               debugPrint('✅ [BOOTSTRAP] Token refreshed successfully');
               refreshSucceeded = true;
 
@@ -2754,9 +2769,11 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
           bool validationDone = false;
           for (int attempt = 1; attempt <= 3; attempt++) {
             try {
+              traceBootstrap('get_user_start attempt=$attempt');
               await Supabase.instance.client.auth.getUser().timeout(
                 const Duration(milliseconds: 1200),
               );
+              traceBootstrap('get_user_complete attempt=$attempt');
               // Clear any stale OAuth error stored during code exchange attempt —
               // the session is valid, so the error was spurious.
               try {
@@ -2825,6 +2842,7 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
     // its JWT failed validation above (it may just be expired; a later
     // refresh will renew it).
     bootstrapUser = Supabase.instance.client.auth.currentUser;
+    traceBootstrap('current_user_resolved hasUser=${bootstrapUser != null}');
     if (bootstrapUser == null &&
         Supabase.instance.client.auth.currentSession != null) {
       if (!offlineCacheManager.isSupabaseAvailable) {
@@ -2853,6 +2871,7 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
     }
 
     setRuntimeSupabaseConfig(url: supabaseUrl, anonKey: supabaseAnonKey);
+    traceBootstrap('runtime_config_set');
 
     // Schedule BGSESSION after the first frame so the cold-start paint is not
     // further delayed. The coordinator coalesces and debounces these calls.
@@ -2944,6 +2963,7 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
   }
 
   ResumeDiagnostics.log('Bootstrap initialization completed');
+  traceBootstrap('returning_success');
 
   return _BootstrapInitResult(
     supabaseUrl: supabaseUrl,
