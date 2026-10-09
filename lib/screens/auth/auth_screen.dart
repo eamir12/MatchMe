@@ -1429,10 +1429,11 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
         throw Exception('Google Client ID not configured for this platform');
       }
 
-      await WebCalendarService.ensureGoogleSignInInitialized(
-        clientId: clientId,
-        serverClientId: serverClientId,
-      );
+      final googleNonce =
+          await WebCalendarService.ensureGoogleSignInInitialized(
+            clientId: clientId,
+            serverClientId: serverClientId,
+          );
 
       // Open native Google sign-in (popup on web, system UI on mobile).
       // The native UI auto-closes after account selection — no Chrome tab.
@@ -1465,6 +1466,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
         provider: OAuthProvider.google,
         idToken: idToken,
         accessToken: accessToken,
+        nonce: googleNonce,
       );
       print(
         '🔵 [GoogleSignIn] signInWithIdToken succeeded. User: ${authResponse.user?.id}, Session: ${authResponse.session != null}',

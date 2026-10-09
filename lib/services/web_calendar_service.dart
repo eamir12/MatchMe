@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:developer' as developer;
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -98,6 +100,14 @@ class WebCalendarService {
   static Future<void>? _sharedGoogleSignInInitFuture;
   static String? _lastInitializedClientId;
   static String? _lastInitializedServerClientId;
+  static String? _googleSignInNonce;
+
+  static String _createGoogleSignInNonce() {
+    final random = Random.secure();
+    return base64Url
+        .encode(List<int>.generate(32, (_) => random.nextInt(256)))
+        .replaceAll('=', '');
+  }
 
   final GoogleSignIn _googleSignIn = GoogleSignIn.instance;
   final StreamController<GoogleSignInAccount?> _userController =
@@ -144,19 +154,20 @@ class WebCalendarService {
     return (dotenv.env[key] ?? '').trim();
   }
 
-  static Future<void> ensureGoogleSignInInitialized({
+  static Future<String> ensureGoogleSignInInitialized({
     required String clientId,
     String? serverClientId,
   }) async {
     final normalizedClientId = clientId.trim();
     final normalizedServerClientId = serverClientId?.trim() ?? '';
+    final nonce = _googleSignInNonce ??= _createGoogleSignInNonce();
 
     if (_lastInitializedClientId == normalizedClientId &&
         _lastInitializedServerClientId == normalizedServerClientId) {
       print(
         'WebCalendarService.ensureGoogleSignInInitialized: already initialized with same client IDs',
       );
-      return;
+      return nonce;
     }
 
     print(
@@ -166,22 +177,26 @@ class WebCalendarService {
       print(
         'WebCalendarService.ensureGoogleSignInInitialized: ABORTING - clientId is empty on Web',
       );
-      return;
+      return nonce;
     }
     final pendingInit = _sharedGoogleSignInInitFuture;
     if (pendingInit != null) {
       await pendingInit;
-      return;
+      return nonce;
     }
-    final initFuture = () async {
+    final Future<void> initFuture = () async {
       if (kIsWeb) {
-        await GoogleSignIn.instance.initialize(clientId: normalizedClientId);
+        await GoogleSignIn.instance.initialize(
+          clientId: normalizedClientId,
+          nonce: nonce,
+        );
         return;
       }
       if (normalizedServerClientId.isNotEmpty) {
         await GoogleSignIn.instance.initialize(
           clientId: normalizedClientId,
           serverClientId: normalizedServerClientId,
+          nonce: nonce,
         );
         return;
       }
@@ -189,9 +204,10 @@ class WebCalendarService {
         await GoogleSignIn.instance.initialize(
           clientId: normalizedClientId,
           serverClientId: normalizedClientId,
+          nonce: nonce,
         );
       } else {
-        await GoogleSignIn.instance.initialize();
+        await GoogleSignIn.instance.initialize(nonce: nonce);
       }
     }();
     _sharedGoogleSignInInitFuture = initFuture;
@@ -199,6 +215,7 @@ class WebCalendarService {
       await initFuture;
       _lastInitializedClientId = normalizedClientId;
       _lastInitializedServerClientId = normalizedServerClientId;
+      return nonce;
     } catch (_) {
       _sharedGoogleSignInInitFuture = null;
       rethrow;

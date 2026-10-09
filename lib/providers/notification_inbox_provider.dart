@@ -63,6 +63,14 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
   int _countUnread(List<NotificationInboxItem> items) =>
       items.where((n) => n.isUnread).length;
 
+  Future<void> _cacheItems(List<NotificationInboxItem> items) async {
+    try {
+      await _service.cacheNotifications(_userId, items);
+    } catch (error) {
+      debugPrint('NotificationInbox: could not persist local snapshot: $error');
+    }
+  }
+
   @override
   NotificationInboxState build() {
     ref.onDispose(() {
@@ -102,11 +110,11 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
       unawaited(refresh());
     });
 
+    unawaited(_initialLoad());
     if (!shouldSkipSupabaseCalls()) {
-      unawaited(_initialLoad());
       unawaited(_setupRealtime());
     } else {
-      debugPrint('⏸️ Notification inbox: skipping initial load - offline');
+      debugPrint('⏸️ Notification inbox: loading local snapshot - offline');
     }
 
     return const NotificationInboxState(isLoading: true);
@@ -114,9 +122,32 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
 
   Future<void> _initialLoad() async {
     try {
+      List<NotificationInboxItem>? cached;
+      try {
+        cached = await _service.loadCachedNotifications(_userId);
+      } catch (error) {
+        debugPrint('NotificationInbox: could not read local snapshot: $error');
+      }
+      if (!ref.mounted || supabase.auth.currentUser?.id != _userId) return;
+      if (cached != null) {
+        state = state.copyWith(
+          items: cached,
+          unreadCount: _countUnread(cached),
+          isLoading: !shouldSkipSupabaseCalls(),
+          hasMore: cached.length >= NotificationInboxService.pageSize,
+        );
+      }
+      if (shouldSkipSupabaseCalls()) {
+        if (cached == null) {
+          state = state.copyWith(isLoading: false, hasMore: false);
+        }
+        return;
+      }
+
       final items = await _service.fetchNotifications();
       if (!ref.mounted) return;
       if (supabase.auth.currentUser?.id != _userId) return;
+      await _cacheItems(items);
       state = state.copyWith(
         items: items,
         unreadCount: _countUnread(items),
@@ -179,6 +210,7 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
       items: items,
       unreadCount: _countUnread(items),
     );
+    unawaited(_cacheItems(items));
   }
 
   /// Cross-device reconciliation for read_at / deleted_at changes: replaces
@@ -199,6 +231,7 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
       items: items,
       unreadCount: _countUnread(items),
     );
+    unawaited(_cacheItems(items));
   }
 
   void _handleDelete(String id) {
@@ -209,14 +242,17 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
       items: items,
       unreadCount: _countUnread(items),
     );
+    unawaited(_cacheItems(items));
   }
 
   /// Reload the list from the server (used on pull-to-refresh and on resume).
   Future<void> refresh() async {
+    if (shouldSkipSupabaseCalls()) return;
     try {
       final items = await _service.fetchNotifications();
       if (!ref.mounted) return;
       if (supabase.auth.currentUser?.id != _userId) return;
+      await _cacheItems(items);
       state = state.copyWith(
         items: items,
         unreadCount: _countUnread(items),
@@ -228,6 +264,7 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
   }
 
   Future<void> loadMore() async {
+    if (shouldSkipSupabaseCalls()) return;
     if (_isLoadingMore || !state.hasMore || state.isLoading) return;
     _isLoadingMore = true;
     state = state.copyWith(isLoadingMore: true);
@@ -240,6 +277,7 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
       final newItems =
           more.where((n) => !existingIds.contains(n.id)).toList();
       final items = [...state.items, ...newItems];
+      await _cacheItems(items);
       state = state.copyWith(
         items: items,
         unreadCount: _countUnread(items),
@@ -274,6 +312,7 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
             n.id == id && n.isUnread ? _withReadAt(n, DateTime.now()) : n)
         .toList();
     state = state.copyWith(items: items, unreadCount: _countUnread(items));
+    await _cacheItems(items);
     try {
       await _service.markRead(id);
     } catch (e) {
@@ -288,6 +327,7 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
             ids.contains(n.id) && n.isUnread ? _withReadAt(n, DateTime.now()) : n)
         .toList();
     state = state.copyWith(items: items, unreadCount: _countUnread(items));
+    await _cacheItems(items);
     try {
       await _service.markReadMany(ids);
     } catch (e) {
@@ -301,6 +341,7 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
         .map((n) => ids.contains(n.id) && !n.isUnread ? _withReadAt(n, null) : n)
         .toList();
     state = state.copyWith(items: items, unreadCount: _countUnread(items));
+    await _cacheItems(items);
     try {
       await _service.markUnreadMany(ids);
     } catch (e) {
@@ -311,6 +352,7 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
   Future<void> delete(String id) async {
     final items = state.items.where((n) => n.id != id).toList();
     state = state.copyWith(items: items, unreadCount: _countUnread(items));
+    await _cacheItems(items);
     try {
       await _service.delete(id);
     } catch (e) {
@@ -325,6 +367,7 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
     final items =
         state.items.where((n) => !idSet.contains(n.id)).toList();
     state = state.copyWith(items: items, unreadCount: _countUnread(items));
+    await _cacheItems(items);
     try {
       await _service.deleteMany(idSet);
     } catch (e) {

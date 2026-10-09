@@ -3369,11 +3369,19 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
     }
   }
 
-  // Online and nearby counts are intentionally never cached: they are
-  // realtime dashboard stats and should always reflect the current server state.
+  Future<Map<String, int?>> loadCachedStats() async {
+    if (supabase.auth.currentUser?.id != userId) {
+      return {'nearby': 0, 'online': null};
+    }
+    final cached = await localDb.getDashboardStats(userId);
+    if (cached == null) {
+      return lastEmittedStats ?? {'nearby': null, 'online': null};
+    }
+    return {'nearby': cached['nearby'], 'online': cached['online']};
+  }
+
   Future<Map<String, int?>> fetchStats({
     bool useCache = false,
-    bool saveToCache = false,
     bool force = false,
   }) async {
     // Throttle: prevent fetching more than once every 2 seconds unless forced
@@ -3389,39 +3397,50 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
       }
     }
 
+    // These counts change frequently, but the last value the user saw remains
+    // more useful offline than replacing it with a false zero.
+    if (shouldSkipSupabaseCalls()) {
+      final cached = await loadCachedStats();
+      logDashboardStatsDecision(
+        phase: 'offline-cache',
+        stats: cached,
+        reason: 'The device is offline; showing the last locally cached counts.',
+        usedCache: true,
+        skippedServerFetch: true,
+        source: 'local_cache',
+      );
+      return cached;
+    }
+
     // Validate auth session before making API calls to prevent 401 errors on login screen
     final session = supabase.auth.currentSession;
     if (session == null) {
-      final zeroStats = {'nearby': 0, 'online': 0};
-      debugPrint('fetchStats: No valid auth session, returning empty stats');
+      final cached = await loadCachedStats();
       logDashboardStatsDecision(
         phase: 'auth-missing',
-        stats: zeroStats,
-        reason:
-            'No valid auth session exists, so the home screen shows 0 because there is no signed-in user to query.',
-        usedCache: false,
+        stats: cached,
+        reason: 'No server session is available; showing the last cached counts.',
+        usedCache: true,
         skippedServerFetch: true,
-        source: 'auth_guard',
+        source: 'local_cache',
       );
-      return zeroStats;
+      return cached;
     }
 
     // Verify token is not expired
     if (session.expiresAt != null) {
       final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       if (session.expiresAt! < now) {
-        final zeroStats = {'nearby': 0, 'online': 0};
-        debugPrint('fetchStats: Token expired, returning empty stats');
+        final cached = await loadCachedStats();
         logDashboardStatsDecision(
           phase: 'token-expired',
-          stats: zeroStats,
-          reason:
-              'The Supabase session token is expired, so the dashboard cannot query the server and displays 0.',
-          usedCache: false,
+          stats: cached,
+          reason: 'The server session expired; showing the last cached counts.',
+          usedCache: true,
           skippedServerFetch: true,
-          source: 'auth_guard',
+          source: 'local_cache',
         );
-        return zeroStats;
+        return cached;
       }
     }
 
@@ -3429,23 +3448,9 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
     isFetchingStats = true;
 
     try {
-      // Live dashboard counters intentionally do not use local DB cache.
       if (!force) {
         if (shouldSkipSupabaseCalls()) {
-          final zeroStats = {'nearby': 0, 'online': 0};
-          debugPrint(
-            '📊 Dashboard stats: Skipping server fetch - Supabase paused',
-          );
-          logDashboardStatsDecision(
-            phase: 'supabase-paused',
-            stats: zeroStats,
-            reason:
-                'Supabase is paused/offline and the live online/nearby counters intentionally do not use cache, so the UI shows 0 until connectivity is restored.',
-            usedCache: false,
-            skippedServerFetch: true,
-            source: 'empty_default',
-          );
-          return zeroStats;
+          return await loadCachedStats();
         }
       }
 
@@ -3486,14 +3491,11 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
         'Dashboard stats fetched: online=${freshStats['online']}, nearby=$nearbyCount (radius=$radiusLog)',
       );
 
-      // Cache the fresh stats if requested
-      if (saveToCache) {
-        await localDb.saveDashboardStats(
-          userId,
-          freshStats['online'] ?? 0,
-          nearbyCount,
-        );
-      }
+      await localDb.saveDashboardStats(
+        userId,
+        freshStats['online'] ?? 0,
+        nearbyCount,
+      );
 
       return freshStats;
     } catch (e) {
@@ -3501,21 +3503,16 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
         debugPrint('Error fetching dashboard stats: $e');
       }
 
-      // Live dashboard counters never fall back to stale cache; they display
-      // current server state only. Keep the last known correct count when
-      // available; otherwise keep online as "unknown" (placeholder) instead of
-      // presenting 0 as if it were a real count.
-      final zeroStats =
-          lastEmittedStats ?? <String, int?>{'nearby': 0, 'online': null};
+      final fallbackStats = await loadCachedStats();
       logDashboardStatsDecision(
         phase: 'error-fallback',
-        stats: zeroStats,
+        stats: fallbackStats,
         reason:
-            'The live online/nearby RPC failed. The dashboard keeps the last known correct count if available, otherwise online stays unknown (placeholder) until the next successful refresh.',
-        usedCache: false,
-        source: 'empty_default',
+            'The live stats query failed; showing the last locally cached counts.',
+        usedCache: true,
+        source: 'local_cache',
       );
-      return zeroStats;
+      return fallbackStats;
     } finally {
       isFetchingStats = false;
     }
@@ -3574,7 +3571,6 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
     try {
       final fresh = await fetchStats(
         useCache: false,
-        saveToCache: false,
         force: true,
       );
       // Guard: controller may have been closed during the await above
@@ -3608,7 +3604,7 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
   // No Hive snapshot is used here by design.
   (() async {
     try {
-      final fresh = await fetchStats(useCache: false, saveToCache: false);
+      final fresh = await fetchStats(useCache: false);
       if (!_sameDashboardStats(fresh, lastEmittedStats)) {
         controller.add(fresh);
         lastEmittedStats = fresh;
@@ -3618,22 +3614,17 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
     }
   })();
 
-  // On web, listen for post-location-sync callbacks so the nearby count is
-  // re-fetched immediately after the user's own location row is committed.
-  // Without this, the initial nearby=0 result (fetched before the RPC
-  // completed) persists until the next periodic refresh because the realtime
-  // subscription filters own-user location changes.
+  // On web, re-fetch after location sync so nearby reflects the newly
+  // committed position without discarding the last-known offline snapshot.
   if (kIsWeb) {
     WebLocationService.onLocationSynced = () async {
       if (!ref.mounted || controller.isClosed) return;
       try {
-        await localDb.clearDashboardStatsCache(userId);
         // Small delay so Postgres can commit the location row before the query
         await Future.delayed(const Duration(milliseconds: 500));
         if (!ref.mounted || controller.isClosed) return;
         final fresh = await fetchStats(
           useCache: false,
-          saveToCache: false,
           force: true,
         );
         if (!_sameDashboardStats(fresh, lastEmittedStats)) {
@@ -3654,18 +3645,17 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
   Future<void> onSessionRegisteredHandler() async {
     if (!ref.mounted || controller.isClosed) return;
     try {
-      // Live counters intentionally never use a cache, so no cache invalidation
-      // is required here. The next server fetch reflects the current reality.
+      // Refresh and persist the latest count after this device is registered
+      // as online.
       final fresh = await fetchStats(
         useCache: false,
-        saveToCache: false,
         force: true,
       );
       logDashboardStatsDecision(
         phase: 'session-registration-refresh',
         stats: fresh,
         reason:
-            'Session registration completed and the dashboard refreshed the live online/nearby count directly from the server without any cache layer.',
+            'Session registration completed and the dashboard refreshed its online/nearby snapshot.',
         source: 'session_registered_callback',
       );
       if (!_sameDashboardStats(fresh, lastEmittedStats)) {
@@ -3689,7 +3679,7 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
       debugPrint('fetchStats skipped in periodic timer: No valid session');
       return;
     }
-    fetchStats(useCache: false, saveToCache: false).then((stats) {
+    fetchStats(useCache: false).then((stats) {
       try {
         // Only emit if stats have changed
         if (!_sameDashboardStats(stats, lastEmittedStats)) {
@@ -3755,7 +3745,7 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
             // location sync to complete. Without this delay, users who just
             // became visible may see nearby=0 because user_locations has no
             // fresh position yet, even though GPS is actively tracking.
-            fetchStats(useCache: false, saveToCache: false).then((stats) {
+            fetchStats(useCache: false).then((stats) {
               try {
                 if (!_sameDashboardStats(stats, lastEmittedStats)) {
                   controller.add(stats);
@@ -3770,7 +3760,7 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
             Future.delayed(const Duration(seconds: 3), () {
               if (!ref.mounted) return;
               if (supabase.auth.currentSession == null) return;
-              fetchStats(useCache: false, saveToCache: false).then((stats) {
+              fetchStats(useCache: false).then((stats) {
                 try {
                   if (!_sameDashboardStats(stats, lastEmittedStats)) {
                     controller.add(stats);
@@ -3823,7 +3813,7 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
               );
               return;
             }
-            fetchStats(useCache: false, saveToCache: false).then((stats) {
+            fetchStats(useCache: false).then((stats) {
               try {
                 if (!_sameDashboardStats(stats, lastEmittedStats)) {
                   controller.add(stats);
@@ -3904,7 +3894,7 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
               );
               return;
             }
-            fetchStats(useCache: false, saveToCache: false).then((stats) {
+            fetchStats(useCache: false).then((stats) {
               try {
                 if (!_sameDashboardStats(stats, lastEmittedStats)) {
                   controller.add(stats);
@@ -3972,7 +3962,7 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
                   );
                   return;
                 }
-                fetchStats(useCache: false, saveToCache: false).then((stats) {
+                fetchStats(useCache: false).then((stats) {
                   try {
                     if (!_sameDashboardStats(stats, lastEmittedStats)) {
                       controller.add(stats);
@@ -4020,7 +4010,7 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
           );
           return;
         }
-        fetchStats(useCache: false, saveToCache: false, force: true).then((
+        fetchStats(useCache: false, force: true).then((
           stats,
         ) {
           try {
@@ -4079,7 +4069,7 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
         }
 
         // Refresh cache with fresh data from server and emit if changed
-        fetchStats(useCache: false, saveToCache: false).then((stats) {
+        fetchStats(useCache: false).then((stats) {
           try {
             // Emit to stream if stats have changed
             if (!_sameDashboardStats(stats, lastEmittedStats)) {

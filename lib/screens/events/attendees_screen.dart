@@ -15,6 +15,7 @@ import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/match_reason_formatter.dart';
 import 'package:matchme/utils/map_utils.dart';
 import 'package:matchme/utils/event_venue_utils.dart';
+import 'package:matchme/utils/offline_utils.dart';
 import 'package:matchme/screens/matches/match_profile_screen.dart';
 import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
@@ -34,12 +35,15 @@ final eventMatchesProvider = FutureProvider.autoDispose
       final localDb = ref.read(localDbProvider);
 
       try {
-        // Try cached attendees first. An EMPTY cached list is treated as a
-        // miss on purpose: matches are created server-side when another
-        // user joins (a change that doesn't trip this user's realtime
-        // subscription), so a cached empty list is usually stale and would
-        // hide a brand-new match for up to the cache TTL.
-        final cachedAttendees = await localDb.getEventAttendees(event.id);
+        final isOffline = shouldSkipSupabaseCalls();
+        // Try cached attendees first. Online, an EMPTY list is treated as a
+        // miss because another user joining may not trip this user's realtime
+        // subscription. Offline, return even an empty/stale snapshot instead
+        // of replacing previously shown data with a network error.
+        final cachedAttendees = await localDb.getEventAttendees(
+          event.id,
+          allowStale: isOffline,
+        );
         if (cachedAttendees != null && cachedAttendees.isNotEmpty) {
           if (kIsWeb) {
             print(
@@ -47,6 +51,10 @@ final eventMatchesProvider = FutureProvider.autoDispose
             );
           }
           return cachedAttendees;
+        }
+
+        if (isOffline) {
+          return cachedAttendees ?? const <Map<String, dynamic>>[];
         }
 
         if (kIsWeb) {

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'dart:developer' as developer;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/models/match_model.dart';
+import 'package:matchme/models/chat_model.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/match_rating_provider.dart';
@@ -203,6 +204,7 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
   String _buildExtensionBadgeText(
     LocalizationState l10n,
     AsyncValue<UserProfile?> otherProfileAsync,
+    String fallbackName,
   ) {
     if (widget.match.chatStartExtensionCount >= 2) {
       return l10n.getString('matchExtendBothExtended');
@@ -216,6 +218,13 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
       return l10n.getString(
         'matchExtendedByOther',
         params: {'name': otherName},
+      );
+    }
+    if (fallbackName.trim().isNotEmpty &&
+        fallbackName != l10n.getString('generalUnknown')) {
+      return l10n.getString(
+        'matchExtendedByOther',
+        params: {'name': fallbackName},
       );
     }
     return l10n.getString('matchExtendedBadge');
@@ -369,6 +378,27 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
       otherUserProfileProvider(widget.match.otherUserId),
     );
     final currentProfileAsync = ref.watch(userProfileProvider(currentUserId));
+    final cachedChats =
+        ref.watch(recentChatsProvider(currentUserId)).asData?.value ??
+        const <ChatModel>[];
+    String cachedChatName = '';
+    List<String> cachedChatPhotos = const [];
+    for (final chat in cachedChats) {
+      if (chat.otherUserId != widget.match.otherUserId) continue;
+      cachedChatName = chat.otherUserName;
+      cachedChatPhotos = chat.otherUserPhotos;
+      break;
+    }
+    final profileName = otherProfileAsync.asData?.value?.name
+        .formatAsFirstNameLastInitial()
+        .trim();
+    final fallbackName = profileName != null &&
+            profileName.isNotEmpty &&
+            profileName != l10n.getString('generalUnknown')
+        ? profileName
+        : cachedChatName.trim().isNotEmpty
+        ? cachedChatName
+        : l10n.getString('generalUnknown');
 
     // Determine whether a chat has been started for this match by reading
     // the same source the "Recent Chats" list uses (`userChatIdsProvider`).
@@ -412,6 +442,8 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
           currentProfileAsync,
           hasChatStarted: hasChatStarted,
           isExpired: isExpired,
+          fallbackName: fallbackName,
+          fallbackPhotos: cachedChatPhotos,
         ),
         if (widget.showDivider) const Divider(height: 1),
       ],
@@ -427,10 +459,10 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     AsyncValue<UserProfile?> currentProfileAsync, {
     required bool hasChatStarted,
     required bool isExpired,
+    required String fallbackName,
+    required List<String> fallbackPhotos,
   }) {
-    final semanticName =
-        otherProfileAsync.asData?.value?.name.formatAsFirstNameLastInitial() ??
-        l10n.getString('generalUnknown');
+    final semanticName = fallbackName;
 
     return Semantics(
       container: true,
@@ -445,17 +477,13 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
           context,
         ).colorScheme.primary.withValues(alpha: 0.08),
         onTap: () {
-          final otherName =
-              otherProfileAsync.asData?.value?.name
-                  .formatAsFirstNameLastInitial() ??
-              l10n.getString('generalUnknown');
           Navigator.push(
             context,
             MaterialPageRoute(
               builder: (context) => MatchProfileScreen(
                 matchId: widget.match.id,
                 otherUserId: widget.match.otherUserId,
-                otherUserName: otherName,
+                otherUserName: fallbackName,
                 matchedIntent: widget.match.matchedIntent,
                 matchType: widget.match.matchType,
                 eventId: widget.match.eventId,
@@ -489,7 +517,12 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  _buildProfilePhoto(otherProfileAsync, context, l10n),
+                  _buildProfilePhoto(
+                    otherProfileAsync,
+                    context,
+                    l10n,
+                    fallbackPhotos,
+                  ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: _buildContentColumn(
@@ -498,6 +531,7 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
                       l10n,
                       textDir,
                       otherProfileAsync,
+                      fallbackName,
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -528,6 +562,7 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
                 currentProfileAsync,
                 hasChatStarted: hasChatStarted,
                 isExpired: isExpired,
+                fallbackName: fallbackName,
               ),
             ],
           ),
@@ -547,11 +582,13 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     LocalizationState l10n,
     ui.TextDirection textDir,
     AsyncValue<UserProfile?> otherProfileAsync,
+    String fallbackName,
   ) {
     final profile = otherProfileAsync.asData?.value;
-    final name =
-        profile?.name.formatAsFirstNameLastInitial() ??
-        l10n.getString('generalUnknown');
+    final name = profile?.name.formatAsFirstNameLastInitial().trim().isNotEmpty ==
+            true
+        ? profile!.name.formatAsFirstNameLastInitial()
+        : fallbackName;
     final age = profile?.dateOfBirth != null
         ? _calculateAge(profile!.dateOfBirth!)
         : null;
@@ -697,6 +734,7 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     AsyncValue<UserProfile?> currentProfileAsync, {
     required bool hasChatStarted,
     required bool isExpired,
+    required String fallbackName,
   }) {
     final successColor =
         Theme.of(context).extension<SemanticColors>()?.success ??
@@ -708,7 +746,12 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
         // Rematch banner below the chips row
         if (widget.match.isRematch) ...[
           const SizedBox(height: 4),
-          _buildRematchIndicator(context, l10n, otherProfileAsync),
+          _buildRematchIndicator(
+            context,
+            l10n,
+            otherProfileAsync,
+            fallbackName,
+          ),
         ],
         if (widget.match.isRetroactive) ...[
           const SizedBox(height: 4),
@@ -797,7 +840,11 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
               const SizedBox(width: 4),
               Flexible(
                 child: Text(
-                  _buildExtensionBadgeText(l10n, otherProfileAsync),
+                  _buildExtensionBadgeText(
+                    l10n,
+                    otherProfileAsync,
+                    fallbackName,
+                  ),
                   style: TextStyle(
                     fontSize: 11,
                     color: successColor,
@@ -947,13 +994,15 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     BuildContext context,
     LocalizationState l10n,
     AsyncValue<UserProfile?> otherProfileAsync,
+    String fallbackName,
   ) {
     final occ = widget.match.matchOccurrence;
-    final otherName =
+    final profileName =
         otherProfileAsync.asData?.value?.name
             .formatAsFirstNameLastInitial()
             .trim() ??
         '';
+    final otherName = profileName.isNotEmpty ? profileName : fallbackName;
     String text;
     // Prefer banner with name: "Rematch! This is your 2nd time matching with {name}"
     if (occ == 2) {
@@ -1063,6 +1112,7 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     AsyncValue<UserProfile?> otherProfileAsync,
     BuildContext context,
     LocalizationState l10n,
+    List<String> fallbackPhotos,
   ) {
     final profile = otherProfileAsync.asData?.value;
     final isVerified = profile?.isVerified ?? false;
@@ -1076,10 +1126,13 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     );
 
     Widget avatar;
-    if (profile?.photos.isNotEmpty == true) {
+    final photoSource = profile?.photos.isNotEmpty == true
+        ? profile!.photos.first
+        : fallbackPhotos.firstOrNull;
+    if (photoSource != null && photoSource.isNotEmpty) {
       avatar = ClipOval(
         child: SignedImage(
-          source: profile!.photos[0],
+          source: photoSource,
           width: 56,
           height: 56,
           fit: BoxFit.cover,

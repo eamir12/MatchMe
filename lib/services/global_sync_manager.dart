@@ -901,7 +901,7 @@ class GlobalHomeSyncManager {
                     'match_id': map['match_id'],
                     'other_user_id': map['other_user_id'],
                     'other_user_name': map['other_name'] ?? 'Unknown User',
-                    'other_user_photos': map['other_photos'] ?? [],
+                    'other_user_photos': map['other_photos'],
                     'last_message': encryptionScheme == 'v1'
                         ? ''
                         : (map['last_message_preview'] ?? ''),
@@ -962,6 +962,7 @@ class GlobalHomeSyncManager {
 
               // Chat-key readiness is awaited above, concurrently with the RPC.
               final chatKeyState = _ref.read(chatKeyProvider);
+              final Map<String, Map<String, dynamic>> msgById = {};
               if (chatKeyState.privateKeyBytes != null &&
                   chatKeyState.privateKeyBytes!.isNotEmpty &&
                   _ref.read(chatKeyProvider.notifier).initializedUserId ==
@@ -978,16 +979,17 @@ class GlobalHomeSyncManager {
                   final id = chat['last_message_id'] as String?;
                   if (id != null && id.isNotEmpty) messageIds.add(id);
                 }
-                final Map<String, Map<String, dynamic>> msgById = {};
                 if (messageIds.isNotEmpty) {
                   try {
                     final rows = await supabase
                         .from('chat_messages')
                         .select(
-                          'id, encryption_scheme, sender_key_id, recipient_key_id, '
+                          'id, match_id, sender_id, recipient_id, created_at, '
+                          'delivered_at, read_at, reaction_summary, reply_to_message_id, '
+                          'translation_capable, encryption_scheme, sender_key_id, recipient_key_id, '
                           'content_original_encrypted, content_original_nonce, '
                           'content_translated_encrypted, content_translated_nonce, '
-                          'wrapped_keys, sender_id, match_id, recipient_id, '
+                          'wrapped_keys, '
                           'detected_source_language, translated_target_language, '
                           'edited_at, translated_source_edited_at',
                         )
@@ -1130,6 +1132,46 @@ class GlobalHomeSyncManager {
                     }
                   } catch (_) {}
                 }
+              }
+
+              // The chats RPC already fetched each latest message to render
+              // its preview. Persist that row too, so opening a conversation
+              // offline still shows the content the user has already seen.
+              // Merge rather than replace so any previously cached history is
+              // retained.
+              for (var i = 0; i < transformed.length; i++) {
+                final chat = transformed[i];
+                final messageId = chat['last_message_id']?.toString() ?? '';
+                final matchId = chat['match_id']?.toString() ?? '';
+                if (messageId.isEmpty || matchId.isEmpty) continue;
+
+                final source = msgById[messageId];
+                final preview = chat['last_message']?.toString() ?? '';
+                if (source == null && preview.isEmpty) continue;
+
+                final cachedMessage = <String, dynamic>{
+                  ...?source,
+                  'id': messageId,
+                  'match_id': matchId,
+                  'sender_id':
+                      source?['sender_id'] ?? chat['last_message_sender_id'],
+                  'created_at':
+                      source?['created_at'] ?? chat['last_message_at'],
+                  'encryption_scheme':
+                      source?['encryption_scheme'] ??
+                      chat['last_message_encryption_scheme'] ??
+                      'legacy',
+                  if (preview.isNotEmpty) 'content_original': preview,
+                  if ((chat['last_message_translated']?.toString() ?? '')
+                      .isNotEmpty)
+                    'content_translated': chat['last_message_translated'],
+                  'edited_at':
+                      source?['edited_at'] ?? chat['last_message_edited_at'],
+                  'translated_source_edited_at':
+                      source?['translated_source_edited_at'] ??
+                      chat['last_message_translated_source_edited_at'],
+                };
+                await localDb.mergeMessages(matchId, [cachedMessage]);
               }
 
               // Enrich matched_intent from local matches cache when the RPC

@@ -17,6 +17,7 @@ import 'dart:developer' as developer;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/services/offline_image_cache.dart';
 import 'package:matchme/services/runtime_supabase_config.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -418,6 +419,13 @@ class StorageHelper {
     );
     final oldKey =
         _sanitizeCacheKey(raw) + (oldVersion > 0 ? '_v$oldVersion' : '');
+    if (kIsWeb) {
+      unawaited(
+        OfflineImageCache.instance.evict(oldKey).catchError((Object error) {
+          debugPrint('Could not evict cached web image: $error');
+        }),
+      );
+    }
     if (!kIsWeb) {
       unawaited(clearDiskCachedImage(oldKey));
     }

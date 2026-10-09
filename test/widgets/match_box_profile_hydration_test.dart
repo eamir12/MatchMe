@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:matchme/models/chat_model.dart';
 import 'package:matchme/models/match_model.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/locale_provider.dart';
@@ -133,7 +134,20 @@ void main() {
             userChatIdsProvider(
               _currentUserId,
             ).overrideWith((ref) => Stream.value(<String>{})),
-            matchExpiryNowProvider.overrideWith(
+              recentChatsProvider(_currentUserId).overrideWith(
+                (ref) => Stream.value([
+                  ChatModel.fromJsonRpc({
+                    'match_id': 'hydrated-match',
+                    'other_user_id': _otherUserId,
+                    'other_user_name': 'Alex Example',
+                    'other_user_photos': [
+                      'https://example.com/cached-avatar.jpg?token=valid',
+                    ],
+                    'last_message_at': now.toIso8601String(),
+                  }),
+                ]),
+              ),
+              matchExpiryNowProvider.overrideWith(
               (ref) => Stream.value(now),
             ),
             userRatingSummaryProvider(_otherUserId).overrideWith(
@@ -155,9 +169,9 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('Unknown'), findsOneWidget);
+      expect(find.textContaining('Alex E.'), findsOneWidget);
       expect(find.textContaining('Shared interests: 2'), findsNothing);
-      expect(find.byType(SignedImage), findsNothing);
+      expect(find.byType(SignedImage), findsOneWidget);
 
       gate.complete(
         _profile(

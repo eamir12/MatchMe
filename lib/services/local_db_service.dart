@@ -1265,6 +1265,31 @@ class LocalDbService {
 
             final existingEntry = existingByMatch[matchId];
             if (existingEntry != null) {
+              final incomingName = incoming['other_user_name']
+                  ?.toString()
+                  .trim();
+              final cachedName = existingEntry['other_user_name']
+                  ?.toString()
+                  .trim();
+              final incomingNameUnavailable =
+                  incomingName == null ||
+                  incomingName.isEmpty ||
+                  incomingName.toLowerCase() == 'unknown' ||
+                  incomingName.toLowerCase() == 'unknown user';
+              if (incomingNameUnavailable &&
+                  cachedName != null &&
+                  cachedName.isNotEmpty &&
+                  cachedName.toLowerCase() != 'unknown' &&
+                  cachedName.toLowerCase() != 'unknown user') {
+                incoming['other_user_name'] = cachedName;
+              }
+
+              if (incoming['other_user_photos'] == null &&
+                  existingEntry['other_user_photos'] != null) {
+                incoming['other_user_photos'] =
+                    existingEntry['other_user_photos'];
+              }
+
               // IMPORTANT: Always use server-provided translation_enabled and translation_language
               // Supabase is the source of truth. When a chat is deleted and recreated,
               // the client cache must reset to server values (default false).
@@ -1775,13 +1800,27 @@ class LocalDbService {
     final key = 'recent_chats_$userId';
     final currentChats = box.get(key);
 
+    List<Map<String, dynamic>> decodeChats(dynamic value) {
+      try {
+        if (value is! String) return const [];
+        final decoded = jsonDecode(value);
+        if (decoded is! List) return const [];
+        return decoded
+            .whereType<Map>()
+            .map((row) => Map<String, dynamic>.from(row))
+            .toList();
+      } catch (error) {
+        debugPrint('[LocalDb] Could not decode cached chats for $userId: $error');
+        return const [];
+      }
+    }
+
     if (kIsWeb) {
       // print('🔍 [WEB] watchChats - Watching key: $key');
     }
 
     if (currentChats != null) {
-      final chats = (jsonDecode(currentChats) as List)
-          .cast<Map<String, dynamic>>();
+      final chats = decodeChats(currentChats);
       if (kIsWeb) {
         // print('🔍 [WEB] watchChats - Initial yield: ${chats.length} chats');
         for (final _ in chats) {
@@ -1797,7 +1836,7 @@ class LocalDbService {
     }
     yield* box.watch(key: key).map((event) {
       final chats = event.value != null && !event.deleted
-          ? (jsonDecode(event.value) as List).cast<Map<String, dynamic>>()
+          ? decodeChats(event.value)
           : <Map<String, dynamic>>[];
 
       if (kIsWeb) {
@@ -3385,6 +3424,85 @@ class LocalDbService {
     await messagesBox.clear();
   }
 
+  Future<void> saveNotificationInbox(
+    String userId,
+    List<Map<String, dynamic>> notifications,
+  ) async {
+    final trimmedId = userId.trim();
+    if (trimmedId.isEmpty) return;
+    final box = await _getSettingsBox();
+    await box.put(
+      'notification_inbox_$trimmedId',
+      jsonEncode({
+        'user_id': trimmedId,
+        'notifications': notifications,
+        'cached_at': DateTime.now().toIso8601String(),
+      }),
+    );
+  }
+
+  Future<List<Map<String, dynamic>>?> getNotificationInbox(
+    String userId,
+  ) async {
+    final trimmedId = userId.trim();
+    if (trimmedId.isEmpty) return null;
+    try {
+      final box = await _getSettingsBox();
+      final raw = box.get('notification_inbox_$trimmedId');
+      if (raw == null) return null;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map || decoded['user_id'] != trimmedId) return null;
+      final notifications = decoded['notifications'];
+      if (notifications is! List) return null;
+      return notifications
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList(growable: false);
+    } catch (error) {
+      debugPrint('[LocalDb] Could not decode notification inbox: $error');
+      return null;
+    }
+  }
+
+  Future<void> saveNearbyMapCells(
+    String userId,
+    String queryKey,
+    List<Map<String, dynamic>> cells,
+  ) async {
+    final trimmedId = userId.trim();
+    if (trimmedId.isEmpty || queryKey.isEmpty) return;
+    final box = await _getSettingsBox();
+    await box.put(
+      'nearby_map_cells_${queryKey}_$trimmedId',
+      jsonEncode({
+        'cells': cells,
+        'cached_at': DateTime.now().toIso8601String(),
+      }),
+    );
+  }
+
+  Future<List<Map<String, dynamic>>?> getNearbyMapCells(
+    String userId,
+    String queryKey,
+  ) async {
+    final trimmedId = userId.trim();
+    if (trimmedId.isEmpty || queryKey.isEmpty) return null;
+    try {
+      final box = await _getSettingsBox();
+      final raw = box.get('nearby_map_cells_${queryKey}_$trimmedId');
+      if (raw == null) return null;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map || decoded['cells'] is! List) return null;
+      return (decoded['cells'] as List)
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList(growable: false);
+    } catch (error) {
+      debugPrint('[LocalDb] Could not decode nearby-map cache: $error');
+      return null;
+    }
+  }
+
   // --- NEW OPTION HIERARCHY CACHE HELPERS ---
 
   /// Save dashboard statistics (online/nearby counts) to this user's local
@@ -3427,7 +3545,7 @@ class LocalDbService {
     } catch (_) {}
   }
 
-  /// Get cached dashboard statistics (returns null if expired or missing)
+  /// Get the last cached dashboard statistics, regardless of age.
   Future<Map<String, int>?> getDashboardStats(String userId) async {
     if (userId.trim().isEmpty) return null;
     try {
@@ -3441,21 +3559,9 @@ class LocalDbService {
       }
 
       final data = jsonDecode(jsonString) as Map<String, dynamic>;
-      final lastUpdated = DateTime.parse(data['last_updated']);
-      // A brief relaunch should use the last complete screen immediately.
-      // Realtime/server refresh begins as soon as the provider is running, so
-      // this bounded snapshot is only a bridge to the current value.
-      final cacheDuration = const Duration(minutes: 5);
-      if (DateTime.now().difference(lastUpdated) > cacheDuration) {
-        if (kIsWeb) {
-          // print('🔍 [WEB] getDashboardStats - Cache expired');
-        }
-        return null; // Expired
-      }
-
       final stats = <String, int>{
-        'online': (data['online_count'] as int?) ?? 0,
-        'nearby': (data['nearby_count'] as int?) ?? 0,
+        'online': (data['online_count'] as num?)?.toInt() ?? 0,
+        'nearby': (data['nearby_count'] as num?)?.toInt() ?? 0,
       };
 
       if (kIsWeb) {
@@ -3736,8 +3842,12 @@ class LocalDbService {
     }
   }
 
-  /// Get cached event attendees (returns null if expired or missing)
-  Future<List<Map<String, dynamic>>?> getEventAttendees(String eventId) async {
+  /// Get cached event attendees. [allowStale] keeps previously displayed data
+  /// available offline after the normal refresh window has elapsed.
+  Future<List<Map<String, dynamic>>?> getEventAttendees(
+    String eventId, {
+    bool allowStale = false,
+  }) async {
     try {
       final box = await _getEventsBox();
       final key = 'attendees_$eventId';
@@ -3753,16 +3863,18 @@ class LocalDbService {
       final data = jsonDecode(jsonString) as Map<String, dynamic>;
       final cachedAt = DateTime.parse(data['cached_at']);
 
-      // Cache for 15 minutes (attendee lists change more frequently)
-      final cacheDuration = await appConfigService.getDuration(
-        'cache.events_duration_seconds',
-        defaultValue: const Duration(minutes: 15),
-      );
-      if (DateTime.now().difference(cachedAt) > cacheDuration) {
-        if (kIsWeb) {
-          // print('🔍 [WEB] getEventAttendees - Cache expired for event: $eventId');
+      if (!allowStale) {
+        // Cache for 15 minutes (attendee lists change more frequently).
+        final cacheDuration = await appConfigService.getDuration(
+          'cache.events_duration_seconds',
+          defaultValue: const Duration(minutes: 15),
+        );
+        if (DateTime.now().difference(cachedAt) > cacheDuration) {
+          if (kIsWeb) {
+            // print('🔍 [WEB] getEventAttendees - Cache expired for event: $eventId');
+          }
+          return null;
         }
-        return null; // Expired
       }
 
       final attendees = (data['attendees'] as List<dynamic>?)

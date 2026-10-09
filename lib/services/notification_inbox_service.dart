@@ -11,6 +11,7 @@
 // deletes everywhere else.
 
 import 'package:flutter/foundation.dart';
+import 'package:matchme/services/local_db_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// One entry in the user's notification inbox — think of it as an email:
@@ -56,6 +57,17 @@ class NotificationInboxItem {
           DateTime.tryParse((map['deleted_at'] ?? '').toString())?.toLocal(),
     );
   }
+
+  Map<String, dynamic> toMap() => {
+    'id': id,
+    'type': type,
+    'title': title,
+    'body': body,
+    'data': data,
+    'created_at': createdAt.toUtc().toIso8601String(),
+    'read_at': readAt?.toUtc().toIso8601String(),
+    'deleted_at': deletedAt?.toUtc().toIso8601String(),
+  };
 }
 
 class NotificationInboxService {
@@ -65,6 +77,28 @@ class NotificationInboxService {
   static const int pageSize = 50;
 
   SupabaseClient get _client => Supabase.instance.client;
+  Future<List<NotificationInboxItem>?> loadCachedNotifications(
+    String userId,
+  ) async {
+    if (_client.auth.currentUser?.id != userId) return null;
+    final localDb = await LocalDbService.instance;
+    final rows = await localDb.getNotificationInbox(userId);
+    if (rows == null) return null;
+    return rows.map(NotificationInboxItem.fromMap).toList(growable: false);
+  }
+
+  Future<void> cacheNotifications(
+    String userId,
+    List<NotificationInboxItem> items,
+  ) async {
+    if (_client.auth.currentUser?.id != userId) return;
+    final localDb = await LocalDbService.instance;
+    if (_client.auth.currentUser?.id != userId) return;
+    await localDb.saveNotificationInbox(
+      userId,
+      items.map((item) => item.toMap()).toList(growable: false),
+    );
+  }
 
   /// Fetch inbox rows, newest first. Soft-deleted rows are excluded.
   Future<List<NotificationInboxItem>> fetchNotifications({

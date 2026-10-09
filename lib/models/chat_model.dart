@@ -1,11 +1,13 @@
 // lib/models/chat_model.dart
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:matchme/utils/encrypted_text_guard.dart';
 
 class ChatModel {
   final String matchId;
   final String otherUserId;
   final String otherUserName;
+  final List<String> otherUserPhotos;
   final String lastMessage;
   final String? lastMessageTranslated; // Translated version of last message
   final String lastMessageId; // <-- [FIX 2] ADD THIS
@@ -51,6 +53,7 @@ class ChatModel {
     required this.matchId,
     required this.otherUserId,
     required this.otherUserName,
+    this.otherUserPhotos = const [],
     required this.lastMessage,
     this.lastMessageTranslated,
     required this.lastMessageId, // <-- [FIX 2] ADD THIS
@@ -132,6 +135,12 @@ class ChatModel {
       otherUserName: maskNameLocal(
         json['other_user_name'] ?? json['other_name'] ?? 'Unknown User',
       ),
+      otherUserPhotos: json['other_user_photos'] is List
+          ? (json['other_user_photos'] as List)
+                .map((photo) => photo.toString().trim())
+                .where((photo) => photo.isNotEmpty)
+                .toList(growable: false)
+          : const [],
       // These two fields mirror columns that, for v1 end-to-end encrypted
       // messages, hold `content_original_encrypted` / `content_translated_encrypted`
       // whenever decryption did not run. Never let a raw AES-GCM blob become
@@ -231,6 +240,7 @@ class ChatModel {
     String? matchId,
     String? otherUserId,
     String? otherUserName,
+    List<String>? otherUserPhotos,
     String? lastMessage,
     Object? lastMessageTranslated = _unset,
     String? lastMessageId,
@@ -252,6 +262,7 @@ class ChatModel {
       matchId: matchId ?? this.matchId,
       otherUserId: otherUserId ?? this.otherUserId,
       otherUserName: otherUserName ?? this.otherUserName,
+      otherUserPhotos: otherUserPhotos ?? this.otherUserPhotos,
       lastMessage: lastMessage ?? this.lastMessage,
       lastMessageTranslated: identical(lastMessageTranslated, _unset)
           ? this.lastMessageTranslated
@@ -288,6 +299,7 @@ class ChatModel {
         other.matchId == matchId &&
         other.otherUserId == otherUserId &&
         other.otherUserName == otherUserName &&
+        listEquals(other.otherUserPhotos, otherUserPhotos) &&
         other.lastMessage == lastMessage &&
         other.lastMessageTranslated == lastMessageTranslated &&
         other.lastMessageId == lastMessageId &&
@@ -311,6 +323,7 @@ class ChatModel {
     matchId,
     otherUserId,
     otherUserName,
+    Object.hashAll(otherUserPhotos),
     lastMessage,
     lastMessageTranslated,
     lastMessageId,

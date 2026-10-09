@@ -25,6 +25,8 @@
 // The Dart provider (pinned_location_provider.dart) is the only writer of
 // these keys. Every GPS tick path must call [isActive] first.
 
+import 'dart:convert';
+
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -32,6 +34,7 @@ class PinnedLocationGate {
   static const String prefsActiveKey = 'pinned_location_active';
   static const String prefsExpiresAtMsKey = 'pinned_location_expires_at_ms';
   static const String prefsLabelKey = 'pinned_location_label';
+  static const String _pendingPinKey = 'pinned_location_pending_sync';
 
   // Key arguments understood by pre-migration builds. Passed through the
   // same legacy API they resolve to the double-prefixed raw keys
@@ -161,6 +164,8 @@ class PinnedLocationGate {
       await prefs.setBool(prefsActiveKey, false);
       await prefs.remove(prefsExpiresAtMsKey);
       await prefs.remove(prefsLabelKey);
+      await prefs.remove('pinned_location_latitude');
+      await prefs.remove('pinned_location_longitude');
       // A lingering pre-migration active row would otherwise resurrect the
       // pin on the next migration pass after an upgrade.
       await _clearLegacyKeys(prefs);
@@ -236,5 +241,102 @@ class PinnedLocationGate {
     } catch (_) {
       return (expiresAt: null, label: null);
     }
+  }
+
+  /// Persist an offline pin request so it can be completed after reconnect,
+  /// including after the app is restarted.
+  static Future<void> writePendingPin({
+    required String userId,
+    required DateTime expiresAt,
+    String? label,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _pendingPinKey,
+      jsonEncode({
+        'action': 'pin',
+        'user_id': userId,
+        'expires_at': expiresAt.toUtc().toIso8601String(),
+        'label': label?.trim().isEmpty == true ? null : label?.trim(),
+      }),
+    );
+  }
+
+  /// Store an extension as a target expiry so retries are idempotent even if
+  /// Supabase applied the previous request but its response was lost.
+  static Future<void> writePendingExtension({
+    required String userId,
+    required DateTime expiresAt,
+    required Duration extra,
+    String? label,
+  }) async {
+    final existing = await readPendingPin();
+    if (existing != null && existing.action == 'pin') {
+      await writePendingPin(
+        userId: userId,
+        expiresAt: expiresAt,
+        label: label,
+      );
+      return;
+    }
+    final totalExtra = existing != null && existing.action == 'extend'
+        ? existing.extraSeconds + extra.inSeconds
+        : extra.inSeconds;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _pendingPinKey,
+      jsonEncode({
+        'action': 'extend',
+        'user_id': userId,
+        'expires_at': expiresAt.toUtc().toIso8601String(),
+        'extra_seconds': totalExtra,
+        'label': label?.trim().isEmpty == true ? null : label?.trim(),
+      }),
+    );
+  }
+
+  static Future<({
+    String userId,
+    String action,
+    DateTime expiresAt,
+    String? label,
+    int extraSeconds,
+  })?> readPendingPin() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_pendingPinKey);
+    if (raw == null) return null;
+    final json = jsonDecode(raw);
+    if (json is! Map<String, dynamic>) {
+      throw const FormatException('Invalid pending pinned-location request');
+    }
+    final userId = json['user_id'];
+    final expiresAt = DateTime.tryParse(json['expires_at']?.toString() ?? '');
+    if (userId is! String || userId.isEmpty || expiresAt == null) {
+      throw const FormatException('Invalid pending pinned-location request');
+    }
+    final action = json['action']?.toString() ?? 'pin';
+    if (action != 'pin' && action != 'extend') {
+      throw const FormatException('Invalid pending pinned-location action');
+    }
+    final extraSeconds = json['extra_seconds'];
+    if (action == 'extend' &&
+        (extraSeconds is! int || extraSeconds < 60)) {
+      throw const FormatException('Invalid pending pinned-location extension');
+    }
+    final rawLabel = json['label'];
+    return (
+      userId: userId,
+      action: action,
+      expiresAt: expiresAt.toUtc(),
+      label: rawLabel is String && rawLabel.trim().isNotEmpty
+          ? rawLabel.trim()
+          : null,
+      extraSeconds: action == 'extend' ? extraSeconds as int : 0,
+    );
+  }
+
+  static Future<void> clearPendingPin() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_pendingPinKey);
   }
 }

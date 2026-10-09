@@ -1,9 +1,13 @@
 // lib/widgets/photo_gallery_viewer.dart
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:extended_image/extended_image.dart';
+import 'package:http/http.dart' as http;
 import 'package:matchme/services/storage_helper.dart';
 import 'package:matchme/services/offline_cache_manager.dart';
+import 'package:matchme/services/offline_image_cache.dart';
 import 'package:matchme/providers/locale_provider.dart';
 
 class PhotoGalleryViewer extends StatefulWidget {
@@ -238,7 +242,9 @@ class _GalleryImageItem extends StatefulWidget {
 class _GalleryImageItemState extends State<_GalleryImageItem> {
   String? _resolvedUrl;
   Map<String, String>? _resolvedHeaders;
+  Uint8List? _cachedWebImageBytes;
   bool _failed = false;
+  int _resolveGeneration = 0;
 
   @override
   void initState() {
@@ -252,6 +258,7 @@ class _GalleryImageItemState extends State<_GalleryImageItem> {
     if (oldWidget.source != widget.source) {
       _resolvedUrl = null;
       _resolvedHeaders = null;
+      _cachedWebImageBytes = null;
       _failed = false;
       _resolveUrl();
     }
@@ -273,12 +280,32 @@ class _GalleryImageItemState extends State<_GalleryImageItem> {
   }
 
   Future<void> _resolveUrl() async {
+    final generation = ++_resolveGeneration;
     final src = widget.source;
     if (src.isEmpty) {
       setState(() {
         _failed = true;
       });
       return;
+    }
+
+    final cacheKey = StorageHelper.cacheKeyForSource(src);
+    if (kIsWeb) {
+      try {
+        final cachedBytes = await OfflineImageCache.instance.read(cacheKey);
+        if (!mounted || generation != _resolveGeneration) return;
+        if (cachedBytes != null) {
+          setState(() => _cachedWebImageBytes = cachedBytes);
+        }
+      } catch (error) {
+        debugPrint('Photo gallery offline cache read failed: $error');
+      }
+      if (offlineCacheManager.shouldUseCachedData()) {
+        if (_cachedWebImageBytes == null && mounted) {
+          setState(() => _failed = true);
+        }
+        return;
+      }
     }
 
     if (offlineCacheManager.shouldUseCachedData()) {
@@ -311,7 +338,7 @@ class _GalleryImageItemState extends State<_GalleryImageItem> {
         src,
         bucket: 'profile-photos',
       );
-      if (!mounted) return;
+      if (!mounted || generation != _resolveGeneration) return;
       if (request == null || request.url.isEmpty) {
         setState(() {
           _failed = true;
@@ -323,8 +350,11 @@ class _GalleryImageItemState extends State<_GalleryImageItem> {
         _resolvedHeaders = request.headers;
         _failed = false;
       });
+      if (kIsWeb) {
+        unawaited(_cacheWebImageBytes(request.url, request.headers, cacheKey));
+      }
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || generation != _resolveGeneration) return;
       setState(() {
         _failed = true;
       });
@@ -351,6 +381,34 @@ class _GalleryImageItemState extends State<_GalleryImageItem> {
 
   @override
   Widget build(BuildContext context) {
+    if (kIsWeb && _cachedWebImageBytes != null) {
+      return ExtendedImage.memory(
+        _cachedWebImageBytes!,
+        mode: ExtendedImageMode.gesture,
+        fit: BoxFit.contain,
+        initGestureConfigHandler: (_) => GestureConfig(
+          minScale: 1.0,
+          maxScale: 5.0,
+          animationMinScale: 0.8,
+          animationMaxScale: 6.0,
+          speed: 1.0,
+          inertialSpeed: 100.0,
+          initialScale: 1.0,
+          inPageView: true,
+        ),
+        loadStateChanged: (state) {
+          if (state.extendedImageLoadState == LoadState.failed) {
+            return Center(
+              child: Text(
+                _getErrorMessage(),
+                style: const TextStyle(color: Colors.white70),
+              ),
+            );
+          }
+          return null;
+        },
+      );
+    }
     if (_resolvedUrl == null && !_failed) {
       return const Center(
         child: SizedBox(
@@ -440,5 +498,27 @@ class _GalleryImageItemState extends State<_GalleryImageItem> {
         }
       },
     );
+  }
+
+  Future<void> _cacheWebImageBytes(
+    String url,
+    Map<String, String>? headers,
+    String cacheKey,
+  ) async {
+    try {
+      final response = await http.get(Uri.parse(url), headers: headers);
+      if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
+        throw StateError('Image fetch failed with HTTP ${response.statusCode}');
+      }
+      final bytes = Uint8List.fromList(response.bodyBytes);
+      await OfflineImageCache.instance.write(cacheKey, bytes);
+      if (!mounted ||
+          cacheKey != StorageHelper.cacheKeyForSource(widget.source)) {
+        return;
+      }
+      setState(() => _cachedWebImageBytes = bytes);
+    } catch (error) {
+      debugPrint('Photo gallery image could not be cached: $error');
+    }
   }
 }

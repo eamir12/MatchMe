@@ -11,17 +11,22 @@
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:matchme/providers/current_location_provider.dart';
 import 'package:matchme/services/background_service.dart';
+import 'package:matchme/services/location_service.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/pinned_partner_provider.dart';
 import 'package:matchme/providers/system_notification_provider.dart';
 import 'package:matchme/providers/visibility_provider.dart';
 import 'package:matchme/services/pinned_location_gate.dart';
 import 'package:matchme/services/supabase_realtime_manager.dart';
+import 'package:matchme/utils/location_deduplicator.dart';
+import 'package:matchme/utils/offline_utils.dart';
 
 class PinnedLocationState {
   final bool isActive;
@@ -79,6 +84,8 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
   Timer? _ticker;
   RealtimeChannel? _channel;
   String? _channelUserId;
+  void Function()? _removeConnectivityListener;
+  bool _pendingPinSyncInProgress = false;
   int? _lastNoticedExpiryMs;
 
   static const _bannerType = 'pinned_location';
@@ -93,6 +100,11 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
       _ticker?.cancel();
       _ticker = null;
       _clearRealtime();
+      _removeConnectivityListener?.call();
+      _removeConnectivityListener = null;
+    });
+    _removeConnectivityListener = onSupabaseResume(() {
+      unawaited(_syncPendingPin());
     });
     // The persistent banner is irrelevant while invisible: hide it when
     // visibility drops, re-post it when visibility returns while pinned.
@@ -112,6 +124,21 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
   }
 
   Future<void> _init() async {
+    var hasPendingPin = false;
+    try {
+      await _restorePendingPin();
+      hasPendingPin = await PinnedLocationGate.readPendingPin() != null;
+    } catch (error, stackTrace) {
+      debugPrint(
+        '[PinnedLoc] Could not restore pending pin: $error\n$stackTrace',
+      );
+    }
+    if (!ref.mounted) return;
+    if (hasPendingPin) {
+      _ensureRealtime();
+      _ticker ??= Timer.periodic(const Duration(seconds: 30), (_) => _tick());
+      return;
+    }
     // Cache-first: seed from local gate cache instantly (memory + disk) so
     // UI renders without waiting for server, then reconcile in background.
     try {
@@ -141,6 +168,42 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
     }
   }
 
+  Future<void> _restorePendingPin() async {
+    final pending = await PinnedLocationGate.readPendingPin();
+    if (pending == null) return;
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId != null && pending.userId != userId) {
+      await PinnedLocationGate.clearPendingPin();
+      await PinnedLocationGate.clearPinCache();
+      return;
+    }
+    if (!pending.expiresAt.isAfter(DateTime.now().toUtc())) {
+      await PinnedLocationGate.clearPendingPin();
+      await PinnedLocationGate.clearPinCache();
+      return;
+    }
+
+    await PinnedLocationGate.writePinCache(
+      expiresAt: pending.expiresAt,
+      label: pending.label,
+    );
+    if (!ref.mounted) return;
+    state = PinnedLocationState(
+      isActive: true,
+      expiresAt: pending.expiresAt,
+      label: pending.label,
+      initialized: true,
+    );
+    try {
+      await ref
+          .read(isVisibleProvider.notifier)
+          .updateLocationStreamInterval(force: true);
+    } catch (_) {}
+    await _notifyNativePinnedStateChanged();
+    await _postBanner();
+    await _syncPendingPin();
+  }
+
   void _tick() {
     if (!ref.mounted) return;
     final s = state;
@@ -149,6 +212,7 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
       // Local expiry tripped before server reconcile: fail open to GPS.
       unawaited(_handleExpired(expiresAt: s.expiresAt));
     } else {
+      unawaited(_syncPendingPin());
       // Refresh countdown UI without changing state identity semantics.
       state = s.copyWith();
     }
@@ -158,6 +222,13 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
   Future<void> refresh() async {
     if (!ref.mounted) return;
     try {
+      final pending = await PinnedLocationGate.readPendingPin();
+      final userId = Supabase.instance.client.auth.currentUser?.id;
+      if (pending != null &&
+          pending.userId == userId &&
+          pending.expiresAt.isAfter(DateTime.now().toUtc())) {
+        return;
+      }
       final server = await PinnedLocationGate.fetchServerState();
       if (!ref.mounted) return;
       if (server == null) {
@@ -208,39 +279,57 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
   Future<void> pinCurrent({required Duration duration, String? label}) async {
     if (state.isLoading) return;
     state = state.copyWith(isLoading: true, error: null);
+    var savingOfflineIntent = false;
     try {
+      final client = Supabase.instance.client;
+      final userId = client.auth.currentUser?.id;
+      if (userId == null) {
+        throw StateError('Authentication is required to pin a location');
+      }
+      final normalizedLabel = (label ?? '').trim();
       var pos = ref.read(currentLocationProvider);
-      if (pos == null) {
+      if (pos == null && !shouldSkipSupabaseCalls()) {
         try {
           await ref.read(currentLocationProvider.notifier).refreshLocation();
         } catch (_) {}
         pos = ref.read(currentLocationProvider);
+      }
+      if (shouldSkipSupabaseCalls()) {
+        savingOfflineIntent = true;
+        await _saveOfflinePin(
+          userId: userId,
+          duration: duration,
+          label: normalizedLabel,
+          position: pos,
+        );
+        return;
       }
       // Anti-fraud (migration 20262087000000): the server pins the position
       // IT has observed from live GPS and ignores the coordinates sent
       // here (kept for signature compatibility). A missing local cached fix
       // is therefore not fatal — the server decides whether its own
       // observation is fresh enough to pin.
-      final res = await Supabase.instance.client.rpc(
+      final res = await client.rpc(
         'pin_current_location',
         params: {
-          'p_user_id': Supabase.instance.client.auth.currentUser!.id,
+          'p_user_id': userId,
           'p_latitude': pos?.latitude,
           'p_longitude': pos?.longitude,
-          'p_label': (label ?? '').trim().isEmpty ? null : label!.trim(),
+          'p_label': normalizedLabel.isEmpty ? null : normalizedLabel,
           'p_duration_seconds': duration.inSeconds,
         },
       );
       final expiresAt = DateTime.parse(res.toString()).toUtc();
       await PinnedLocationGate.writePinCache(
         expiresAt: expiresAt,
-        label: label,
+        label: normalizedLabel,
       );
+      await PinnedLocationGate.clearPendingPin();
       if (!ref.mounted) return;
       state = PinnedLocationState(
         isActive: true,
         expiresAt: expiresAt,
-        label: (label ?? '').trim().isEmpty ? null : label!.trim(),
+        label: normalizedLabel.isEmpty ? null : normalizedLabel,
         latitude: pos?.latitude,
         longitude: pos?.longitude,
         initialized: true,
@@ -269,6 +358,21 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
       // Realtime: tell every match partner immediately (match row + profile).
       _broadcastOwnPinned(isPinned: true, expiresAt: expiresAt);
     } catch (e) {
+      if (!savingOfflineIntent &&
+          (isExpectedOfflineFailure(e) || shouldSkipSupabaseCalls())) {
+        final userId = Supabase.instance.client.auth.currentUser?.id;
+        if (userId != null) {
+          final pos = ref.read(currentLocationProvider);
+          savingOfflineIntent = true;
+          await _saveOfflinePin(
+            userId: userId,
+            duration: duration,
+            label: (label ?? '').trim(),
+            position: pos,
+          );
+          return;
+        }
+      }
       if (ref.mounted) {
         state = state.copyWith(isLoading: false, error: e.toString());
       }
@@ -277,18 +381,241 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
     if (ref.mounted) state = state.copyWith(isLoading: false, error: null);
   }
 
+  Future<void> _saveOfflinePin({
+    required String userId,
+    required Duration duration,
+    required String label,
+    required Position? position,
+  }) async {
+    final now = DateTime.now().toUtc();
+    final expiresAt = now.add(duration);
+    final normalizedLabel = label.isEmpty ? null : label;
+    try {
+      await PinnedLocationGate.writePendingPin(
+        userId: userId,
+        expiresAt: expiresAt,
+        label: normalizedLabel,
+      );
+      await PinnedLocationGate.writePinCache(
+        expiresAt: expiresAt,
+        label: normalizedLabel,
+      );
+    } catch (error) {
+      if (ref.mounted) {
+        state = state.copyWith(isLoading: false, error: error.toString());
+      }
+      rethrow;
+    }
+    if (!ref.mounted) return;
+    state = PinnedLocationState(
+      isActive: true,
+      expiresAt: expiresAt,
+      label: normalizedLabel,
+      latitude: position?.latitude,
+      longitude: position?.longitude,
+      isLoading: false,
+      initialized: true,
+    );
+    _lastNoticedExpiryMs = null;
+    await _postBanner();
+    try {
+      await ref
+          .read(isVisibleProvider.notifier)
+          .updateLocationStreamInterval(force: true);
+    } catch (_) {}
+    await _notifyNativePinnedStateChanged();
+    debugPrint(
+      '[PinnedLoc] Saved offline pin intent for $userId; awaiting Supabase sync',
+    );
+  }
+
+  Future<void> _syncPendingPin() async {
+    if (_pendingPinSyncInProgress || shouldSkipSupabaseCalls()) return;
+    _pendingPinSyncInProgress = true;
+    try {
+      final pending = await PinnedLocationGate.readPendingPin();
+      final client = Supabase.instance.client;
+      final userId = client.auth.currentUser?.id;
+      if (pending == null || userId == null) return;
+      if (pending.userId != userId) {
+        await PinnedLocationGate.clearPendingPin();
+        await PinnedLocationGate.clearPinCache();
+        if (ref.mounted) state = const PinnedLocationState(initialized: true);
+        return;
+      }
+
+      final now = DateTime.now().toUtc();
+      final remainingSeconds = pending.expiresAt.difference(now).inSeconds;
+      if (remainingSeconds < 60) {
+        await PinnedLocationGate.clearPendingPin();
+        await PinnedLocationGate.clearPinCache();
+        if (ref.mounted) state = const PinnedLocationState(initialized: true);
+        await _clearBanner();
+        await _resumeLiveGps();
+        await _notifyNativePinnedStateChanged();
+        return;
+      }
+
+      if (pending.action == 'extend') {
+        final server = await PinnedLocationGate.fetchServerState();
+        if (server == null) {
+          throw StateError('Unable to read pinned location before extending');
+        }
+        if (!server.active || server.expiresAt == null) {
+          await PinnedLocationGate.clearPendingPin();
+          await PinnedLocationGate.clearPinCache();
+          if (ref.mounted) {
+            state = const PinnedLocationState(initialized: true);
+          }
+          await _clearBanner();
+          await _resumeLiveGps();
+          await _notifyNativePinnedStateChanged();
+          return;
+        }
+
+        final extraSeconds = pending.expiresAt
+            .difference(server.expiresAt!)
+            .inSeconds;
+        var expiresAt = server.expiresAt!;
+        if (extraSeconds >= 60) {
+          final result = await client.rpc(
+            'extend_pinned_location',
+            params: {'p_user_id': userId, 'p_extra_seconds': extraSeconds},
+          );
+          expiresAt = DateTime.parse(result.toString()).toUtc();
+        }
+        await PinnedLocationGate.writePinCache(
+          expiresAt: expiresAt,
+          label: pending.label ?? server.label,
+        );
+        if (ref.mounted) {
+          state = PinnedLocationState(
+            isActive: true,
+            expiresAt: expiresAt,
+            label: pending.label ?? server.label,
+            latitude: server.lat,
+            longitude: server.lng,
+            initialized: true,
+          );
+        }
+        await PinnedLocationGate.clearPendingPin();
+        await _postBanner();
+        await _notifyNativePinnedStateChanged();
+        _broadcastOwnPinned(isPinned: true, expiresAt: expiresAt);
+        debugPrint('[PinnedLoc] Offline pin extension synchronized');
+        return;
+      }
+
+      final params = {
+        'p_user_id': userId,
+        'p_label': pending.label,
+        'p_duration_seconds': remainingSeconds,
+      };
+      var result = await client.rpc(
+        'pin_current_location_from_observation',
+        params: params,
+      );
+      if (result == null) {
+        final position = await _acquireFreshPosition();
+        await client.rpc(
+          'update_user_location',
+          params: {
+            'p_user_id': userId,
+            'p_latitude': position.latitude,
+            'p_longitude': position.longitude,
+            'p_speed': position.speed,
+            'p_heading': position.heading,
+          },
+        );
+        result = await client.rpc(
+          'pin_current_location_from_observation',
+          params: params,
+        );
+      }
+      if (result is! Map) {
+        throw StateError(
+          'Supabase did not return the pinned location after syncing',
+        );
+      }
+
+      final expiresAt = DateTime.parse(result['expires_at'].toString()).toUtc();
+      final latitude = (result['latitude'] as num).toDouble();
+      final longitude = (result['longitude'] as num).toDouble();
+      await PinnedLocationGate.writePinCache(
+        expiresAt: expiresAt,
+        label: pending.label,
+      );
+      if (ref.mounted) {
+        state = PinnedLocationState(
+          isActive: true,
+          expiresAt: expiresAt,
+          label: pending.label,
+          latitude: latitude,
+          longitude: longitude,
+          initialized: true,
+        );
+      }
+      await PinnedLocationGate.clearPendingPin();
+      await _postBanner();
+      await _notifyNativePinnedStateChanged();
+      _broadcastOwnPinned(isPinned: true, expiresAt: expiresAt);
+      debugPrint('[PinnedLoc] Offline pin synchronized to Supabase');
+    } catch (error, stackTrace) {
+      debugPrint('[PinnedLoc] Offline pin sync failed: $error\n$stackTrace');
+    } finally {
+      _pendingPinSyncInProgress = false;
+    }
+  }
+
+  Future<Position> _acquireFreshPosition() async {
+    final locationService = ref.read(locationServiceProvider);
+    if (!await locationService.handleLocationPermission()) {
+      throw StateError('Location permission is required to finish pin setup');
+    }
+    final position = await LocationDeduplicator.getPosition(
+      label: 'offlinePinnedLocationSync',
+      fetcher: () => Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.best,
+        ),
+      ).timeout(const Duration(seconds: 15)),
+    );
+    if (position == null) {
+      throw StateError('No fresh location was available to finish pin setup');
+    }
+    await ref
+        .read(currentLocationProvider.notifier)
+        .updateFromService(position);
+    return position;
+  }
+
   Future<void> extend({required Duration extra}) async {
     if (state.isLoading || !state.isActive) return;
     state = state.copyWith(isLoading: true, error: null);
+    var savingOfflineIntent = false;
     try {
-      final res = await Supabase.instance.client.rpc(
+      final client = Supabase.instance.client;
+      final userId = client.auth.currentUser?.id;
+      if (userId == null) {
+        throw StateError('Authentication is required to extend a pin');
+      }
+      if (shouldSkipSupabaseCalls()) {
+        savingOfflineIntent = true;
+        await _saveOfflineExtension(userId: userId, extra: extra);
+        return;
+      }
+      final pending = await PinnedLocationGate.readPendingPin();
+      if (pending != null) {
+        savingOfflineIntent = true;
+        await _saveOfflineExtension(userId: userId, extra: extra);
+        return;
+      }
+      final res = await client.rpc(
         'extend_pinned_location',
-        params: {
-          'p_user_id': Supabase.instance.client.auth.currentUser!.id,
-          'p_extra_seconds': extra.inSeconds,
-        },
+        params: {'p_user_id': userId, 'p_extra_seconds': extra.inSeconds},
       );
       final expiresAt = DateTime.parse(res.toString()).toUtc();
+      await PinnedLocationGate.clearPendingPin();
       await PinnedLocationGate.writePinCache(
         expiresAt: expiresAt,
         label: state.label,
@@ -303,6 +630,15 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
       // Realtime: refreshed expiry must reach partners immediately.
       _broadcastOwnPinned(isPinned: true, expiresAt: expiresAt);
     } catch (e) {
+      if (!savingOfflineIntent &&
+          (isExpectedOfflineFailure(e) || shouldSkipSupabaseCalls())) {
+        final userId = Supabase.instance.client.auth.currentUser?.id;
+        if (userId != null) {
+          savingOfflineIntent = true;
+          await _saveOfflineExtension(userId: userId, extra: extra);
+          return;
+        }
+      }
       if (ref.mounted) {
         state = state.copyWith(isLoading: false, error: e.toString());
       }
@@ -310,10 +646,55 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
     }
   }
 
+  Future<void> _saveOfflineExtension({
+    required String userId,
+    required Duration extra,
+  }) async {
+    final currentExpiry = state.expiresAt;
+    if (currentExpiry == null ||
+        !currentExpiry.isAfter(DateTime.now().toUtc())) {
+      throw StateError('There is no active pinned location to extend');
+    }
+    final requestedExpiry = currentExpiry.add(extra);
+    try {
+      await PinnedLocationGate.writePendingExtension(
+        userId: userId,
+        expiresAt: requestedExpiry,
+        extra: extra,
+        label: state.label,
+      );
+      await PinnedLocationGate.writePinCache(
+        expiresAt: requestedExpiry,
+        label: state.label,
+      );
+    } catch (error) {
+      if (ref.mounted) {
+        state = state.copyWith(isLoading: false, error: error.toString());
+      }
+      rethrow;
+    }
+    if (!ref.mounted) return;
+    state = state.copyWith(
+      expiresAt: requestedExpiry,
+      isLoading: false,
+      error: null,
+    );
+    _lastNoticedExpiryMs = null;
+    await _postBanner();
+    _broadcastOwnPinned(isPinned: true, expiresAt: requestedExpiry);
+    debugPrint(
+      '[PinnedLoc] Saved offline pin extension for $userId; awaiting Supabase sync',
+    );
+    if (!shouldSkipSupabaseCalls()) {
+      unawaited(_syncPendingPin());
+    }
+  }
+
   Future<void> unpin() async {
     if (state.isLoading) return;
     state = state.copyWith(isLoading: true, error: null);
     try {
+      await PinnedLocationGate.clearPendingPin();
       final uid = Supabase.instance.client.auth.currentUser?.id;
       if (uid != null) {
         try {
@@ -359,6 +740,7 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
 
   Future<void> _handleExpired({DateTime? expiresAt}) async {
     final expiryMs = expiresAt?.toUtc().millisecondsSinceEpoch;
+    await PinnedLocationGate.clearPendingPin();
     await PinnedLocationGate.clearPinCache();
     if (!ref.mounted) return;
     state = const PinnedLocationState(initialized: true);

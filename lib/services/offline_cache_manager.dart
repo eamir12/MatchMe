@@ -13,6 +13,7 @@ import 'package:matchme/services/calendar_sync_service.dart';
 import 'package:matchme/services/offline_mutation_queue.dart';
 import 'package:matchme/services/supabase_realtime_manager.dart';
 import 'package:matchme/services/storage_helper.dart';
+import 'package:matchme/services/offline_image_cache.dart';
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -431,6 +432,11 @@ class OfflineCacheManager {
       // In-memory image cache (profile photos) must not survive logout.
       imageCache.clear();
       imageCache.clearLiveImages();
+      try {
+        await OfflineImageCache.instance.clear();
+      } catch (error) {
+        debugPrint('⚠️ [OFFLINE] Failed to clear cached image bytes: $error');
+      }
       // Sensitive prefs shim for native service (tokens/location key).
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('user_id');

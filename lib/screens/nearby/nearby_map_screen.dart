@@ -29,6 +29,7 @@ import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/utils/country_localized_names.dart';
 import 'package:matchme/utils/unit_utils.dart';
 import 'package:matchme/utils/nearby_map_camera.dart';
+import 'package:matchme/utils/offline_utils.dart';
 import 'package:matchme/providers/unit_provider.dart';
 import 'package:matchme/widgets/app_empty_state.dart';
 import 'package:matchme/widgets/app_skeleton.dart';
@@ -765,6 +766,46 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
     final double queryRadiusKm = defaultRadiusKm;
 
     final cellMeters = _cellMetersForRadiusKm(queryRadiusKm);
+    final queryKey =
+        '${queryCenter.latitude.toStringAsFixed(6)}_'
+        '${queryCenter.longitude.toStringAsFixed(6)}_'
+        '${queryRadiusKm.toStringAsFixed(6)}_$cellMeters'
+            .replaceAll('.', '_')
+            .replaceAll('-', 'm');
+    LocalDbService? localDb;
+    List<Map<String, dynamic>>? cachedRows;
+    try {
+      localDb = await LocalDbService.instance;
+      cachedRows = await localDb.getNearbyMapCells(userId, queryKey);
+    } catch (error) {
+      debugPrint('Nearby map cache read failed: $error');
+    }
+
+    List<NearbyMapCell> decodeCells(
+      List<Map<String, dynamic>> rows,
+    ) {
+      final parsed = <NearbyMapCell>[];
+      for (final row in rows) {
+        final lat = (row['cell_center_lat'] as num?)?.toDouble();
+        final lng = (row['cell_center_lng'] as num?)?.toDouble();
+        final count = (row['user_count'] as num?)?.toInt();
+        if (lat == null || lng == null || count == null || count <= 0) {
+          continue;
+        }
+        parsed.add(NearbyMapCell(lat: lat, lng: lng, count: count));
+      }
+      return parsed;
+    }
+
+    if (shouldSkipSupabaseCalls()) {
+      if (!mounted) return;
+      setState(() {
+        _cells = cachedRows == null ? const [] : decodeCells(cachedRows);
+        _selectedCell = null;
+        _loading = false;
+      });
+      return;
+    }
 
     final pin = ref.read(pinnedLocationProvider);
     final locationSource = pin.isActive ? 'pinned' : 'live';
@@ -793,16 +834,11 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
       );
 
       final rows = (result as List<dynamic>?) ?? const [];
-      final parsed = <NearbyMapCell>[];
-      for (final row in rows) {
-        if (row is! Map) continue;
-        final lat = (row['cell_center_lat'] as num?)?.toDouble();
-        final lng = (row['cell_center_lng'] as num?)?.toDouble();
-        final count = (row['user_count'] as num?)?.toInt();
-        if (lat == null || lng == null || count == null) continue;
-        if (count <= 0) continue;
-        parsed.add(NearbyMapCell(lat: lat, lng: lng, count: count));
-      }
+      final cacheRows = rows
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList(growable: false);
+      final parsed = decodeCells(cacheRows);
 
       var totalUsers = 0;
       for (final c in parsed) {
@@ -811,6 +847,13 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
       print(
         '[${_ts()}] 🗺️ NearbyMapScreen: _fetchCells rpc ok (rows=${rows.length}, cells=${parsed.length}, totalUsers=$totalUsers)',
       );
+
+      try {
+        localDb ??= await LocalDbService.instance;
+        await localDb.saveNearbyMapCells(userId, queryKey, cacheRows);
+      } catch (error) {
+        debugPrint('Nearby map cache write failed: $error');
+      }
 
       if (!mounted) return;
       setState(() {
@@ -828,6 +871,13 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
       final errorTranslationKey =
           ErrorLocalizationService.getMapErrorTranslationKey(e);
       final isNetworkError = errorTranslationKey.startsWith('networkError');
+      if (cachedRows != null) {
+        setState(() {
+          _cells = decodeCells(cachedRows!);
+          _selectedCell = null;
+        });
+        return;
+      }
       if (!isNetworkError) {
         setState(() {
           _cells = const [];

@@ -10,10 +10,14 @@
 // - Otherwise request a signed URL once in initState / when source changes and store the result.
 // - While waiting, show placeholder; on failure show errorWidget (or a fallback broken image).
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:matchme/services/storage_helper.dart';
 import 'package:matchme/services/offline_cache_manager.dart';
+import 'package:matchme/services/offline_image_cache.dart';
 import 'package:extended_image/extended_image.dart';
 import 'dart:developer' as developer;
 
@@ -53,6 +57,7 @@ class _SignedImageState extends State<SignedImage> {
   int _resolveGeneration = 0;
   int _retryCount = 0;
   String? _lastCacheKey;
+  Uint8List? _cachedWebImageBytes;
 
   @override
   void initState() {
@@ -76,6 +81,7 @@ class _SignedImageState extends State<SignedImage> {
       );
       _resolvedUrl = null;
       _resolvedHeaders = null;
+      _cachedWebImageBytes = null;
       _failed = false;
       _retryCount = 0;
       _lastCacheKey = newCacheKey;
@@ -200,6 +206,28 @@ class _SignedImageState extends State<SignedImage> {
       return;
     }
 
+    final cacheKey = StorageHelper.cacheKeyForSource(src);
+    if (kIsWeb) {
+      try {
+        final cachedBytes = await OfflineImageCache.instance.read(cacheKey);
+        if (!mounted || generation != _resolveGeneration) return;
+        if (cachedBytes != null) {
+          setState(() => _cachedWebImageBytes = cachedBytes);
+        }
+      } catch (error) {
+        developer.log(
+          'Offline image cache read failed: $error',
+          name: 'MatchMeTrace',
+        );
+      }
+      if (offlineCacheManager.shouldUseCachedData()) {
+        if (_cachedWebImageBytes == null && mounted) {
+          setState(() => _failed = true);
+        }
+        return;
+      }
+    }
+
     if (offlineCacheManager.shouldUseCachedData()) {
       final headers = StorageHelper.buildAuthHeaders();
       final directUrl = headers != null
@@ -267,6 +295,9 @@ class _SignedImageState extends State<SignedImage> {
         _resolvedHeaders = request.headers;
         _failed = false;
       });
+      if (kIsWeb) {
+        unawaited(_cacheWebImageBytes(request.url, request.headers, cacheKey));
+      }
     } catch (_) {
       if (!mounted) return;
       if (generation != _resolveGeneration) return;
@@ -292,6 +323,21 @@ class _SignedImageState extends State<SignedImage> {
   @override
   Widget build(BuildContext context) {
     final cacheKey = StorageHelper.cacheKeyForSource(widget.source);
+    if (kIsWeb && _cachedWebImageBytes != null) {
+      return Image.memory(
+        _cachedWebImageBytes!,
+        fit: widget.fit,
+        width: widget.width,
+        height: widget.height,
+        alignment: widget.alignment,
+        filterQuality: widget.filterQualityLow
+            ? FilterQuality.low
+            : FilterQuality.high,
+        errorBuilder: (context, error, stackTrace) {
+          return widget.errorWidget ?? const Icon(Icons.broken_image);
+        },
+      );
+    }
     // Priority: resolved url -> errorWidget -> placeholder (if loading) -> small broken icon
     if (_resolvedUrl != null && _resolvedUrl!.isNotEmpty) {
       return _buildCachedNetworkImage(
@@ -331,5 +377,30 @@ class _SignedImageState extends State<SignedImage> {
             ),
           ),
     );
+  }
+
+  Future<void> _cacheWebImageBytes(
+    String url,
+    Map<String, String>? headers,
+    String cacheKey,
+  ) async {
+    try {
+      final response = await http.get(Uri.parse(url), headers: headers);
+      if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
+        throw StateError('Image fetch failed with HTTP ${response.statusCode}');
+      }
+      final bytes = Uint8List.fromList(response.bodyBytes);
+      await OfflineImageCache.instance.write(cacheKey, bytes);
+      if (!mounted ||
+          cacheKey != StorageHelper.cacheKeyForSource(widget.source)) {
+        return;
+      }
+      setState(() => _cachedWebImageBytes = bytes);
+    } catch (error) {
+      developer.log(
+        'Could not persist displayed image for offline use: $error',
+        name: 'MatchMeTrace',
+      );
+    }
   }
 }
