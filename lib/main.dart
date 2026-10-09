@@ -347,6 +347,7 @@ void _mainSync() {
         !lower.contains('maptiles') &&
         !lower.contains('hivecrypto') &&
         !lower.contains('profileedit') &&
+        !lower.contains('matchmeapp') &&
         !lower.contains('[settings]') &&
         !lower.contains('profilesyncservice') &&
         !lower.contains('connectivity')) {
@@ -571,6 +572,12 @@ class _BootstrapAppState extends State<_BootstrapApp> {
           debugPrint(
             '⏱️ [BOOTSTRAP] Init complete at ${DateTime.now().millisecondsSinceEpoch}',
           );
+          debugPrint(
+            '[BOOTSTRAP_TRACE] future_builder_completed '
+            'hasError=${snapshot.hasError} hasResult=${result != null} '
+            'errorApp=${result?.errorApp != null} '
+            'immediateReveal=${result?.prefersImmediateAppReveal}',
+          );
         }
         if (snapshot.hasError || result == null) {
           final err =
@@ -607,7 +614,10 @@ class _BootstrapAppState extends State<_BootstrapApp> {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               BootstrapDeferral.markAppReady();
             });
-            if (mounted) setState(() => _showMainApp = true);
+            if (mounted) {
+              debugPrint('[BOOTSTRAP_TRACE] switching_to_main_app');
+              setState(() => _showMainApp = true);
+            }
           });
           return const MaterialApp(
             debugShowCheckedModeBanner: false,
@@ -615,6 +625,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
           );
         }
 
+        debugPrint('[BOOTSTRAP_TRACE] building_match_me_app');
         return UncontrolledProviderScope(
           container: widget.container,
           child: const MatchMeApp(),
@@ -4172,6 +4183,10 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
       fireImmediately: true,
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      debugPrint(
+        '[BOOTSTRAP_TRACE] match_me_first_frame '
+        'at ${DateTime.now().millisecondsSinceEpoch}',
+      );
       debugPrint(
         '⏱️ [MatchMeApp] First Frame Rendered at ${DateTime.now().millisecondsSinceEpoch}',
       );
