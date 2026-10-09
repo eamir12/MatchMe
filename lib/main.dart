@@ -308,6 +308,7 @@ void _mainSync() {
   print('[BOOTSTRAP] Initializing VoiceGuidanceService...');
   unawaited(VoiceGuidanceService.instance.loadEnabledFromPrefs());
   PlatformDispatcher.instance.onError = (error, stack) {
+    print('[STARTUP_DIAG] platform_error type=${error.runtimeType}');
     // PlatformDispatcher runs AFTER the zone guard, so errors caught here
     // are ones that escaped the zone guard AND are non-ignorable.
     // Still check our suppression patterns as a safety net.
@@ -326,6 +327,12 @@ void _mainSync() {
   FlutterError.onError = (FlutterErrorDetails details) {
     final error = details.exception;
     final stack = details.stack ?? StackTrace.current;
+    print(
+      '[STARTUP_DIAG] flutter_error '
+      'type=${error.runtimeType} '
+      'library=${details.library ?? "unknown"} '
+      'context=${details.context?.toDescription() ?? "unknown"}',
+    );
     if (_suppressUnhandledError(error, stack)) return;
     if (_isIgnorableWebSocketError(error)) {
       return;
@@ -362,6 +369,24 @@ void _mainSync() {
 
   _bootstrapInitFuture = _bootstrapInitialize(container);
   runApp(_BootstrapApp(container: container, initFuture: _bootstrapInitFuture));
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    print(
+      '[STARTUP_DIAG] first_root_frame '
+      'at=${DateTime.now().millisecondsSinceEpoch}',
+    );
+  });
+  void logFirstFrameTiming(List<FrameTiming> timings) {
+    if (timings.isEmpty) return;
+    SchedulerBinding.instance.removeTimingsCallback(logFirstFrameTiming);
+    final timing = timings.first;
+    print(
+      '[STARTUP_DIAG] first_frame_timing '
+      'buildUs=${timing.buildDuration.inMicroseconds} '
+      'rasterUs=${timing.rasterDuration.inMicroseconds}',
+    );
+  }
+
+  SchedulerBinding.instance.addTimingsCallback(logFirstFrameTiming);
   _installWebStartupWarmupFrames();
 }
 
@@ -554,6 +579,11 @@ class _BootstrapAppState extends State<_BootstrapApp> {
     return FutureBuilder<_BootstrapInitResult>(
       future: _initFuture,
       builder: (context, snapshot) {
+        print(
+          '[STARTUP_DIAG] future_builder '
+          'state=${snapshot.connectionState.name} '
+          'hasError=${snapshot.hasError} hasResult=${snapshot.data != null}',
+        );
         if (snapshot.connectionState != ConnectionState.done) {
           final nowMs = DateTime.now().millisecondsSinceEpoch;
           if (nowMs - _lastWaitingLogAtMs >= 1000) {
@@ -572,14 +602,18 @@ class _BootstrapAppState extends State<_BootstrapApp> {
           debugPrint(
             '⏱️ [BOOTSTRAP] Init complete at ${DateTime.now().millisecondsSinceEpoch}',
           );
-          debugPrint(
-            '[BOOTSTRAP_TRACE] future_builder_completed '
+          print(
+            '[STARTUP_DIAG] future_builder_completed '
             'hasError=${snapshot.hasError} hasResult=${result != null} '
             'errorApp=${result?.errorApp != null} '
             'immediateReveal=${result?.prefersImmediateAppReveal}',
           );
         }
         if (snapshot.hasError || result == null) {
+          print(
+            '[STARTUP_DIAG] selecting_bootstrap_error '
+            'errorType=${snapshot.error?.runtimeType ?? "none"}',
+          );
           final err =
               snapshot.error?.toString() ??
               LocalizationState.defaultTranslation('bootstrapUnknownError');
@@ -592,6 +626,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
         }
 
         if (result.errorApp != null) {
+          print('[STARTUP_DIAG] selecting_result_error_app');
           return MaterialApp(
             debugShowCheckedModeBanner: false,
             home: result.errorApp!,
@@ -599,6 +634,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
         }
 
         if (!_minimumLoaderElapsed && !result.prefersImmediateAppReveal) {
+          print('[STARTUP_DIAG] minimum_loader_still_active');
           return const MaterialApp(
             debugShowCheckedModeBanner: false,
             home: StartupLoaderScaffold(),
@@ -615,7 +651,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
               BootstrapDeferral.markAppReady();
             });
             if (mounted) {
-              debugPrint('[BOOTSTRAP_TRACE] switching_to_main_app');
+              print('[STARTUP_DIAG] switching_to_main_app');
               setState(() => _showMainApp = true);
             }
           });
@@ -625,7 +661,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
           );
         }
 
-        debugPrint('[BOOTSTRAP_TRACE] building_match_me_app');
+        print('[STARTUP_DIAG] building_match_me_app');
         return UncontrolledProviderScope(
           container: widget.container,
           child: const MatchMeApp(),
@@ -2378,8 +2414,9 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
   ProviderContainer container,
 ) async {
   void traceBootstrap(String checkpoint) {
-    debugPrint(
-      '[BOOTSTRAP_TRACE] $checkpoint at ${DateTime.now().millisecondsSinceEpoch}',
+    print(
+      '[STARTUP_DIAG] bootstrap=$checkpoint '
+      'at=${DateTime.now().millisecondsSinceEpoch}',
     );
   }
 
@@ -4134,7 +4171,7 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
 
   @override
   void initState() {
-    debugPrint(
+    print(
       '⏱️ [MatchMeApp] initState at ${DateTime.now().millisecondsSinceEpoch}',
     );
     super.initState();
@@ -4183,11 +4220,11 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
       fireImmediately: true,
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      debugPrint(
-        '[BOOTSTRAP_TRACE] match_me_first_frame '
+      print(
+        '[STARTUP_DIAG] match_me_first_frame '
         'at ${DateTime.now().millisecondsSinceEpoch}',
       );
-      debugPrint(
+      print(
         '⏱️ [MatchMeApp] First Frame Rendered at ${DateTime.now().millisecondsSinceEpoch}',
       );
 
@@ -4615,7 +4652,7 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
 
   @override
   Widget build(BuildContext context) {
-    debugPrint(
+    print(
       '⏱️ [MatchMeApp] build at ${DateTime.now().millisecondsSinceEpoch}',
     );
     final localization = ref.watch(localizationProvider);
@@ -5353,7 +5390,13 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
         child: authState.when(
           data: (state) {
             final user = state.session?.user;
+            print(
+              '[STARTUP_DIAG] auth_route_state '
+              'hasUser=${user != null} '
+              'loading=${authState.isLoading} error=${authState.hasError}',
+            );
             if (user == null) {
+              print('[STARTUP_DIAG] selecting_auth_screen');
               return const AuthScreen();
             }
             // A calendar import borrows the social sign-in flow to obtain a
