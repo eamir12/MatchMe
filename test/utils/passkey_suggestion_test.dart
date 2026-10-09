@@ -16,17 +16,40 @@ void main() {
       );
 
       for (final key in [
-        'authPasskeySetupIosTitle',
-        'authPasskeySetupIosBody',
-        'authPasskeySetupIosButton',
+        'authPasskeySetupIosLoginTitle',
+        'authPasskeySetupAndroidLoginTitle',
+        'authPasskeySetupWindowsLoginTitle',
+        'authPasskeySetupWebLoginTitle',
+        'authPasskeySetupPasswordAlternative',
+        'authPasskeySetupMoreInfoButton',
+        'authPasskeySetupWebInstructionsTitle',
+        'authPasskeySetupWebInstructionsBody',
         'authPasskeySetupIosInstructionsTitle',
         'authPasskeySetupIosInstructionsBody',
-        'authPasskeySetupAndroidTitle',
-        'authPasskeySetupWindowsTitle',
       ]) {
         expect(localization.getString(key), isNot(key));
         expect(localization.getString(key), isNotEmpty);
       }
+      expect(
+        localization.getString('authPasskeySetupIosLoginTitle'),
+        contains('iPhone'),
+      );
+      expect(
+        localization.getString('authPasskeySetupAndroidLoginTitle'),
+        contains('Android'),
+      );
+      expect(
+        localization.getString('authPasskeySetupWindowsLoginTitle'),
+        contains('Windows PC'),
+      );
+      expect(
+        localization.getString('authPasskeySetupWebLoginTitle'),
+        contains('browser'),
+      );
+      expect(
+        localization.getString('authPasskeySetupPasswordAlternative'),
+        contains('username and password'),
+      );
     });
   });
 
@@ -87,8 +110,12 @@ void main() {
           platform: TargetPlatform.windows,
         );
         expect(presentation.showActionButton, isFalse);
-        expect(presentation.titleKey, 'authPasskeySetupWindowsTitle');
-        expect(presentation.bodyKey, 'authPasskeySetupWindowsBody');
+        expect(presentation.titleKey, 'authPasskeySetupWindowsLoginTitle');
+        expect(presentation.bodyKey, 'authPasskeySetupPasswordAlternative');
+        expect(
+          presentation.moreInfoButtonKey,
+          'authPasskeySetupMoreInfoButton',
+        );
         expect(
           presentation.setupAction,
           PasskeySetupAction.openWindowsSignInOptions,
@@ -107,9 +134,14 @@ void main() {
       );
       expect(presentation.titleKey, isNot('authPasskeyInlineHintTitle'));
       expect(presentation.bodyKey, isNot('authPasskeyInlineHintBody'));
-      expect(presentation.titleKey, 'authPasskeySetupIosTitle');
+      expect(presentation.titleKey, 'authPasskeySetupIosLoginTitle');
+      expect(presentation.bodyKey, 'authPasskeySetupPasswordAlternative');
+      expect(
+        presentation.moreInfoButtonKey,
+        'authPasskeySetupMoreInfoButton',
+      );
       expect(presentation.setupAction, PasskeySetupAction.showInstructions);
-      expect(presentation.setupButtonLabelKey, 'authPasskeySetupIosButton');
+      expect(presentation.setupButtonLabelKey, isNull);
       expect(
         presentation.setupInstructionsBodyKey,
         'authPasskeySetupIosInstructionsBody',
@@ -121,11 +153,40 @@ void main() {
         PasskeyDeviceCapability.noPlatformAuthenticator,
         platform: TargetPlatform.android,
       );
-      expect(presentation.titleKey, 'authPasskeySetupAndroidTitle');
+      expect(presentation.titleKey, 'authPasskeySetupAndroidLoginTitle');
+      expect(presentation.bodyKey, 'authPasskeySetupPasswordAlternative');
+      expect(
+        presentation.moreInfoButtonKey,
+        'authPasskeySetupMoreInfoButton',
+      );
       expect(
         presentation.setupAction,
         PasskeySetupAction.openAndroidSecuritySettings,
       );
+      expect(
+        presentation.setupButtonLabelKey,
+        'authPasskeySetupAndroidButton',
+      );
+    });
+
+    test('uses browser-specific wording on web regardless of host platform', () {
+      final presentation = resolvePasskeyCardPresentation(
+        PasskeyDeviceCapability.noPlatformAuthenticator,
+        platform: TargetPlatform.windows,
+        isWeb: true,
+      );
+      expect(presentation.titleKey, 'authPasskeySetupWebLoginTitle');
+      expect(presentation.bodyKey, 'authPasskeySetupPasswordAlternative');
+      expect(
+        presentation.moreInfoButtonKey,
+        'authPasskeySetupMoreInfoButton',
+      );
+      expect(presentation.setupAction, PasskeySetupAction.showInstructions);
+      expect(
+        presentation.setupInstructionsTitleKey,
+        'authPasskeySetupWebInstructionsTitle',
+      );
+      expect(presentation.setupButtonLabelKey, isNull);
     });
 
     test('offers the passkey action when an authenticator is ready', () {

@@ -159,6 +159,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
       resolvePasskeyCardPresentation(
         _passkeyCapability ?? PasskeyDeviceCapability.unsupported,
         platform: defaultTargetPlatform,
+        isWeb: kIsWeb,
       );
 
   static const double _oauthProviderIconSize = 20;
@@ -520,9 +521,9 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
                   onPressed: authInteractionBlocked
                       ? null
                       : _handlePasskeySetup,
-                  icon: const Icon(Icons.settings_outlined),
+                  icon: const Icon(Icons.info_outline),
                   label: Text(
-                    getString(_passkeyCardPresentation.setupButtonLabelKey!),
+                    getString(_passkeyCardPresentation.moreInfoButtonKey!),
                   ),
                   style: OutlinedButton.styleFrom(
                     minimumSize: const Size.fromHeight(50),
@@ -551,49 +552,21 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
 
   Future<void> _handlePasskeySetup() async {
     final presentation = _passkeyCardPresentation;
-    switch (presentation.setupAction) {
-      case PasskeySetupAction.openAndroidSecuritySettings:
-        try {
-          final opened = await const MethodChannel(
-            'matchme/passkey_setup',
-          ).invokeMethod<bool>('openSecuritySettings');
-          if (opened == true || !mounted) return;
-        } on PlatformException catch (error) {
-          debugPrint('[Passkey] Could not open Android security settings: $error');
-        } on MissingPluginException catch (error) {
-          debugPrint('[Passkey] Android settings bridge is unavailable: $error');
-        }
-        break;
-      case PasskeySetupAction.openWindowsSignInOptions:
-        try {
-          final opened = await launchUrl(
-            Uri.parse('ms-settings:signinoptions'),
-            mode: LaunchMode.externalApplication,
-          );
-          if (opened || !mounted) return;
-        } catch (error) {
-          debugPrint('[Passkey] Could not open Windows sign-in settings: $error');
-        }
-        break;
-      case PasskeySetupAction.showInstructions:
-      case null:
-        break;
-    }
-
     if (!mounted) return;
     final l10n = ref.read(localizationProvider);
     await showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: Text(
-          l10n.getString(presentation.setupInstructionsTitleKey!),
-        ),
+        title: Text(l10n.getString(presentation.setupInstructionsTitleKey!)),
         content: SingleChildScrollView(
-          child: Text(
-            l10n.getString(presentation.setupInstructionsBodyKey!),
-          ),
+          child: Text(l10n.getString(presentation.setupInstructionsBodyKey!)),
         ),
         actions: [
+          if (presentation.setupButtonLabelKey != null)
+            TextButton(
+              onPressed: () => _openPasskeySetupSettings(presentation),
+              child: Text(l10n.getString(presentation.setupButtonLabelKey!)),
+            ),
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
             child: Text(l10n.getString('done')),
@@ -601,6 +574,41 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
         ],
       ),
     );
+  }
+
+  Future<void> _openPasskeySetupSettings(
+    PasskeyCardPresentation presentation,
+  ) async {
+    switch (presentation.setupAction) {
+      case PasskeySetupAction.openAndroidSecuritySettings:
+        try {
+          final opened = await const MethodChannel(
+            'matchme/passkey_setup',
+          ).invokeMethod<bool>('openSecuritySettings');
+          if (opened != true) {
+            debugPrint('[Passkey] Android security settings did not open.');
+          }
+        } on PlatformException catch (error) {
+          debugPrint('[Passkey] Could not open Android security settings: $error');
+        } on MissingPluginException catch (error) {
+          debugPrint('[Passkey] Android settings bridge is unavailable: $error');
+        }
+      case PasskeySetupAction.openWindowsSignInOptions:
+        try {
+          final opened = await launchUrl(
+            Uri.parse('ms-settings:signinoptions'),
+            mode: LaunchMode.externalApplication,
+          );
+          if (!opened) {
+            debugPrint('[Passkey] Windows sign-in settings did not open.');
+          }
+        } catch (error) {
+          debugPrint('[Passkey] Could not open Windows sign-in settings: $error');
+        }
+      case PasskeySetupAction.showInstructions:
+      case null:
+        return;
+    }
   }
 
   // NEW: Sign in with passkey (for now, placeholder that could call Supabase passkey auth)

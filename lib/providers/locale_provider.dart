@@ -444,6 +444,8 @@ class LocalizationState {
     'authPasskeySetupAndroidInstructionsTitle':
         'Set up a screen lock for passkeys',
     'authPasskeySetupAndroidTitle': 'Set up passkeys on this Android device',
+    'authPasskeySetupAndroidLoginTitle':
+        'Passkeys aren’t set up on this Android device',
     'authPasskeySetupIosBody':
         'Passkeys on iPhone use your device passcode and iCloud Passwords & Keychain. Turn on these features in Settings, then try again.',
     'authPasskeySetupIosButton': 'View iPhone setup steps',
@@ -451,6 +453,7 @@ class LocalizationState {
         '1. In Settings, set a passcode under Face ID & Passcode or Touch ID & Passcode.\n\n2. Tap your name, then iCloud > Passwords & Keychain, and turn on Sync this iPhone.\n\nMenu names can vary slightly by iOS version. After setup, return here and try the passkey again.',
     'authPasskeySetupIosInstructionsTitle': 'Set up passkeys on iPhone',
     'authPasskeySetupIosTitle': 'Set up passkeys on this iPhone',
+    'authPasskeySetupIosLoginTitle': 'Passkeys aren’t set up on this iPhone',
     'authPasskeySetupMacBody':
         'Passkeys on Mac use Touch ID or your Mac login password and may sync through iCloud Passwords & Keychain. Use the setup steps for your Mac.',
     'authPasskeySetupMacButton': 'View Mac setup steps',
@@ -465,6 +468,13 @@ class LocalizationState {
         'Passkey setup depends on your device and browser. Enable a device screen lock or biometric unlock, and make sure a passkey provider is available. You can also use a passkey saved on another device.',
     'authPasskeySetupOtherInstructionsTitle': 'Set up passkeys on this device',
     'authPasskeySetupOtherTitle': 'Set up passkeys on this device',
+    'authPasskeySetupMoreInfoButton': 'More information',
+    'authPasskeySetupPasswordAlternative':
+        'You can sign in with your username and password instead.',
+    'authPasskeySetupWebInstructionsBody':
+        'Passkey availability in a browser depends on your browser, device, and saved passkey provider. Check that your browser supports passkeys and that a passkey is available in your password manager. You can also sign in with your username and password.',
+    'authPasskeySetupWebInstructionsTitle': 'About passkeys in this browser',
+    'authPasskeySetupWebLoginTitle': 'Passkeys aren’t set up in this browser',
     'authPasskeySetupWindowsBody':
         'Passkeys on Windows use Windows Hello. Set up a PIN, fingerprint, or face sign-in in Windows Settings, then try again.',
     'authPasskeySetupWindowsButton': 'Open Windows Hello settings',
@@ -473,6 +483,8 @@ class LocalizationState {
     'authPasskeySetupWindowsInstructionsTitle':
         'Set up Windows Hello for passkeys',
     'authPasskeySetupWindowsTitle': 'Set up passkeys on this PC',
+    'authPasskeySetupWindowsLoginTitle':
+        'Passkeys aren’t set up on this Windows PC',
     'authPasskeyNoPasswordNeeded': 'No password needed on supported devices.',
     'authPasskeyNotAvailable':
         'This account does not have a passkey registered',

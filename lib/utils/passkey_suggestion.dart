@@ -11,6 +11,7 @@ class PasskeyCardPresentation {
     required this.titleKey,
     required this.bodyKey,
     required this.showActionButton,
+    this.moreInfoButtonKey,
     this.setupAction,
     this.setupButtonLabelKey,
     this.setupInstructionsTitleKey,
@@ -24,6 +25,7 @@ class PasskeyCardPresentation {
   /// action would only fail, and the copy must not point at a button that
   /// isn't there.
   final bool showActionButton;
+  final String? moreInfoButtonKey;
   final PasskeySetupAction? setupAction;
   final String? setupButtonLabelKey;
   final String? setupInstructionsTitleKey;
@@ -44,58 +46,74 @@ enum PasskeySetupAction {
 PasskeyCardPresentation resolvePasskeyCardPresentation(
   PasskeyDeviceCapability capability, {
   required TargetPlatform platform,
-}
-) {
+  bool isWeb = false,
+}) {
   switch (capability) {
     case PasskeyDeviceCapability.noPlatformAuthenticator:
-      final configuration = switch (platform) {
+      final configuration = isWeb
+          ? (
+              title: 'authPasskeySetupWebLoginTitle',
+              body: 'authPasskeySetupPasswordAlternative',
+              button: 'authPasskeySetupMoreInfoButton',
+              action: PasskeySetupAction.showInstructions,
+              instructionsTitle: 'authPasskeySetupWebInstructionsTitle',
+              instructionsBody: 'authPasskeySetupWebInstructionsBody',
+              settingsButton: null,
+            )
+          : switch (platform) {
         TargetPlatform.iOS => (
-          title: 'authPasskeySetupIosTitle',
-          body: 'authPasskeySetupIosBody',
-          button: 'authPasskeySetupIosButton',
+          title: 'authPasskeySetupIosLoginTitle',
+          body: 'authPasskeySetupPasswordAlternative',
+          button: 'authPasskeySetupMoreInfoButton',
           action: PasskeySetupAction.showInstructions,
           instructionsTitle: 'authPasskeySetupIosInstructionsTitle',
           instructionsBody: 'authPasskeySetupIosInstructionsBody',
+          settingsButton: null,
         ),
         TargetPlatform.android => (
-          title: 'authPasskeySetupAndroidTitle',
-          body: 'authPasskeySetupAndroidBody',
-          button: 'authPasskeySetupAndroidButton',
+          title: 'authPasskeySetupAndroidLoginTitle',
+          body: 'authPasskeySetupPasswordAlternative',
+          button: 'authPasskeySetupMoreInfoButton',
           action: PasskeySetupAction.openAndroidSecuritySettings,
           instructionsTitle: 'authPasskeySetupAndroidInstructionsTitle',
           instructionsBody: 'authPasskeySetupAndroidInstructionsBody',
+          settingsButton: 'authPasskeySetupAndroidButton',
         ),
         TargetPlatform.windows => (
-          title: 'authPasskeySetupWindowsTitle',
-          body: 'authPasskeySetupWindowsBody',
-          button: 'authPasskeySetupWindowsButton',
+          title: 'authPasskeySetupWindowsLoginTitle',
+          body: 'authPasskeySetupPasswordAlternative',
+          button: 'authPasskeySetupMoreInfoButton',
           action: PasskeySetupAction.openWindowsSignInOptions,
           instructionsTitle: 'authPasskeySetupWindowsInstructionsTitle',
           instructionsBody: 'authPasskeySetupWindowsInstructionsBody',
+          settingsButton: 'authPasskeySetupWindowsButton',
         ),
         TargetPlatform.macOS => (
           title: 'authPasskeySetupMacTitle',
-          body: 'authPasskeySetupMacBody',
-          button: 'authPasskeySetupMacButton',
+          body: 'authPasskeySetupPasswordAlternative',
+          button: 'authPasskeySetupMoreInfoButton',
           action: PasskeySetupAction.showInstructions,
           instructionsTitle: 'authPasskeySetupMacInstructionsTitle',
           instructionsBody: 'authPasskeySetupMacInstructionsBody',
+          settingsButton: null,
         ),
         _ => (
           title: 'authPasskeySetupOtherTitle',
-          body: 'authPasskeySetupOtherBody',
-          button: 'authPasskeySetupOtherButton',
+          body: 'authPasskeySetupPasswordAlternative',
+          button: 'authPasskeySetupMoreInfoButton',
           action: PasskeySetupAction.showInstructions,
           instructionsTitle: 'authPasskeySetupOtherInstructionsTitle',
           instructionsBody: 'authPasskeySetupOtherInstructionsBody',
+          settingsButton: null,
         ),
       };
       return PasskeyCardPresentation(
         titleKey: configuration.title,
         bodyKey: configuration.body,
         showActionButton: false,
+        moreInfoButtonKey: configuration.button,
         setupAction: configuration.action,
-        setupButtonLabelKey: configuration.button,
+        setupButtonLabelKey: configuration.settingsButton,
         setupInstructionsTitleKey: configuration.instructionsTitle,
         setupInstructionsBodyKey: configuration.instructionsBody,
       );
