@@ -18,6 +18,7 @@ import 'package:matchme/screens/profile/profile_screen.dart';
 import 'package:matchme/screens/events/events_screen.dart';
 import 'package:matchme/widgets/match_notification_overlay.dart';
 import 'package:matchme/widgets/custom_app_bar.dart';
+import 'package:matchme/widgets/offline_indicator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/widgets/rating_prompt_watcher.dart';
 import 'package:matchme/services/user_activity_service.dart';
@@ -868,18 +869,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
       // credentials on disk and the next launch re-authenticates the
       // signed-out user instead of showing the login screen.
       await SessionService.clearPersistedSupabaseSessionSnapshot();
-      // Clear the shared (non-user-scoped) dashboard stats cache so the next
-      // account that logs in on this device never sees this user's stale
-      // online/nearby counts. Also reset the singleton heartbeat coalescer so
-      // the next user starts with a clean ping window.
-      try {
-        final outgoingUserId = loggedOutUser?.id;
-        if (outgoingUserId != null && outgoingUserId.isNotEmpty) {
-          await ref
-              .read(localDbProvider)
-              .clearDashboardStatsCache(outgoingUserId);
-        }
-      } catch (_) {}
+      // Reset the singleton heartbeat coalescer so the next user starts with
+      // a clean ping window.
       UserActivityService.instance.reset();
       // Reset the chat key provider: it is a process-lifetime singleton, so
       // without this the next login (any user) would start from the previous
@@ -1033,7 +1024,15 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
           },
           onSelectTab: _selectTab,
         ),
-        body: mainContent,
+        // Offline banner across all tabs: shown whenever the device is
+        // offline — including the cold-cache failure path where the app
+        // entered with empty sections after the first sync could not land.
+        body: Column(
+          children: [
+            const OfflineIndicator(),
+            Expanded(child: mainContent),
+          ],
+        ),
         bottomNavigationBar: useRail
             ? null
             : SafeArea(

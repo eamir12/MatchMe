@@ -27,6 +27,15 @@ class _TestUserPreferencesNotifier extends UserPreferencesNotifier {
   UserPreferencesState build() => UserPreferencesState.defaults();
 }
 
+class _StubAppConfigNotifier extends AppConfigNotifier {
+  @override
+  Map<String, String> build() => const {
+    'ads.external.enabled': 'false',
+    'ads.internal.enabled': 'false',
+    'ads.display_order': 'external_first',
+  };
+}
+
 String _fakeAccessToken() {
   final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
   String encode(Map<String, dynamic> value) {
@@ -102,6 +111,7 @@ void main() {
           externalAdsEnabledProvider.overrideWithValue(false),
           internalAdsEnabledProvider.overrideWithValue(false),
           adDisplayOrderProvider.overrideWithValue('external_first'),
+          appConfigProvider.overrideWith(_StubAppConfigNotifier.new),
           userPreferencesProvider.overrideWith(
             _TestUserPreferencesNotifier.new,
           ),
@@ -195,6 +205,7 @@ void main() {
             externalAdsEnabledProvider.overrideWithValue(false),
             internalAdsEnabledProvider.overrideWithValue(false),
             adDisplayOrderProvider.overrideWithValue('external_first'),
+          appConfigProvider.overrideWith(_StubAppConfigNotifier.new),
             userPreferencesProvider.overrideWith(
               _TestUserPreferencesNotifier.new,
             ),
@@ -274,6 +285,7 @@ void main() {
           externalAdsEnabledProvider.overrideWithValue(false),
           internalAdsEnabledProvider.overrideWithValue(false),
           adDisplayOrderProvider.overrideWithValue('external_first'),
+          appConfigProvider.overrideWith(_StubAppConfigNotifier.new),
           userPreferencesProvider.overrideWith(
             _TestUserPreferencesNotifier.new,
           ),
@@ -327,6 +339,7 @@ void main() {
           externalAdsEnabledProvider.overrideWithValue(false),
           internalAdsEnabledProvider.overrideWithValue(false),
           adDisplayOrderProvider.overrideWithValue('external_first'),
+          appConfigProvider.overrideWith(_StubAppConfigNotifier.new),
           userPreferencesProvider.overrideWith(
             _TestUserPreferencesNotifier.new,
           ),

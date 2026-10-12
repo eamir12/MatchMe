@@ -3,6 +3,7 @@
 // - Align helper text to right for RTL
 // - Use Row(textDirection: ...) for the attach row so children order is flipped automatically
 
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -37,6 +38,10 @@ class _RequestChangeDialogState extends ConsumerState<RequestChangeDialog> {
   bool get _canSubmit => _reason.trim().isNotEmpty && !_submitting;
 
   Future<void> _pickFiles() async {
+    // file_picker 12.x: pickFiles returns List<PlatformFile> (empty =
+    // cancelled). The old withData/bytes fields are gone in
+    // platform_interface 3.4 — bytes are read lazily at submit via
+    // PlatformFile.readAsBytes().
     final result = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: const [
@@ -52,32 +57,12 @@ class _RequestChangeDialogState extends ConsumerState<RequestChangeDialog> {
         'ppt',
         'pptx',
       ],
-      allowMultiple: true,
-      withData: true,
     );
-    if (result == null) return;
-    final filesWithBytes = result.files.where((f) => f.bytes != null).toList();
-    final filesWithoutBytes = result.files
-        .where((f) => f.bytes == null)
-        .toList();
-
-    if (filesWithoutBytes.isNotEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              ref
-                  .read(localizationProvider)
-                  .getString('profileEditFileBytesMissing'),
-            ),
-          ),
-        );
-      }
-    }
+    if (result.isEmpty) return;
 
     setState(() {
       _pickedFiles.clear();
-      _pickedFiles.addAll(filesWithBytes);
+      _pickedFiles.addAll(result);
     });
   }
 
@@ -96,9 +81,15 @@ class _RequestChangeDialogState extends ConsumerState<RequestChangeDialog> {
     final svc = ref.read(profileEditRequestServiceProvider);
     try {
       final List<Map<String, dynamic>> attachments = [];
+      var missingBytes = false;
       for (var f in _pickedFiles) {
-        final bytes = f.bytes;
-        if (bytes == null) continue;
+        Uint8List? bytes;
+        try {
+          bytes = await f.readAsBytes();
+        } catch (_) {
+          missingBytes = true;
+          continue;
+        }
         final safeName = _sanitizeFileName(f.name);
         final filename =
             '${widget.userId}/${DateTime.now().toUtc().millisecondsSinceEpoch}_$safeName';
@@ -119,8 +110,19 @@ class _RequestChangeDialogState extends ConsumerState<RequestChangeDialog> {
           'name': f.name,
           'url': objectPath,
           'bucket': bucket,
-          'size': f.size,
+          'size': await f.length(),
         });
+      }
+      if (missingBytes && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              ref
+                  .read(localizationProvider)
+                  .getString('profileEditFileBytesMissing'),
+            ),
+          ),
+        );
       }
 
       final ok = await svc.submitRequestWithAttachments(

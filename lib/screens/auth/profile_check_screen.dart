@@ -41,6 +41,11 @@ class _ProfileCheckScreenState extends ConsumerState<ProfileCheckScreen> {
   Widget? _mainScreen;
   _PcsScreen _screen = _PcsScreen.loading;
 
+  /// True when the app was entered via the no-cached-profile escape hatch
+  /// (offline / sync failed / 8s watchdog). The cold-cache home-sync hold
+  /// below must not re-trap a user who was deliberately let through.
+  bool _enteredViaNoProfileEscape = false;
+
   /// Set when the wizard is opened because a *completed* profile has a
   /// critical gap (missing field/photo) so the wizard jumps straight to
   /// the gap's page. Null when the wizard is opened the ordinary way
@@ -81,6 +86,7 @@ class _ProfileCheckScreenState extends ConsumerState<ProfileCheckScreen> {
     _pendingMainNavigation = false;
     _mainScreen = null;
     _gapSection = null;
+    _enteredViaNoProfileEscape = false;
     _loadingGateStartedAt = DateTime.now();
     _armLoadingGateWatchdog();
     _cachedProfileFuture = _loadCachedProfile();
@@ -162,6 +168,27 @@ class _ProfileCheckScreenState extends ConsumerState<ProfileCheckScreen> {
       case _PcsScreen.mainNavigation:
         if (_pendingMainNavigation) {
           return const StartupLoaderScaffold();
+        }
+        // Cold cache (first login or cache wiped): hold the pulsing startup
+        // logo until the first full home sync (profile + matches + chats)
+        // has landed in the local DB, so Home is never shown partially
+        // populated. `initialHomeSyncProvider` always settles — its cold
+        // path has a 30s timeout and resolves immediately when offline —
+        // so this can never trap the user on the logo; on failure/timeout
+        // the app enters with whatever exists (empty sections + offline
+        // banner) and the background sync keeps retrying. A warm relaunch
+        // (complete local snapshot) passes within a frame or two.
+        // The no-cached-profile escape hatch bypasses this hold.
+        if (!_enteredViaNoProfileEscape) {
+          final hasCompleteCache = ref
+              .watch(homeHasCompleteCacheProvider(widget.user.id))
+              .asData
+              ?.value ??
+              false;
+          if (!hasCompleteCache &&
+              ref.watch(initialHomeSyncProvider(widget.user.id)).isLoading) {
+            return const StartupLoaderScaffold();
+          }
         }
         if (!_didRunPermissionGate) {
           _didRunPermissionGate = true;
@@ -340,6 +367,7 @@ class _ProfileCheckScreenState extends ConsumerState<ProfileCheckScreen> {
         final noProfileTarget = _resolveNoCachedProfileTarget(lastSyncResult);
         if (noProfileTarget != null) {
           _screen = noProfileTarget;
+          _enteredViaNoProfileEscape = true;
           _loadingGateWatchdog?.cancel();
           _loadingGateWatchdog = null;
           if (noProfileTarget == _PcsScreen.wizard) {

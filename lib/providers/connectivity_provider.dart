@@ -512,8 +512,24 @@ final connectivityProvider = Provider<AsyncValue<bool>>((ref) {
   ref.watch(_availabilityBridgeProvider);
   ref.watch(availabilityVersionProvider);
   final healthAsync = ref.watch(connectivityHealthProvider);
-  return healthAsync.whenData(
-    (health) =>
-        health.isOnline && OfflineCacheManager.instance.isSupabaseAvailable,
+  // Optimistic online until the first probe verdict lands: the health stream
+  // is AsyncLoading for the first ~0.5-2.5s after launch (probe in flight or
+  // first probe timing out on startup contention). Call sites reading
+  // `.value ?? false` previously flashed the offline banner during that
+  // window even though the app was serving perfectly good cached data.
+  //
+  // The data mapping uses `isUiOnline` (status != offline) rather than
+  // `isOnline` (backendReachable): a single failed probe or the initial
+  // degraded state must not flip the whole UI offline — OfflineCacheManager
+  // already ignores those transients ("Ignoring transient failure"), and the
+  // banner only appearing on a *declared* offline state (probe failures past
+  // grace) keeps the UI verdict consistent with the data-layer verdict.
+  return healthAsync.when(
+    loading: () => const AsyncData(true),
+    error: (Object error, StackTrace stackTrace) =>
+        AsyncError<bool>(error, stackTrace),
+    data: (health) => AsyncData(
+      health.isUiOnline && OfflineCacheManager.instance.isSupabaseAvailable,
+    ),
   );
 });

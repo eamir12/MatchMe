@@ -344,16 +344,25 @@ class _MatchNotificationOverlayState
                             ),
                             const SizedBox(height: 4),
                             profileAsync.when(
-                              data: (profile) => Text(
-                                profile?.name.formatAsFirstNameLastInitial() ??
-                                    l10n.getString('generalUnknown'),
-                                style: TextStyle(
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.onPrimary,
-                                  fontSize: 14,
-                                ),
-                              ),
+                              data: (profile) {
+                                final displayName =
+                                    profile?.name.formatAsFirstNameLastInitial() ??
+                                    l10n.getString('generalUnknown');
+                                final layout = displayName.displayTextLayout(
+                                  Directionality.of(context),
+                                );
+                                return Text(
+                                  displayName,
+                                  textAlign: layout.textAlign,
+                                  textDirection: layout.textDirection,
+                                  style: TextStyle(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onPrimary,
+                                    fontSize: 14,
+                                  ),
+                                );
+                              },
                               loading: () => Text(
                                 l10n.getString('generalLoading'),
                                 style: TextStyle(

@@ -37,7 +37,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Manual'));
+    await tester.tap(find.text('Enter details manually'));
     await tester.pumpAndSettle();
 
     expect(find.text('Public event details'), findsOneWidget);

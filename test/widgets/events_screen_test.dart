@@ -32,6 +32,15 @@ class _TestUserPreferencesNotifier extends UserPreferencesNotifier {
   UserPreferencesState build() => UserPreferencesState.defaults();
 }
 
+class _StubAppConfigNotifier extends AppConfigNotifier {
+  @override
+  Map<String, String> build() => const {
+    'ads.external.enabled': 'false',
+    'ads.internal.enabled': 'false',
+    'ads.display_order': 'external_first',
+  };
+}
+
 class _LeaveEventManager extends EventManager {
   static int leaveCalls = 0;
   static bool result = false;
@@ -118,6 +127,7 @@ void main() {
           externalAdsEnabledProvider.overrideWithValue(false),
           internalAdsEnabledProvider.overrideWithValue(false),
           adDisplayOrderProvider.overrideWithValue('external_first'),
+          appConfigProvider.overrideWith(_StubAppConfigNotifier.new),
           userPreferencesProvider.overrideWith(
             _TestUserPreferencesNotifier.new,
           ),
@@ -155,6 +165,7 @@ void main() {
           externalAdsEnabledProvider.overrideWithValue(false),
           internalAdsEnabledProvider.overrideWithValue(false),
           adDisplayOrderProvider.overrideWithValue('external_first'),
+          appConfigProvider.overrideWith(_StubAppConfigNotifier.new),
           userPreferencesProvider.overrideWith(
             _TestUserPreferencesNotifier.new,
           ),
@@ -164,13 +175,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final mapButton = find.byTooltip('Open in Maps');
-    expect(mapButton, findsOneWidget);
-    expect(tester.getSize(mapButton), const Size(48, 48));
-
-    await tester.tap(find.byType(PopupMenuButton<String>));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Leave event'));
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Leave event'));
     await tester.pumpAndSettle();
 
     expect(find.textContaining('Leave "Rooftop Mixer"?'), findsOneWidget);

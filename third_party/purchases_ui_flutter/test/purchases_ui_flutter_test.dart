@@ -1,0 +1,1069 @@
+import 'dart:async';
+
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:purchases_flutter/models/offering_wrapper.dart';
+import 'package:purchases_flutter/models/package_wrapper.dart';
+import 'package:purchases_flutter/models/presented_offering_context_wrapper.dart';
+import 'package:purchases_flutter/models/presented_offering_targeting_context_wrapper.dart';
+import 'package:purchases_flutter/models/store_product_wrapper.dart';
+import 'package:purchases_flutter/models/customer_info_wrapper.dart';
+import 'package:purchases_flutter/models/store_transaction.dart';
+import 'package:purchases_ui_flutter/purchases_ui_flutter.dart';
+import 'package:purchases_ui_flutter/views/customer_center_view_method_handler.dart';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  const channel = MethodChannel('purchases_ui_flutter');
+  final log = <MethodCall>[];
+  dynamic response;
+
+  const offering = Offering('identifier', 'serverDescription', {}, [
+    Package(
+      'package_id',
+      PackageType.annual,
+      StoreProduct('product_id', 'description', 'title', 2.99, '\$2.99', 'USD'),
+      PresentedOfferingContext(
+        'identifier',
+        'placement_id',
+        PresentedOfferingTargetingContext(123, 'ruleId'),
+      ),
+    ),
+  ]);
+
+  setUp(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      log.add(call);
+      return response;
+    });
+  });
+
+  tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null);
+    log.clear();
+    response = null;
+  });
+
+  Future<void> invokeChannelMethod(
+    String method,
+    dynamic arguments, {
+    String channelName = 'purchases_ui_flutter',
+  }) async {
+    final codec = const StandardMethodCodec();
+    final data = codec.encodeMethodCall(MethodCall(method, arguments));
+    final completer = Completer<void>();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .handlePlatformMessage(
+      channelName,
+      data,
+      (_) => completer.complete(),
+    );
+    await completer.future;
+    await Future<void>.delayed(Duration.zero);
+  }
+
+  test('presentPaywall', () async {
+    response = 'NOT_PRESENTED';
+    await RevenueCatUI.presentPaywall();
+    expect(log, <Matcher>[
+      isMethodCall(
+        'presentPaywall',
+        arguments: {
+          'offeringIdentifier': null,
+          'presentedOfferingContext': null,
+          'displayCloseButton': false,
+          'customVariables': null,
+        },
+      ),
+    ]);
+  });
+
+  test('presentPaywall with offering identifier', () async {
+    response = 'NOT_PRESENTED';
+    await RevenueCatUI.presentPaywall(offering: offering);
+
+    expect(log, <Matcher>[
+      isMethodCall(
+        'presentPaywall',
+        arguments: {
+          'offeringIdentifier': offering.identifier,
+          'presentedOfferingContext': {
+            'offeringIdentifier': 'identifier',
+            'placementIdentifier': 'placement_id',
+            'targetingContext': {'revision': 123, 'ruleId': 'ruleId'},
+          },
+          'displayCloseButton': false,
+          'customVariables': null,
+        },
+      ),
+    ]);
+  });
+
+  test('presentPaywall with all parameters', () async {
+    response = 'NOT_PRESENTED';
+    await RevenueCatUI.presentPaywall(
+      offering: offering,
+      displayCloseButton: true,
+    );
+
+    expect(log, <Matcher>[
+      isMethodCall(
+        'presentPaywall',
+        arguments: {
+          'offeringIdentifier': offering.identifier,
+          'presentedOfferingContext': {
+            'offeringIdentifier': 'identifier',
+            'placementIdentifier': 'placement_id',
+            'targetingContext': {'revision': 123, 'ruleId': 'ruleId'},
+          },
+          'displayCloseButton': true,
+          'customVariables': null,
+        },
+      ),
+    ]);
+  });
+
+  test('presentPaywallIfNeeded', () async {
+    response = 'NOT_PRESENTED';
+    await RevenueCatUI.presentPaywallIfNeeded('entitlement');
+    expect(log, <Matcher>[
+      isMethodCall(
+        'presentPaywallIfNeeded',
+        arguments: {
+          'requiredEntitlementIdentifier': 'entitlement',
+          'offeringIdentifier': null,
+          'presentedOfferingContext': null,
+          'displayCloseButton': false,
+          'customVariables': null,
+        },
+      ),
+    ]);
+  });
+
+  test('presentPaywallIfNeeded with offering identifier', () async {
+    response = 'NOT_PRESENTED';
+    await RevenueCatUI.presentPaywallIfNeeded(
+      'entitlement',
+      offering: offering,
+    );
+
+    expect(log, <Matcher>[
+      isMethodCall(
+        'presentPaywallIfNeeded',
+        arguments: {
+          'requiredEntitlementIdentifier': 'entitlement',
+          'offeringIdentifier': offering.identifier,
+          'presentedOfferingContext': {
+            'offeringIdentifier': 'identifier',
+            'placementIdentifier': 'placement_id',
+            'targetingContext': {'revision': 123, 'ruleId': 'ruleId'},
+          },
+          'displayCloseButton': false,
+          'customVariables': null,
+        },
+      ),
+    ]);
+  });
+
+  test('presentPaywallIfNeeded with all parameters', () async {
+    response = 'NOT_PRESENTED';
+    await RevenueCatUI.presentPaywallIfNeeded(
+      'entitlement',
+      offering: offering,
+      displayCloseButton: true,
+    );
+
+    expect(log, <Matcher>[
+      isMethodCall(
+        'presentPaywallIfNeeded',
+        arguments: {
+          'requiredEntitlementIdentifier': 'entitlement',
+          'offeringIdentifier': offering.identifier,
+          'presentedOfferingContext': {
+            'offeringIdentifier': 'identifier',
+            'placementIdentifier': 'placement_id',
+            'targetingContext': {'revision': 123, 'ruleId': 'ruleId'},
+          },
+          'displayCloseButton': true,
+          'customVariables': null,
+        },
+      ),
+    ]);
+  });
+
+  test('presentPaywall with custom variables', () async {
+    response = 'NOT_PRESENTED';
+    await RevenueCatUI.presentPaywall(
+      customVariables: {
+        'player_name': CustomVariableValue.string('John'),
+        'level': CustomVariableValue.number(5),
+        'is_premium': CustomVariableValue.boolean(true),
+      },
+    );
+    expect(log, <Matcher>[
+      isMethodCall(
+        'presentPaywall',
+        arguments: {
+          'offeringIdentifier': null,
+          'presentedOfferingContext': null,
+          'displayCloseButton': false,
+          'customVariables': {
+            'player_name': 'John',
+            'level': 5.0,
+            'is_premium': true,
+          },
+        },
+      ),
+    ]);
+  });
+
+  test('presentPaywallIfNeeded with custom variables', () async {
+    response = 'NOT_PRESENTED';
+    await RevenueCatUI.presentPaywallIfNeeded(
+      'entitlement',
+      customVariables: {
+        'player_name': CustomVariableValue.string('John'),
+        'level': CustomVariableValue.number(42),
+      },
+    );
+    expect(log, <Matcher>[
+      isMethodCall(
+        'presentPaywallIfNeeded',
+        arguments: {
+          'requiredEntitlementIdentifier': 'entitlement',
+          'offeringIdentifier': null,
+          'presentedOfferingContext': null,
+          'displayCloseButton': false,
+          'customVariables': {'player_name': 'John', 'level': 42.0},
+        },
+      ),
+    ]);
+  });
+
+  test(
+      'presentPaywall with android-only presentation configuration does not send useFullScreenPresentation',
+      () async {
+    response = 'NOT_PRESENTED';
+    await RevenueCatUI.presentPaywall(
+      presentationConfiguration: const PaywallPresentationConfiguration(
+        android: AndroidPaywallPresentationStyle.fullScreen,
+      ),
+    );
+    expect(log, <Matcher>[
+      isMethodCall(
+        'presentPaywall',
+        arguments: {
+          'offeringIdentifier': null,
+          'presentedOfferingContext': null,
+          'displayCloseButton': false,
+          'customVariables': null,
+        },
+      ),
+    ]);
+  });
+
+  test('presentPaywallIfNeeded with sheet presentation configuration',
+      () async {
+    response = 'NOT_PRESENTED';
+    await RevenueCatUI.presentPaywallIfNeeded(
+      'entitlement',
+      presentationConfiguration: const PaywallPresentationConfiguration(
+        ios: IOSPaywallPresentationStyle.sheet,
+      ),
+    );
+    expect(log, <Matcher>[
+      isMethodCall(
+        'presentPaywallIfNeeded',
+        arguments: {
+          'requiredEntitlementIdentifier': 'entitlement',
+          'offeringIdentifier': null,
+          'presentedOfferingContext': null,
+          'displayCloseButton': false,
+          'customVariables': null,
+          // sheet is the native default; key is omitted rather than sent as false
+        },
+      ),
+    ]);
+  });
+
+  test('presentPaywall with full screen presentation configuration', () async {
+    response = 'NOT_PRESENTED';
+    await RevenueCatUI.presentPaywall(
+      presentationConfiguration: const PaywallPresentationConfiguration(
+        ios: IOSPaywallPresentationStyle.fullScreen,
+      ),
+    );
+    expect(log, <Matcher>[
+      isMethodCall(
+        'presentPaywall',
+        arguments: {
+          'offeringIdentifier': null,
+          'presentedOfferingContext': null,
+          'displayCloseButton': false,
+          'customVariables': null,
+          'useFullScreenPresentation': true,
+        },
+      ),
+    ]);
+  });
+
+  test('presentPaywall with sheet presentation configuration', () async {
+    response = 'NOT_PRESENTED';
+    await RevenueCatUI.presentPaywall(
+      presentationConfiguration: const PaywallPresentationConfiguration(
+        ios: IOSPaywallPresentationStyle.sheet,
+      ),
+    );
+    expect(log, <Matcher>[
+      isMethodCall(
+        'presentPaywall',
+        arguments: {
+          'offeringIdentifier': null,
+          'presentedOfferingContext': null,
+          'displayCloseButton': false,
+          'customVariables': null,
+          // sheet is the native default; key is omitted rather than sent as false
+        },
+      ),
+    ]);
+  });
+
+  test('presentPaywallIfNeeded with full screen presentation configuration',
+      () async {
+    response = 'NOT_PRESENTED';
+    await RevenueCatUI.presentPaywallIfNeeded(
+      'entitlement',
+      presentationConfiguration: const PaywallPresentationConfiguration(
+        ios: IOSPaywallPresentationStyle.fullScreen,
+      ),
+    );
+    expect(log, <Matcher>[
+      isMethodCall(
+        'presentPaywallIfNeeded',
+        arguments: {
+          'requiredEntitlementIdentifier': 'entitlement',
+          'offeringIdentifier': null,
+          'presentedOfferingContext': null,
+          'displayCloseButton': false,
+          'customVariables': null,
+          'useFullScreenPresentation': true,
+        },
+      ),
+    ]);
+  });
+
+  group('presentPaywall callbacks', () {
+    String presentedChannelOf(MethodCall call) =>
+        'com.revenuecat.purchasesui/PresentedPaywall/'
+        '${(call.arguments as Map)['presentationId']}';
+
+    test('sends presentationId only when a callback is given', () async {
+      response = 'NOT_PRESENTED';
+      await RevenueCatUI.presentPaywall(onPurchaseCancelled: () {});
+      await RevenueCatUI.presentPaywallIfNeeded(
+        'entitlement',
+        onInteraction: (_) {},
+      );
+      await RevenueCatUI.presentPaywall();
+
+      expect((log[0].arguments as Map)['presentationId'], isA<int>());
+      expect((log[1].arguments as Map)['presentationId'], isA<int>());
+      expect(
+        log[2],
+        isMethodCall(
+          'presentPaywall',
+          arguments: {
+            'offeringIdentifier': null,
+            'presentedOfferingContext': null,
+            'displayCloseButton': false,
+            'customVariables': null,
+          },
+        ),
+      );
+    });
+
+    test('delivers callbacks while presented and stops after the result',
+        () async {
+      final resultCompleter = Completer<String>();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) {
+        log.add(call);
+        return resultCompleter.future;
+      });
+      final interactions = <Map<String, dynamic>>[];
+      var cancelled = 0;
+
+      final pending = RevenueCatUI.presentPaywall(
+        onPurchaseCancelled: () => cancelled++,
+        onInteraction: interactions.add,
+      );
+      await Future<void>.delayed(Duration.zero);
+      final presentedChannel = presentedChannelOf(log.single);
+
+      await invokeChannelMethod(
+        'onInteraction',
+        {'component_type': 'tab', 'component_value': 'yearly'},
+        channelName: presentedChannel,
+      );
+      await invokeChannelMethod(
+        'onPurchaseCancelled',
+        null,
+        channelName: presentedChannel,
+      );
+      expect(interactions, [
+        {'component_type': 'tab', 'component_value': 'yearly'},
+      ]);
+      expect(cancelled, 1);
+
+      resultCompleter.complete('CANCELLED');
+      expect(await pending, PaywallResult.cancelled);
+
+      await invokeChannelMethod(
+        'onPurchaseCancelled',
+        null,
+        channelName: presentedChannel,
+      );
+      expect(cancelled, 1);
+    });
+
+    test('routes each presentation only its own events', () async {
+      final firstResult = Completer<String>();
+      final secondResult = Completer<String>();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) {
+        log.add(call);
+        return call.method == 'presentPaywall'
+            ? firstResult.future
+            : secondResult.future;
+      });
+      var firstCancelled = 0;
+      var secondCancelled = 0;
+
+      final first = RevenueCatUI.presentPaywall(
+        onPurchaseCancelled: () => firstCancelled++,
+      );
+      final second = RevenueCatUI.presentPaywallIfNeeded(
+        'entitlement',
+        onPurchaseCancelled: () => secondCancelled++,
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(log, hasLength(2));
+      final firstChannel = presentedChannelOf(log[0]);
+      final secondChannel = presentedChannelOf(log[1]);
+      expect(firstChannel, isNot(secondChannel));
+
+      await invokeChannelMethod(
+        'onPurchaseCancelled',
+        null,
+        channelName: firstChannel,
+      );
+      expect(firstCancelled, 1);
+      expect(secondCancelled, 0);
+
+      await invokeChannelMethod(
+        'onPurchaseCancelled',
+        null,
+        channelName: secondChannel,
+      );
+      expect(firstCancelled, 1);
+      expect(secondCancelled, 1);
+
+      secondResult.complete('NOT_PRESENTED');
+      await second;
+      await invokeChannelMethod(
+        'onPurchaseCancelled',
+        null,
+        channelName: firstChannel,
+      );
+      expect(firstCancelled, 2);
+
+      firstResult.complete('CANCELLED');
+      await first;
+    });
+
+    test('stops delivering callbacks when the presentation fails', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) {
+        log.add(call);
+        return Future<dynamic>.error(PlatformException(code: 'error'));
+      });
+      var cancelled = 0;
+
+      await expectLater(
+        RevenueCatUI.presentPaywall(onPurchaseCancelled: () => cancelled++),
+        throwsA(isA<PlatformException>()),
+      );
+
+      await invokeChannelMethod(
+        'onPurchaseCancelled',
+        null,
+        channelName: presentedChannelOf(log.single),
+      );
+      expect(cancelled, 0);
+    });
+  });
+
+  test('presentPaywall parses response correctly', () async {
+    response = 'NOT_PRESENTED';
+    var paywallResult = await RevenueCatUI.presentPaywall();
+    expect(paywallResult, PaywallResult.notPresented);
+    response = 'CANCELLED';
+    paywallResult = await RevenueCatUI.presentPaywall();
+    expect(paywallResult, PaywallResult.cancelled);
+    response = 'ERROR';
+    paywallResult = await RevenueCatUI.presentPaywall();
+    expect(paywallResult, PaywallResult.error);
+    response = 'PURCHASED';
+    paywallResult = await RevenueCatUI.presentPaywall();
+    expect(paywallResult, PaywallResult.purchased);
+    response = 'RESTORED';
+    paywallResult = await RevenueCatUI.presentPaywall();
+    expect(paywallResult, PaywallResult.restored);
+  });
+
+  test('presentCustomerCenter', () async {
+    response = null;
+    await RevenueCatUI.presentCustomerCenter();
+    expect(log, <Matcher>[
+      isMethodCall('clearCustomerCenterCallbacks', arguments: null),
+      isMethodCall('presentCustomerCenter', arguments: null),
+    ]);
+  });
+
+  test('presentCustomerCenter with callbacks', () async {
+    response = null;
+    bool onRestoreStartedCalled = false;
+    bool onFeedbackSurveyCompletedCalled = false;
+
+    await RevenueCatUI.presentCustomerCenter(
+      onRestoreStarted: () => onRestoreStartedCalled = true,
+      onFeedbackSurveyCompleted: (_) => onFeedbackSurveyCompletedCalled = true,
+    );
+
+    expect(log, <Matcher>[
+      isMethodCall('clearCustomerCenterCallbacks', arguments: null),
+      isMethodCall('setCustomerCenterCallbacks', arguments: null),
+      isMethodCall('presentCustomerCenter', arguments: null),
+    ]);
+
+    // Verify callbacks are stored (they should be callable)
+    expect(onRestoreStartedCalled, false); // Not called yet
+    expect(onFeedbackSurveyCompletedCalled, false); // Not called yet
+  });
+
+  test('presentCustomerCenter registers single callback', () async {
+    response = null;
+    var restoreStartedCalled = false;
+
+    await RevenueCatUI.presentCustomerCenter(
+      onRestoreStarted: () {
+        restoreStartedCalled = true;
+      },
+    );
+
+    expect(log, <Matcher>[
+      isMethodCall('clearCustomerCenterCallbacks', arguments: null),
+      isMethodCall('setCustomerCenterCallbacks', arguments: null),
+      isMethodCall('presentCustomerCenter', arguments: null),
+    ]);
+
+    log.clear();
+    await invokeChannelMethod('onRestoreStarted', null);
+    expect(restoreStartedCalled, true);
+  });
+
+  test(
+    'callback key format regression test - iOS productId vs productIdentifier',
+    () async {
+      // This test documents and prevents regression of the key mismatch bug
+      // iOS sends 'productId' but we were expecting 'productIdentifier' in some places
+
+      // Test that the correct key format is expected by simulating callback parsing
+      const mockCallbackData = {
+        'productId': 'com.example.premium', // This is what iOS actually sends
+        'status': 'success',
+      };
+
+      // Test data extraction logic that should match what's in _handleCustomerCenterMethodCall
+      final data = mockCallbackData;
+      final productIdentifier = data['productId'] as String? ??
+          ''; // Should use 'productId' not 'productIdentifier'
+      final status = data['status'] as String? ?? '';
+
+      expect(productIdentifier, 'com.example.premium');
+      expect(status, 'success');
+
+      // Test that wrong key would fail (demonstrating the bug that was fixed)
+      final wrongProductId = data['productIdentifier'] as String? ?? 'MISSING';
+      expect(
+        wrongProductId,
+        'MISSING',
+      ); // This proves 'productIdentifier' key doesn't exist
+    },
+  );
+
+  test('CustomerCenterView method handler uses correct key format', () async {
+    String? capturedProductId;
+    String? capturedStatus;
+
+    final handler = CustomerCenterViewMethodHandler(
+      onRefundRequestCompleted: (productId, status) {
+        capturedProductId = productId;
+        capturedStatus = status;
+      },
+    );
+
+    // Test with correct iOS format
+    await handler.handleMethodCall(
+      const MethodCall('onRefundRequestCompleted', {
+        'productId': 'com.example.premium',
+        'status': 'success',
+      }),
+    );
+
+    expect(capturedProductId, 'com.example.premium');
+    expect(capturedStatus, 'success');
+  });
+
+  test(
+    'CustomerCenterView method handler handles invalid data gracefully',
+    () async {
+      String? capturedProductId;
+      String? capturedStatus;
+      bool callbackWasCalled = false;
+
+      final handler = CustomerCenterViewMethodHandler(
+        onRefundRequestCompleted: (productId, status) {
+          capturedProductId = productId;
+          capturedStatus = status;
+          callbackWasCalled = true;
+        },
+      );
+
+      // Test with invalid data type
+      await handler.handleMethodCall(
+        const MethodCall('onRefundRequestCompleted', 'invalid_data'),
+      );
+
+      expect(
+        callbackWasCalled,
+        false,
+      ); // Callback should not be called with invalid data
+
+      // Test with missing productId key
+      await handler.handleMethodCall(
+        const MethodCall('onRefundRequestCompleted', {
+          'status': 'success',
+          // Missing 'productId' key
+        }),
+      );
+
+      expect(
+        callbackWasCalled,
+        false,
+      ); // Callback should not be called when productId is null
+    },
+  );
+
+  test(
+    'CustomerCenterView shouldShowCloseButton parameter is documented for platform limitations',
+    () {
+      // This test documents the platform limitation where Android doesn't support
+      // hiding the close button, while iOS does.
+
+      // Test that the parameter is accepted on both platforms
+      const viewWithCloseButton = CustomerCenterView(
+        shouldShowCloseButton: true,
+      );
+      const viewWithoutCloseButton = CustomerCenterView(
+        shouldShowCloseButton: false,
+      );
+
+      expect(viewWithCloseButton.shouldShowCloseButton, true);
+      expect(viewWithoutCloseButton.shouldShowCloseButton, false);
+
+      // Note: Actual behavior differs by platform:
+      // - iOS: respects the shouldShowCloseButton parameter
+      // - Android: always shows close button regardless of parameter value
+      // This is documented in the shouldShowCloseButton property documentation
+    },
+  );
+
+  group('RevenueCatUI customer center method handling', () {
+    test('onDismiss clears native listener and callbacks', () async {
+      var onRestoreStartedCallCount = 0;
+
+      await RevenueCatUI.presentCustomerCenter(
+        onRestoreStarted: () {
+          onRestoreStartedCallCount += 1;
+        },
+      );
+
+      log.clear();
+
+      await invokeChannelMethod('onRestoreStarted', null);
+      expect(onRestoreStartedCallCount, 1);
+
+      await invokeChannelMethod('onDismiss', null);
+
+      expect(log, <Matcher>[
+        isMethodCall('clearCustomerCenterCallbacks', arguments: null),
+      ]);
+
+      log.clear();
+
+      await invokeChannelMethod('onDismiss', null);
+
+      expect(log, <Matcher>[
+        isMethodCall('clearCustomerCenterCallbacks', arguments: null),
+      ]);
+
+      await invokeChannelMethod('onRestoreStarted', null);
+
+      expect(onRestoreStartedCallCount, 1);
+    });
+
+    test('onCustomActionSelected accepts null purchaseIdentifier', () async {
+      String? capturedActionId;
+      String? capturedPurchaseIdentifier = 'initial';
+
+      await RevenueCatUI.presentCustomerCenter(
+        onCustomActionSelected: (actionId, purchaseIdentifier) {
+          capturedActionId = actionId;
+          capturedPurchaseIdentifier = purchaseIdentifier;
+        },
+      );
+
+      log.clear();
+
+      await invokeChannelMethod(
+        'onCustomActionSelected',
+        <dynamic, dynamic>{
+          'actionId': 'custom.action',
+          'purchaseIdentifier': null,
+        },
+      );
+
+      expect(capturedActionId, 'custom.action');
+      expect(capturedPurchaseIdentifier, isNull);
+    });
+
+    test('onCustomActionSelected requires non-empty actionId', () async {
+      var callbackCalled = false;
+
+      await RevenueCatUI.presentCustomerCenter(
+        onCustomActionSelected: (_, __) {
+          callbackCalled = true;
+        },
+      );
+
+      log.clear();
+
+      await invokeChannelMethod(
+        'onCustomActionSelected',
+        <dynamic, dynamic>{'purchaseIdentifier': 'purchase.identifier'},
+      );
+
+      expect(callbackCalled, false);
+
+      await invokeChannelMethod(
+        'onCustomActionSelected',
+        <dynamic, dynamic>{
+          'actionId': '',
+          'purchaseIdentifier': 'purchase.identifier',
+        },
+      );
+
+      expect(callbackCalled, false);
+    });
+
+    test('onManagementOptionSelected accepts null url', () async {
+      String? capturedOptionId;
+      String? capturedUrl = 'initial';
+
+      await RevenueCatUI.presentCustomerCenter(
+        onManagementOptionSelected: (optionId, url) {
+          capturedOptionId = optionId;
+          capturedUrl = url;
+        },
+      );
+
+      log.clear();
+
+      await invokeChannelMethod(
+        'onManagementOptionSelected',
+        <dynamic, dynamic>{'optionId': 'manage', 'url': null},
+      );
+
+      expect(capturedOptionId, 'manage');
+      expect(capturedUrl, isNull);
+    });
+
+    test('onManagementOptionSelected ignores invalid url type', () async {
+      var callbackCalled = false;
+
+      await RevenueCatUI.presentCustomerCenter(
+        onManagementOptionSelected: (_, __) {
+          callbackCalled = true;
+        },
+      );
+
+      log.clear();
+
+      await invokeChannelMethod(
+        'onManagementOptionSelected',
+        <dynamic, dynamic>{'optionId': 'manage', 'url': 123},
+      );
+
+      expect(callbackCalled, false);
+    });
+
+    test('onRefundRequestCompleted requires productId and status', () async {
+      String? capturedProductId;
+      String? capturedStatus;
+
+      await RevenueCatUI.presentCustomerCenter(
+        onRefundRequestCompleted: (productId, status) {
+          capturedProductId = productId;
+          capturedStatus = status;
+        },
+      );
+
+      log.clear();
+
+      await invokeChannelMethod(
+        'onRefundRequestCompleted',
+        <dynamic, dynamic>{'productId': 'com.app.product', 'status': 'success'},
+      );
+
+      expect(capturedProductId, 'com.app.product');
+      expect(capturedStatus, 'success');
+
+      capturedProductId = null;
+      capturedStatus = null;
+
+      await invokeChannelMethod(
+        'onRefundRequestCompleted',
+        <dynamic, dynamic>{'productId': 'com.app.product'},
+      );
+
+      expect(capturedProductId, isNull);
+      expect(capturedStatus, isNull);
+
+      await invokeChannelMethod(
+        'onRefundRequestCompleted',
+        <dynamic, dynamic>{'status': 'success'},
+      );
+
+      expect(capturedProductId, isNull);
+      expect(capturedStatus, isNull);
+    });
+
+    test('onRefundRequestCompleted ignores invalid argument types', () async {
+      var callbackCalled = false;
+
+      await RevenueCatUI.presentCustomerCenter(
+        onRefundRequestCompleted: (_, __) {
+          callbackCalled = true;
+        },
+      );
+
+      log.clear();
+
+      await invokeChannelMethod('onRefundRequestCompleted', 'invalid');
+
+      expect(callbackCalled, false);
+    });
+
+    test(
+      'onRefundRequestStarted requires non-empty product identifier',
+      () async {
+        var callbackCalled = false;
+
+        await RevenueCatUI.presentCustomerCenter(
+          onRefundRequestStarted: (_) {
+            callbackCalled = true;
+          },
+        );
+
+        log.clear();
+
+        await invokeChannelMethod(
+          'onRefundRequestStarted',
+          <dynamic, dynamic>{'productId': ''},
+        );
+        expect(callbackCalled, false);
+
+        await invokeChannelMethod(
+          'onRefundRequestStarted',
+          <dynamic, dynamic>{'productId': 'product'},
+        );
+        expect(callbackCalled, true);
+      },
+    );
+
+    test(
+      'onFeedbackSurveyCompleted requires non-empty optionIdentifier',
+      () async {
+        var callbackCalled = false;
+
+        await RevenueCatUI.presentCustomerCenter(
+          onFeedbackSurveyCompleted: (_) {
+            callbackCalled = true;
+          },
+        );
+
+        log.clear();
+
+        await invokeChannelMethod(
+          'onFeedbackSurveyCompleted',
+          <dynamic, dynamic>{'optionId': ''},
+        );
+        expect(callbackCalled, false);
+
+        await invokeChannelMethod(
+          'onFeedbackSurveyCompleted',
+          <dynamic, dynamic>{'optionId': 'option'},
+        );
+        expect(callbackCalled, true);
+      },
+    );
+
+    test('onPromotionalOfferSucceeded fires callback with data', () async {
+      CustomerInfo? receivedCustomerInfo;
+      StoreTransaction? receivedTransaction;
+      String? receivedOfferId;
+
+      await RevenueCatUI.presentCustomerCenter(
+        onPromotionalOfferSucceeded: (customerInfo, transaction, offerId) {
+          receivedCustomerInfo = customerInfo;
+          receivedTransaction = transaction;
+          receivedOfferId = offerId;
+        },
+      );
+
+      log.clear();
+
+      await invokeChannelMethod('onPromotionalOfferSucceeded', {
+        'customerInfo': {
+          'originalAppUserId': 'test_user',
+          'entitlements': {
+            'all': {},
+            'active': {},
+            'verification': 'NOT_REQUESTED',
+          },
+          'activeSubscriptions': [],
+          'latestExpirationDate': null,
+          'allExpirationDates': {},
+          'allPurchasedProductIdentifiers': [],
+          'firstSeen': '2024-01-01T00:00:00Z',
+          'requestDate': '2024-01-01T00:00:00Z',
+          'allPurchaseDates': {},
+          'originalApplicationVersion': null,
+          'nonSubscriptionTransactions': [],
+        },
+        'transaction': {
+          'transactionIdentifier': 'txn_123',
+          'productIdentifier': 'com.test.product',
+          'purchaseDate': '2024-01-01T00:00:00Z',
+        },
+        'offerId': 'promo_offer_1',
+      });
+      expect(receivedCustomerInfo, isNotNull);
+      expect(receivedTransaction, isNotNull);
+      expect(receivedTransaction!.transactionIdentifier, 'txn_123');
+      expect(receivedTransaction!.productIdentifier, 'com.test.product');
+      expect(receivedOfferId, 'promo_offer_1');
+    });
+  });
+
+  group('PaywallPresentationConfiguration', () {
+    test('fullScreen static has correct values', () {
+      expect(
+        PaywallPresentationConfiguration.fullScreen.ios,
+        IOSPaywallPresentationStyle.fullScreen,
+      );
+      expect(
+        PaywallPresentationConfiguration.fullScreen.android,
+        AndroidPaywallPresentationStyle.fullScreen,
+      );
+    });
+
+    test('defaultConfiguration static has correct values', () {
+      expect(
+        PaywallPresentationConfiguration.defaultConfiguration.ios,
+        IOSPaywallPresentationStyle.sheet,
+      );
+      expect(
+        PaywallPresentationConfiguration.defaultConfiguration.android,
+        AndroidPaywallPresentationStyle.fullScreen,
+      );
+    });
+
+    test('equality', () {
+      const a = PaywallPresentationConfiguration(
+        ios: IOSPaywallPresentationStyle.fullScreen,
+        android: AndroidPaywallPresentationStyle.fullScreen,
+      );
+      const b = PaywallPresentationConfiguration(
+        ios: IOSPaywallPresentationStyle.fullScreen,
+        android: AndroidPaywallPresentationStyle.fullScreen,
+      );
+      const c = PaywallPresentationConfiguration(
+        ios: IOSPaywallPresentationStyle.sheet,
+      );
+
+      expect(a, equals(b));
+      expect(a, isNot(equals(c)));
+      expect(a.hashCode, equals(b.hashCode));
+    });
+
+    test('toString', () {
+      const config = PaywallPresentationConfiguration(
+        ios: IOSPaywallPresentationStyle.fullScreen,
+        android: AndroidPaywallPresentationStyle.fullScreen,
+      );
+      expect(
+        config.toString(),
+        'PaywallPresentationConfiguration(ios: fullScreen, android: fullScreen)',
+      );
+    });
+  });
+
+  group('IOSPaywallPresentationStyle', () {
+    test('equality', () {
+      expect(
+        IOSPaywallPresentationStyle.fullScreen,
+        equals(IOSPaywallPresentationStyle.fullScreen),
+      );
+      expect(
+        IOSPaywallPresentationStyle.fullScreen,
+        isNot(equals(IOSPaywallPresentationStyle.sheet)),
+      );
+    });
+
+    test('toString', () {
+      expect(IOSPaywallPresentationStyle.fullScreen.toString(), 'fullScreen');
+      expect(IOSPaywallPresentationStyle.sheet.toString(), 'sheet');
+    });
+  });
+
+  group('AndroidPaywallPresentationStyle', () {
+    test('equality', () {
+      expect(
+        AndroidPaywallPresentationStyle.fullScreen,
+        equals(AndroidPaywallPresentationStyle.fullScreen),
+      );
+    });
+
+    test('toString', () {
+      expect(
+        AndroidPaywallPresentationStyle.fullScreen.toString(),
+        'fullScreen',
+      );
+    });
+  });
+}

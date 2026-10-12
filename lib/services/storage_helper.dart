@@ -15,13 +15,13 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:developer' as developer;
 import 'package:flutter/foundation.dart';
-import 'package:flutter/painting.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/offline_image_cache.dart';
 import 'package:matchme/services/runtime_supabase_config.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/utils/offline_utils.dart';
+import 'package:http/http.dart' as http;
 import 'package:extended_image/extended_image.dart';
 
 class _CacheEntry {
@@ -419,14 +419,15 @@ class StorageHelper {
     );
     final oldKey =
         _sanitizeCacheKey(raw) + (oldVersion > 0 ? '_v$oldVersion' : '');
-    if (kIsWeb) {
-      unawaited(
-        OfflineImageCache.instance.evict(oldKey).catchError((Object error) {
-          debugPrint('Could not evict cached web image: $error');
-        }),
-      );
-    }
+    // Always evict the persisted byte cache (the layer SignedImage paints
+    // from) so a photo change takes effect on every platform.
+    unawaited(
+      OfflineImageCache.instance.evict(oldKey).catchError((Object error) {
+        debugPrint('Could not evict cached image bytes: $error');
+      }),
+    );
     if (!kIsWeb) {
+      // Legacy temp-dir entries from the old ExtendedImage pipeline.
       unawaited(clearDiskCachedImage(oldKey));
     }
     evict(urlOrPath);
@@ -437,49 +438,70 @@ class StorageHelper {
     );
   }
 
+  /// Download the image bytes for a resolved URL and persist them into the
+  /// encrypted OfflineImageCache (the layer SignedImage paints from on every
+  /// platform). Deduplicates concurrent fetches of the same URL so widgets
+  /// and the startup warmer share a single request.
+  ///
+  /// Entries larger than 1MB (full-screen originals) are returned but not
+  /// persisted, so the byte cache stays avatar/chat-photo sized.
+  static final Map<String, Future<Uint8List?>> _imageFetches = {};
+
+  static Future<Uint8List?> fetchImageBytesFromUrl(
+    String url, {
+    Map<String, String>? headers,
+    String? cacheKey,
+  }) {
+    if (url.trim().isEmpty) return Future<Uint8List?>.value();
+    final pending = _imageFetches[url];
+    if (pending != null) return pending;
+    final future = _fetchImageBytesImpl(url, headers: headers, cacheKey: cacheKey);
+    _imageFetches[url] = future;
+    return future.whenComplete(() => _imageFetches.remove(url));
+  }
+
+  static Future<Uint8List?> _fetchImageBytesImpl(
+    String url, {
+    Map<String, String>? headers,
+    String? cacheKey,
+  }) async {
+    try {
+      final response = await http
+          .get(Uri.parse(url), headers: headers)
+          .timeout(const Duration(seconds: 20));
+      if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
+        return null;
+      }
+      final bytes = Uint8List.fromList(response.bodyBytes);
+      if (cacheKey != null && cacheKey.isNotEmpty && bytes.length <= 1024 * 1024) {
+        await OfflineImageCache.instance.write(cacheKey, bytes);
+      }
+      return bytes;
+    } catch (_) {
+      return null;
+    }
+  }
+
   static Future<void> prefetchImageSource(
     String urlOrObjectPath, {
     String? bucket,
   }) async {
     if (urlOrObjectPath.trim().isEmpty) return;
     try {
+      final cacheKey = cacheKeyForSource(urlOrObjectPath);
+      if (cacheKey.isNotEmpty) {
+        final existing = await OfflineImageCache.instance.read(cacheKey);
+        if (existing != null && existing.isNotEmpty) return;
+      }
       final request = await resolveImageRequest(
         urlOrObjectPath,
         bucket: bucket,
       );
       if (request == null || request.url.isEmpty) return;
-
-      final cacheKey = cacheKeyForSource(urlOrObjectPath);
-      final provider = ExtendedNetworkImageProvider(
+      await fetchImageBytesFromUrl(
         request.url,
         headers: request.headers,
-        cache: true,
         cacheKey: cacheKey.isNotEmpty ? cacheKey : request.url,
-      );
-
-      final stream = provider.resolve(const ImageConfiguration());
-      final completer = Completer<void>();
-      late final ImageStreamListener listener;
-      listener = ImageStreamListener(
-        (image, synchronousCall) {
-          stream.removeListener(listener);
-          if (!completer.isCompleted) {
-            completer.complete();
-          }
-        },
-        onError: (exception, stackTrace) {
-          stream.removeListener(listener);
-          if (!completer.isCompleted) {
-            completer.complete();
-          }
-        },
-      );
-      stream.addListener(listener);
-      await completer.future.timeout(
-        const Duration(seconds: 20),
-        onTimeout: () {
-          stream.removeListener(listener);
-        },
       );
     } catch (_) {}
   }

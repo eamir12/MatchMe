@@ -195,4 +195,91 @@ void main() {
       await tester.pump(const Duration(seconds: 51));
     },
   );
+
+  testWidgets(
+    'match card spells out "Verified" next to a verified profile',
+    (tester) async {
+      final now = DateTime.now();
+      final match = MatchModel(
+        id: 'verified-match',
+        userAId: _currentUserId,
+        userBId: _otherUserId,
+        otherUserId: _otherUserId,
+        matchedIntent: 'friendship',
+        matchType: 'manual_test',
+        createdAt: now,
+      );
+      final l10n = LocalizationState(
+        currentLocale: const Locale('en'),
+        textDirection: TextDirection.ltr,
+        strings: const {},
+        supportedLanguages: const [],
+      );
+      final verifiedProfile = UserProfile.fromMap({
+        'id': _otherUserId,
+        'name': 'Alexandra Example',
+        'photos': ['https://example.com/avatar.jpg?token=valid'],
+        'is_verified': true,
+      });
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            localizationProvider.overrideWith(() => _TestLocalization(l10n)),
+            otherUserProfileProvider(
+              _otherUserId,
+            ).overrideWith((ref) => Future.value(verifiedProfile)),
+            userProfileProvider(_currentUserId).overrideWith(
+              (ref) => Stream.value(_profile(_currentUserId, 'Viewer Example')),
+            ),
+            userChatIdsProvider(
+              _currentUserId,
+            ).overrideWith((ref) => Stream.value(<String>{})),
+            recentChatsProvider(_currentUserId).overrideWith(
+              (ref) => Stream.value([
+                ChatModel.fromJsonRpc({
+                  'match_id': 'verified-match',
+                  'other_user_id': _otherUserId,
+                  'other_user_name': 'Alex Example',
+                  'other_user_photos': [
+                    'https://example.com/cached-avatar.jpg?token=valid',
+                  ],
+                  'last_message_at': now.toIso8601String(),
+                }),
+              ]),
+            ),
+            matchExpiryNowProvider.overrideWith(
+              (ref) => Stream.value(now),
+            ),
+            userRatingSummaryProvider(_otherUserId).overrideWith(
+              (ref) async => const UserRatingSummary(
+                ratedByCount: 0,
+                q1Avg: null,
+                q2Avg: null,
+                q3Avg: null,
+                q4Avg: null,
+                q5Avg: null,
+                overallAvg: null,
+              ),
+            ),
+          ],
+          child: MaterialApp(
+            home: Scaffold(body: MatchBox(match: match)),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      // The bare check on the avatar is not self-explanatory; the card must
+      // also carry a readable label next to the name it belongs to.
+      expect(find.text('Verified'), findsOneWidget);
+      expect(find.byIcon(Icons.verified), findsWidgets);
+      expect(tester.takeException(), isNull);
+
+      await tester.pump(const Duration(seconds: 11));
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(seconds: 51));
+    },
+  );
 }

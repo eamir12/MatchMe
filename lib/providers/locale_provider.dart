@@ -1065,7 +1065,7 @@ class LocalizationState {
     'eventLeft': 'You left the event',
     'eventMatchedAttendeesCount': '{count} of your matches attending',
     'eventMatchedAttendeesOnly':
-        'Only people you’ve matched with are shown—not the full attendee list.',
+        'Only your event matches are shown—not the full attendee list.',
     'eventRsvpAttending': 'You’re listed as attending on MatchMe',
     'eventPublicDisclosureTitle': 'Public event details',
     'eventPublicDisclosureBody':
@@ -4018,9 +4018,109 @@ class LocalizationState {
   }
 }
 
+/// Snapshot of the persisted localization cache, read once during bootstrap
+/// (before Supabase is up) so the first [Localization.build] can paint the
+/// app with real strings and a non-empty language list on frame one.
+class _WarmLaunchLocalization {
+  final String langCode;
+  final Map<String, String> strings;
+  final List<AppLanguage> supportedLanguages;
+
+  const _WarmLaunchLocalization({
+    required this.langCode,
+    required this.strings,
+    required this.supportedLanguages,
+  });
+}
+
 // --- 3. The Notifier ---
 @Riverpod(keepAlive: true)
 class Localization extends _$Localization {
+  /// One-shot warm-launch preload filled by [preloadForWarmLaunch] during
+  /// bootstrap and consumed by the first [build]. Without it, the online
+  /// initial state is `isLoading: true, supportedLanguages: []`, which trips
+  /// the router's localization gate and holds the pulsating loader for the
+  /// ~0.6-0.8s _initImpl needs to re-read the exact same SharedPreferences
+  /// keys — on every online warm relaunch.
+  static _WarmLaunchLocalization? _warmLaunchPreload;
+
+  /// Decoded translations from [preloadForWarmLaunch], kept so `_init()`'s
+  /// cache load doesn't re-read prefs and re-jsonDecode the same multi-MB
+  /// blob during the first-frames window (a several-hundred-ms main-isolate
+  /// hog that delays the first Home data paint). Consumed on first read.
+  static Map<String, Map<String, String>>? _predecodedTranslations;
+
+  /// Reads the persisted supported-languages list and cached translations
+  /// straight from SharedPreferences. Touches no Supabase state, so it is
+  /// safe to run in parallel with (or before) Supabase.initialize. Best-effort:
+  /// any failure leaves the preload null and build() takes the normal path.
+  static Future<void> preloadForWarmLaunch() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      final langJson = prefs.getString('cached_supported_languages');
+      if (langJson == null || langJson.isEmpty || langJson == '[]') {
+        return; // genuine first run — nothing persisted to warm from
+      }
+      final List<AppLanguage> supported;
+      try {
+        final List<dynamic> jsonList = jsonDecode(langJson);
+        supported = jsonList.map((item) {
+          return AppLanguage(
+            code: item['code'] as String? ?? '',
+            displayName: item['displayName'] as String? ?? '',
+            direction: (item['direction'] as String? ?? 'LTR') == 'RTL'
+                ? TextDirection.rtl
+                : TextDirection.ltr,
+          );
+        }).toList();
+      } catch (_) {
+        return;
+      }
+      if (supported.isEmpty) return;
+
+      var langCode = prefs.getString('user_language_code');
+      if (langCode == null ||
+          langCode.isEmpty ||
+          !supported.any((l) => l.code == langCode)) {
+        // Mirror _initImpl's non-DB fallback: device locale, then 'en'.
+        final Locale deviceLocale =
+            WidgetsBinding.instance.platformDispatcher.locale;
+        langCode = supported.any((l) => l.code == deviceLocale.languageCode)
+            ? deviceLocale.languageCode
+            : (supported.any((l) => l.code == 'en')
+                ? 'en'
+                : supported.first.code);
+      }
+
+      final strJson = prefs.getString('translations_$langCode');
+      if (strJson == null || strJson.isEmpty) return;
+      final Map<String, String> strings;
+      try {
+        final raw = jsonDecode(strJson) as Map<dynamic, dynamic>;
+        final map = <String, String>{};
+        raw.forEach((key, value) {
+          final keyStr = key.toString();
+          if (keyStr.startsWith('ads_test_')) return;
+          map[keyStr] = value.toString();
+        });
+        if (map.isEmpty) return;
+        strings = map;
+      } catch (_) {
+        return;
+      }
+
+      _warmLaunchPreload = _WarmLaunchLocalization(
+        langCode: langCode,
+        strings: strings,
+        supportedLanguages: supported,
+      );
+      (_predecodedTranslations ??= {})[langCode] = strings;
+    } catch (_) {
+      // Best-effort: build() falls back to the normal loading path.
+    }
+  }
+
   // Keys that were provided by the DB in the most recent fetch
   Set<String> _lastFetchedDbKeys = <String>{};
 
@@ -4110,6 +4210,31 @@ class Localization extends _$Localization {
     _ensureLanguageRealtimeSubscription();
     unawaited(_syncLanguageFromRemote());
     _init();
+
+    // One-shot warm-launch preload (filled by bootstrap): paint real cached
+    // strings + language list on the very first frame so the router's
+    // localization gate never trips. _init() above still runs to refresh
+    // from DB in the background and to complete whenInitialized.
+    final warmPreload = _warmLaunchPreload;
+    if (warmPreload != null) {
+      _warmLaunchPreload = null;
+      final initialLang = warmPreload.supportedLanguages.firstWhere(
+        (l) => l.code == warmPreload.langCode,
+        orElse: () => warmPreload.supportedLanguages.first,
+      );
+      debugPrint(
+        '[L10N] Warm-launch preload: ${initialLang.code} '
+        '(${warmPreload.strings.length} strings, '
+        '${warmPreload.supportedLanguages.length} languages)',
+      );
+      return LocalizationState(
+        currentLocale: Locale(initialLang.code),
+        textDirection: initialLang.direction,
+        strings: warmPreload.strings,
+        supportedLanguages: warmPreload.supportedLanguages,
+        isLoading: false,
+      );
+    }
 
     // When offline, provide supported languages immediately to prevent loader flash.
     // The _init() will still run and update locale from SharedPreferences.
@@ -4240,11 +4365,25 @@ class Localization extends _$Localization {
     List<AppLanguage> supported;
     if (isOffline) {
       supported = await _loadSupportedLanguagesFromCache();
+    } else if (await _hasPersistedSupportedLanguages()) {
+      // CACHE-FIRST startup (warm relaunch): a previous launch already
+      // persisted the real supported-languages list (see
+      // _cacheSupportedLanguages), so render it immediately instead of
+      // blocking the whole app on a network round-trip. The router's
+      // localization gate (`isLoading && supportedLanguages.isEmpty`) therefore
+      // clears on the first frame rather than after _fetchSupportedLanguages
+      // returns — this is what kept the loader on screen for ~1.3s. Refresh
+      // from the server in the background so admin changes still land for the
+      // next launch.
+      supported = await _loadSupportedLanguagesFromCache();
+      unawaited(_fetchSupportedLanguages());
     } else {
-      supported = await _fetchSupportedLanguages().timeout(
-        const Duration(seconds: 5),
-        onTimeout: () => _defaultSupportedLanguages(),
-      );
+      // Genuine first run (no persisted list yet): render the built-in
+      // default list (en/es/he) instantly and fetch the real list from the
+      // server in the background. Blocking here kept the whole app behind
+      // the router's localization gate for up to 5s on first launch.
+      supported = _defaultSupportedLanguages();
+      unawaited(_fetchSupportedLanguages());
     }
 
     final prefs = await SharedPreferences.getInstance();
@@ -4333,30 +4472,27 @@ class Localization extends _$Localization {
         unawaited(_refreshTranslationCache(initialLang.code));
       }
     } else {
-      // No cache — fetch from DB (will fall back to defaults on failure).
-      try {
-        final strings = await _fetchTranslationsFromDB(initialLang.code);
-
-        await _saveTranslationsToCache(initialLang.code, strings);
-
-        if (!ref.mounted) return;
-
-        state = LocalizationState(
-          currentLocale: Locale(initialLang.code),
-          textDirection: initialLang.direction,
-          strings: strings,
-          supportedLanguages: supported,
-          isLoading: false,
-        );
-        debugPrint(
-          '[L10N] Translations loaded from DB for $langCode (${strings.length} strings)',
-        );
-        _syncNativeBackgroundNotificationStrings(strings);
-      } catch (e) {
-        if (!ref.mounted) return;
-        state = state.copyWith(supportedLanguages: supported, isLoading: false);
-        debugPrint('[L10N] Using default translations (DB and cache failed)');
-        _syncNativeBackgroundNotificationStrings(state.strings);
+      // No cache (genuine first run): use the bundled default strings so the
+      // router gate clears instantly, then fetch the full set from the DB in
+      // the background and update in place. Blocking here kept the whole app
+      // behind the localization gate on first launch.
+      final defaults = Map<String, String>.from(
+        LocalizationState._defaultTranslations,
+      );
+      if (!ref.mounted) return;
+      state = LocalizationState(
+        currentLocale: Locale(initialLang.code),
+        textDirection: initialLang.direction,
+        strings: defaults,
+        supportedLanguages: supported,
+        isLoading: false,
+      );
+      debugPrint(
+        '[L10N] First run: using bundled default translations for $langCode, fetching DB set in background',
+      );
+      _syncNativeBackgroundNotificationStrings(defaults);
+      if (offlineCacheManager.isSupabaseAvailable) {
+        unawaited(_loadTranslationsInBackground(initialLang.code));
       }
     }
   }
@@ -4406,6 +4542,22 @@ class Localization extends _$Localization {
     } catch (_) {}
   }
 
+  /// True when a real supported-languages list has been persisted by a previous
+  /// launch (via [_cacheSupportedLanguages]), as opposed to the built-in default
+  /// fallback that [_loadSupportedLanguagesFromCache] returns when nothing is
+  /// stored yet. Lets warm relaunches render immediately instead of blocking on
+  /// a network round-trip; a genuine first run also renders instantly (built-in
+  /// defaults) and only refreshes the list from the server in the background.
+  Future<bool> _hasPersistedSupportedLanguages() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final jsonStr = prefs.getString('cached_supported_languages');
+      return jsonStr != null && jsonStr.isNotEmpty && jsonStr != '[]';
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<List<AppLanguage>> _loadSupportedLanguagesFromCache() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -4434,6 +4586,28 @@ class Localization extends _$Localization {
       final strings = await _fetchTranslationsFromDB(langCode);
       await _saveTranslationsToCache(langCode, strings);
     } catch (_) {}
+  }
+
+  /// First-run background load: fetch the full translation set for
+  /// [langCode] from the DB, persist it to the local cache, and update the
+  /// in-memory state so the UI converges from the bundled defaults to the
+  /// server set without a reload.
+  Future<void> _loadTranslationsInBackground(String langCode) async {
+    try {
+      final strings = await _fetchTranslationsFromDB(langCode);
+      await _saveTranslationsToCache(langCode, strings);
+      if (!ref.mounted) return;
+      // The user may have switched locale while the fetch was in flight; in
+      // that case the setLocale path owns the state update for the new code.
+      if (state.currentLocale.languageCode != langCode) return;
+      state = state.copyWith(strings: strings, dbKeys: _lastFetchedDbKeys);
+      _syncNativeBackgroundNotificationStrings(strings);
+      debugPrint(
+        '[L10N] Background DB translations applied for $langCode (${strings.length} strings)',
+      );
+    } catch (e) {
+      debugPrint('[L10N] Background DB translation load failed: $e');
+    }
   }
 
   /// Public method: force-refresh translations from the DB for the current
@@ -4548,6 +4722,32 @@ class Localization extends _$Localization {
   Future<Map<String, String>> _loadTranslationsFromCache(
     String langCode,
   ) async {
+    // Fast path: the warm-launch bootstrap already decoded this language's
+    // blob. Reuse it instead of re-reading SharedPreferences and re-decoding
+    // several megabytes of JSON while the first Home frames are painting.
+    final predecoded = _predecodedTranslations?.remove(langCode);
+    if (predecoded != null && predecoded.isNotEmpty) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final dbJson = prefs.getString('translations_${langCode}_dbkeys');
+        if (dbJson != null) {
+          try {
+            final List<dynamic> keys = jsonDecode(dbJson);
+            _lastFetchedDbKeys = keys
+                .map((e) => e.toString())
+                .where((k) => !k.startsWith('ads_test_'))
+                .toSet();
+          } catch (e) {
+            // ignore parse errors
+          }
+        } else {
+          _lastFetchedDbKeys = predecoded.keys.toSet();
+        }
+      } catch (e) {
+        // ignore prefs errors — strings themselves are already in hand
+      }
+      return Map<String, String>.from(predecoded);
+    }
     try {
       final prefs = await SharedPreferences.getInstance();
       final jsonString = prefs.getString('translations_$langCode');

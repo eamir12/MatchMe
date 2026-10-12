@@ -187,7 +187,13 @@ void main() {
       await Future<void>.delayed(Duration.zero);
       requestGate = Completer<void>();
       requestStarted = Completer<void>();
-      final third = service.syncProfile(_userId, source: 'test-third');
+      // A later sync must be able to start a fresh request once the previous
+      // one completed. Use a debounce-bypass source — a plain source would be
+      // skipped for 5s after the successful sync above.
+      final third = service.syncProfile(
+        _userId,
+        source: 'manual-review-request',
+      );
       await requestStarted.future;
       requestGate.complete();
       final thirdResult = await third;

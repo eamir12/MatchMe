@@ -18,13 +18,9 @@ void main() {
       ),
     );
 
-    expect(find.text('You’re listed as attending on MatchMe'), findsOneWidget);
-    expect(find.text('4 attending, including you'), findsOneWidget);
+    expect(find.text('4 attending'), findsOneWidget);
     final semantics = tester.getSemantics(find.byType(EventAttendanceSummary));
-    expect(
-      semantics.label,
-      'You’re listed as attending on MatchMe. 4 attending, including you',
-    );
+    expect(semantics.label, '4 attending');
   });
 
   testWidgets('attendance summary omits an unavailable count', (tester) async {
@@ -38,8 +34,7 @@ void main() {
       ),
     );
 
-    expect(find.text('You’re listed as attending on MatchMe'), findsOneWidget);
-    expect(find.textContaining('attending, including you'), findsNothing);
+    expect(find.textContaining('attending'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 

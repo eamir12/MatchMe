@@ -28,7 +28,11 @@ project.getTasks().withType(JavaCompile).configureEach {
 }
 
 apply plugin: 'com.android.library'
-apply plugin: 'kotlin-android'
+// NOTE: kotlin-android is deliberately NOT applied here. While the app keeps
+// android.builtInKotlin=false, the app's root build.gradle.kts applies KGP to
+// every Android library subproject. Re-applying it from a plugin is what
+// Flutter's "plugins that apply Kotlin Gradle Plugin (KGP)" warning flags, and
+// it must be gone before Flutter hard-fails on it (flutter/flutter#184837).
 
 android {
     compileSdk 36

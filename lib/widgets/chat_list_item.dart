@@ -82,6 +82,9 @@ class ChatListItem extends ConsumerWidget {
       loading: () => fallbackName,
       error: (e, s) => fallbackName,
     );
+    // The name lays out in its own script (a Hebrew name keeps its trailing
+    // period left of the initial) while staying flush with the UI direction.
+    final nameLayout = formattedName.displayTextLayout(textDir);
 
     final String ageGender = otherProfileAsync.when(
       data: (profile) {
@@ -334,10 +337,8 @@ class ChatListItem extends ConsumerWidget {
                                 fontSize: 16,
                                 color: Theme.of(context).colorScheme.onSurface,
                               ),
-                              textAlign: textDir == ui.TextDirection.rtl
-                                  ? TextAlign.right
-                                  : TextAlign.left,
-                              textDirection: textDir,
+                              textAlign: nameLayout.textAlign,
+                              textDirection: nameLayout.textDirection,
                             ),
                           ),
                           const SizedBox(width: 8),

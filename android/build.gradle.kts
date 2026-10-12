@@ -41,7 +41,31 @@ val newBuildDir: Directory =
         .get()
 rootProject.layout.buildDirectory.value(newBuildDir)
 
+// Set :app's build dir override *before* the subprojects loop below. Gradle
+// evaluates subprojects alphabetically, so any plugin whose name sorts before
+// "app" (android_file_picker!) would be evaluated first. The Flutter Gradle
+// plugin relies on :app being evaluated before plugin projects: while :app is
+// evaluated it creates the "flutter" extension on every plugin project and
+// registers afterEvaluate hooks on them (PluginHandler.kt:109/122). A plugin
+// evaluated too early fails with "Extension with name 'flutter' does not
+// exist" (when its build script reads it) or "Cannot run
+// Project.afterEvaluate(Action) when the project is already evaluated" (when
+// :app later tries to register the hook). evaluationDependsOn(":app") in the
+// loop below forces :app to evaluate first, but it does so *eagerly* — before
+// the loop would otherwise reach :app — so :app's build dir must already be
+// in place here or AGP/R8 resolve paths against the default
+// android/app/build instead of the overridden build/app.
+project(":app") {
+    layout.buildDirectory.value(newBuildDir.dir("app"))
+}
+
 subprojects {
+    // Force :app to evaluate before this (plugin) subproject. Excluded for
+    // :app itself to avoid a self-dependency. See comment above.
+    if (name != "app") {
+        evaluationDependsOn(":app")
+    }
+
     layout.buildDirectory.value(newBuildDir.dir(name))
 
     // Keep Java warning noise down without overriding each plugin's chosen target.

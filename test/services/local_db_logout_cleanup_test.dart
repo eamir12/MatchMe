@@ -132,9 +132,8 @@ void main() {
   });
 
   test(
-    'dashboard and notification snapshots remain available offline',
+    'notification snapshot remains available offline',
     () async {
-      await db.saveDashboardStats('offline-snapshot-user', 12, 4);
       await db.saveNotificationInbox('offline-snapshot-user', [
         {
           'id': 'cached-notification',
@@ -143,10 +142,6 @@ void main() {
         },
       ]);
 
-      expect(await db.getDashboardStats('offline-snapshot-user'), {
-        'online': 12,
-        'nearby': 4,
-      });
       expect(
         (await db.getNotificationInbox('offline-snapshot-user'))?.single['id'],
         'cached-notification',

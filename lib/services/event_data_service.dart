@@ -40,20 +40,18 @@ class EventDataService {
     if (userId == null) throw Exception("User not logged in");
 
     try {
-      final FilePickerResult? result = await FilePicker.pickFiles(
+      // file_picker 12.x: pickFile returns PlatformFile? (null = cancelled).
+      // Web loads bytes by default; mobile returns a temp file path.
+      final file = await FilePicker.pickFile(
         type: FileType.custom,
         allowedExtensions: ['jpg', 'jpeg', 'png', 'pdf'],
-        allowMultiple: false,
-        withData: kIsWeb,
       );
 
       // If the user cancelled the file picker, return null so callers can
       // treat that as a non-error cancellation and simply close any UI.
-      if (result == null) {
+      if (file == null) {
         return null; // User cancelled
       }
-
-      final file = result.files.single;
       final fileExt = file.extension?.toLowerCase() ?? 'file';
       final fileName = '${uuid.v4()}.$fileExt';
       final filePath = '$userId/$fileName';
@@ -62,14 +60,11 @@ class EventDataService {
       // 1. UPLOAD the file (with improved error handling/logging)
       try {
         if (kIsWeb) {
-          if (file.bytes == null) {
-            throw Exception("File bytes are null on web.");
-          }
           await supabase.storage
               .from(_bucketId)
               .uploadBinary(
                 filePath,
-                file.bytes!,
+                await file.readAsBytes(),
                 fileOptions: FileOptions(contentType: mimeType),
               );
         } else {

@@ -507,9 +507,31 @@ class SessionService {
       if (t.isNotEmpty && !candidates.contains(t)) candidates.add(t);
     }
 
-    final secure = SecureStorageService.instance;
-    add(await secure.read(_prefsPersistedSupabaseSessionKey));
-    add(await NativeSecureStore.getString(_prefsPersistedSupabaseSessionKey));
+    // Native bridge first: a plain MethodChannel read with no Keychain/
+    // Keystore round trip on the FlutterSecureStorage platform channel. The
+    // snapshot is dual-stored there (see persistCurrentSupabaseSessionSnapshot),
+    // so a warm relaunch resolves the session WITHOUT queueing behind other
+    // FlutterSecureStorage consumers (notably the Hive encryption key read,
+    // which races this seed at bootstrap). That contention previously stalled
+    // the gather past its timeout and silently downgraded every warm launch
+    // to the slow Supabase.initialize recovery path (seeded=false).
+    try {
+      add(await NativeSecureStore.getString(_prefsPersistedSupabaseSessionKey));
+    } catch (_) {}
+
+    // Only fall back to the Dart SecureStorage copy when the native bridge
+    // has nothing: this read contends with every other secure-storage
+    // consumer and costs ~0.85s on a cold Keystore.
+    if (candidates.isEmpty) {
+      try {
+        add(
+          await SecureStorageService.instance.read(
+            _prefsPersistedSupabaseSessionKey,
+          ),
+        );
+      } catch (_) {}
+    }
+
     try {
       final prefs = await SharedPreferences.getInstance();
       add(prefs.getString(_prefsPersistedSupabaseSessionKey));
@@ -790,6 +812,60 @@ class SessionService {
           try {
             Supabase.instance.client.auth.stopAutoRefresh();
           } catch (_) {}
+          return true;
+        }
+      }
+      return Supabase.instance.client.auth.currentSession != null;
+    } catch (_) {
+      return Supabase.instance.client.auth.currentSession != null;
+    }
+  }
+
+  /// Seeds the auth client from the locally persisted session WITHOUT any
+  /// network IO. Used by the bootstrap fast path so a warm relaunch can route
+  /// to the cached home without waiting for the full `Supabase.initialize()`
+  /// (whose secure-storage reads + deep-link platform channels cost 1.4-2.3s
+  /// on cold Keychain/Keystore access).
+  ///
+  /// Unlike [restorePersistedSessionOfflineOnly] this does NOT stop
+  /// auto-refresh: the SDK's own initialize continues in the background and
+  /// owns the normal refresh lifecycle once it completes.
+  ///
+  /// Returns true when a session is in memory afterwards. Never clears
+  /// anything — the permissive session policy only ever seeds.
+  static Future<bool> seedSessionFromLocalStorage({
+    // Generous enough to survive the rare fallback where the native bridge
+    // is empty and the FlutterSecureStorage read must run contended (~1.6s
+    // cold Keystore behind another consumer). The common path resolves from
+    // the native bridge in ~100ms, so this cap almost never binds.
+    Duration timeout = const Duration(milliseconds: 2500),
+  }) async {
+    try {
+      if (Supabase.instance.client.auth.currentSession != null) return true;
+      final candidates = await _gatherPersistedSessionCandidates().timeout(
+        timeout,
+      );
+      for (final raw in candidates) {
+        if (raw.isEmpty) continue;
+        final sessionJson = _extractSupabaseSessionJson(raw);
+        if (sessionJson == null) continue;
+        try {
+          await Supabase.instance.client.auth
+              .setInitialSession(sessionJson)
+              .timeout(const Duration(seconds: 1));
+        } catch (_) {
+          continue;
+        }
+        if (Supabase.instance.client.auth.currentSession != null) {
+          _recoveredPersistedSessionThisLaunch = true;
+          try {
+            await persistCurrentSupabaseSessionSnapshot().timeout(
+              const Duration(milliseconds: 500),
+            );
+          } catch (_) {}
+          debugPrint(
+            '🔐 [SESSION] Seeded session from local storage (bootstrap fast path)',
+          );
           return true;
         }
       }

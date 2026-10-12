@@ -591,6 +591,27 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
     () => unawaited(emitInitialEvent()),
   );
 
+  // WARM RELAUNCH FAST PATH: on a relaunch the SDK's real initialSession event
+  // already fired *inside* Supabase.initialize() (which bootstrap awaited
+  // before this provider was built) — and onAuthStateChange does not replay
+  // past events. Without this, the provider would sit in loading until the
+  // 1s [initialEventTimeout] fires, which is the whole "time to see Home".
+  // The session is already recovered in memory, so emit it synchronously and
+  // let the router resolve on the very first frame. The stream subscription
+  // above still handles every subsequent (and any late) event; the dedup guard
+  // suppresses a duplicate initialSession if the real one still arrives.
+  if (!initialEventEmitted && auth.currentSession != null) {
+    initialEventEmitted = true;
+    initialEventLogged = true;
+    initialEventTimeout.cancel();
+    debugPrint(
+      '🔄 [AUTH] Emitting recovered session synchronously on warm relaunch (skipping 1s wait)',
+    );
+    controller.add(
+      AuthState(AuthChangeEvent.initialSession, auth.currentSession),
+    );
+  }
+
   // Deleted-account probe: shortly after startup (deferred so it never
   // delays the cold-start paint), and re-armed on every connectivity
   // restore — a cold start that began offline learns about a deleted

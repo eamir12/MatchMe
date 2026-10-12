@@ -571,11 +571,12 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     );
   }
 
-  /// Identity column: bold name (+"New here!" pill when applicable) on line
-  /// 1, quiet "67 · Male" on line 2 — no "Age:"/"Gender:" labels, and the
-  /// name's trailing last-initial period never collides with the age.
-  /// Verification moved to an overlay on the avatar; rating sits top-right
-  /// of the card (rendered by the caller).
+  /// Identity column: bold name (+ "Verified"/"New here!" pills when
+  /// applicable) on line 1, quiet "67 · Male" on line 2 — no "Age:"/"Gender:"
+  /// labels, and the name's trailing last-initial period never collides with
+  /// the age. The avatar keeps a bare check overlay as a quick status mark,
+  /// so the pill spells the status out for anyone who does not know what the
+  /// check means; rating sits top-right of the card (rendered by the caller).
   Widget _buildContentColumn(
     BuildContext context,
     WidgetRef ref,
@@ -601,11 +602,14 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     if (profile?.createdAt != null) {
       isNewUser = DateTime.now().difference(profile!.createdAt!).inDays < 7;
     }
+    final isVerified = profile?.isVerified ?? false;
 
     final metaParts = <String>[
       if (age != null) '$age',
       ?genderText,
     ];
+
+    final nameLayout = name.displayTextLayout(textDir);
 
     return Column(
       textDirection: textDir,
@@ -624,9 +628,14 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.start,
+                textAlign: nameLayout.textAlign,
+                textDirection: nameLayout.textDirection,
               ),
             ),
+            if (isVerified) ...[
+              const SizedBox(width: 6),
+              _buildVerifiedPill(context, l10n, profile!),
+            ],
             if (isNewUser) ...[
               const SizedBox(width: 6),
               _buildNewUserPill(context, l10n, profile!),
@@ -650,6 +659,44 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
           ),
         ],
       ],
+    );
+  }
+
+  /// Compact "Verified" pill shown inline after the name. The avatar check
+  /// overlay alone was not self-explanatory, so the card always spells the
+  /// status out next to the name it belongs to.
+  Widget _buildVerifiedPill(
+    BuildContext context,
+    LocalizationState l10n,
+    UserProfile profile,
+  ) {
+    final color = Theme.of(context).colorScheme.primary;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        textDirection: Directionality.of(context),
+        children: [
+          Icon(Icons.verified, size: 12, color: color),
+          const SizedBox(width: 2),
+          Flexible(
+            child: Text(
+              _verifiedBadgeText(l10n, profile.gender),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: color,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 

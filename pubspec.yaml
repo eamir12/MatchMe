@@ -36,7 +36,7 @@ dependencies:
   shared_preferences: ^2.5.5
   image_picker: ^1.2.0
   camera: ^0.12.0+2
-  file_picker: ^11.0.3
+  file_picker: ^12.3.0
   extended_image: ^10.1.0
   image: ^4.8.0
   uuid: ^4.6.0
@@ -51,7 +51,7 @@ dependencies:
   cupertino_icons: ^1.0.8
 
   # --- Locale Detection ---
-  device_info_plus: ^12.4.0
+  device_info_plus: ^13.3.0
   crypto: ^3.0.2
 
   flutter_map: ^8.3.1
@@ -60,7 +60,15 @@ dependencies:
  
   # --- Encryption & Secure Storage ---
   cryptography: ^2.7.0
-  flutter_secure_storage: ^9.2.0
+  # Two-step upgrade (done): v9 -> v10 shipped first and migrated the Android
+  # cipher layer (EncryptedSharedPreferences -> Keystore ciphers, verified in
+  # the field); v11 then removes the deprecated encryptedSharedPreferences
+  # parameter and the v9->v10 migration path. NEVER ship v11 before a device
+  # that still holds v9 data has run a v10 build — v10 is the only bridge.
+  # v10 also dragged win32 ^6 via flutter_secure_storage_windows 4.x, which is
+  # why device_info_plus/share_plus/package_info_plus/file_picker are on their
+  # win32-6 majors (see above).
+  flutter_secure_storage: ^11.2.0
 
   # --- Local Database (Hive) ---
   hive: ^2.2.3
@@ -69,7 +77,7 @@ dependencies:
   # --- Local Notifications ---
   flutter_local_notifications: ^22.3.0
   confetti: ^0.8.0
-  flutter_timezone: ^5.1.0
+  flutter_timezone: ^5.1.1
   timezone: ^0.11.0
 
   auto_size_text: ^3.0.0
@@ -81,7 +89,7 @@ dependencies:
   quick_actions: ^1.1.0
   visibility_detector: ^0.4.0+2
   web: ^1.1.1
-  device_calendar_plus: ^0.8.0
+  device_calendar_plus: ^0.10.1
   googleapis: ^16.0.0
   google_sign_in: ^7.2.0
   extension_google_sign_in_as_googleapis_auth: ^3.0.0
@@ -91,9 +99,12 @@ dependencies:
   passkeys: ^2.22.1
   
   # --- PAYMENTS ---
-  purchases_flutter: ^10.9.0
-  purchases_ui_flutter: ^10.9.0
-  share_plus: ^12.0.2
+  purchases_flutter: ^10.15.2
+  purchases_ui_flutter: ^10.15.2
+  share_plus: ^13.3.1
+  # Transitive (via geolocator_linux); pinned to 10.x so its win32 ^6
+  # requirement stays compatible with flutter_secure_storage 10+/11.
+  package_info_plus: ^10.2.2
 
   # --- GOOGLE MOBILE ADS ---
   google_mobile_ads: ^9.1.0
@@ -145,6 +156,34 @@ dependency_overrides:
   # add_custom_command, which new CMake rejects (CMP0175 warning). Fixed here.
   webview_windows:
     path: third_party/webview_windows
+  # MatchMe fork: upstream 3.5.3 applies kotlin-android unconditionally from its
+  # Android plugins {} block, which trips Flutter's "plugins that apply KGP"
+  # warning and would break under android.builtInKotlin=true. One-line patch,
+  # see third_party/README.md.
+  msal_auth:
+    path: third_party/msal_auth
+  # MatchMe fork: aad_oauth 1.0.1 (latest upstream) pins flutter_secure_storage
+  # ^9.0.0. Two patches: constraint relaxed to ^11.0.0, and config.dart's
+  # default AndroidOptions(encryptedSharedPreferences: true) -> AndroidOptions()
+  # (v11 removed the parameter). Needed by Microsoft calendar OAuth
+  # (calendar_sync_service.dart).
+  aad_oauth:
+    path: third_party/aad_oauth
+  # MatchMe fork: android_file_picker 1.1.1 does extensions.getByName("flutter"),
+  # which throws when Gradle evaluates this plugin before :app (alphabetical
+  # order: android_file_picker < app). Patched to findByName + fallback to 36.
+  android_file_picker:
+    path: third_party/android_file_picker
+  # MatchMe fork: all three apply kotlin-android from a conditional block, which
+  # is still enough for Flutter's text-scan KGP warning (conditionals are
+  # ignored by the regex) and will hard-fail future Flutter. Each is a
+  # delete-the-apply-line patch relying on the root shim; see README.md.
+  emoji_picker_flutter:
+    path: third_party/emoji_picker_flutter
+  firebase_core:
+    path: third_party/firebase_core
+  purchases_ui_flutter:
+    path: third_party/purchases_ui_flutter
   # freezed_annotation: ^3.0.0
 
 flutter:

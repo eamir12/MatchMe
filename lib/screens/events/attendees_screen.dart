@@ -561,8 +561,13 @@ class AttendeesScreen extends ConsumerWidget {
                                       profile?.dateOfBirth,
                                     );
                                     if (age == null) {
+                                      final layout = name.displayTextLayout(
+                                        Directionality.of(context),
+                                      );
                                       return Text(
                                         name,
+                                        textAlign: layout.textAlign,
+                                        textDirection: layout.textDirection,
                                         style: const TextStyle(
                                           fontWeight: FontWeight.bold,
                                         ),

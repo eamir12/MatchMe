@@ -23,7 +23,10 @@ formatter:
 analyzer:
   exclude:
     - matchme_admin/**
-    - third_party/passkeys_android/**
+    # third_party/* are vendored plugin forks (kept verbatim from pub.dev with
+    # minimal patches); they are separate packages and are not analyzed or
+    # formatted from this root.
+    - third_party/**
     - profile_provider_backup.dart
     - build/**
     - android/**

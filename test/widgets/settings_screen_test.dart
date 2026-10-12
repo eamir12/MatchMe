@@ -137,6 +137,26 @@ Widget _buildApp({
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  /// Accent of the settings menu card that leads with [icon]: the card's
+  /// gradient is painted entirely from the category accent.
+  Color cardAccent(WidgetTester tester, IconData icon) {
+    final card = tester
+        .widgetList<Container>(
+          find.ancestor(of: find.byIcon(icon), matching: find.byType(Container)),
+        )
+        .firstWhere(
+          (container) =>
+              container.decoration is BoxDecoration &&
+              (container.decoration! as BoxDecoration).gradient != null,
+        );
+    final gradient = (card.decoration! as BoxDecoration).gradient!;
+    return (gradient as LinearGradient).colors.first;
+  }
+
+  /// Text color of a section header.
+  Color? headerAccent(WidgetTester tester, String title) =>
+      tester.widget<Text>(find.text(title)).style?.color;
+
   setUpAll(() async {
     SharedPreferences.setMockInitialValues({});
     await Supabase.initialize(
@@ -255,6 +275,40 @@ void main() {
 
     expect(find.byType(AppRecoveryBanner), findsNothing);
     expect(calls, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Settings gives each category one accent, header included', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _buildApp(syncState: const ProfileSyncState(), onSync: (_, _) {}),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    final general = cardAccent(tester, Icons.school_outlined); // App tour
+    final generalDisplay = cardAccent(tester, Icons.settings_display);
+    final matching = cardAccent(tester, Icons.favorite_border);
+    final matchingPrefs = cardAccent(tester, Icons.people_alt_outlined);
+
+    // Every card inside a category shares that category's accent…
+    expect(generalDisplay, general);
+    expect(matchingPrefs, matching);
+    // …and different categories are visually distinct.
+    expect(matching, isNot(general));
+
+    // Section headers are tinted with their own category's accent (the card
+    // gradient carries the same hue at a low alpha).
+    expect(
+      headerAccent(tester, 'General')?.withValues(alpha: 1),
+      general.withValues(alpha: 1),
+    );
+    expect(
+      headerAccent(tester, 'Matching & discovery')?.withValues(alpha: 1),
+      matching.withValues(alpha: 1),
+    );
+
     expect(tester.takeException(), isNull);
   });
 }

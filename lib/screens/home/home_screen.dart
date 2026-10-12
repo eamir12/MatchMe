@@ -506,44 +506,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   // MainNavigationScreen / IndexedStack), so per-user UI state must reset
   // when the signed-in user changes — like a cold start.
   String? _homeUserId;
-  // Once the home content has been shown for the current account, never go
-  // back to the full-screen loader — even if a provider briefly reports
-  // loading again (e.g. a re-sync after the window regained focus). Falling
-  // back to the loader on every reload is what made the home screen visibly
-  // "twitch" (spinner flash + scroll/content jump) when switching between
-  // Chrome and other apps or minimizing/maximizing the window.
-  bool _homeWasReady = false;
 
-  /// Set once the full-screen skeleton has been on screen for longer than
-  /// [_fullScreenSkeletonBudget], which forces the content to render with
-  /// whatever has arrived so far.
-  bool _skeletonBudgetExpired = false;
-  Timer? _skeletonBudgetTimer;
-
-  /// Upper bound on how long the home screen may show nothing but skeleton
-  /// placeholders before the real layout is rendered anyway.
-  ///
-  /// The `homeReady` gate below exists to avoid flashing an *empty* home while
-  /// the first server sync is still in flight. But it also means one slow query
-  /// leaves the user staring at full-width grey slabs for as long as the
-  /// provider takes — up to the 30s ceiling on `initialHomeSyncProvider`. The
-  /// sections each carry their own inline `loading:` skeleton, so rendering
-  /// early degrades to a progressive fill-in rather than an empty screen.
-  static const Duration _fullScreenSkeletonBudget = Duration(seconds: 2);
-
-  void _cancelSkeletonBudgetTimer() {
-    _skeletonBudgetTimer?.cancel();
-    _skeletonBudgetTimer = null;
-  }
-
-  void _startSkeletonBudgetTimer() {
-    if (_skeletonBudgetTimer != null || _skeletonBudgetExpired) return;
-    _skeletonBudgetTimer = Timer(_fullScreenSkeletonBudget, () {
-      _skeletonBudgetTimer = null;
-      _skeletonBudgetExpired = true;
-      if (mounted) setState(() {});
-    });
-  }
+  // The cold-cache full-screen gate (pulsing startup logo until the first
+  // full sync lands) lives in ProfileCheckScreen, which holds the shell
+  // transition until the home data snapshot is complete. HomeScreen
+  // therefore always renders its content: immediate on a warm relaunch from
+  // cache; on the no-cached-profile escape hatch it renders whatever exists
+  // (empty sections + offline banner) while the background sync keeps
+  // filling in.
 
   @override
   void initState() {
@@ -795,9 +765,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       try {
         ref.read(chatFullTextSearchProvider('home').notifier).clear();
       } catch (_) {}
-      _homeWasReady = false;
-      _skeletonBudgetExpired = false;
-      _cancelSkeletonBudgetTimer();
     }
 
     // Use helper (not ref.watch) — helper itself will watch the connectivityProvider safely.
@@ -833,45 +800,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // workaround applied via `ref.listen`.
     final effectiveSub = ref.watch(effectiveCurrentSubscriptionProvider);
 
-    // Gate the entire screen behind a single loading state so sections don't
-    // pop in one-by-one with "..." placeholders. The screen is only rendered
-    // once every core element (profile, stats, matches, chats) has settled.
-    // NOTE: the local-DB streams emit their (possibly empty) cached values
-    // almost instantly, so `isLoading` alone cannot distinguish "synced and
-    // genuinely empty" from "server sync hasn't landed yet". When online,
-    // additionally wait for the first server sync (initialHomeSyncProvider)
-    // so the home is never shown empty before populating seconds later.
-    final chatIdsAsync = ref.watch(userChatIdsProvider(userId));
-    final initialSyncAsync = ref.watch(initialHomeSyncProvider(userId));
-    final bool homeReady =
-        !profileState.isLoading &&
-        (!isOnline || !dashboardStats.isLoading) &&
-        !recentMatchesAsync.isLoading &&
-        !recentChatsAsync.isLoading &&
-        !chatIdsAsync.isLoading &&
-        (!isOnline || !initialSyncAsync.isLoading);
-    if (homeReady) {
-      _homeWasReady = true;
-      _cancelSkeletonBudgetTimer();
-    }
-    // Only gate on the loader before the first successful render for this
-    // account, and never for longer than the budget - see
-    // [_fullScreenSkeletonBudget].
-    final showFullScreenSkeleton =
-        !homeReady && !_homeWasReady && !_skeletonBudgetExpired;
-    if (showFullScreenSkeleton) {
-      _startSkeletonBudgetTimer();
-    } else {
-      _cancelSkeletonBudgetTimer();
-    }
-    if (showFullScreenSkeleton) {
-      return Scaffold(
-        body: Semantics(
-          label: l10n.getString('generalLoading'),
-          child: const AppSkeletonList(itemCount: 5, itemHeight: 96),
-        ),
-      );
-    }
+    // The cold-cache display gate (pulsing startup logo until the first full
+    // sync lands) lives in ProfileCheckScreen; by the time this widget is
+    // built the local snapshot is complete on the normal path. This watch
+    // keeps the initial sync provider alive so its warm-relaunch path kicks
+    // the background refresh (matches + chats + profile) that keeps the
+    // rendered snapshot fresh. Live counters (online/nearby) never display
+    // disk-cached values: they show the last live Supabase value received
+    // this session, or a "..." placeholder until one arrives.
+    ref.watch(initialHomeSyncProvider(userId));
 
     return RefreshIndicator(
       onRefresh: () async {
@@ -969,7 +906,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       return _buildStatCard(
                         context,
                         Icons.radar_outlined,
-                        "${stats['nearby'] ?? 0}",
+                        stats['nearby']?.toString() ?? "...",
                         l10n.getString('homeNearby'),
                         onTap: () {
                           Navigator.of(context).push(
@@ -996,7 +933,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     error: (e, s) => _buildStatCard(
                       context,
                       Icons.radar_outlined,
-                      "0",
+                      "...",
                       l10n.getString('homeNearby'),
                       onTap: () {
                         Navigator.of(context).push(
@@ -1593,7 +1530,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   @override
   void dispose() {
-    _cancelSkeletonBudgetTimer();
     _matchesSearchController.dispose();
     _chatsSearchController.dispose();
     super.dispose();

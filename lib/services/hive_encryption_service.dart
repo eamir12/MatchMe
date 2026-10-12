@@ -3,7 +3,9 @@
 //
 // Design (non-breaking migration):
 // - Key: 32 random bytes (Random.secure via CryptoService), base64 in
-//   SecureStorage under `hive_encryption_key_v1`.
+//   SecureStorage under `hive_encryption_key_v1`, dual-stored (write-through)
+//   in the native EncryptedSharedPreferences bridge on Android so bootstrap
+//   box opens don't contend on the flutter_secure_storage platform channel.
 // - On first run after update: no key exists -> generate + store. Existing
 //   unencrypted boxes are migrated: open unencrypted, copy entries to memory,
 //   delete from disk, reopen encrypted, restore.
@@ -19,6 +21,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:matchme/services/crypto_service.dart';
+import 'package:matchme/services/native_secure_store.dart';
 import 'package:matchme/services/secure_storage_service.dart';
 
 class HiveEncryptionService {
@@ -40,28 +43,61 @@ class HiveEncryptionService {
 
   Future<Uint8List> _loadOrCreateKey() async {
     if (_cachedKeyBytes != null) return _cachedKeyBytes!;
+
+    // Native bridge first: a MethodChannel read that does NOT queue behind
+    // flutter_secure_storage. At bootstrap the secure-storage channel is the
+    // long pole (cold Android Keystore ~0.9-1.4s) and every other consumer —
+    // the session seed's persists, Supabase's own recovery — serializes
+    // behind whoever reads it first. Reading the key natively keeps the
+    // encrypted boxes (and therefore Home avatars) off that queue entirely.
+    // No-op on non-Android (returns null -> secure-storage fallback below).
+    try {
+      final native = await NativeSecureStore.getString(_keyStorageKey);
+      final decoded = _decodeKeyOrNull(native);
+      if (decoded != null) {
+        _cachedKeyBytes = decoded;
+        return decoded;
+      }
+    } catch (_) {}
+
     final secure = SecureStorageService.instance;
     try {
       final existing = await secure.read(_keyStorageKey);
-      if (existing != null && existing.isNotEmpty) {
-        try {
-          final decoded = base64Decode(existing);
-          if (decoded.length == 32) {
-            _cachedKeyBytes = Uint8List.fromList(decoded);
-            return _cachedKeyBytes!;
-          }
-        } catch (_) {
-          // Corrupt entry -> fall through to regenerate.
+      final decoded = _decodeKeyOrNull(existing);
+      if (decoded != null) {
+        _cachedKeyBytes = decoded;
+        // Write through so the next launch reads natively and never touches
+        // flutter_secure_storage at all.
+        if (existing != null) {
+          try {
+            await NativeSecureStore.setString(_keyStorageKey, existing);
+          } catch (_) {}
         }
+        return decoded;
       }
     } catch (_) {}
 
     final fresh = await CryptoService.instance.generateRandomBytes(32);
+    final encoded = base64Encode(fresh);
     try {
-      await secure.write(_keyStorageKey, base64Encode(fresh));
+      await secure.write(_keyStorageKey, encoded);
+    } catch (_) {}
+    try {
+      await NativeSecureStore.setString(_keyStorageKey, encoded);
     } catch (_) {}
     _cachedKeyBytes = fresh;
     return fresh;
+  }
+
+  static Uint8List? _decodeKeyOrNull(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = base64Decode(raw);
+      if (decoded.length == 32) return Uint8List.fromList(decoded);
+    } catch (_) {
+      // Corrupt entry -> treated as absent.
+    }
+    return null;
   }
 
   /// Open a Hive box with encryption, migrating legacy unencrypted data.

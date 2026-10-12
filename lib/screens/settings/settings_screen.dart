@@ -23,11 +23,17 @@ import 'package:matchme/screens/profile/verification_screen.dart';
 import 'package:matchme/screens/subscription/billing_screen.dart';
 import 'package:matchme/utils/resume_route_restore.dart';
 import 'package:matchme/utils/settings_search_utils.dart';
+import 'package:matchme/theme/semantic_colors.dart';
 import 'package:matchme/widgets/pending_mutations_indicator.dart';
 import 'package:matchme/widgets/app_empty_state.dart';
 import 'package:matchme/widgets/app_skeleton.dart';
 import 'package:matchme/utils/directional_icons.dart';
 import 'package:matchme/utils/string_extensions.dart';
+
+/// The categories the main settings menu is grouped into. Each category owns
+/// a single accent color (see `_SettingsScreenState._sectionScope`) so the
+/// grouped submenus read as categories instead of a mix of unrelated hues.
+enum _SettingsSection { general, matching, notifications, premium, account }
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key, this.scrollToInvisibilityRules = false});
@@ -114,14 +120,116 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
     }
   }
 
-  Widget _buildSectionHeader(BuildContext context, String title) {
+  Widget _buildSectionHeader(BuildContext context, String title, Color accent) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(4, 20, 4, 8),
       child: Text(
         title,
         style: Theme.of(context).textTheme.titleSmall?.copyWith(
-          color: Theme.of(context).colorScheme.primary,
+          color: accent,
           fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+
+  /// One accent color per settings category, so every submenu button in a
+  /// category — and its section header — shares the same meaningful color.
+  Color _sectionAccent(BuildContext context, _SettingsSection section) {
+    final colors = Theme.of(context).colorScheme;
+    switch (section) {
+      case _SettingsSection.general:
+        // Indigo — the app-wide default for app-level preferences.
+        return colors.primary;
+      case _SettingsSection.matching:
+        // Pink (theme secondary) — people, hearts, discovery.
+        return colors.secondary;
+      case _SettingsSection.notifications:
+        // Sky blue — informational, and deliberately not the gold of Premium.
+        return Theme.of(context).brightness == Brightness.dark
+            ? const Color(0xFF38BDF8)
+            : const Color(0xFF0284C7);
+      case _SettingsSection.premium:
+        // Amber/gold — the paid tier.
+        return colors.tertiary;
+      case _SettingsSection.account:
+        // Green — identity and trust, matching the verified status color.
+        return Theme.of(
+          context,
+        ).extension<SemanticColors>()?.success ?? Colors.green;
+    }
+  }
+
+  /// One submenu button of the main settings menu.
+  ///
+  /// Everything the card paints — gradient, border, icon, title, chevron —
+  /// comes from [accent], so a category's cards cannot drift apart in color.
+  Widget _buildMenuCard({
+    Key? key,
+    required VoidCallback onTap,
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required Color accent,
+  }) {
+    return Container(
+      key: key,
+      margin: const EdgeInsets.only(bottom: 8),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                accent.withValues(alpha: 0.1),
+                accent.withValues(alpha: 0.05),
+              ],
+            ),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: accent.withValues(alpha: 0.2)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(icon, color: accent, size: 28),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: accent,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.onSurface.withValues(alpha: 0.7),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Icon(directionalForwardIos(context), color: accent, size: 20),
+            ],
+          ),
         ),
       ),
     );
@@ -135,6 +243,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           ({
             String label,
             String group,
+            Color accent,
             String description,
             IconData icon,
             VoidCallback onTap,
@@ -143,6 +252,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           (
             label: l10n.getString('settingsAppDisplay'),
             group: l10n.getString('settingsSectionGeneral'),
+            accent: _sectionAccent(context, _SettingsSection.general),
             description: l10n.getString('settingsAppDisplayDesc'),
             icon: Icons.settings_display,
             onTap: () => Navigator.of(parentContext).push(
@@ -154,6 +264,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           (
             label: l10n.getString('settingsMatching'),
             group: l10n.getString('settingsSectionMatching'),
+            accent: _sectionAccent(context, _SettingsSection.matching),
             description: l10n.getString('settingsMatchingDesc'),
             icon: Icons.favorite_border,
             onTap: () => Navigator.of(parentContext).push(
@@ -163,6 +274,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           (
             label: l10n.getString('settingsMatchPreferences'),
             group: l10n.getString('settingsSectionMatching'),
+            accent: _sectionAccent(context, _SettingsSection.matching),
             description: l10n.getString('settingsMatchPreferencesDesc'),
             icon: Icons.people_alt_outlined,
             onTap: () => Navigator.of(parentContext).push(
@@ -172,6 +284,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           (
             label: l10n.getString('settingsInvisibilityRules'),
             group: l10n.getString('settingsSectionMatching'),
+            accent: _sectionAccent(context, _SettingsSection.matching),
             description: l10n.getString('settingsInvisibilityRulesDesc'),
             icon: Icons.visibility_off,
             onTap: () => Navigator.of(parentContext).push(
@@ -183,6 +296,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           (
             label: l10n.getString('settingsNotifications'),
             group: l10n.getString('settingsNotifications'),
+            accent: _sectionAccent(context, _SettingsSection.notifications),
             description: l10n.getString('settingsNotificationsSettingsDesc'),
             icon: Icons.notifications_outlined,
             onTap: () => Navigator.of(
@@ -192,6 +306,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           (
             label: l10n.getString('inboxTitle'),
             group: l10n.getString('settingsNotifications'),
+            accent: _sectionAccent(context, _SettingsSection.notifications),
             description: l10n.getString('inboxEntryDesc'),
             icon: Icons.mark_email_unread_outlined,
             onTap: () => Navigator.of(
@@ -201,6 +316,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           (
             label: l10n.getString('paywallTitle'),
             group: l10n.getString('settingsSectionPremium'),
+            accent: _sectionAccent(context, _SettingsSection.premium),
             description: l10n.getString('paywallFeaturesTitle'),
             icon: Icons.workspace_premium_outlined,
             onTap: () => Navigator.of(
@@ -210,6 +326,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           (
             label: l10n.getString('billingTitle'),
             group: l10n.getString('settingsSectionPremium'),
+            accent: _sectionAccent(context, _SettingsSection.premium),
             description: l10n.getString('billingSettingsDescription'),
             icon: Icons.receipt_long_outlined,
             onTap: () => Navigator.of(
@@ -219,6 +336,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           (
             label: l10n.getString('inviteFriendsTitle'),
             group: l10n.getString('settingsSectionPremium'),
+            accent: _sectionAccent(context, _SettingsSection.premium),
             description: l10n.getString('inviteFriendsDescription'),
             icon: Icons.card_giftcard,
             onTap: () => Navigator.of(parentContext).push(
@@ -228,6 +346,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           (
             label: l10n.getString('profileVerification'),
             group: l10n.getString('settingsSectionAccount'),
+            accent: _sectionAccent(context, _SettingsSection.account),
             description: l10n.getString('getVerifiedToBuildTrust'),
             icon: Icons.verified_outlined,
             onTap: () => Navigator.of(parentContext).push(
@@ -237,6 +356,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           (
             label: l10n.getString('securitySignInHubTitle'),
             group: l10n.getString('settingsSectionAccount'),
+            accent: _sectionAccent(context, _SettingsSection.account),
             description: l10n.getString('securitySignInHubDescription'),
             icon: Icons.security,
             onTap: () => Navigator.of(
@@ -246,6 +366,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           (
             label: l10n.getString('settingsAccountManagement'),
             group: l10n.getString('settingsSectionAccount'),
+            accent: _sectionAccent(context, _SettingsSection.account),
             description: l10n.getString('settingsAccountManagementDesc'),
             icon: Icons.person_outline,
             onTap: () => Navigator.of(parentContext).push(
@@ -260,6 +381,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           (
             label: l10n.getString('settingsLegalTerms'),
             group: l10n.getString('settingsSectionGeneral'),
+            accent: _sectionAccent(context, _SettingsSection.general),
             description: l10n.getString('settingsLegalTermsDesc'),
             icon: Icons.gavel_outlined,
             onTap: () => Navigator.of(parentContext).push(
@@ -273,6 +395,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           (
             label: l10n.getString('settingsLegalPrivacy'),
             group: l10n.getString('settingsSectionGeneral'),
+            accent: _sectionAccent(context, _SettingsSection.general),
             description: l10n.getString('settingsLegalPrivacyDesc'),
             icon: Icons.privacy_tip_outlined,
             onTap: () => Navigator.of(parentContext).push(
@@ -367,10 +490,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w700,
-                                    color:
-                                        Theme.of(
-                                          sheetContext,
-                                        ).colorScheme.primary,
+                                    color: destination.accent,
                                   ),
                                 ),
                                 const SizedBox(height: 2),
@@ -411,6 +531,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
     // Theme-aware helpers
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
+
+    // One accent per settings category (see _sectionAccent): shared by every
+    // submenu card of the category and by its section header.
+    final generalAccent = _sectionAccent(context, _SettingsSection.general);
+    final matchingAccent = _sectionAccent(context, _SettingsSection.matching);
+    final notificationsAccent = _sectionAccent(
+      context,
+      _SettingsSection.notifications,
+    );
+    final premiumAccent = _sectionAccent(context, _SettingsSection.premium);
+    final accountAccent = _sectionAccent(context, _SettingsSection.account);
 
     return Scaffold(
       appBar: AppBar(
@@ -477,1004 +608,194 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                     controller: _scrollController,
                     padding: const EdgeInsets.all(16.0),
                     children: [
+                      _buildSectionHeader(
+                        context,
+                        l10n.getString('settingsSectionGeneral'),
+                        generalAccent,
+                      ),
                       // App tour — replay the guided onboarding introduction.
-                      Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        child: InkWell(
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                fullscreenDialog: true,
-                                builder: (context) =>
-                                    const OnboardingIntroScreen(),
-                              ),
-                            );
-                          },
-                          borderRadius: BorderRadius.circular(16),
-                          child: Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                colors: [
-                                  Theme.of(
-                                    context,
-                                  ).colorScheme.primary.withValues(alpha: 0.1),
-                                  Theme.of(
-                                    context,
-                                  ).colorScheme.primary.withValues(alpha: 0.05),
-                                ],
-                              ),
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.primary.withValues(alpha: 0.2),
-                              ),
+                      _buildMenuCard(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              fullscreenDialog: true,
+                              builder: (context) =>
+                                  const OnboardingIntroScreen(),
                             ),
-                            child: Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context).colorScheme.primary
-                                        .withValues(alpha: 0.1),
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: Icon(
-                                    Icons.school_outlined,
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.primary,
-                                    size: 28,
-                                  ),
-                                ),
-                                const SizedBox(width: 16),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        l10n.getString('settingsAppTour'),
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.primary,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        l10n.getString('settingsAppTourDesc'),
-                                        style: TextStyle(
-                                          fontSize: 13,
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .onSurface
-                                              .withValues(alpha: 0.7),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Icon(
-                                  directionalForwardIos(context),
-                                  color: Theme.of(context).colorScheme.primary,
-                                  size: 20,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
+                          );
+                        },
+                        icon: Icons.school_outlined,
+                        title: l10n.getString('settingsAppTour'),
+                        subtitle: l10n.getString('settingsAppTourDesc'),
+                        accent: generalAccent,
                       ),
-
                       // App Display Section - Navigate to dedicated screen
-                      Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        child: InkWell(
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) =>
-                                    const AppDisplaySettingsScreen(),
-                              ),
-                            );
-                          },
-                          borderRadius: BorderRadius.circular(16),
-                          child: Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                colors: [
-                                  Theme.of(
-                                    context,
-                                  ).colorScheme.primary.withValues(alpha: 0.1),
-                                  Theme.of(
-                                    context,
-                                  ).colorScheme.primary.withValues(alpha: 0.05),
-                                ],
-                              ),
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.primary.withValues(alpha: 0.2),
-                              ),
+                      _buildMenuCard(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) =>
+                                  const AppDisplaySettingsScreen(),
                             ),
-                            child: Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context).colorScheme.primary
-                                        .withValues(alpha: 0.1),
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: Icon(
-                                    Icons.settings_display,
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.primary,
-                                    size: 28,
-                                  ),
-                                ),
-                                const SizedBox(width: 16),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        l10n.getString('settingsAppDisplay'),
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.primary,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        l10n.getString(
-                                          'settingsAppDisplayDesc',
-                                        ),
-                                        style: TextStyle(
-                                          fontSize: 13,
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .onSurface
-                                              .withValues(alpha: 0.7),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Icon(
-                                  directionalForwardIos(context),
-                                  color: Theme.of(context).colorScheme.primary,
-                                  size: 20,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
+                          );
+                        },
+                        icon: Icons.settings_display,
+                        title: l10n.getString('settingsAppDisplay'),
+                        subtitle: l10n.getString('settingsAppDisplayDesc'),
+                        accent: generalAccent,
                       ),
-
                       _buildSectionHeader(
                         context,
                         l10n.getString('settingsSectionMatching'),
+                        matchingAccent,
                       ),
                       // Matching Section - Navigate to dedicated screen
-                      Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        child: InkWell(
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) =>
-                                    const MatchingSettingsScreen(),
-                              ),
-                            );
-                          },
-                          borderRadius: BorderRadius.circular(16),
-                          child: Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                colors: [
-                                  Theme.of(
-                                    context,
-                                  ).colorScheme.primary.withValues(alpha: 0.1),
-                                  Theme.of(
-                                    context,
-                                  ).colorScheme.primary.withValues(alpha: 0.05),
-                                ],
-                              ),
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.primary.withValues(alpha: 0.2),
-                              ),
+                      _buildMenuCard(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) =>
+                                  const MatchingSettingsScreen(),
                             ),
-                            child: Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context).colorScheme.primary
-                                        .withValues(alpha: 0.1),
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: Icon(
-                                    Icons.favorite_border,
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.primary,
-                                    size: 28,
-                                  ),
-                                ),
-                                const SizedBox(width: 16),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        l10n.getString('settingsMatching'),
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.primary,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        l10n.getString('settingsMatchingDesc'),
-                                        style: TextStyle(
-                                          fontSize: 13,
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .onSurface
-                                              .withValues(alpha: 0.7),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Icon(
-                                  directionalForwardIos(context),
-                                  color: Theme.of(context).colorScheme.primary,
-                                  size: 20,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
+                          );
+                        },
+                        icon: Icons.favorite_border,
+                        title: l10n.getString('settingsMatching'),
+                        subtitle: l10n.getString('settingsMatchingDesc'),
+                        accent: matchingAccent,
                       ),
-
                       // Gender and Age Preferences Section - Navigate to dedicated screen
-                      Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        child: InkWell(
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) =>
-                                    const MatchPreferencesScreen(),
-                              ),
-                            );
-                          },
-                          borderRadius: BorderRadius.circular(16),
-                          child: Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                colors: [
-                                  Theme.of(
-                                    context,
-                                  ).colorScheme.primary.withValues(alpha: 0.1),
-                                  Theme.of(
-                                    context,
-                                  ).colorScheme.primary.withValues(alpha: 0.05),
-                                ],
-                              ),
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.primary.withValues(alpha: 0.2),
-                              ),
+                      _buildMenuCard(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) =>
+                                  const MatchPreferencesScreen(),
                             ),
-                            child: Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context).colorScheme.primary
-                                        .withValues(alpha: 0.1),
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: Icon(
-                                    Icons.people_alt_outlined,
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.primary,
-                                    size: 28,
-                                  ),
-                                ),
-                                const SizedBox(width: 16),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        l10n.getString(
-                                          'settingsMatchPreferences',
-                                        ),
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.primary,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        l10n.getString(
-                                          'settingsMatchPreferencesDesc',
-                                        ),
-                                        style: TextStyle(
-                                          fontSize: 14,
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .onSurface
-                                              .withValues(alpha: 0.7),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                Icon(
-                                  directionalForwardIos(context),
-                                  color: Theme.of(context).colorScheme.primary,
-                                  size: 16,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
+                          );
+                        },
+                        icon: Icons.people_alt_outlined,
+                        title: l10n.getString('settingsMatchPreferences'),
+                        subtitle: l10n.getString('settingsMatchPreferencesDesc'),
+                        accent: matchingAccent,
                       ),
-
                       // Invisibility Rules Section - Navigate to dedicated screen
-                      Container(
+                      _buildMenuCard(
                         key: _invisibilityRulesKey,
-                        margin: const EdgeInsets.only(bottom: 8),
-                        child: InkWell(
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) =>
-                                    const InvisibilityRulesScreen(),
-                              ),
-                            );
-                          },
-                          borderRadius: BorderRadius.circular(16),
-                          child: Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                colors: [
-                                  Theme.of(
-                                    context,
-                                  ).colorScheme.primary.withValues(alpha: 0.1),
-                                  Theme.of(
-                                    context,
-                                  ).colorScheme.primary.withValues(alpha: 0.05),
-                                ],
-                              ),
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.primary.withValues(alpha: 0.2),
-                              ),
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) =>
+                                  const InvisibilityRulesScreen(),
                             ),
-                            child: Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context).colorScheme.primary
-                                        .withValues(alpha: 0.1),
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: Icon(
-                                    Icons.visibility_off,
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.primary,
-                                    size: 28,
-                                  ),
-                                ),
-                                const SizedBox(width: 16),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        l10n.getString(
-                                          'settingsInvisibilityRules',
-                                        ),
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.primary,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        l10n.getString(
-                                          'settingsInvisibilityRulesDesc',
-                                        ),
-                                        style: TextStyle(
-                                          fontSize: 13,
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .onSurface
-                                              .withValues(alpha: 0.7),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Icon(
-                                  directionalForwardIos(context),
-                                  color: Theme.of(context).colorScheme.primary,
-                                  size: 20,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
+                          );
+                        },
+                        icon: Icons.visibility_off,
+                        title: l10n.getString('settingsInvisibilityRules'),
+                        subtitle: l10n.getString('settingsInvisibilityRulesDesc'),
+                        accent: matchingAccent,
                       ),
-
                       _buildSectionHeader(
                         context,
                         l10n.getString('settingsNotifications'),
+                        notificationsAccent,
                       ),
                       // Notifications Settings Section - Navigate to dedicated screen
-                      Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        child: InkWell(
-                          onTap: () {
-                            Navigator.of(context).pushNamed(
-                              ResumeRouteRestore.notificationsSettingsRoute,
-                            );
-                          },
-                          borderRadius: BorderRadius.circular(16),
-                          child: Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                colors: [
-                                  Theme.of(
-                                    context,
-                                  ).colorScheme.primary.withValues(alpha: 0.1),
-                                  Theme.of(
-                                    context,
-                                  ).colorScheme.primary.withValues(alpha: 0.05),
-                                ],
-                              ),
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.primary.withValues(alpha: 0.2),
-                              ),
-                            ),
-                            child: Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context).colorScheme.primary
-                                        .withValues(alpha: 0.1),
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: Icon(
-                                    Icons.notifications_outlined,
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.primary,
-                                    size: 28,
-                                  ),
-                                ),
-                                const SizedBox(width: 16),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        l10n.getString('settingsNotifications'),
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.primary,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        l10n.getString(
-                                          'settingsNotificationsSettingsDesc',
-                                        ),
-                                        style: TextStyle(
-                                          fontSize: 13,
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .onSurface
-                                              .withValues(alpha: 0.7),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Icon(
-                                  directionalForwardIos(context),
-                                  color: Theme.of(context).colorScheme.primary,
-                                  size: 20,
-                                ),
-                              ],
-                            ),
-                          ),
+                      _buildMenuCard(
+                        onTap: () => Navigator.of(context).pushNamed(
+                          ResumeRouteRestore.notificationsSettingsRoute,
                         ),
+                        icon: Icons.notifications_outlined,
+                        title: l10n.getString('settingsNotifications'),
+                        subtitle: l10n.getString('settingsNotificationsSettingsDesc'),
+                        accent: notificationsAccent,
                       ),
-
                       // Notification inbox: persistent, re-readable record of
                       // every notification the user has been sent.
-                      Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        child: InkWell(
-                          onTap: () {
-                            Navigator.of(context).pushNamed(
-                              ResumeRouteRestore.notificationInboxRoute,
-                            );
-                          },
-                          borderRadius: BorderRadius.circular(16),
-                          child: Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .surfaceContainerHighest
-                                  .withValues(alpha: 0.4),
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .outlineVariant
-                                    .withValues(alpha: 0.5),
-                              ),
-                            ),
-                            child: Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context).colorScheme.primary
-                                        .withValues(alpha: 0.1),
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: Icon(
-                                    Icons.mark_email_unread_outlined,
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.primary,
-                                    size: 24,
-                                  ),
-                                ),
-                                const SizedBox(width: 16),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        l10n.getString('inboxTitle'),
-                                        style: TextStyle(
-                                          fontSize: 16,
-                                          fontWeight: FontWeight.bold,
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.onSurface,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        l10n.getString('inboxEntryDesc'),
-                                        style: TextStyle(
-                                          fontSize: 13,
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .onSurface
-                                              .withValues(alpha: 0.7),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Icon(
-                                  directionalForwardIos(context),
-                                  color: Theme.of(context).colorScheme.primary,
-                                  size: 20,
-                                ),
-                              ],
-                            ),
-                          ),
+                      _buildMenuCard(
+                        onTap: () => Navigator.of(context).pushNamed(
+                          ResumeRouteRestore.notificationInboxRoute,
                         ),
+                        icon: Icons.mark_email_unread_outlined,
+                        title: l10n.getString('inboxTitle'),
+                        subtitle: l10n.getString('inboxEntryDesc'),
+                        accent: notificationsAccent,
                       ),
-
                       _buildSectionHeader(
                         context,
                         l10n.getString('settingsSectionPremium'),
+                        premiumAccent,
                       ),
                       Builder(
                         builder: (context) {
                           final config = ref.watch(appConfigProvider);
                           final showSubscription =
-                              (config['subscription.enabled']?.toLowerCase() ??
-                                  'true') ==
+                              (config['subscription.enabled']?.toLowerCase() ?? 'true') ==
                               'true';
                           final showInviteFriends =
-                              (config['referral.enabled']?.toLowerCase() ??
-                                  'true') ==
+                              (config['referral.enabled']?.toLowerCase() ?? 'true') ==
                               'true';
 
                           return Column(
                             children: [
                               if (showSubscription)
-                                Container(
-                                  margin: const EdgeInsets.only(bottom: 8),
-                                  child: InkWell(
-                                    onTap: () {
-                                      Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (context) =>
-                                              const PaywallScreen(),
-                                        ),
-                                      );
-                                    },
-                                    borderRadius: BorderRadius.circular(16),
-                                    child: Container(
-                                      padding: const EdgeInsets.all(16),
-                                      decoration: BoxDecoration(
-                                        gradient: LinearGradient(
-                                          colors: [
-                                            Theme.of(context)
-                                                .colorScheme
-                                                .tertiary
-                                                .withValues(alpha: 0.12),
-                                            Theme.of(context)
-                                                .colorScheme
-                                                .tertiary
-                                                .withValues(alpha: 0.06),
-                                          ],
-                                        ),
-                                        borderRadius: BorderRadius.circular(16),
-                                        border: Border.all(
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .tertiary
-                                              .withValues(alpha: 0.25),
-                                        ),
+                                _buildMenuCard(
+                                  onTap: () {
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (context) => const PaywallScreen(),
                                       ),
-                                      child: Row(
-                                        children: [
-                                          Container(
-                                            padding: const EdgeInsets.all(12),
-                                            decoration: BoxDecoration(
-                                              color: Theme.of(context)
-                                                  .colorScheme
-                                                  .tertiary
-                                                  .withValues(alpha: 0.12),
-                                              borderRadius:
-                                                  BorderRadius.circular(12),
-                                            ),
-                                            child: Icon(
-                                              Icons.workspace_premium_outlined,
-                                              color: Theme.of(
-                                                context,
-                                              ).colorScheme.tertiary,
-                                              size: 28,
-                                            ),
-                                          ),
-                                          const SizedBox(width: 16),
-                                          Expanded(
-                                            child: Column(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.start,
-                                              children: [
-                                                Text(
-                                                  l10n.getString(
-                                                    'paywallTitle',
-                                                  ),
-                                                  style: TextStyle(
-                                                    fontSize: 18,
-                                                    fontWeight: FontWeight.bold,
-                                                    color: Theme.of(
-                                                      context,
-                                                    ).colorScheme.tertiary,
-                                                  ),
-                                                ),
-                                                const SizedBox(height: 4),
-                                                Text(
-                                                  l10n.getString(
-                                                    'paywallFeaturesTitle',
-                                                  ),
-                                                  style: TextStyle(
-                                                    fontSize: 13,
-                                                    color: Theme.of(context)
-                                                        .colorScheme
-                                                        .onSurface
-                                                        .withValues(alpha: 0.7),
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                          const SizedBox(width: 12),
-                                          Icon(
-                                            directionalForwardIos(context),
-                                            color: Theme.of(
-                                              context,
-                                            ).colorScheme.tertiary,
-                                            size: 20,
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
+                                    );
+                                  },
+                                  icon: Icons.workspace_premium_outlined,
+                                  title: l10n.getString('paywallTitle'),
+                                  subtitle: l10n.getString('paywallFeaturesTitle'),
+                                  accent: premiumAccent,
                                 ),
                               if (showSubscription)
-                                Container(
-                                  margin: const EdgeInsets.only(bottom: 8),
-                                  child: InkWell(
-                                    onTap: () {
-                                      Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (context) =>
-                                              const BillingScreen(),
-                                        ),
-                                      );
-                                    },
-                                    borderRadius: BorderRadius.circular(16),
-                                    child: Container(
-                                      padding: const EdgeInsets.all(16),
-                                      decoration: BoxDecoration(
-                                        gradient: LinearGradient(
-                                          colors: [
-                                            Theme.of(context)
-                                                .colorScheme
-                                                .secondary
-                                                .withValues(alpha: 0.12),
-                                            Theme.of(context)
-                                                .colorScheme
-                                                .secondary
-                                                .withValues(alpha: 0.06),
-                                          ],
-                                        ),
-                                        borderRadius: BorderRadius.circular(16),
-                                        border: Border.all(
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .secondary
-                                              .withValues(alpha: 0.25),
-                                        ),
+                                _buildMenuCard(
+                                  onTap: () {
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (context) => const BillingScreen(),
                                       ),
-                                      child: Row(
-                                        children: [
-                                          Container(
-                                            padding: const EdgeInsets.all(12),
-                                            decoration: BoxDecoration(
-                                              color: Theme.of(context)
-                                                  .colorScheme
-                                                  .secondary
-                                                  .withValues(alpha: 0.12),
-                                              borderRadius:
-                                                  BorderRadius.circular(12),
-                                            ),
-                                            child: Icon(
-                                              Icons.receipt_long_outlined,
-                                              color: Theme.of(
-                                                context,
-                                              ).colorScheme.secondary,
-                                              size: 28,
-                                            ),
-                                          ),
-                                          const SizedBox(width: 16),
-                                          Expanded(
-                                            child: Column(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.start,
-                                              children: [
-                                                Text(
-                                                  l10n.getString(
-                                                    'billingTitle',
-                                                  ),
-                                                  style: TextStyle(
-                                                    fontSize: 18,
-                                                    fontWeight: FontWeight.bold,
-                                                    color: Theme.of(
-                                                      context,
-                                                    ).colorScheme.secondary,
-                                                  ),
-                                                ),
-                                                const SizedBox(height: 4),
-                                                Text(
-                                                  l10n.getString(
-                                                    'billingSettingsDescription',
-                                                  ),
-                                                  style: TextStyle(
-                                                    fontSize: 13,
-                                                    color: Theme.of(context)
-                                                        .colorScheme
-                                                        .onSurface
-                                                        .withValues(alpha: 0.7),
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                          const SizedBox(width: 12),
-                                          Icon(
-                                            directionalForwardIos(context),
-                                            color: Theme.of(
-                                              context,
-                                            ).colorScheme.secondary,
-                                            size: 20,
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
+                                    );
+                                  },
+                                  icon: Icons.receipt_long_outlined,
+                                  title: l10n.getString('billingTitle'),
+                                  subtitle: l10n.getString('billingSettingsDescription'),
+                                  accent: premiumAccent,
                                 ),
                               if (showInviteFriends)
-                                Container(
-                                  margin: const EdgeInsets.only(bottom: 8),
-                                  child: InkWell(
-                                    onTap: () {
-                                      Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (context) =>
-                                              const InviteFriendsScreen(),
-                                        ),
-                                      );
-                                    },
-                                    borderRadius: BorderRadius.circular(16),
-                                    child: Container(
-                                      padding: const EdgeInsets.all(16),
-                                      decoration: BoxDecoration(
-                                        gradient: LinearGradient(
-                                          colors: [
-                                            Theme.of(context)
-                                                .colorScheme
-                                                .primary
-                                                .withValues(alpha: 0.1),
-                                            Theme.of(context)
-                                                .colorScheme
-                                                .primary
-                                                .withValues(alpha: 0.05),
-                                          ],
-                                        ),
-                                        borderRadius: BorderRadius.circular(16),
-                                        border: Border.all(
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .primary
-                                              .withValues(alpha: 0.2),
-                                        ),
+                                _buildMenuCard(
+                                  onTap: () {
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (context) => const InviteFriendsScreen(),
                                       ),
-                                      child: Row(
-                                        children: [
-                                          Container(
-                                            padding: const EdgeInsets.all(12),
-                                            decoration: BoxDecoration(
-                                              color: Theme.of(context)
-                                                  .colorScheme
-                                                  .primary
-                                                  .withValues(alpha: 0.1),
-                                              borderRadius:
-                                                  BorderRadius.circular(12),
-                                            ),
-                                            child: Icon(
-                                              Icons.card_giftcard,
-                                              color: Theme.of(
-                                                context,
-                                              ).colorScheme.primary,
-                                              size: 28,
-                                            ),
-                                          ),
-                                          const SizedBox(width: 16),
-                                          Expanded(
-                                            child: Column(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.start,
-                                              children: [
-                                                Text(
-                                                  l10n.getString(
-                                                    'inviteFriendsTitle',
-                                                  ),
-                                                  style: TextStyle(
-                                                    fontSize: 18,
-                                                    fontWeight: FontWeight.bold,
-                                                    color: Theme.of(
-                                                      context,
-                                                    ).colorScheme.primary,
-                                                  ),
-                                                ),
-                                                const SizedBox(height: 4),
-                                                Text(
-                                                  l10n.getString(
-                                                    'inviteFriendsDescription',
-                                                  ),
-                                                  style: TextStyle(
-                                                    fontSize: 13,
-                                                    color: Theme.of(context)
-                                                        .colorScheme
-                                                        .onSurface
-                                                        .withValues(alpha: 0.7),
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                          const SizedBox(width: 12),
-                                          Icon(
-                                            directionalForwardIos(context),
-                                            color: Theme.of(
-                                              context,
-                                            ).colorScheme.primary,
-                                            size: 20,
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
+                                    );
+                                  },
+                                  icon: Icons.card_giftcard,
+                                  title: l10n.getString('inviteFriendsTitle'),
+                                  subtitle: l10n.getString('inviteFriendsDescription'),
+                                  accent: premiumAccent,
                                 ),
                             ],
                           );
                         },
                       ),
-
                       _buildSectionHeader(
                         context,
                         l10n.getString('settingsSectionAccount'),
+                        accountAccent,
                       ),
                       Container(
                         margin: const EdgeInsets.only(bottom: 8),
@@ -1509,7 +830,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
 
                                 switch (status) {
                                   case 'approved':
-                                    accentColor = Colors.green;
+                                    // Same green as the Account category it
+                                    // sits in, so approval reads as "done".
+                                    accentColor = accountAccent;
                                     leadingIcon = Icons.verified;
                                     title = l10n.getString('verified');
                                     subtitle = l10n.getString(
@@ -1543,9 +866,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                                     );
                                     break;
                                   default:
-                                    accentColor = Theme.of(
-                                      context,
-                                    ).colorScheme.primary;
+                                    accentColor = accountAccent;
                                     leadingIcon = Icons.verified_outlined;
                                     title = l10n.getString(
                                       'profileVerification',
@@ -1638,193 +959,30 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                       ),
 
                       // Security & Sign-In Hub Button
-                      Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        child: InkWell(
-                          onTap: () {
-                            Navigator.of(
-                              context,
-                            ).pushNamed(ResumeRouteRestore.securityCenterRoute);
-                          },
-                          borderRadius: BorderRadius.circular(16),
-                          child: Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                colors: [
-                                  Theme.of(
-                                    context,
-                                  ).colorScheme.primary.withValues(alpha: 0.1),
-                                  Theme.of(
-                                    context,
-                                  ).colorScheme.primary.withValues(alpha: 0.05),
-                                ],
-                              ),
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.primary.withValues(alpha: 0.2),
-                              ),
-                            ),
-                            child: Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context).colorScheme.primary
-                                        .withValues(alpha: 0.1),
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: Icon(
-                                    Icons.security,
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.primary,
-                                    size: 28,
-                                  ),
-                                ),
-                                const SizedBox(width: 16),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        l10n.getString(
-                                          'securitySignInHubTitle',
-                                        ),
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.primary,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        l10n.getString(
-                                          'securitySignInHubDescription',
-                                        ),
-                                        style: TextStyle(
-                                          fontSize: 13,
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .onSurface
-                                              .withValues(alpha: 0.7),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Icon(
-                                  directionalForwardIos(context),
-                                  color: Theme.of(context).colorScheme.primary,
-                                  size: 20,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
+                      _buildMenuCard(
+                        onTap: () => Navigator.of(
+                          context,
+                        ).pushNamed(ResumeRouteRestore.securityCenterRoute),
+                        icon: Icons.security,
+                        title: l10n.getString('securitySignInHubTitle'),
+                        subtitle: l10n.getString('securitySignInHubDescription'),
+                        accent: accountAccent,
                       ),
-
                       // Account Management Section - Navigate to dedicated screen
-                      Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        child: InkWell(
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) =>
-                                    const AccountManagementScreen(),
-                              ),
-                            );
-                          },
-                          borderRadius: BorderRadius.circular(16),
-                          child: Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                colors: [
-                                  Theme.of(
-                                    context,
-                                  ).colorScheme.primary.withValues(alpha: 0.1),
-                                  Theme.of(
-                                    context,
-                                  ).colorScheme.primary.withValues(alpha: 0.05),
-                                ],
-                              ),
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.primary.withValues(alpha: 0.2),
-                              ),
+                      _buildMenuCard(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) =>
+                                  const AccountManagementScreen(),
                             ),
-                            child: Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context).colorScheme.primary
-                                        .withValues(alpha: 0.1),
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: Icon(
-                                    Icons.person,
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.primary,
-                                    size: 28,
-                                  ),
-                                ),
-                                const SizedBox(width: 16),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        l10n.getString(
-                                          'settingsAccountManagement',
-                                        ),
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.primary,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        l10n.getString(
-                                          'settingsAccountManagementDesc',
-                                        ),
-                                        style: TextStyle(
-                                          fontSize: 13,
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .onSurface
-                                              .withValues(alpha: 0.7),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Icon(
-                                  directionalForwardIos(context),
-                                  color: Theme.of(context).colorScheme.primary,
-                                  size: 20,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
+                          );
+                        },
+                        icon: Icons.person,
+                        title: l10n.getString('settingsAccountManagement'),
+                        subtitle: l10n.getString('settingsAccountManagementDesc'),
+                        accent: accountAccent,
                       ),
                     ],
                   );

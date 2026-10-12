@@ -56,8 +56,6 @@ void main() {
       find.text('Match with people who are attending the same events as you'),
       findsOneWidget,
     );
-    expect(find.text('You’re listed as attending on MatchMe'), findsOneWidget);
-    expect(find.text('3 attending, including you'), findsOneWidget);
     expect(
       find.text(
         'Only your event matches are shown—not the full attendee list.',

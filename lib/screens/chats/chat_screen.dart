@@ -33,6 +33,7 @@ import 'package:matchme/widgets/chat_background.dart';
 import 'package:matchme/widgets/offline_indicator.dart';
 import 'package:matchme/utils/encrypted_text_guard.dart';
 import 'package:matchme/utils/offline_utils.dart';
+import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/utils/translation_edit_marker.dart';
 import 'package:matchme/utils/chat_composer_utils.dart';
@@ -2036,6 +2037,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     final chattingCaption = l10n.getString('chatYouAreChattingWith');
     final displayName = widget.otherUserName;
+    // The header name lays out in its own script (a Hebrew name keeps its
+    // trailing period left of the initial) on the UI language's edge.
+    final displayNameLayout = displayName.displayTextLayout(l10n.textDirection);
 
     return Directionality(
       textDirection: l10n.textDirection,
@@ -2115,6 +2119,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         displayName,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
+                        textAlign: displayNameLayout.textAlign,
+                        textDirection: displayNameLayout.textDirection,
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
                     ],
@@ -3077,6 +3083,7 @@ class _MessageBubble extends ConsumerWidget {
     final senderLabel = isQuoteFromMe
         ? youLabel()
         : (otherUserName.trim().isNotEmpty ? otherUserName : youLabel());
+    final senderLabelLayout = senderLabel.displayTextLayout(l10n.textDirection);
     final accent = isMe
         ? (isDark ? Colors.green.shade300 : Colors.green.shade700)
         : Theme.of(context).colorScheme.primary;
@@ -3115,6 +3122,8 @@ class _MessageBubble extends ConsumerWidget {
             senderLabel,
             maxLines: 2,
             overflow: TextOverflow.visible,
+            textAlign: senderLabelLayout.textAlign,
+            textDirection: senderLabelLayout.textDirection,
             style: TextStyle(
               color: accent,
               fontSize: 12,

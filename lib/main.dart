@@ -63,6 +63,8 @@ import 'package:matchme/services/local_db_service.dart'; // Added for explicit i
 import 'package:matchme/services/map_tile_cache_service.dart';
 import 'package:matchme/services/offline_trail_service.dart';
 import 'package:matchme/services/storage_helper.dart'; // Persisted photo URL warmup
+import 'package:matchme/services/startup_cache_warmer.dart';
+import 'package:matchme/services/offline_image_cache.dart';
 import 'package:matchme/services/encrypted_cache_service.dart';
 import 'package:matchme/providers/chat_key_provider.dart';
 import 'package:matchme/services/chat_key_service.dart';
@@ -361,6 +363,7 @@ void _mainSync() {
         !lower.contains('matchmeapp') &&
         !lower.contains('[settings]') &&
         !lower.contains('profilesyncservice') &&
+        !lower.contains('cache_warm') &&
         !lower.contains('connectivity')) {
       return;
     }
@@ -536,37 +539,15 @@ class _BootstrapApp extends StatefulWidget {
 }
 
 class _BootstrapAppState extends State<_BootstrapApp> {
-  static const Duration _minimumLoaderDuration = Duration(milliseconds: 600);
-
   bool _showMainApp = false;
-  bool _minimumLoaderElapsed = false;
   bool _didLogInitComplete = false;
   int _lastWaitingLogAtMs = 0;
   late Future<_BootstrapInitResult> _initFuture;
-  Timer? _minimumLoaderTimer;
 
   @override
   void initState() {
     super.initState();
     _initFuture = widget.initFuture;
-    _restartMinimumLoaderTimer();
-  }
-
-  @override
-  void dispose() {
-    _minimumLoaderTimer?.cancel();
-    super.dispose();
-  }
-
-  void _restartMinimumLoaderTimer() {
-    _minimumLoaderTimer?.cancel();
-    _minimumLoaderElapsed = false;
-    _minimumLoaderTimer = Timer(_minimumLoaderDuration, () {
-      if (!mounted) return;
-      setState(() {
-        _minimumLoaderElapsed = true;
-      });
-    });
   }
 
   void _retryBootstrap() {
@@ -575,7 +556,6 @@ class _BootstrapAppState extends State<_BootstrapApp> {
       _didLogInitComplete = false;
       _initFuture = _bootstrapInitialize(widget.container);
     });
-    _restartMinimumLoaderTimer();
   }
 
   @override
@@ -609,8 +589,7 @@ class _BootstrapAppState extends State<_BootstrapApp> {
           print(
             '[STARTUP_DIAG] future_builder_completed '
             'hasError=${snapshot.hasError} hasResult=${result != null} '
-            'errorApp=${result?.errorApp != null} '
-            'immediateReveal=${result?.prefersImmediateAppReveal}',
+            'errorApp=${result?.errorApp != null}',
           );
         }
         if (snapshot.hasError || result == null) {
@@ -634,14 +613,6 @@ class _BootstrapAppState extends State<_BootstrapApp> {
           return MaterialApp(
             debugShowCheckedModeBanner: false,
             home: result.errorApp!,
-          );
-        }
-
-        if (!_minimumLoaderElapsed && !result.prefersImmediateAppReveal) {
-          print('[STARTUP_DIAG] minimum_loader_still_active');
-          return const MaterialApp(
-            debugShowCheckedModeBanner: false,
-            home: StartupLoaderScaffold(),
           );
         }
 
@@ -1380,12 +1351,10 @@ class _BootstrapInitResult {
   final Widget? errorApp;
   final String? supabaseUrl;
   final String? supabaseAnonKey;
-  final bool prefersImmediateAppReveal;
   const _BootstrapInitResult({
     this.errorApp,
     this.supabaseUrl,
     this.supabaseAnonKey,
-    this.prefersImmediateAppReveal = false,
   });
 }
 
@@ -2323,6 +2292,49 @@ Future<void> _processOAuthDeepLink(Uri uri) async {
   }
 }
 
+void _traceBootstrap(String checkpoint) {
+  print(
+    '[STARTUP_DIAG] bootstrap=$checkpoint '
+    'at=${DateTime.now().millisecondsSinceEpoch}',
+  );
+}
+
+/// True when this launch was triggered by an OAuth callback that still needs
+/// its code exchanged before the widget tree may build.
+///
+/// Web: the callback lands as `?code=&state=` (or an error param) in
+/// [Uri.base]. Mobile: the OAuth redirect arrives as a deep link; on a
+/// cold start via deep link, [PlatformDispatcher.defaultRouteName] carries
+/// the callback URL (code+state). A normal icon launch sets it to `/`.
+/// This is synchronous and immune to the stale `pending_oauth_provider`
+/// prefs key that used to force the sequential path on every launch.
+bool _isOAuthCallbackInFlight() {
+  if (kIsWeb) {
+    final uri = Uri.base;
+    final fragment = uri.fragment;
+    final queryParams = uri.queryParameters;
+    if (queryParams.containsKey('error')) return true;
+    return (queryParams.containsKey('code') &&
+            queryParams.containsKey('state')) ||
+        (fragment.contains('code=') && fragment.contains('state='));
+  }
+  // Mobile / desktop: check the launch route for an OAuth callback URL.
+  try {
+    final initialRoute =
+        WidgetsBinding.instance.platformDispatcher.defaultRouteName;
+    if (initialRoute.isEmpty || initialRoute == '/') return false;
+    final uri = Uri.parse(initialRoute);
+    final fragment = uri.fragment;
+    final queryParams = uri.queryParameters;
+    if (queryParams.containsKey('error')) return true;
+    return (queryParams.containsKey('code') &&
+            queryParams.containsKey('state')) ||
+        (fragment.contains('code=') && fragment.contains('state='));
+  } catch (_) {
+    return false;
+  }
+}
+
 Future<void> _processWebOAuthCodeDuringBootstrap() async {
   if (!kIsWeb) return;
   // Clear any stale OAuth error from a prior session so it doesn't persist
@@ -2417,12 +2429,7 @@ Future<void> _processWebOAuthCodeDuringBootstrap() async {
 Future<_BootstrapInitResult> _bootstrapInitialize(
   ProviderContainer container,
 ) async {
-  void traceBootstrap(String checkpoint) {
-    print(
-      '[STARTUP_DIAG] bootstrap=$checkpoint '
-      'at=${DateTime.now().millisecondsSinceEpoch}',
-    );
-  }
+  void traceBootstrap(String checkpoint) => _traceBootstrap(checkpoint);
 
   traceBootstrap('start');
   // Yield immediately so main() can call runApp and the first frame (loading indicator) paints before heavy work.
@@ -2467,12 +2474,21 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
   await initializeAppConfigCache();
   traceBootstrap('app_config_cache_ready');
 
+  // Warm relaunch: preload the persisted localization cache (supported
+  // languages + translations) straight from SharedPreferences, in parallel
+  // with Hive/DotEnv/Supabase. The first Localization.build then paints real
+  // strings on frame one and the router's localization gate (isLoading &&
+  // supportedLanguages.isEmpty) never trips — previously it held the
+  // pulsating loader for ~0.6-0.8s after the first frame on every online
+  // warm relaunch. Best-effort; never fails startup.
+  final l10nPreloadFuture = Localization.preloadForWarmLaunch();
+
   // NOTE: there is deliberately no connectivity/internet pre-check here.
   // The app's online/offline status is Supabase reachability and nothing else
   // (see `supabase_reachability.dart`): working internet with an unreachable
   // Supabase is still offline, so a transport or generate_204 probe could only
-  // ever reach the wrong verdict. The single decision point is
-  // `_applySupabaseReachabilityGate()` below, right after Supabase is up.
+  // ever reach the wrong verdict. The single decision point is the deferred
+  // reachability gate below, which never blocks the first paint.
 
   Future<void> initHive() async {
     Object? lastError;
@@ -2495,6 +2511,25 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
     '⏱️ [BOOTSTRAP] Starting parallel init (Hive + DotEnv) at ${DateTime.now().millisecondsSinceEpoch}',
   );
   final hiveInitFuture = initHive();
+
+  // Open the encrypted OfflineImageCache box the moment Hive is ready —
+  // chained directly off hiveInitFuture, NOT behind the later l10n/config
+  // awaits. The first SignedImage read on Home used to trigger this box-open
+  // itself at the first frame; every avatar read queues behind the multi-MB
+  // encrypted box decode (~1.4-1.8s) and all avatars pop in together. Purely
+  // local I/O; fire-and-forget, best-effort, never blocks bootstrap.
+  unawaited(
+    hiveInitFuture
+        .then((_) => OfflineImageCache.instance.warmup())
+        .then(
+          (_) => debugPrint(
+            '⏱️ [BOOTSTRAP] OfflineImageCache box opened at ${DateTime.now().millisecondsSinceEpoch}',
+          ),
+        )
+        .catchError((e, st) {
+          _reportNonFatal(e, st);
+        }),
+  );
 
   final dotenvFuture = dotenv.load(fileName: 'assets/.env').catchError((e, st) {
     _reportNonFatal(e, st);
@@ -2543,33 +2578,69 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
   // cold starts (2s caused spurious timeouts on slow TLS).
   const supabaseInitTimeout = Duration(seconds: 5);
 
-  final supabaseInitFuture =
-      Supabase.initialize(
-        url: supabaseUrl,
-        publishableKey: supabaseAnonKey,
-        // Security: persist the SDK session (access + refresh tokens) in secure
-        // storage (Keychain / EncryptedSharedPreferences) instead of the default
-        // plaintext SharedPreferences / localStorage.
-        authOptions: FlutterAuthClientOptions(
-          localStorage: SecureLocalStorage(
-            persistSessionKey: SecureLocalStorage.buildSessionKey(supabaseUrl),
+  // NOTE: the call's synchronous prologue (_init) creates the client and marks
+  // the Supabase singleton initialized before its first await — so merely
+  // CALLING initialize here (without awaiting) makes every supabase.auth
+  // access in the app safe. Only currentSession/currentUser stay null until
+  // session recovery lands.
+  Future<Supabase>? supabaseInitFuture;
+  var forceSequentialPath = false;
+  try {
+    supabaseInitFuture =
+        Supabase.initialize(
+          url: supabaseUrl,
+          publishableKey: supabaseAnonKey,
+          // Security: persist the SDK session (access + refresh tokens) in secure
+          // storage (Keychain / EncryptedSharedPreferences) instead of the default
+          // plaintext SharedPreferences / localStorage.
+          authOptions: FlutterAuthClientOptions(
+            localStorage: SecureLocalStorage(
+              persistSessionKey: SecureLocalStorage.buildSessionKey(
+                supabaseUrl,
+              ),
+            ),
           ),
-        ),
-        realtimeClientOptions: RealtimeClientOptions(
-          transport: (url, headers) => WebSocketChannel.connect(Uri.parse(url)),
-        ),
-      ).timeout(
-        supabaseInitTimeout,
-        onTimeout: () {
-          debugPrint(
-            '⚠️ [BOOTSTRAP] Supabase initialization timed out after ${supabaseInitTimeout.inSeconds}s',
-          );
-          throw TimeoutException(
-            'Supabase initialization timeout',
-            supabaseInitTimeout,
-          );
-        },
-      );
+          realtimeClientOptions: RealtimeClientOptions(
+            transport: (url, headers) =>
+                WebSocketChannel.connect(Uri.parse(url)),
+          ),
+        ).timeout(
+          supabaseInitTimeout,
+          onTimeout: () {
+            debugPrint(
+              '⚠️ [BOOTSTRAP] Supabase initialization timed out after ${supabaseInitTimeout.inSeconds}s',
+            );
+            throw TimeoutException(
+              'Supabase initialization timeout',
+              supabaseInitTimeout,
+            );
+          },
+        );
+  } catch (e) {
+    // Synchronous construction failure (malformed URL etc.): no client
+    // exists, so the fast path cannot seed a session — take the sequential
+    // path so this surfaces through its existing error handling.
+    debugPrint('⚠️ [BOOTSTRAP] Supabase client construction failed: $e');
+    forceSequentialPath = true;
+    supabaseInitFuture = Future<Supabase>.error(e);
+  }
+
+  // OAuth callbacks must keep the sequential path: the code exchange has to
+  // complete BEFORE the widget tree builds (supabase_flutter's deep-link
+  // handler races us for the code otherwise). Warm relaunches — the common
+  // case — take the fast path below.
+  if (!forceSequentialPath) {
+    forceSequentialPath = _isOAuthCallbackInFlight();
+  }
+
+  // FAST-PATH SEED: start the local session seed immediately so it runs in
+  // parallel with Hive — a warm relaunch then routes on the seeded session
+  // without ever awaiting Supabase.initialize (whose secure-storage reads +
+  // deep-link platform channels cost 1.4-2.3s on cold Keychain/Keystore).
+  Future<bool>? sessionSeedFuture;
+  if (!forceSequentialPath) {
+    sessionSeedFuture = SessionService.seedSessionFromLocalStorage();
+  }
 
   // Wait for Hive to be ready before starting LocalDb
   await hiveInitFuture;
@@ -2577,15 +2648,11 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
     '⏱️ [BOOTSTRAP] Hive initialized at ${DateTime.now().millisecondsSinceEpoch}',
   );
 
-  final restoreTarget = await ResumeRouteRestore.peekPendingRouteName();
-  traceBootstrap('restore_route_checked');
-  final prefersImmediateAppReveal =
-      restoreTarget != null && restoreTarget.isNotEmpty;
-  if (prefersImmediateAppReveal) {
-    debugPrint(
-      '⏱️ [BOOTSTRAP] Immediate reveal enabled for saved restore target "$restoreTarget"',
-    );
-  }
+  // The l10n preload is a pure SharedPreferences read started above; by now
+  // (Hive open takes far longer) it is certainly done, but await it so the
+  // first Localization.build is guaranteed to find the warm-launch snapshot.
+  // Still fully parallel with the pending Supabase.initialize below.
+  await l10nPreloadFuture;
 
   // Start LocalDb init (depends on Hive)
   // We do NOT await this here, so the UI can load while Hive opens boxes.
@@ -2626,7 +2693,101 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
     }),
   );
 
-  // Await Supabase completion (critical for auth check in MatchMeApp)
+  if (forceSequentialPath) {
+    // SLOW PATH (OAuth callback in flight, or client construction failed):
+    // preserve the pre-existing sequential behavior — the OAuth code exchange
+    // must complete BEFORE the widget tree builds, and construction failures
+    // surface through the hard error screen.
+    final supabaseError = await _runPostSupabaseInitBackground(
+      container,
+      supabaseUrl,
+      supabaseAnonKey,
+      supabaseInitFuture,
+    );
+    if (supabaseError != null) {
+      throw Exception(supabaseError);
+    }
+    ResumeDiagnostics.log('Bootstrap initialization completed');
+    traceBootstrap('returning_success_sequential');
+    return _BootstrapInitResult(
+      supabaseUrl: supabaseUrl,
+      supabaseAnonKey: supabaseAnonKey,
+    );
+  }
+
+  // FAST PATH (warm relaunch / normal cold start): never await
+  // Supabase.initialize. The local session seed started above (in parallel
+  // with Hive) has bounded internal timeouts; this outer timeout guarantees
+  // bootstrap returns even if a secure-storage platform channel stalls —
+  // authStateProvider's 1s fallback timer then owns the routing.
+  traceBootstrap('fast_path_awaiting_session_seed');
+  var sessionSeeded = false;
+  try {
+    sessionSeeded = await (sessionSeedFuture ?? Future<bool>.value(false))
+        .timeout(
+      const Duration(milliseconds: 3000),
+      onTimeout: () => false,
+    );
+  } catch (_) {}
+  traceBootstrap('fast_path_session_seed_done seeded=$sessionSeeded');
+
+  // Providers read the runtime config at first build — set it before
+  // returning. Idempotent; the background chain sets it again after init.
+  setRuntimeSupabaseConfig(url: supabaseUrl, anonKey: supabaseAnonKey);
+  traceBootstrap('runtime_config_set');
+
+  // Everything that previously ran after `await supabaseInitFuture` now
+  // completes in the background: OAuth processing, deep-link handler,
+  // reachability gate, session validation, bootstrapUser resolution,
+  // BGSESSION, chat keys, and the cache warmer.
+  unawaited(() async {
+    try {
+      final supabaseError = await _runPostSupabaseInitBackground(
+        container,
+        supabaseUrl,
+        supabaseAnonKey,
+        supabaseInitFuture!,
+      );
+      if (supabaseError != null) {
+        // Non-network init failure. The UI is already running from cache —
+        // continue offline instead of surfacing the hard error screen
+        // (offline-first policy). Missing URL/key config errors were caught
+        // before this point and still show the error app.
+        debugPrint(
+          '❌ [BOOTSTRAP] Background Supabase init failed (continuing offline): $supabaseError',
+        );
+        try {
+          setRuntimeSupabaseConfig(url: supabaseUrl, anonKey: supabaseAnonKey);
+        } catch (_) {}
+        offlineCacheManager.setSupabaseAvailability(false, force: true);
+      }
+    } catch (e, st) {
+      _reportNonFatal(e, st);
+    }
+  }());
+
+  ResumeDiagnostics.log('Bootstrap initialization completed');
+  traceBootstrap('returning_success_fast');
+
+  return _BootstrapInitResult(
+    supabaseUrl: supabaseUrl,
+    supabaseAnonKey: supabaseAnonKey,
+  );
+}
+
+/// Runs everything that used to sit on the critical path AFTER
+/// `await supabaseInitFuture` inside [_bootstrapInitialize]. Called either
+/// sequentially (slow path — OAuth callbacks) or fire-and-forget (fast path).
+///
+/// Returns the non-network init error message (for the slow path to throw),
+/// or null on success / handled network failure (offline mode already
+/// applied). Never throws — network errors are absorbed into offline mode.
+Future<String?> _runPostSupabaseInitBackground(
+  ProviderContainer container,
+  String supabaseUrl,
+  String supabaseAnonKey,
+  Future<Supabase> supabaseInitFuture,
+) async {
   String? supabaseError;
   User? bootstrapUser;
   // NOTE: session policy — bootstrap must never clear the cached session.
@@ -2635,6 +2796,7 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
   // auth.forced_sign_out_days or an explicit UI logout may sign out.)
   try {
     final supabaseInstance = await supabaseInitFuture;
+    _traceBootstrap('post_init_supabase_initialized');
     debugPrint(
       '⏱️ [BOOTSTRAP] Supabase initialized at ${DateTime.now().millisecondsSinceEpoch}',
     );
@@ -2646,7 +2808,26 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
     // supabase_flutter's SupabaseAuth widget auto-registers a deep-link handler
     // that calls getSessionFromUrl — if we don't consume the code and clear the
     // URL first, the SDK handler will throw an unhandled DartError on failure.
+    // (Web-only no-op elsewhere; on the fast path there is no code to consume.)
     await _processWebOAuthCodeDuringBootstrap();
+
+    // Clear stale pending_oauth_provider: if the launch route was not an
+    // OAuth callback (fast path already ruled that out), any leftover key
+    // from an abandoned flow is noise — remove it so it never forces the
+    // sequential path again.
+    if (!kIsWeb) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final pending =
+            prefs.getString('pending_oauth_provider')?.trim() ?? '';
+        if (pending.isNotEmpty) {
+          await prefs.remove('pending_oauth_provider');
+          debugPrint(
+            '🧹 [BOOTSTRAP] Cleared stale pending_oauth_provider="$pending"',
+          );
+        }
+      } catch (_) {}
+    }
 
     // Setup deep link handler for OAuth callbacks (CRITICAL for calendar sync)
     // Must be done after Supabase is initialized
@@ -2666,235 +2847,40 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
     // with a dead network. No confirming attempt here — the runtime monitor
     // re-probes within seconds and restores the online state automatically, so
     // a false negative only costs a cached-data splash, not a stuck app.
-    if (offlineCacheManager.isSupabaseAvailable) {
-      traceBootstrap('before_reachability_gate');
-      final reachable = await _applySupabaseReachabilityGate();
-      traceBootstrap('after_reachability_gate reachable=$reachable');
-      if (!reachable) {
-        debugPrint(
-          '⏱️ [BOOTSTRAP] Forced offline after the Supabase reachability gate failed',
-        );
-      }
-    }
+    //
+    // COLD-START SPEED: the gate is NEVER awaited on the critical path. On a
+    // warm relaunch we start optimistic-online — `isSupabaseAvailable` already
+    // defaults to true — and the cached home paints immediately. On a first
+    // login the cold-cache hold in ProfileCheckScreen owns the waiting while
+    // this probe runs in the background and flips the app offline within its
+    // budget if the server is unreachable; the initial home sync then fails
+    // fast and the escape hatch enters the app with the offline banner.
+    _traceBootstrap('reachability_gate_deferred');
+    unawaited(_runPostReachabilityGate());
 
     // Validate recovered session on all platforms immediately after Supabase init.
     // If the restored session has an invalid/expired JWT, clear it and force re-login.
     // Previously this was Web-only — moved to universal so mobile also catches stale JWTs.
+    //
+    // COLD-START SPEED: the same refresh + getUser + provider-invalidation work now
+    // runs in the background ([_runBackgroundSessionValidation]) once the first frame
+    // has painted, so a warm relaunch reveals the cached home without waiting on up to
+    // three 1.2s network round trips. The permissive session policy is unchanged —
+    // this never signs the user out; it only proactively refreshes an expiring token
+    // and invalidates the token-scoped providers so they re-init with the fresh token.
     final recoveredSession = Supabase.instance.client.auth.currentSession;
-    traceBootstrap('session_check hasSession=${recoveredSession != null}');
+    _traceBootstrap('session_check hasSession=${recoveredSession != null}');
     if (recoveredSession != null) {
-      debugPrint('⏱️ [BOOTSTRAP] Session recovered, validating JWT...');
-
-      // Skip network-dependent session validation when offline to avoid
-      // hanging the startup for 10-15 seconds on network timeouts.
-      if (!offlineCacheManager.isSupabaseAvailable) {
-        debugPrint('⏱️ [BOOTSTRAP] Skipping JWT validation (offline)');
-      } else {
-        // Proactively check token expiry and attempt refresh before calling getUser().
-        // This avoids a 403 error from the server for an expired access token.
-        // Wrapped in a 2s timeout + 3 rapid tries; network failure -> offline.
-        final now = DateTime.now().millisecondsSinceEpoch / 1000;
-        final expiresAt = recoveredSession.expiresAt;
-        if (expiresAt != null && expiresAt <= now + 30) {
-          debugPrint(
-            '⏱️ [BOOTSTRAP] Token expired or expiring soon (exp=$expiresAt), attempting refresh...',
-          );
-          bool refreshSucceeded = false;
-          for (int attempt = 1; attempt <= 3; attempt++) {
-            try {
-              traceBootstrap('refresh_session_start attempt=$attempt');
-              await SessionService.safeRefreshSession(
-                timeout: const Duration(milliseconds: 1200),
-              ).timeout(const Duration(milliseconds: 1200));
-              traceBootstrap('refresh_session_complete attempt=$attempt');
-              debugPrint('✅ [BOOTSTRAP] Token refreshed successfully');
-              refreshSucceeded = true;
-
-              // Token refresh succeeded: invalidate critical providers to force them to re-initialize
-              // with the refreshed token. This prevents stale token errors in location share,
-              // recent chats, and match notifications during bootstrap.
-              unawaited(
-                Future.microtask(() {
-                  try {
-                    if (bootstrapUser != null) {
-                      // Invalidate providers that depend on the session token
-                      container.invalidate(
-                        recentChatsProvider(bootstrapUser.id),
-                      );
-                      container.invalidate(
-                        recentMatchesProvider(bootstrapUser.id),
-                      );
-                      // Also invalidate match notifications to force subscription retry with new token
-                      container.invalidate(matchNotificationProvider);
-                    }
-                    debugPrint(
-                      '✅ [BOOTSTRAP] Invalidated providers after token refresh for recovery',
-                    );
-                  } catch (e) {
-                    debugPrint(
-                      '⚠️ [BOOTSTRAP] Provider invalidation after refresh failed: $e',
-                    );
-                  }
-                }),
-              );
-
-              break;
-            } catch (refreshError) {
-              final isNetwork =
-                  refreshError is TimeoutException ||
-                  isExpectedOfflineFailure(refreshError) ||
-                  refreshError.toString().toLowerCase().contains(
-                    'socketexception',
-                  ) ||
-                  refreshError.toString().toLowerCase().contains('timeout');
-              if (isNetwork) {
-                debugPrint(
-                  '⚠️ [BOOTSTRAP] Token refresh attempt $attempt failed (network/timeout): $refreshError',
-                );
-                if (attempt < 3) {
-                  await Future.delayed(const Duration(milliseconds: 200));
-                  continue;
-                }
-                debugPrint(
-                  '⚠️ [BOOTSTRAP] Token refresh failed after 3 rapid tries -> confirming offline with Supabase',
-                );
-                await _applySupabaseUnreachable('token refresh failed');
-                break;
-              } else {
-                // Check for refresh_token race - safeRefresh already retried with native token
-                final lower = refreshError.toString().toLowerCase();
-                if (lower.contains('refresh_token_already_used') ||
-                    lower.contains('already used')) {
-                  debugPrint(
-                    '⚠️ [BOOTSTRAP] Token refresh race (already_used) - native may have refreshed, continuing with current session',
-                  );
-                  // If native refreshed, currentSession should now be valid
-                  if (Supabase.instance.client.auth.currentSession != null) {
-                    refreshSucceeded = true;
-
-                    // Token may have been refreshed by native: invalidate providers for recovery
-                    unawaited(
-                      Future.microtask(() {
-                        try {
-                          if (bootstrapUser != null) {
-                            container.invalidate(
-                              recentChatsProvider(bootstrapUser.id),
-                            );
-                            container.invalidate(
-                              recentMatchesProvider(bootstrapUser.id),
-                            );
-                            container.invalidate(matchNotificationProvider);
-                          }
-                          debugPrint(
-                            '✅ [BOOTSTRAP] Invalidated providers after native token refresh (race recovery)',
-                          );
-                        } catch (e) {
-                          debugPrint(
-                            '⚠️ [BOOTSTRAP] Provider invalidation after race recovery failed: $e',
-                          );
-                        }
-                      }),
-                    );
-                  }
-                } else {
-                  debugPrint(
-                    '⏱️ [BOOTSTRAP] Token refresh failed (expected if refresh token also expired): $refreshError',
-                  );
-                }
-                break;
-              }
-            }
-          }
-          if (!refreshSucceeded && !offlineCacheManager.isSupabaseAvailable) {
-            debugPrint(
-              '⏱️ [BOOTSTRAP] Skipping getUser due to offline after refresh',
-            );
-          } else {
-            // Yield after the network round trip so the UI can paint a frame.
-            await Future.delayed(Duration.zero);
-          }
-        }
-
-        if (!offlineCacheManager.isSupabaseAvailable) {
-          debugPrint('⏱️ [BOOTSTRAP] Skipping getUser (already offline)');
-        } else {
-          bool validationDone = false;
-          for (int attempt = 1; attempt <= 3; attempt++) {
-            try {
-              traceBootstrap('get_user_start attempt=$attempt');
-              await Supabase.instance.client.auth.getUser().timeout(
-                const Duration(milliseconds: 1200),
-              );
-              traceBootstrap('get_user_complete attempt=$attempt');
-              // Clear any stale OAuth error stored during code exchange attempt —
-              // the session is valid, so the error was spurious.
-              try {
-                final prefs = await SharedPreferences.getInstance();
-                await prefs.remove('oauth_bootstrap_error');
-              } catch (_) {}
-              debugPrint('✅ [BOOTSTRAP] Session JWT is valid');
-              validationDone = true;
-              break;
-            } catch (e) {
-              final isNetwork =
-                  e is TimeoutException || isExpectedOfflineFailure(e);
-              if (isNetwork) {
-                debugPrint(
-                  '⚠️ [BOOTSTRAP] getUser attempt $attempt failed (network/timeout): $e',
-                );
-                if (attempt < 3) {
-                  await Future.delayed(const Duration(milliseconds: 200));
-                  continue;
-                }
-                debugPrint(
-                  '⚠️ [BOOTSTRAP] getUser failed after 3 rapid tries -> confirming offline, using cached session',
-                );
-                await _applySupabaseUnreachable('getUser failed');
-                break;
-              }
-              // POLICY: never auto-sign-out here. An expired/invalid JWT on
-              // cold start (e.g. access token expired while the app was
-              // closed) must NOT log the user out. Keep the cached session
-              // so the user stays logged in; a later refresh will renew it.
-              // Only auth.forced_sign_out_days or an explicit user logout
-              // may clear the session.
-              final errorMsg = e.toString().toLowerCase();
-              if (errorMsg.contains('invalid jwt') ||
-                  errorMsg.contains('jwt expired') ||
-                  errorMsg.contains('token is expired') ||
-                  errorMsg.contains('unauthorized') ||
-                  errorMsg.contains('403') ||
-                  errorMsg.contains('401')) {
-                debugPrint(
-                  '⏱️ [BOOTSTRAP] Session JWT validation failed ($e) — keeping cached session, NOT signing out (permissive session policy)',
-                );
-                unawaited(
-                  SessionService.persistSignOutReason(
-                    reason: e.toString(),
-                    source: 'bootstrapGetUser-kept-session',
-                  ),
-                );
-              } else {
-                debugPrint(
-                  '⚠️ [BOOTSTRAP] Session validation error (non-auth): $e',
-                );
-              }
-              validationDone = true;
-              break;
-            }
-          }
-          if (!validationDone) {
-            debugPrint('⚠️ [BOOTSTRAP] Validation loop ended without result');
-          }
-        }
-      }
+      debugPrint('⏱️ [BOOTSTRAP] Session recovered, deferring JWT validation off the startup path');
+      unawaited(_runBackgroundSessionValidation(recoveredSession, container));
     }
 
     // Never auto-clear: keep whatever session the SDK recovered, even if
     // its JWT failed validation above (it may just be expired; a later
     // refresh will renew it).
     bootstrapUser = Supabase.instance.client.auth.currentUser;
-    traceBootstrap('current_user_resolved hasUser=${bootstrapUser != null}');
+    _traceBootstrap('current_user_resolved hasUser=${bootstrapUser != null}');
+
     if (bootstrapUser == null &&
         Supabase.instance.client.auth.currentSession != null) {
       if (!offlineCacheManager.isSupabaseAvailable) {
@@ -2923,7 +2909,7 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
     }
 
     setRuntimeSupabaseConfig(url: supabaseUrl, anonKey: supabaseAnonKey);
-    traceBootstrap('runtime_config_set');
+    _traceBootstrap('runtime_config_set');
 
     // Schedule BGSESSION after the first frame so the cold-start paint is not
     // further delayed. The coordinator coalesces and debounces these calls.
@@ -2990,7 +2976,7 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
   }
 
   if (supabaseError != null) {
-    throw Exception(supabaseError);
+    return supabaseError;
   }
 
   // Note: We deliberately do NOT await localDbInitFuture here.
@@ -3012,16 +2998,21 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
   if (currentUser != null) {
     final capturedUserId = currentUser.id;
     unawaited(_runPostFrameChatKeyInit(capturedUserId));
+    // Fault the local home snapshot into the OS page cache (after the first
+    // frames, so it never competes with the initial paint) — the Home
+    // streams then decode already-warm pages on a relaunch.
+    unawaited(() async {
+      while (!BootstrapDeferral.isAppReady) {
+        await Future.delayed(const Duration(milliseconds: 30));
+      }
+      await StartupCacheWarmer.warmHomeCaches(capturedUserId);
+    }());
   }
 
   ResumeDiagnostics.log('Bootstrap initialization completed');
-  traceBootstrap('returning_success');
+  _traceBootstrap('post_init_complete');
 
-  return _BootstrapInitResult(
-    supabaseUrl: supabaseUrl,
-    supabaseAnonKey: supabaseAnonKey,
-    prefersImmediateAppReveal: prefersImmediateAppReveal,
-  );
+  return null;
 }
 
 /// Lightweight coordinator that signals when the first real app frame has
@@ -3071,6 +3062,216 @@ Future<void> _runPostFrameChatKeyInit(String userId) async {
     // local-only state and retries (30s timer / resume refresh).
     debugPrint('⏱️ [BOOTSTRAP] ChatKeyProvider setup deferred: $e');
     debugPrintStack(stackTrace: st, label: 'ChatKeyProvider setup deferred');
+  }
+}
+
+/// Runs the Supabase reachability gate off the startup critical path.
+///
+/// Waits for the first real frame to render, then runs
+/// [_applySupabaseReachabilityGate]. Bootstrap starts optimistic-online
+/// (`isSupabaseAvailable` defaults to true) on every path — warm relaunch
+/// and first login alike — and the runtime connectivity monitor keeps
+/// re-probing, so deferring this does not change the final online/offline
+/// verdict — it only stops the health-check round trip from delaying the
+/// first paint. On a first login the cold-cache hold in ProfileCheckScreen
+/// owns the waiting while this probe flips the app offline within its
+/// budget if the server is unreachable.
+Future<void> _runPostReachabilityGate() async {
+  while (!BootstrapDeferral.isAppReady) {
+    await Future.delayed(const Duration(milliseconds: 30));
+  }
+  await Future.delayed(Duration.zero);
+  try {
+    final reachable = await _applySupabaseReachabilityGate();
+    if (!reachable) {
+      debugPrint(
+        '⏱️ [BOOTSTRAP] Forced offline after the (deferred) Supabase reachability gate failed',
+      );
+    }
+  } catch (e) {
+    debugPrint('⏱️ [BOOTSTRAP] Deferred reachability gate error: $e');
+  }
+}
+
+/// Validates + proactively refreshes the recovered session off the startup
+/// critical path.
+///
+/// This is the exact work that used to block the splash (up to three 1.2s
+/// network round trips): refresh an expiring token, call getUser to confirm the
+/// JWT, clear stale OAuth errors, and invalidate the token-scoped providers so
+/// they re-init with the fresh token. It runs after the first frame has painted
+/// so a warm relaunch reveals the cached home instantly while the session is
+/// validated in the background.
+///
+/// POLICY (unchanged): this NEVER signs the user out. A failed/invalid JWT or a
+/// refresh race only keeps the cached session so the user stays logged in; a
+/// later refresh renews it. Only `auth.forced_sign_out_days` or an explicit UI
+/// logout may clear the session.
+Future<void> _runBackgroundSessionValidation(
+  Session recoveredSession,
+  ProviderContainer container,
+) async {
+  while (!BootstrapDeferral.isAppReady) {
+    await Future.delayed(const Duration(milliseconds: 30));
+  }
+  await Future.delayed(Duration.zero);
+
+  void invalidateTokenProviders() {
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId == null) return;
+    try {
+      container.invalidate(recentChatsProvider(userId));
+      container.invalidate(recentMatchesProvider(userId));
+      container.invalidate(matchNotificationProvider);
+    } catch (e) {
+      debugPrint(
+        '⚠️ [BOOTSTRAP] Provider invalidation after refresh failed: $e',
+      );
+    }
+  }
+
+  try {
+    // Skip network-dependent session validation when offline to avoid hanging
+    // on network timeouts.
+    if (!offlineCacheManager.isSupabaseAvailable) {
+      debugPrint('⏱️ [BOOTSTRAP] Skipping JWT validation (offline)');
+      return;
+    }
+
+    // Proactively check token expiry and attempt refresh before calling getUser().
+    // This avoids a 403 error from the server for an expired access token.
+    final now = DateTime.now().millisecondsSinceEpoch / 1000;
+    final expiresAt = recoveredSession.expiresAt;
+    if (expiresAt != null && expiresAt <= now + 30) {
+      debugPrint(
+        '⏱️ [BOOTSTRAP] Token expired or expiring soon (exp=$expiresAt), attempting refresh...',
+      );
+      bool refreshSucceeded = false;
+      for (int attempt = 1; attempt <= 3; attempt++) {
+        try {
+          await SessionService.safeRefreshSession(
+            timeout: const Duration(milliseconds: 1200),
+          ).timeout(const Duration(milliseconds: 1200));
+          debugPrint('✅ [BOOTSTRAP] Token refreshed successfully');
+          refreshSucceeded = true;
+          // Invalidate critical providers so they re-init with the fresh token.
+          invalidateTokenProviders();
+          break;
+        } catch (refreshError) {
+          final isNetwork =
+              refreshError is TimeoutException ||
+              isExpectedOfflineFailure(refreshError) ||
+              refreshError.toString().toLowerCase().contains(
+                'socketexception',
+              ) ||
+              refreshError.toString().toLowerCase().contains('timeout');
+          if (isNetwork) {
+            debugPrint(
+              '⚠️ [BOOTSTRAP] Token refresh attempt $attempt failed (network/timeout): $refreshError',
+            );
+            if (attempt < 3) {
+              await Future.delayed(const Duration(milliseconds: 200));
+              continue;
+            }
+            debugPrint(
+              '⚠️ [BOOTSTRAP] Token refresh failed after 3 rapid tries -> confirming offline with Supabase',
+            );
+            await _applySupabaseUnreachable('token refresh failed');
+            break;
+          } else {
+            final lower = refreshError.toString().toLowerCase();
+            if (lower.contains('refresh_token_already_used') ||
+                lower.contains('already used')) {
+              debugPrint(
+                '⚠️ [BOOTSTRAP] Token refresh race (already_used) - native may have refreshed, continuing with current session',
+              );
+              if (Supabase.instance.client.auth.currentSession != null) {
+                refreshSucceeded = true;
+                invalidateTokenProviders();
+              }
+            } else {
+              debugPrint(
+                '⏱️ [BOOTSTRAP] Token refresh failed (expected if refresh token also expired): $refreshError',
+              );
+            }
+            break;
+          }
+        }
+      }
+      if (!refreshSucceeded && !offlineCacheManager.isSupabaseAvailable) {
+        debugPrint('⏱️ [BOOTSTRAP] Skipping getUser due to offline after refresh');
+        return;
+      }
+    }
+
+    if (!offlineCacheManager.isSupabaseAvailable) {
+      debugPrint('⏱️ [BOOTSTRAP] Skipping getUser (already offline)');
+      return;
+    }
+
+    bool validationDone = false;
+    for (int attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await Supabase.instance.client.auth.getUser().timeout(
+          const Duration(milliseconds: 1200),
+        );
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.remove('oauth_bootstrap_error');
+        } catch (_) {}
+        debugPrint('✅ [BOOTSTRAP] Session JWT is valid');
+        validationDone = true;
+        break;
+      } catch (e) {
+        final isNetwork =
+            e is TimeoutException || isExpectedOfflineFailure(e);
+        if (isNetwork) {
+          debugPrint(
+            '⚠️ [BOOTSTRAP] getUser attempt $attempt failed (network/timeout): $e',
+          );
+          if (attempt < 3) {
+            await Future.delayed(const Duration(milliseconds: 200));
+            continue;
+          }
+          debugPrint(
+            '⚠️ [BOOTSTRAP] getUser failed after 3 rapid tries -> confirming offline, using cached session',
+          );
+          await _applySupabaseUnreachable('getUser failed');
+          break;
+        }
+        // POLICY: never auto-sign-out here — keep the cached session.
+        final errorMsg = e.toString().toLowerCase();
+        if (errorMsg.contains('invalid jwt') ||
+            errorMsg.contains('jwt expired') ||
+            errorMsg.contains('token is expired') ||
+            errorMsg.contains('unauthorized') ||
+            errorMsg.contains('403') ||
+            errorMsg.contains('401')) {
+          debugPrint(
+            '⏱️ [BOOTSTRAP] Session JWT validation failed ($e) — keeping cached session, NOT signing out (permissive session policy)',
+          );
+          unawaited(
+            SessionService.persistSignOutReason(
+              reason: e.toString(),
+              source: 'bootstrapGetUser-kept-session',
+            ),
+          );
+        } else {
+          debugPrint('⚠️ [BOOTSTRAP] Session validation error (non-auth): $e');
+        }
+        validationDone = true;
+        break;
+      }
+    }
+    if (!validationDone) {
+      debugPrint('⚠️ [BOOTSTRAP] Validation loop ended without result');
+    }
+  } catch (e, st) {
+    debugPrint('⏱️ [BOOTSTRAP] Background session validation error: $e');
+    debugPrintStack(
+      stackTrace: st,
+      label: 'Background session validation error',
+    );
   }
 }
 

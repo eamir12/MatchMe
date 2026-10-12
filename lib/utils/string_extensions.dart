@@ -1,5 +1,7 @@
 // lib/utils/string_extensions.dart
 
+import 'dart:ui' show TextAlign, TextDirection;
+
 extension StringExtension on String {
   /// Capitalizes the first letter of the string and lowercases the rest.
   String capitalize() {
@@ -118,6 +120,35 @@ extension StringExtension on String {
       return '\u200E$firstNames $lastInitial.\u200E';
     }
   }
+
+  /// Base direction for showing this string as its own block of text.
+  ///
+  /// Latin letters win LTR, Hebrew/Arabic wins RTL, anything else falls back
+  /// to LTR — the same rule the matched profile screen has always used for
+  /// its title. It matters because a name formatted as "First L." ends in a
+  /// period: laid out against the surrounding UI direction the period ends up
+  /// on the wrong side of the name (a Hebrew name in an English UI grows a
+  /// stray dot on its right), while laying the name out in its own script
+  /// keeps the dot glued to the initial where readers expect it.
+  TextDirection displayTextDirection() {
+    if (RegExp(r'[a-zA-Z]').hasMatch(this)) return TextDirection.ltr;
+    return isRtl() ? TextDirection.rtl : TextDirection.ltr;
+  }
+
+  /// [displayTextDirection] plus the edge the text block should sit against.
+  ///
+  /// The direction follows the name, but the alignment stays pinned to the
+  /// UI direction ([uiDirection]): a Hebrew name in an English UI must keep
+  /// starting on the left instead of jumping to the right edge the moment its
+  /// paragraph direction flips.
+  ({TextDirection textDirection, TextAlign textAlign}) displayTextLayout(
+    TextDirection uiDirection,
+  ) => (
+    textDirection: displayTextDirection(),
+    textAlign: uiDirection == TextDirection.rtl
+        ? TextAlign.right
+        : TextAlign.left,
+  );
 }
 
 /// Particles across Spanish and other languages that stay lowercase when they

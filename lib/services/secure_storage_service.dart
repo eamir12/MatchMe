@@ -5,7 +5,8 @@
 // - Previously the app used `const FlutterSecureStorage()` in 3+ places with
 //   default options. Defaults are platform-dependent and unauditable.
 // - This service pins explicit options:
-//   Android: EncryptedSharedPreferences (AES256_SIV + AES256_GCM, Keystore).
+//   Android: v11 Keystore ciphers (RSA-OAEP key wrap + AES-GCM), no options
+//   needed; v9 -> v10 -> v11 migration history in _buildStorage.
 //   iOS/macOS: Keychain first_unlock_this_device_only (no iCloud sync, no
 //   backup to other devices).
 // - Web/Linux/Windows fallback is NOT secure (localStorage / plain file).
@@ -22,11 +23,14 @@ class SecureStorageService {
   static final SecureStorageService instance = SecureStorageService._();
 
   static FlutterSecureStorage _buildStorage() {
-    // flutter_secure_storage v9 API. NOTE: defaults are INSECURE
-    // (Android encryptedSharedPreferences=false, iOS unlocked) — we pin
-    // hardened values explicitly.
+    // flutter_secure_storage v11 API. v9 stored Android data in
+    // EncryptedSharedPreferences (Jetpack Security); v10 replaced that with
+    // custom Keystore ciphers (RSA-OAEP key wrap + AES-GCM) and migrated all
+    // v9 data (confirmed on device). v11 then removed the deprecated
+    // `encryptedSharedPreferences` parameter and the migration path itself,
+    // so no AndroidOptions are needed (defaults are the v10 ciphers).
+    // iOS/macOS are pinned below.
     return const FlutterSecureStorage(
-      aOptions: AndroidOptions(encryptedSharedPreferences: true),
       iOptions: IOSOptions(
         accessibility: KeychainAccessibility.first_unlock_this_device,
       ),

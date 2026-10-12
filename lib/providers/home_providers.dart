@@ -172,8 +172,15 @@ final recentMatchesProvider = StreamProvider.autoDispose.family<List<MatchModel>
 
   final localStream = localDb.watchMatches(userId);
 
+  var loggedFirstMatchesEmission = false;
   return localStream
       .map((list) {
+        if (!loggedFirstMatchesEmission) {
+          loggedFirstMatchesEmission = true;
+          debugPrint(
+            '[CACHE_WARM] recentMatches first emission: ${list.length} rows',
+          );
+        }
         final mapped = list
             .map((json) => MatchModel.fromJsonRpc(json, userId))
             .toList();
@@ -325,6 +332,23 @@ void clearUserScopedHomeMemoryCaches() {
 final Set<String> _previewRefreshInFlight = <String>{};
 const Duration _previewTranslationRefreshDelay = Duration(seconds: 3);
 
+// --- homeHasCompleteCacheProvider ---
+/// Resolves to `true` once this user has a complete, locally readable home
+/// snapshot (profile + recent matches + recent chats all present in Hive).
+///
+/// This is a `FutureProvider` rather than a method called directly from the
+/// build so that the provider it depends on (`localDbProvider`) is watched
+/// rather than read (the build method is not allowed to `await`). It still
+/// reads from disk almost instantly, so on a relaunch it flips to `true`
+/// within a frame or two — long before any network sync can finish. HomeScreen
+/// watches this to render cached data immediately instead of waiting on a
+/// network-backed sync that merely confirms what is already on disk.
+final homeHasCompleteCacheProvider = FutureProvider.autoDispose
+    .family<bool, String>((ref, userId) async {
+      final localDb = ref.read(localDbProvider);
+      return localDb.hasCompleteHomeCache(userId);
+    });
+
 // --- initialHomeSyncProvider ---
 /// Completes once the first server sync of matches + chats has finished for
 /// [userId] and the results have been written to the local DB.
@@ -345,6 +369,10 @@ final initialHomeSyncProvider = FutureProvider.autoDispose.family<void, String>(
   ref,
   userId,
 ) async {
+  // Keep the disk-cache lookup alive during the sync body so a widget watching
+  // [homeHasCompleteCacheProvider] can rely on the Hive boxes being open by the
+  // time it reads them.
+  ref.watch(homeHasCompleteCacheProvider(userId));
   if (userId.isEmpty) return;
   // Offline: nothing to sync — show cached data immediately.
   if (!offlineCacheManager.isSupabaseAvailable || shouldSkipSupabaseCalls()) {
@@ -369,19 +397,35 @@ final initialHomeSyncProvider = FutureProvider.autoDispose.family<void, String>(
     debugPrint(
       '✅ [HOME_READY] Complete local home snapshot found for $userId — rendering cache while refresh runs',
     );
+    // Defer the heavy background refresh off the first-frames window. Kicking
+    // syncMatchesNow + syncChatsNow (multi-phase E2EE pipeline) + profileSync
+    // at the exact moment Home first builds saturates the main isolate (RPC
+    // parsing, decrypts, JSON + encrypted-box writes) for seconds — the UI
+    // cannot paint the section streams' cached first emission, so the user
+    // stares at the grey skeleton bars even though the data is already in
+    // Hive. Two seconds lets the cached rows paint first; realtime and the
+    // periodic sync still cover anything that changes in between.
     unawaited(
-      Future.wait([
-        syncService.syncMatchesNow(userId),
-        syncService.syncChatsNow(userId, force: true),
-        profileSync.syncProfile(userId, source: 'warm-home-refresh'),
-      ]).then((_) {
-        // Warm matched-user caches (profiles + ratings + photos) so the
-        // next startup renders instantly from memory + local storage.
-        _warmMatchedUsersAfterHomeSync(ref, userId);
+      Future<void>.delayed(const Duration(seconds: 2)).then((_) async {
+        if (!ref.mounted) return;
+        await Future.wait([
+          syncService.syncMatchesNow(userId),
+          syncService.syncChatsNow(userId, force: true),
+          profileSync.syncProfile(userId, source: 'warm-home-refresh'),
+        ]).then((_) {
+          // Warm matched-user caches (profiles + ratings + photos) so the
+          // next startup renders instantly from memory + local storage.
+          unawaited(_warmMatchedUsersAfterHomeSync(ref, userId));
+        });
       }),
     );
-    // Warm immediately from existing cache too (no network wait).
-    unawaited(_warmMatchedUsersAfterHomeSync(ref, userId));
+    // Warm immediately from existing cache too, but after the first frames
+    // so its box reads and profile refreshes don't starve the first paint.
+    unawaited(
+      Future<void>.delayed(const Duration(seconds: 2)).then(
+        (_) => _warmMatchedUsersAfterHomeSync(ref, userId),
+      ),
+    );
     return;
   }
 
@@ -998,10 +1042,19 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
 
   final localStream = localDb.watchChats(userId);
 
+  var loggedFirstChatsEmission = false;
   // Add distinct to prevent duplicate emissions when data hasn't changed
-  final distinctStream = localStream.distinct((prev, next) {
-    return compareChatLists(prev, next);
-  });
+  final distinctStream = localStream
+      .map((chats) {
+        if (!loggedFirstChatsEmission) {
+          loggedFirstChatsEmission = true;
+          debugPrint(
+            '[CACHE_WARM] recentChats first emission: ${chats.length} rows',
+          );
+        }
+        return chats;
+      })
+      .distinct(compareChatLists);
 
   // Add logging for web debugging
   if (kIsWeb) {}
@@ -3220,7 +3273,7 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
   });
 });
 
-// Dashboard stats provider - cached stats with real-time updates
+// Dashboard stats provider - live-only counters with real-time updates
 /// Fetches the live dashboard stats (online + nearby) for [userId] directly
 /// from the server. Returns the stats map plus the radius actually used for
 /// the nearby query so callers can log it without re-reading config.
@@ -3315,15 +3368,6 @@ Future<void> warmDashboardStatsForUser(String userId) async {
   try {
     final live = await _fetchLiveDashboardStats(userId);
     _warmDashboardStatsByUser[userId] = (stats: live.stats, at: DateTime.now());
-    unawaited(
-      LocalDbService.instance.then(
-        (localDb) => localDb.saveDashboardStats(
-          userId,
-          live.stats['online'] ?? 0,
-          live.stats['nearby'] ?? 0,
-        ),
-      ),
-    );
   } catch (e) {
     _warmDashboardStatsByUser.remove(userId);
   }
@@ -3335,11 +3379,12 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
   final userId = supabase.auth.currentUser?.id;
 
   if (userId == null) {
-    return Stream.value({'nearby': 0, 'online': 0});
+    // Signed out: emit nothing. Live counters must never show fabricated
+    // zeros; the UI keeps its placeholder until a live value is received.
+    return const Stream.empty();
   }
 
   final controller = StreamController<Map<String, int?>>();
-  final localDb = ref.read(localDbProvider);
   Timer? periodicRefreshTimer;
   Timer? userActivityDebounceTimer;
   DateTime? lastFetchStatsTime;
@@ -3367,78 +3412,83 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
     }
   }
 
-  Future<Map<String, int?>> loadCachedStats() async {
-    if (supabase.auth.currentUser?.id != userId) {
-      return {'nearby': 0, 'online': null};
+  /// Emits [stats] when it differs from the last emission. A null [stats]
+  /// means "no live value available" (fetch skipped or failed) — nothing is
+  /// emitted so the UI keeps its placeholder (or the last live value) instead
+  /// of showing a stale or fabricated number.
+  void emitIfChanged(Map<String, int?>? stats) {
+    if (stats == null) return;
+    try {
+      if (!_sameDashboardStats(stats, lastEmittedStats)) {
+        controller.add(stats);
+        lastEmittedStats = stats;
+      }
+    } catch (_) {
+      // ignore closed controller
     }
-    final cached = await localDb.getDashboardStats(userId);
-    if (cached == null) {
-      return lastEmittedStats ?? {'nearby': null, 'online': null};
-    }
-    return {'nearby': cached['nearby'], 'online': cached['online']};
   }
 
-  Future<Map<String, int?>> fetchStats({
-    bool useCache = false,
-    bool force = false,
-  }) async {
+  /// Fetches live dashboard stats from the server.
+  ///
+  /// Live counters are NEVER served from disk cache: they must reflect
+  /// current server state only. Returns null when no live value is available
+  /// (device offline, no/expired session, throttle window, concurrent fetch,
+  /// or the RPC failed) — callers must skip emission so the UI shows a
+  /// placeholder rather than a stale number. On failure the last live value
+  /// already emitted this session stays on screen (lastEmittedStats).
+  Future<Map<String, int?>?> fetchStats({bool force = false}) async {
     // Throttle: prevent fetching more than once every 2 seconds unless forced
     // Also prevent concurrent fetches
     if (!force) {
       if (isFetchingStats) {
-        return lastEmittedStats ?? {'nearby': 0, 'online': 0};
+        return null;
       }
       final now = DateTime.now();
       if (lastFetchStatsTime != null &&
           now.difference(lastFetchStatsTime!).inMilliseconds < 2000) {
-        return lastEmittedStats ?? {'nearby': 0, 'online': 0};
+        return null;
       }
     }
 
-    // These counts change frequently, but the last value the user saw remains
-    // more useful offline than replacing it with a false zero.
     if (shouldSkipSupabaseCalls()) {
-      final cached = await loadCachedStats();
       logDashboardStatsDecision(
-        phase: 'offline-cache',
-        stats: cached,
-        reason: 'The device is offline; showing the last locally cached counts.',
-        usedCache: true,
+        phase: 'offline-skip',
+        stats: lastEmittedStats ?? const {'nearby': null, 'online': null},
+        reason:
+            'The device is offline; live counters stay on the last live value received this session (or the placeholder if none).',
         skippedServerFetch: true,
-        source: 'local_cache',
+        source: 'live_only',
       );
-      return cached;
+      return null;
     }
 
     // Validate auth session before making API calls to prevent 401 errors on login screen
     final session = supabase.auth.currentSession;
     if (session == null) {
-      final cached = await loadCachedStats();
       logDashboardStatsDecision(
-        phase: 'auth-missing',
-        stats: cached,
-        reason: 'No server session is available; showing the last cached counts.',
-        usedCache: true,
+        phase: 'auth-missing-skip',
+        stats: lastEmittedStats ?? const {'nearby': null, 'online': null},
+        reason:
+            'No server session is available; live counters stay on the last live value received this session (or the placeholder if none).',
         skippedServerFetch: true,
-        source: 'local_cache',
+        source: 'live_only',
       );
-      return cached;
+      return null;
     }
 
     // Verify token is not expired
     if (session.expiresAt != null) {
       final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       if (session.expiresAt! < now) {
-        final cached = await loadCachedStats();
         logDashboardStatsDecision(
-          phase: 'token-expired',
-          stats: cached,
-          reason: 'The server session expired; showing the last cached counts.',
-          usedCache: true,
+          phase: 'token-expired-skip',
+          stats: lastEmittedStats ?? const {'nearby': null, 'online': null},
+          reason:
+              'The server session expired; live counters stay on the last live value received this session (or the placeholder if none).',
           skippedServerFetch: true,
-          source: 'local_cache',
+          source: 'live_only',
         );
-        return cached;
+        return null;
       }
     }
 
@@ -3446,15 +3496,6 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
     isFetchingStats = true;
 
     try {
-      if (!force) {
-        if (shouldSkipSupabaseCalls()) {
-          return await loadCachedStats();
-        }
-      }
-
-      // Fetch fresh stats from server
-      if (kIsWeb) {}
-
       final live = await _fetchLiveDashboardStats(userId);
       final freshStats = live.stats;
       final userRadiusMeters = live.radiusMeters;
@@ -3489,28 +3530,21 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
         'Dashboard stats fetched: online=${freshStats['online']}, nearby=$nearbyCount (radius=$radiusLog)',
       );
 
-      await localDb.saveDashboardStats(
-        userId,
-        freshStats['online'] ?? 0,
-        nearbyCount,
-      );
-
       return freshStats;
     } catch (e) {
       if (!isExpectedOfflineFailure(e)) {
         debugPrint('Error fetching dashboard stats: $e');
       }
 
-      final fallbackStats = await loadCachedStats();
       logDashboardStatsDecision(
-        phase: 'error-fallback',
-        stats: fallbackStats,
+        phase: 'error-keep-last-live',
+        stats: lastEmittedStats ?? const {'nearby': null, 'online': null},
         reason:
-            'The live stats query failed; showing the last locally cached counts.',
-        usedCache: true,
-        source: 'local_cache',
+            'The live stats query failed; keeping the last live value received this session (or the placeholder if none was received).',
+        skippedServerFetch: true,
+        source: 'live_session_value',
       );
-      return fallbackStats;
+      return null;
     } finally {
       isFetchingStats = false;
     }
@@ -3567,17 +3601,11 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
     lastResumeStatsRefreshAt = now;
     debugPrint('📊 Dashboard stats: Connectivity restored, forcing refresh');
     try {
-      final fresh = await fetchStats(
-        useCache: false,
-        force: true,
-      );
+      final fresh = await fetchStats(force: true);
       // Guard: controller may have been closed during the await above
       // (e.g. autoDispose triggered because all watchers were removed)
       if (controller.isClosed) return;
-      if (!_sameDashboardStats(fresh, lastEmittedStats)) {
-        controller.add(fresh);
-        lastEmittedStats = fresh;
-      }
+      emitIfChanged(fresh);
     } catch (e) {
       debugPrint(
         '📊 Dashboard stats: Error on connectivity restore refresh: $e',
@@ -3602,18 +3630,14 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
   // No Hive snapshot is used here by design.
   (() async {
     try {
-      final fresh = await fetchStats(useCache: false);
-      if (!_sameDashboardStats(fresh, lastEmittedStats)) {
-        controller.add(fresh);
-        lastEmittedStats = fresh;
-      }
+      emitIfChanged(await fetchStats());
     } catch (_) {
       // ignore initial refresh errors
     }
   })();
 
   // On web, re-fetch after location sync so nearby reflects the newly
-  // committed position without discarding the last-known offline snapshot.
+  // committed position without discarding the last live value received.
   if (kIsWeb) {
     WebLocationService.onLocationSynced = () async {
       if (!ref.mounted || controller.isClosed) return;
@@ -3621,14 +3645,8 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
         // Small delay so Postgres can commit the location row before the query
         await Future.delayed(const Duration(milliseconds: 500));
         if (!ref.mounted || controller.isClosed) return;
-        final fresh = await fetchStats(
-          useCache: false,
-          force: true,
-        );
-        if (!_sameDashboardStats(fresh, lastEmittedStats)) {
-          controller.add(fresh);
-          lastEmittedStats = fresh;
-        }
+        final fresh = await fetchStats(force: true);
+        emitIfChanged(fresh);
       } catch (_) {}
     };
   }
@@ -3645,21 +3663,17 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
     try {
       // Refresh and persist the latest count after this device is registered
       // as online.
-      final fresh = await fetchStats(
-        useCache: false,
-        force: true,
-      );
+      final fresh = await fetchStats(force: true);
       logDashboardStatsDecision(
         phase: 'session-registration-refresh',
-        stats: fresh,
+        stats: fresh ??
+            lastEmittedStats ??
+            const {'nearby': null, 'online': null},
         reason:
             'Session registration completed and the dashboard refreshed its online/nearby snapshot.',
         source: 'session_registered_callback',
       );
-      if (!_sameDashboardStats(fresh, lastEmittedStats)) {
-        controller.add(fresh);
-        lastEmittedStats = fresh;
-      }
+      emitIfChanged(fresh);
     } catch (_) {}
   }
 
@@ -3677,17 +3691,7 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
       debugPrint('fetchStats skipped in periodic timer: No valid session');
       return;
     }
-    fetchStats(useCache: false).then((stats) {
-      try {
-        // Only emit if stats have changed
-        if (!_sameDashboardStats(stats, lastEmittedStats)) {
-          controller.add(stats);
-          lastEmittedStats = stats;
-        }
-      } catch (_) {
-        // ignore closed controller
-      }
-    });
+    fetchStats().then(emitIfChanged);
   });
 
   // Subscribe to users table for visibility setting changes
@@ -3743,31 +3747,13 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
             // location sync to complete. Without this delay, users who just
             // became visible may see nearby=0 because user_locations has no
             // fresh position yet, even though GPS is actively tracking.
-            fetchStats(useCache: false).then((stats) {
-              try {
-                if (!_sameDashboardStats(stats, lastEmittedStats)) {
-                  controller.add(stats);
-                  lastEmittedStats = stats;
-                }
-              } catch (e) {
-                // ignore closed controller
-              }
-            });
+            fetchStats().then(emitIfChanged);
             // Schedule a follow-up refresh after a short delay to pick up
             // the location that should have synced by then.
             Future.delayed(const Duration(seconds: 3), () {
               if (!ref.mounted) return;
               if (supabase.auth.currentSession == null) return;
-              fetchStats(useCache: false).then((stats) {
-                try {
-                  if (!_sameDashboardStats(stats, lastEmittedStats)) {
-                    controller.add(stats);
-                    lastEmittedStats = stats;
-                  }
-                } catch (e) {
-                  // ignore closed controller
-                }
-              });
+              fetchStats().then(emitIfChanged);
             });
           },
         )
@@ -3811,16 +3797,7 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
               );
               return;
             }
-            fetchStats(useCache: false).then((stats) {
-              try {
-                if (!_sameDashboardStats(stats, lastEmittedStats)) {
-                  controller.add(stats);
-                  lastEmittedStats = stats;
-                }
-              } catch (e) {
-                // ignore closed controller
-              }
-            });
+            fetchStats().then(emitIfChanged);
           },
         )
         .subscribe((status, err) {
@@ -3892,16 +3869,7 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
               );
               return;
             }
-            fetchStats(useCache: false).then((stats) {
-              try {
-                if (!_sameDashboardStats(stats, lastEmittedStats)) {
-                  controller.add(stats);
-                  lastEmittedStats = stats;
-                }
-              } catch (e) {
-                // ignore closed controller
-              }
-            });
+            fetchStats().then(emitIfChanged);
           },
         )
         .onPostgresChanges(
@@ -3960,16 +3928,7 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
                   );
                   return;
                 }
-                fetchStats(useCache: false).then((stats) {
-                  try {
-                    if (!_sameDashboardStats(stats, lastEmittedStats)) {
-                      controller.add(stats);
-                      lastEmittedStats = stats;
-                    }
-                  } catch (e) {
-                    // ignore closed controller
-                  }
-                });
+                fetchStats().then(emitIfChanged);
               },
             );
           },
@@ -4008,18 +3967,7 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
           );
           return;
         }
-        fetchStats(useCache: false, force: true).then((
-          stats,
-        ) {
-          try {
-            if (!_sameDashboardStats(stats, lastEmittedStats)) {
-              controller.add(stats);
-              lastEmittedStats = stats;
-            }
-          } catch (_) {
-            // ignore closed controller
-          }
-        });
+        fetchStats(force: true).then(emitIfChanged);
       }
       lastConnectivityStatus = currentHealth.status;
     }
@@ -4066,18 +4014,8 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
           return;
         }
 
-        // Refresh cache with fresh data from server and emit if changed
-        fetchStats(useCache: false).then((stats) {
-          try {
-            // Emit to stream if stats have changed
-            if (!_sameDashboardStats(stats, lastEmittedStats)) {
-              controller.add(stats);
-              lastEmittedStats = stats;
-            }
-          } catch (e) {
-            // ignore closed controller
-          }
-        });
+        // Refresh from server; emit only when a live value arrives.
+        fetchStats().then(emitIfChanged);
       }
     });
   })();

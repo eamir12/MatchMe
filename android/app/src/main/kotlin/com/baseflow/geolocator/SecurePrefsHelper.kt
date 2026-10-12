@@ -25,6 +25,21 @@ object SecurePrefsHelper {
     private const val SECURE_FILE = "matchme_secure_prefs"
     private const val PLAIN_FILE = "FlutterSharedPreferences"
 
+    // Cached per process. Creating EncryptedSharedPreferences loads the
+    // Keystore MasterKey (~0.5-0.8s cold); rebuilding it on every call made
+    // each native read/write that expensive, and bootstrap serializes three
+    // of them (session gather, snapshot persist, Hive key read) — the launch
+    // long pole. First access pays the cost once; Application.onCreate warms
+    // it on a background thread before Dart's first call.
+    @Volatile private var cachedSecure: SharedPreferences? = null
+    @Volatile private var cachedPlain: SharedPreferences? = null
+
+    /** Pre-create the prefs instances (call off the main thread). */
+    fun warmup(context: Context) {
+        securePrefs(context)
+        plainPrefs(context)
+    }
+
     // Keys that must prefer encrypted storage.
     private val SENSITIVE_KEYS = setOf(
         "flutter.user_token",
@@ -35,7 +50,13 @@ object SecurePrefsHelper {
         "flutter.location_share_other_user_id",
         // Offline Retro Matching trail buffer recorded by the background
         // service (GPS history — location data, must not sit in plaintext).
-        "flutter.offline_trail_native"
+        "flutter.offline_trail_native",
+        // Hive box encryption key (Dart-side dual-store). Native read keeps
+        // encrypted box opens off the flutter_secure_storage platform channel
+        // at bootstrap — that channel is the launch long pole (cold Keystore)
+        // and serializes the session seed's persists behind whoever reads it
+        // first. Key never lives in plaintext prefs.
+        "hive_encryption_key_v1"
     )
 
     // Session snapshot keys written by Dart / native that embed access +
@@ -52,24 +73,36 @@ object SecurePrefsHelper {
     }
 
     private fun securePrefs(context: Context): SharedPreferences {
-        return try {
-            val masterKey = MasterKey.Builder(context)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
-            EncryptedSharedPreferences.create(
-                context,
-                SECURE_FILE,
-                masterKey,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-            )
-        } catch (_: Throwable) {
-            context.getSharedPreferences(SECURE_FILE, Context.MODE_PRIVATE)
+        cachedSecure?.let { return it }
+        synchronized(this) {
+            cachedSecure?.let { return it }
+            val created = try {
+                val masterKey = MasterKey.Builder(context)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                    .build()
+                EncryptedSharedPreferences.create(
+                    context,
+                    SECURE_FILE,
+                    masterKey,
+                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                )
+            } catch (_: Throwable) {
+                context.getSharedPreferences(SECURE_FILE, Context.MODE_PRIVATE)
+            }
+            cachedSecure = created
+            return created
         }
     }
 
     private fun plainPrefs(context: Context): SharedPreferences {
-        return context.getSharedPreferences(PLAIN_FILE, Context.MODE_PRIVATE)
+        cachedPlain?.let { return it }
+        synchronized(this) {
+            cachedPlain?.let { return it }
+            val created = context.getSharedPreferences(PLAIN_FILE, Context.MODE_PRIVATE)
+            cachedPlain = created
+            return created
+        }
     }
 
     fun getString(context: Context, key: String, def: String? = null): String? {

@@ -1,25 +1,20 @@
 // lib/widgets/signed_image.dart
-// Stateful SignedImage that caches the resolved signed URL per widget instance
-// and avoids recreating the signing Future each build (prevents continuous createSignedUrl calls).
+// Bytes-first SignedImage: paints from the encrypted OfflineImageCache
+// (raw bytes, cleared on logout) whenever possible, so avatars and photos
+// appear within one frame of mount on warm relaunches — no signed-URL
+// resolution, no network, no extended_image decode pipeline.
 //
-// Note: we detect already-signed URLs locally (don't rely on private helpers in StorageHelper).
-//
-// Behavior:
-// - If source is already a signed URL (contains token or X-Amz-), use it directly.
-// - If StorageHelper.getCachedUrl(source) returns a cached signed URL, use that immediately.
-// - Otherwise request a signed URL once in initState / when source changes and store the result.
-// - While waiting, show placeholder; on failure show errorWidget (or a fallback broken image).
+// On cache miss: resolve a signed URL once, download through
+// StorageHelper.fetchImageBytesFromUrl (shared, in-flight deduped,
+// persists bytes into OfflineImageCache), then paint from memory.
 
 import 'dart:async';
 
-import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
-import 'package:matchme/services/storage_helper.dart';
+import 'package:flutter/material.dart';
 import 'package:matchme/services/offline_cache_manager.dart';
 import 'package:matchme/services/offline_image_cache.dart';
-import 'package:extended_image/extended_image.dart';
-import 'dart:developer' as developer;
+import 'package:matchme/services/storage_helper.dart';
 
 class SignedImage extends StatefulWidget {
   final String
@@ -51,23 +46,23 @@ class SignedImage extends StatefulWidget {
 }
 
 class _SignedImageState extends State<SignedImage> {
-  String? _resolvedUrl;
-  Map<String, String>? _resolvedHeaders;
+  Uint8List? _bytes;
   bool _failed = false;
-  int _resolveGeneration = 0;
+  int _loadGeneration = 0;
   int _retryCount = 0;
   String? _lastCacheKey;
-  Uint8List? _cachedWebImageBytes;
 
   @override
   void initState() {
     super.initState();
     _lastCacheKey = StorageHelper.cacheKeyForSource(widget.source);
-    developer.log(
-      '🖼️ SignedImage init: source=${widget.source}, cacheKey=$_lastCacheKey, bucket=${widget.bucket}',
-      name: 'MatchMeTrace',
-    );
-    _initResolve();
+    final hot = OfflineImageCache.instance.peek(_lastCacheKey ?? '');
+    if (hot != null) {
+      // Sync hot-cache hit: paints in this very frame.
+      _bytes = hot;
+    } else {
+      unawaited(_load());
+    }
   }
 
   @override
@@ -75,25 +70,39 @@ class _SignedImageState extends State<SignedImage> {
     super.didUpdateWidget(oldWidget);
     final newCacheKey = StorageHelper.cacheKeyForSource(widget.source);
     if (oldWidget.source != widget.source || _lastCacheKey != newCacheKey) {
-      developer.log(
-        '🖼️ SignedImage update: sourceChanged=${oldWidget.source != widget.source}, cacheKeyChanged=${_lastCacheKey != newCacheKey}, source=${widget.source}, cacheKey=$newCacheKey',
-        name: 'MatchMeTrace',
-      );
-      _resolvedUrl = null;
-      _resolvedHeaders = null;
-      _cachedWebImageBytes = null;
+      _loadGeneration++;
       _failed = false;
       _retryCount = 0;
       _lastCacheKey = newCacheKey;
-      _initResolve();
+      final hot = OfflineImageCache.instance.peek(newCacheKey);
+      if (hot != null) {
+        _bytes = hot;
+      } else {
+        _bytes = null;
+        unawaited(_load());
+      }
       return;
     }
     _lastCacheKey = newCacheKey;
   }
 
-  String? _cacheFallbackUrl() {
+  /// Physical-pixel width to decode at, derived from the widget's logical
+  /// width and the current device pixel ratio (capped at 2048).
+  ///
+  /// Decoding a 1080x1080 photo for a 56px avatar costs ~100-300ms of decode
+  /// per row on low-end devices and bloats the ImageCache ~40x — the main
+  /// reason avatars pop in late on Home. Downsampled decode is ~5ms.
+  int? _decodeCacheWidth() {
+    final w = widget.width;
+    if (w == null || w <= 0 || !w.isFinite) return null;
+    final dpr = MediaQuery.maybeOf(context)?.devicePixelRatio ?? 1.0;
+    final px = (w * dpr).ceil();
+    if (px <= 0) return null;
+    return px > 2048 ? 2048 : px;
+  }
+
+  String? _fallbackUrl() {
     if (widget.source.isEmpty) return null;
-    // Don't try fallback URL for known-missing objects
     if (StorageHelper.isKnownMissing(widget.source, bucket: widget.bucket)) {
       return null;
     }
@@ -107,252 +116,170 @@ class _SignedImageState extends State<SignedImage> {
     );
   }
 
-  Widget _buildCachedNetworkImage(
-    String imageUrl,
-    String cacheKey, {
-    Map<String, String>? headers,
-  }) {
-    if (kIsWeb) {
-      return Image.network(
-        imageUrl,
-        fit: widget.fit,
-        width: widget.width,
-        height: widget.height,
-        alignment: widget.alignment,
-        headers: null,
-        filterQuality: widget.filterQualityLow
-            ? FilterQuality.low
-            : FilterQuality.high,
-        webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
-        loadingBuilder: (context, child, loadingProgress) {
-          if (loadingProgress == null) return child;
-          return SizedBox(
-            width: widget.width,
-            height: widget.height,
-            child:
-                widget.placeholder ??
-                const Center(
-                  child: SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                ),
-          );
-        },
-        errorBuilder: (context, error, stackTrace) {
-          return widget.errorWidget ?? const Icon(Icons.broken_image);
-        },
-      );
-    }
-
-    return ExtendedImage.network(
-      imageUrl,
-      fit: widget.fit,
-      width: widget.width,
-      height: widget.height,
-      alignment: widget.alignment,
-      headers: headers,
-      cache: true,
-      cacheKey: cacheKey.isNotEmpty ? cacheKey : null,
-      filterQuality: widget.filterQualityLow
-          ? FilterQuality.low
-          : FilterQuality.high,
-      loadStateChanged: (state) {
-        switch (state.extendedImageLoadState) {
-          case LoadState.loading:
-            return SizedBox(
-              width: widget.width,
-              height: widget.height,
-              child:
-                  widget.placeholder ??
-                  const Center(
-                    child: SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                  ),
-            );
-          case LoadState.completed:
-            return ExtendedRawImage(
-              image: state.extendedImageInfo?.image,
-              fit: widget.fit,
-              width: widget.width,
-              height: widget.height,
-              alignment: widget.alignment,
-              filterQuality: widget.filterQualityLow
-                  ? FilterQuality.low
-                  : FilterQuality.high,
-            );
-          case LoadState.failed:
-            return widget.errorWidget ?? const Icon(Icons.broken_image);
-        }
-      },
-    );
-  }
-
-  Future<void> _initResolve() async {
-    final generation = ++_resolveGeneration;
+  Future<void> _load() async {
+    final generation = ++_loadGeneration;
     final src = widget.source;
-    developer.log(
-      '🖼️ SignedImage resolve start: source=$src, gen=$generation, bucket=${widget.bucket}',
-      name: 'MatchMeTrace',
-    );
     if (src.isEmpty) {
-      setState(() {
-        _failed = true;
-      });
+      if (mounted) {
+        setState(() => _failed = true);
+      }
       return;
     }
 
     final cacheKey = StorageHelper.cacheKeyForSource(src);
-    if (kIsWeb) {
-      try {
-        final cachedBytes = await OfflineImageCache.instance.read(cacheKey);
-        if (!mounted || generation != _resolveGeneration) return;
-        if (cachedBytes != null) {
-          setState(() => _cachedWebImageBytes = cachedBytes);
-        }
-      } catch (error) {
-        developer.log(
-          'Offline image cache read failed: $error',
-          name: 'MatchMeTrace',
-        );
-      }
-      if (offlineCacheManager.shouldUseCachedData()) {
-        if (_cachedWebImageBytes == null && mounted) {
-          setState(() => _failed = true);
-        }
-        return;
-      }
-    }
 
-    if (offlineCacheManager.shouldUseCachedData()) {
-      final headers = StorageHelper.buildAuthHeaders();
-      final directUrl = headers != null
-          ? StorageHelper.buildAuthenticatedObjectUrl(
-              src,
-              bucket: widget.bucket,
-            )
-          : null;
-      final fallbackUrl = directUrl ?? _cacheFallbackUrl();
-      if (fallbackUrl != null && fallbackUrl.isNotEmpty) {
-        setState(() {
-          _resolvedUrl = fallbackUrl;
-          _resolvedHeaders =
-              directUrl == fallbackUrl && headers != null && headers.isNotEmpty
-              ? headers
-              : null;
-          _failed = false;
-        });
-        return;
-      }
+    // 1. Persistent encrypted byte cache (survives relaunch): paints with
+    // zero network and zero signed-URL work.
+    final cached = await OfflineImageCache.instance.read(cacheKey);
+    if (!mounted || generation != _loadGeneration) return;
+    if (cached != null) {
       setState(() {
-        _failed = true;
+        _bytes = cached;
+        _failed = false;
       });
       return;
     }
 
-    // Otherwise, ask StorageHelper to create one (once).
-    setState(() {
-      _failed = false;
-    });
+    // 2. Offline (Supabase unreachable): best-effort fetch from the
+    // direct/authenticated or public URL; otherwise fail fast.
+    if (offlineCacheManager.shouldUseCachedData()) {
+      final bytes = await _fetchDirectOrFallback(cacheKey);
+      if (!mounted || generation != _loadGeneration) return;
+      setState(() {
+        _bytes = bytes;
+        _failed = bytes == null;
+      });
+      return;
+    }
 
+    // 3. Online: resolve a signed URL once, download bytes (shared
+    // in-flight dedup; persists into OfflineImageCache), then paint.
+    ResolvedImageRequest? request;
     try {
-      final request = await StorageHelper.resolveImageRequest(
+      request = await StorageHelper.resolveImageRequest(
         src,
         bucket: widget.bucket,
       );
-      if (!mounted) return;
-      if (generation != _resolveGeneration) return;
-      if (request == null || request.url.isEmpty) {
-        developer.log(
-          '🖼️ SignedImage resolve: signed url missing',
-          name: 'MatchMeTrace',
-        );
-        if (!StorageHelper.canCreateSignedUrls && _retryCount < 12) {
-          _retryCount++;
-          Future.delayed(const Duration(milliseconds: 400), () {
-            if (!mounted) return;
-            if (generation != _resolveGeneration) return;
-            _initResolve();
-          });
-          return;
-        }
-        setState(() {
-          _failed = true;
-        });
-        return;
-      }
-      _retryCount = 0;
-      developer.log(
-        '🖼️ SignedImage resolve: signed url resolved',
-        name: 'MatchMeTrace',
-      );
-      setState(() {
-        _resolvedUrl = request.url;
-        _resolvedHeaders = request.headers;
-        _failed = false;
-      });
-      if (kIsWeb) {
-        unawaited(_cacheWebImageBytes(request.url, request.headers, cacheKey));
-      }
     } catch (_) {
-      if (!mounted) return;
-      if (generation != _resolveGeneration) return;
-      developer.log(
-        '🖼️ SignedImage resolve: error creating signed url',
-        name: 'MatchMeTrace',
-      );
-      if (!StorageHelper.canCreateSignedUrls && _retryCount < 12) {
+      request = null;
+    }
+    if (!mounted || generation != _loadGeneration) return;
+
+    if (request == null || request.url.isEmpty) {
+      if (!_canCreateSignedUrlsSafe() && _retryCount < 12) {
         _retryCount++;
         Future.delayed(const Duration(milliseconds: 400), () {
-          if (!mounted) return;
-          if (generation != _resolveGeneration) return;
-          _initResolve();
+          if (!mounted || generation != _loadGeneration) return;
+          unawaited(_load());
         });
         return;
       }
+      final bytes = await _fetchDirectOrFallback(cacheKey);
+      if (!mounted || generation != _loadGeneration) return;
       setState(() {
+        _bytes = bytes;
+        _failed = bytes == null;
+      });
+      return;
+    }
+
+    _retryCount = 0;
+    var bytes = await StorageHelper.fetchImageBytesFromUrl(
+      request.url,
+      headers: request.headers,
+      cacheKey: cacheKey,
+    );
+    if (!mounted || generation != _loadGeneration) return;
+    if (bytes == null) {
+      // Signed URL fetch failed (expired, revoked, network blip): try the
+      // public/fallback URL once before giving up.
+      bytes = await _fetchDirectOrFallback(cacheKey);
+      if (!mounted || generation != _loadGeneration) return;
+    }
+    setState(() {
+      _bytes = bytes;
+      _failed = bytes == null;
+    });
+  }
+
+  /// Best-effort fetch used when signed-URL creation is unavailable (offline
+  /// or session not ready): prefer the authenticated direct-object URL,
+  /// else the public/source URL.
+  Future<Uint8List?> _fetchDirectOrFallback(String cacheKey) async {
+    Map<String, String>? headers;
+    String? url;
+    try {
+      headers = StorageHelper.buildAuthHeaders();
+      if (headers != null) {
+        url = StorageHelper.buildAuthenticatedObjectUrl(
+          widget.source,
+          bucket: widget.bucket,
+        );
+      }
+    } catch (_) {
+      headers = null;
+    }
+    if (url == null || url.isEmpty) {
+      url = _fallbackUrl();
+      headers = null;
+    }
+    if (url == null || url.isEmpty) return null;
+    return StorageHelper.fetchImageBytesFromUrl(
+      url,
+      headers: headers,
+      cacheKey: cacheKey,
+    );
+  }
+
+  /// `canCreateSignedUrls` reads `Supabase.instance`, which can throw when
+  /// Supabase is not initialized (e.g. widget tests).
+  bool _canCreateSignedUrlsSafe() {
+    try {
+      return StorageHelper.canCreateSignedUrls;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _handleDecodeFailure() async {
+    final key = _lastCacheKey;
+    if (key != null && key.isNotEmpty) {
+      await OfflineImageCache.instance.evict(key);
+    }
+    if (!mounted) return;
+    // errorBuilder runs during build; defer the state change one frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {
+        _bytes = null;
         _failed = true;
       });
-    }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final cacheKey = StorageHelper.cacheKeyForSource(widget.source);
-    if (kIsWeb && _cachedWebImageBytes != null) {
+    final bytes = _bytes;
+    if (bytes != null) {
       return Image.memory(
-        _cachedWebImageBytes!,
+        bytes,
         fit: widget.fit,
         width: widget.width,
         height: widget.height,
         alignment: widget.alignment,
+        cacheWidth: _decodeCacheWidth(),
+        gaplessPlayback: true,
         filterQuality: widget.filterQualityLow
             ? FilterQuality.low
             : FilterQuality.high,
         errorBuilder: (context, error, stackTrace) {
+          unawaited(_handleDecodeFailure());
           return widget.errorWidget ?? const Icon(Icons.broken_image);
         },
       );
     }
-    // Priority: resolved url -> errorWidget -> placeholder (if loading) -> small broken icon
-    if (_resolvedUrl != null && _resolvedUrl!.isNotEmpty) {
-      return _buildCachedNetworkImage(
-        _resolvedUrl!,
-        cacheKey,
-        headers: _resolvedHeaders,
-      );
-    }
 
     if (_failed) {
-      final fallbackUrl = _cacheFallbackUrl();
-      if (fallbackUrl != null && fallbackUrl.isNotEmpty) {
-        return _buildCachedNetworkImage(fallbackUrl, cacheKey);
-      }
-
       if (StorageHelper.isKnownMissing(widget.source, bucket: widget.bucket)) {
         return SizedBox(width: widget.width, height: widget.height);
       }
@@ -377,30 +304,5 @@ class _SignedImageState extends State<SignedImage> {
             ),
           ),
     );
-  }
-
-  Future<void> _cacheWebImageBytes(
-    String url,
-    Map<String, String>? headers,
-    String cacheKey,
-  ) async {
-    try {
-      final response = await http.get(Uri.parse(url), headers: headers);
-      if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
-        throw StateError('Image fetch failed with HTTP ${response.statusCode}');
-      }
-      final bytes = Uint8List.fromList(response.bodyBytes);
-      await OfflineImageCache.instance.write(cacheKey, bytes);
-      if (!mounted ||
-          cacheKey != StorageHelper.cacheKeyForSource(widget.source)) {
-        return;
-      }
-      setState(() => _cachedWebImageBytes = bytes);
-    } catch (error) {
-      developer.log(
-        'Could not persist displayed image for offline use: $error',
-        name: 'MatchMeTrace',
-      );
-    }
   }
 }
