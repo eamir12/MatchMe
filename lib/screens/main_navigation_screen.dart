@@ -37,6 +37,8 @@ import 'package:matchme/services/chat_key_service.dart';
 import 'package:matchme/utils/resume_route_restore.dart';
 import 'package:matchme/screens/onboarding/onboarding_intro_screen.dart';
 import 'package:matchme/services/onboarding_intro_service.dart';
+import 'package:matchme/screens/profile/verification_screen.dart';
+import 'package:matchme/services/verification_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 final supabase = Supabase.instance.client;
@@ -544,6 +546,12 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
   /// cannot stop two racing states from pushing duplicate tours.
   static final Set<String> _onboardingAutoLaunchedUserIds = <String>{};
 
+  /// Process-wide record of accounts already prompted for photo verification
+  /// during this app run. Requirement: prompt on every launch while the
+  /// verification is not completed — but at most once per launch, never for
+  /// approved accounts and never while a submission is already under review.
+  static final Set<String> _verificationPromptShownUserIds = <String>{};
+
   @override
   void initState() {
     super.initState();
@@ -552,7 +560,13 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
       if (mounted) {
         _updateUserActivity();
         unawaited(_restoreNavigationContext());
-        unawaited(_maybeLaunchOnboardingIntro());
+        // Verification prompt waits for the intro tour to finish so the two
+        // launch dialogs never overlap.
+        unawaited(
+          _maybeLaunchOnboardingIntro().then(
+            (_) => _maybePromptPhotoVerification(),
+          ),
+        );
 
         // Start background service for authenticated user
         final currentUserId = supabase.auth.currentUser?.id;
@@ -639,6 +653,89 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
       return UserProfile.fromMap(raw).isProfileComplete;
     } catch (_) {
       return false;
+    }
+  }
+
+  /// Asks the user to complete photo verification on app launch when their
+  /// verification is not completed yet (`unverified` or `rejected`).
+  /// Approved accounts are done, and pending/analyzing submissions cannot be
+  /// resubmitted — neither is prompted. Runs at most once per app launch per
+  /// account (process-wide set, mirroring the intro-tour gate), and only
+  /// after the intro tour has finished so dialogs never stack.
+  Future<void> _maybePromptPhotoVerification() async {
+    try {
+      final userId = supabase.auth.currentUser?.id;
+      if (userId == null || userId.isEmpty) return;
+      if (_verificationPromptShownUserIds.contains(userId)) return;
+      // Claim the once-per-launch slot synchronously: everything after this
+      // point awaits, and a racing State instance must not double-prompt.
+      _verificationPromptShownUserIds.add(userId);
+      // Give the startup transition a moment to settle on a calm screen.
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      if (!mounted) return;
+      // Offline: the prompt could only lead to a failed submission flow.
+      if (OfflineCacheManager.instance.shouldUseCachedData()) return;
+
+      // Server status first (the source of truth for admin decisions), with
+      // the cached profile as fallback when the status read fails.
+      String? status;
+      try {
+        final statusData = await VerificationService().getVerificationStatus(
+          userId,
+        );
+        if (statusData != null) {
+          status = statusData['is_verified'] == true
+              ? 'approved'
+              : statusData['verification_status']?.toString();
+        }
+      } catch (_) {}
+      if (!mounted) return;
+      final profile = ref.read(userProfileProvider(userId)).asData?.value;
+      if (status == null || status.isEmpty) {
+        if (profile == null) return;
+        status = profile.isVerified ? 'approved' : profile.verificationStatus;
+      }
+      if (status != 'unverified' && status != 'rejected') return;
+
+      // Only prompt when the user can actually submit: a complete profile
+      // with at least one photo (the AI compares the verification selfie
+      // against profile photo #1).
+      if (profile == null || !profile.isProfileComplete) return;
+      if (profile.photos.isEmpty) return;
+
+      if (!mounted) return;
+      final l10n = ref.read(localizationProvider);
+      final rejected = status == 'rejected';
+      final startVerification = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: Text(l10n.getString('verificationPromptTitle')),
+            content: Text(
+              rejected
+                  ? l10n.getString('verificationPromptBodyRejected')
+                  : l10n.getString('verificationPromptBodyUnverified'),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: Text(l10n.getString('verificationPromptLater')),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: Text(l10n.getString('verifyNow')),
+              ),
+            ],
+          );
+        },
+      );
+      if (startVerification == true && mounted) {
+        Navigator.of(
+          context,
+        ).push(MaterialPageRoute(builder: (_) => const VerificationScreen()));
+      }
+    } catch (e) {
+      debugPrint('[MainNavigation] Verification prompt failed: $e');
     }
   }
 
@@ -801,7 +898,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
         if (user != null) {
           await supabase.rpc(
             'set_user_offline',
-            params: {'p_user_id': user.id},
+            params: {'p_user_id': user.id, 'p_clear_pinned': true},
           );
         }
       } catch (e) {

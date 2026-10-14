@@ -3387,6 +3387,7 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
   final controller = StreamController<Map<String, int?>>();
   Timer? periodicRefreshTimer;
   Timer? userActivityDebounceTimer;
+  Timer? presenceTickDebounceTimer;
   DateTime? lastFetchStatsTime;
   Map<String, int?>? lastEmittedStats;
   DateTime? lastActivityCommitTimestamp;
@@ -3947,6 +3948,53 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
     return activityChannel!;
   });
 
+  // Subscribe to the shared presence tick: a single-row table touched by DB
+  // triggers whenever any user's presence flips (login, explicit logout, or
+  // the stale-online cleanup after heartbeats stop). Unlike the raw-table
+  // channels above, the tick table is readable by every authenticated user,
+  // so these events always arrive even when RLS hides other users'
+  // user_activity / user_session rows. The count itself still comes from the
+  // SECURITY DEFINER RPCs — the tick carries no user data.
+  final presenceTickChannelName = 'dashboard_stats_presence_tick_$userId';
+  RealtimeChannel? presenceTickChannel;
+  SupabaseRealtimeManager.instance.register(presenceTickChannelName, () {
+    presenceTickChannel = supabase
+        .channel(presenceTickChannelName)
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'presence_tick',
+          callback: (payload) {
+            debugPrint('🔄 [REALTIME] presence_tick event received: $payload');
+            if (!ref.mounted || controller.isClosed) return;
+            presenceTickDebounceTimer?.cancel();
+            presenceTickDebounceTimer = Timer(
+              const Duration(milliseconds: 500),
+              () {
+                debugPrint(
+                  '🔄 [REALTIME] Presence tick - refreshing online/nearby counts (debounced)',
+                );
+                if (!ref.mounted || controller.isClosed) return;
+                if (supabase.auth.currentSession == null) return;
+                fetchStats(force: true).then(emitIfChanged);
+              },
+            );
+          },
+        )
+        .subscribe((status, err) {
+          if (handleExpectedSupabaseOfflineFailure(err)) {
+            return;
+          }
+          if (SupabaseRealtimeManager.instance.isPaused) return;
+          if (err != null) {
+            debugPrint(
+              '🔄 [REALTIME] Presence tick channel status: $status, error: $err',
+            );
+          }
+        });
+    return presenceTickChannel!;
+  });
+
   // Listen to connectivity changes and force refresh when coming back online
   StreamSubscription? connectivitySubscription;
   ConnectivityHealthStatus? lastConnectivityStatus;
@@ -4025,9 +4073,11 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
     SupabaseRealtimeManager.instance.unregister(visibilityChannelName);
     SupabaseRealtimeManager.instance.unregister(locationChannelName);
     SupabaseRealtimeManager.instance.unregister(activityChannelName);
+    SupabaseRealtimeManager.instance.unregister(presenceTickChannelName);
     periodicRefreshTimer?.cancel();
     cacheRefreshTimer?.cancel();
     userActivityDebounceTimer?.cancel();
+    presenceTickDebounceTimer?.cancel();
     connectivitySubscription?.cancel();
     if (kIsWeb) {
       WebLocationService.onLocationSynced = null;

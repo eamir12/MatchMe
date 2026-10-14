@@ -20,8 +20,8 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:http/http.dart' as http;
-import 'package:latlong2/latlong.dart' hide Path;
 
+import 'package:matchme/models/match_model.dart';
 import 'package:matchme/services/hive_encryption_service.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/utils/offline_utils.dart';
@@ -395,67 +395,20 @@ class MapTileCacheService {
     }
   }
 
-  /// Display center/zoom for a serialized [MatchLocation] JSON map, mirroring
-  /// MatchLocationMiniMap's rendering math (coarse center + capped zoom, or
-  /// exact-coordinates midpoint + distance-based zoom).
+  /// Display center/zoom for a serialized [MatchLocation] JSON map — delegates
+  /// to [MatchLocation.displayView] so pre-warmed tiles always match what
+  /// MatchLocationMiniMap actually renders (coverage-based zoom, coarse
+  /// center, no precise pins).
   (double, double, double)? _displayAreaFor(Map<dynamic, dynamic> loc) {
-    double? asDouble(dynamic v) =>
-        v == null ? null : double.tryParse(v.toString());
-    final cLat = asDouble(
-      loc['map_center_lat'] ?? loc['mapCenterLat'] ?? loc['center_lat'],
-    );
-    final cLng = asDouble(
-      loc['map_center_lng'] ?? loc['mapCenterLng'] ?? loc['center_lng'],
-    );
-    if (cLat != null && cLng != null) {
-      final rawZoom = asDouble(
-            loc['map_zoom'] ?? loc['mapZoom'] ?? loc['zoom'],
-          ) ??
-          12;
-      final zoom = (rawZoom + 1.5).clamp(1.0, 16.0).toDouble();
-      return (cLat, cLng, zoom);
-    }
-    final u1Lat = asDouble(
-      loc['user1_lat'] ?? loc['user1Lat'] ?? loc['user1_latitude'],
-    );
-    final u1Lng = asDouble(
-      loc['user1_lng'] ?? loc['user1Lng'] ?? loc['user1_longitude'],
-    );
-    final u2Lat = asDouble(
-      loc['user2_lat'] ?? loc['user2Lat'] ?? loc['user2_latitude'],
-    );
-    final u2Lng = asDouble(
-      loc['user2_lng'] ?? loc['user2Lng'] ?? loc['user2_longitude'],
-    );
-    if (u1Lat == null ||
-        u1Lng == null ||
-        u2Lat == null ||
-        u2Lng == null) {
+    try {
+      final view = MatchLocation.fromJson(
+        Map<String, dynamic>.from(loc),
+      ).displayView();
+      if (view == null) return null;
+      return (view.centerLat, view.centerLng, view.zoom);
+    } catch (_) {
       return null;
     }
-    const distance = Distance();
-    final distKm = distance.as(
-      LengthUnit.Kilometer,
-      LatLng(u1Lat, u1Lng),
-      LatLng(u2Lat, u2Lng),
-    );
-    double zoomForDistance(double km) {
-      if (km < 0.3) return 16.5;
-      if (km < 0.6) return 15.5;
-      if (km < 1.0) return 14.5;
-      if (km < 2.0) return 13.5;
-      if (km < 5.0) return 12.5;
-      if (km < 10.0) return 11.5;
-      if (km < 20.0) return 10.5;
-      if (km < 50.0) return 9.5;
-      return 8.5;
-    }
-
-    return (
-      (u1Lat + u2Lat) / 2,
-      (u1Lng + u2Lng) / 2,
-      zoomForDistance(distKm),
-    );
   }
 
   Uint8List? _bytesFromEntry(dynamic entry) {

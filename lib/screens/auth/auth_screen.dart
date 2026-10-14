@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:matchme/providers/auth_provider.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/widgets/language_picker_list.dart';
+import 'package:matchme/widgets/theme_mode_picker.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/main_intents_provider.dart';
 import 'package:matchme/screens/auth/signup_email_code_screen.dart';
@@ -980,6 +981,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
     required String label,
     required String assetPath,
     required bool authInteractionBlocked,
+    bool isUnavailable = false,
   }) {
     final icon = SizedBox(
       width: _oauthProviderIconSize,
@@ -998,16 +1000,37 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
     return OutlinedButton(
       onPressed: authInteractionBlocked
           ? null
-          : () => _signInWithOAuth(provider),
+          : isUnavailable
+              ? _showOAuthProviderUnavailable
+              : () => _signInWithOAuth(provider),
       style: OutlinedButton.styleFrom(
         minimumSize: const Size.fromHeight(_oauthButtonHeight),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        foregroundColor: isUnavailable ? Colors.grey.shade500 : null,
+        backgroundColor: isUnavailable ? Colors.grey.shade100 : null,
+        side: isUnavailable
+            ? BorderSide(color: Colors.grey.shade300)
+            : null,
       ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [text, spacer, icon],
       ),
     );
+  }
+
+  /// Shows a localized "provider unavailable" message in the auth error
+  /// banner when the user taps a disabled OAuth button (Apple/Facebook).
+  void _showOAuthProviderUnavailable() {
+    _clearBootstrapErrorPref();
+    setState(() {
+      _errorMessageKey = 'authOAuthProviderUnavailable';
+      _errorMessage = null;
+      _errorOAuthProvider = null;
+      _errorRawMessage = null;
+      _actualErrorMessage = null;
+      _showingRawError = false;
+    });
   }
 
   /// True on the desktop targets, where a custom-scheme OAuth redirect cannot
@@ -2507,6 +2530,11 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
             onPressed: () =>
                 _showLanguagePicker(context, l10n.supportedLanguages),
           ),
+          IconButton(
+            icon: const Icon(Icons.dark_mode_outlined),
+            tooltip: getString('settingsThemeMode'),
+            onPressed: () => showThemeModePickerDialog(context),
+          ),
         ],
       ),
       body: authInteractionBlocked
@@ -3052,6 +3080,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
                         label: getString('authContinueWithApple'),
                         assetPath: 'assets/images/providers/apple.png',
                         authInteractionBlocked: authInteractionBlocked,
+                        isUnavailable: true,
                       ),
                       const SizedBox(height: 12),
                       _buildOAuthButton(
@@ -3059,6 +3088,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
                         label: getString('authContinueWithFacebook'),
                         assetPath: 'assets/images/providers/facebook.png',
                         authInteractionBlocked: authInteractionBlocked,
+                        isUnavailable: true,
                       ),
                       const SizedBox(height: 20),
                       TextButton(

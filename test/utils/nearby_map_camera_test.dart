@@ -8,7 +8,7 @@ void main() {
   const viewport = Size(390, 700);
   const latitude = 37.5;
 
-  double renderedDiameterPixels(double radiusMeters, double zoom) {
+  double renderedRadiusPixels(double radiusMeters, double zoom) {
     const earthCircumferenceMeters = 2 * math.pi * 6378137;
     final latitudeScale = math.cos(latitude * math.pi / 180);
     return radiusMeters *
@@ -27,9 +27,9 @@ void main() {
         latitude: latitude,
         viewportSize: viewport,
       );
-      final diameter = renderedDiameterPixels(testCase.radiusMeters, zoom);
-      final targetDiameter = math.min(viewport.width, viewport.height) * 0.84;
-
+      final diameter = 2 * renderedRadiusPixels(testCase.radiusMeters, zoom);
+      final targetDiameter =
+          math.min(viewport.width, viewport.height) * nearbyMapRadiusFillRatio;
       expect(diameter, closeTo(targetDiameter, targetDiameter * 0.01));
       expect(zoom, inInclusiveRange(1, nearbyMapMaxZoom));
     });

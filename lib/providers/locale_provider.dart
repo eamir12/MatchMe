@@ -59,6 +59,43 @@ bool isRtlLanguageCode(String? code) {
   return kRtlLanguageCodes.contains(normalised);
 }
 
+/// Legacy/alternate platform language codes mapped to the modern ISO 639-1
+/// code the app ships. Java (and some Android/Windows builds) still report
+/// Hebrew as `iw`, Indonesian as `in`, Yiddish as `ji` and Javanese as `jw`.
+const Map<String, String> kLegacyLanguageCodeAliases = {
+  'iw': 'he',
+  'in': 'id',
+  'ji': 'yi',
+  'jw': 'jv',
+};
+
+/// The initial UI language for a device: the device's own language when the
+/// app ships it, otherwise English.
+///
+/// On a fresh install this is the only "choice" the user has made, so it must
+/// win — but only when the language is actually supported. Platform codes are
+/// normalised first (legacy `iw`, region suffixes like `he-IL`, case), so a
+/// Hebrew device does not look unsupported and silently start in English.
+///
+/// This never consults stored preferences or the account: callers resolve
+/// saved/explicit choices before falling back here.
+String resolveDeviceLanguageCode(
+  Iterable<String> supportedCodes,
+  Locale? deviceLocale,
+) {
+  final raw = deviceLocale?.languageCode.trim().toLowerCase().replaceAll(
+    '_',
+    '-',
+  );
+  final base = (raw == null || raw.isEmpty) ? '' : raw.split('-').first;
+  final code = kLegacyLanguageCodeAliases[base] ?? base;
+  if (code.isNotEmpty &&
+      supportedCodes.any((c) => c.trim().toLowerCase() == code)) {
+    return code;
+  }
+  return 'en';
+}
+
 class AppLanguage {
   final String code;
   final String displayName;
@@ -428,6 +465,8 @@ class LocalizationState {
         'You can also try a different login provider.',
     'authOAuthSuggestionPassword': 'You can also try username and password.',
     'authOr': 'or',
+    'authOAuthProviderUnavailable':
+        'This sign-in method is currently unavailable. Please use another option.',
     'authPasskeyAvailable': 'Passkey sign-in available for this account',
     'authPasskeyBody':
         'Use the passkey saved on this device to sign in securely without a password.',
@@ -1358,8 +1397,7 @@ class LocalizationState {
     'homeNearbyMapDesc': 'See who is around you within your match radius.',
     'homeNearbyMapRadius': 'Your currently selected radius: {radius}',
     'homeNearbyMapPinAction': 'Pin current location',
-    'homeNearbyMapPinnedLocation':
-        'Your location is currently pinned{label}.',
+    'homeNearbyMapPinnedLocation': 'Your location is currently pinned{label}.',
     'homeNearbyMapPinnedToLabel': 'to',
     'homeNoChats': 'No recent chats',
     'homeNoMatches': 'No recent matches',
@@ -2517,6 +2555,8 @@ class LocalizationState {
     'photoIssueText': 'Text overlay',
     'photoIssueWatermark': 'Watermark',
     'photoRejectedTitle': 'Photo not approved',
+    'photoRejectedTryAgain': 'Try again',
+    'photoRejectedPrimaryKept': 'Your current primary photo was kept.',
     'profileWizardPhotoUploading': 'Uploading and verifying your photo…',
     'profileWizardCompletingProfile': 'Setting up your profile…',
     'profileWizardPrimaryPhotoBadge': 'Primary Photo',
@@ -3515,16 +3555,25 @@ class LocalizationState {
         'Place your hand in the gesture area and show the gesture',
     'verificationCaptureStatusShowFace': 'Make sure your face is visible',
     'verificationCaptureStatusShowGesture': 'Show the required gesture',
-    'verificationCaptureStatusUseCorrectHand': 'Use your {hand} hand',
+    'verificationCaptureStatusUseCorrectHand':
+        'Wrong hand — use your {hand} hand',
+    'verificationCaptureRetry': 'Retry',
     'verificationCaptureWrapperFailedToLoad':
         'Verification capture failed to load: {error}',
+    'verificationComparisonMismatchHeader': "What didn't match",
+    'verificationComparisonNoBoxes':
+        'The AI found differences between your photos but could not mark their exact locations.',
+    'verificationComparisonProfilePhotoLabel': 'Profile photo',
+    'verificationComparisonTitle': 'Photo comparison',
+    'verificationComparisonVerificationPhotoLabel': 'Verification photo',
     'verificationGestureClosedFistDescription':
-        'Show a closed fist with your right hand next to your face.',
+        'Curl the four fingers of your right hand down into your palm and wrap your thumb across the front of them. Keep your wrist straight, your knuckles facing the camera, and hold the fist beside your face.',
     'verificationGestureClosedFistLeftDescription':
-        'Show a closed fist with your left hand next to your face.',
+        'Curl the four fingers of your left hand down into your palm and wrap your thumb across the front of them. Keep your wrist straight, your knuckles facing the camera, and hold the fist beside your face.',
     'verificationGestureClosedFistLeftTitle':
         'Show a closed fist with your left hand',
-    'verificationGestureClosedFistTitle': 'Show a closed fist',
+    'verificationGestureClosedFistTitle':
+        'Show a closed fist with your right hand',
     'verificationGestureCoverMouthDescription':
         'Cover your mouth with your hand while taking the photo',
     'verificationGestureCoverMouthTitle': 'Cover your mouth',
@@ -3535,26 +3584,29 @@ class LocalizationState {
         'Show the I love you hand sign with your right hand next to your face.',
     'verificationGestureILoveYouTitle': 'Show the I love you sign',
     'verificationGestureOpenPalmDescription':
-        'Show an open palm with your right hand next to your face, with your fingers fully visible.',
+        'Hold your right hand up with your palm facing the camera and all five fingers spread apart, pointing upward. Keep every finger straight and fully visible, and hold your hand beside your face.',
     'verificationGestureOpenPalmLeftDescription':
-        'Show an open palm with your left hand next to your face, with your fingers fully visible.',
+        'Hold your left hand up with your palm facing the camera and all five fingers spread apart, pointing upward. Keep every finger straight and fully visible, and hold your hand beside your face.',
     'verificationGestureOpenPalmLeftTitle':
         'Show an open palm with your left hand',
-    'verificationGestureOpenPalmTitle': 'Show an open palm',
+    'verificationGestureOpenPalmTitle':
+        'Show an open palm with your right hand',
     'verificationGesturePeaceSignDescription':
-        'Show a V-shaped peace sign with your right hand next to your face.',
+        'Extend the index and middle fingers of your right hand upward in a V shape and press them apart. Curl your ring finger and pinky down into your palm, hold them with your thumb, and keep your palm facing the camera beside your face.',
     'verificationGesturePeaceSignLeftDescription':
-        'Show a V-shaped peace sign with your left hand next to your face.',
+        'Extend the index and middle fingers of your left hand upward in a V shape and press them apart. Curl your ring finger and pinky down into your palm, hold them with your thumb, and keep your palm facing the camera beside your face.',
     'verificationGesturePeaceSignLeftTitle':
         'Show a peace sign with your left hand',
-    'verificationGesturePeaceSignTitle': 'Show a peace sign',
+    'verificationGesturePeaceSignTitle':
+        'Show a peace sign with your right hand',
     'verificationGesturePointingUpDescription':
-        'Point up with your right index finger next to your face.',
+        'Extend only the index finger of your right hand straight upward and make a fist with the other three fingers, held down with your thumb. Keep your palm facing the camera and your hand beside your face.',
     'verificationGesturePointingUpLeftDescription':
-        'Point up with your left index finger next to your face.',
+        'Extend only the index finger of your left hand straight upward and make a fist with the other three fingers, held down with your thumb. Keep your palm facing the camera and your hand beside your face.',
     'verificationGesturePointingUpLeftTitle':
         'Point up with your left index finger',
-    'verificationGesturePointingUpTitle': 'Point up with your index finger',
+    'verificationGesturePointingUpTitle':
+        'Point up with your right index finger',
     'verificationGesturePointToCheekDescription':
         'Point to your cheek with your finger',
     'verificationGesturePointToCheekTitle': 'Point to your cheek',
@@ -3562,19 +3614,20 @@ class LocalizationState {
         'Raise your right hand clearly in the photo',
     'verificationGestureRaiseRightHandTitle': 'Raise your right hand',
     'verificationGestureThumbsDownDescription':
-        'Show a clear thumbs-down with your right hand next to your face.',
+        'Make a fist with your right hand and point your thumb straight down toward the floor. Keep the other fingers curled, your knuckles facing the camera, and hold your hand beside your face.',
     'verificationGestureThumbsDownLeftDescription':
-        'Show a clear thumbs-down with your left hand next to your face.',
+        'Make a fist with your left hand and point your thumb straight down toward the floor. Keep the other fingers curled, your knuckles facing the camera, and hold your hand beside your face.',
     'verificationGestureThumbsDownLeftTitle':
         'Show a thumbs-down with your left hand',
-    'verificationGestureThumbsDownTitle': 'Show a thumbs-down',
+    'verificationGestureThumbsDownTitle':
+        'Show a thumbs-down with your right hand',
     'verificationGestureThumbsUpDescription':
-        'Show a clear thumbs-up with your right hand next to your face.',
+        'Make a fist with your right hand and point your thumb straight up toward the ceiling. Keep the other fingers curled, your palm facing sideways, and hold your hand beside your face.',
     'verificationGestureThumbsUpLeftDescription':
-        'Show a clear thumbs-up with your left hand next to your face.',
+        'Make a fist with your left hand and point your thumb straight up toward the ceiling. Keep the other fingers curled, your palm facing sideways, and hold your hand beside your face.',
     'verificationGestureThumbsUpLeftTitle':
         'Show a thumbs-up with your left hand',
-    'verificationGestureThumbsUpTitle': 'Show a thumbs-up',
+    'verificationGestureThumbsUpTitle': 'Show a thumbs-up with your right hand',
     'verificationGestureTouchChinDescription': 'Touch your chin with your hand',
     'verificationGestureTouchChinTitle': 'Touch your chin',
     'verificationNoPending': 'No pending verifications',
@@ -3582,6 +3635,12 @@ class LocalizationState {
         'Your verification was not approved. Please try again with a clearer photo.',
     'verificationPrivacyNotice':
         'Your verification photo is used for verification and fraud prevention, stays private, and is kept only as long as needed for review and community safety. After that, we keep only derived fraud-prevention signals.',
+    'verificationPromptBodyRejected':
+        'Your photo verification was not approved. Try again with a clearer photo and the requested hand gesture.',
+    'verificationPromptBodyUnverified':
+        'Verifying your photo keeps MatchMe real and safe. Take a quick selfie with a hand gesture — it only takes a minute.',
+    'verificationPromptLater': 'Later',
+    'verificationPromptTitle': 'Photo verification',
     'verificationRejected': 'Verification Rejected',
     'verificationRejectedCanRetry':
         'Verification was rejected. You can try again.',
@@ -4083,14 +4142,12 @@ class Localization extends _$Localization {
       if (langCode == null ||
           langCode.isEmpty ||
           !supported.any((l) => l.code == langCode)) {
-        // Mirror _initImpl's non-DB fallback: device locale, then 'en'.
-        final Locale deviceLocale =
-            WidgetsBinding.instance.platformDispatcher.locale;
-        langCode = supported.any((l) => l.code == deviceLocale.languageCode)
-            ? deviceLocale.languageCode
-            : (supported.any((l) => l.code == 'en')
-                ? 'en'
-                : supported.first.code);
+        // Mirror _initImpl's non-DB fallback: the device's language when the
+        // app ships it, otherwise 'en'.
+        langCode = resolveDeviceLanguageCode(
+          supported.map((l) => l.code),
+          WidgetsBinding.instance.platformDispatcher.locale,
+        );
       }
 
       final strJson = prefs.getString('translations_$langCode');
@@ -4140,8 +4197,12 @@ class Localization extends _$Localization {
   // _loadStringsAndUpdateState (after first fetch) AND from the auth
   // listener (syncLanguageAfterLogin). Without this guard each cold start
   // updates the DB twice and runs smart retranslation twice.
+  // _lastSyncedLanguageExplicit records how far the last push went: a seed
+  // must not dedup away a later explicit push of the same code (that push
+  // is what flips users.preferred_language_explicit to true).
   String? _lastSyncedLanguageInDb;
   String? _lastSyncedLanguageUserId;
+  bool _lastSyncedLanguageExplicit = false;
 
   // Storm guards for syncLanguageAfterLogin. Auth events (initialSession,
   // signedIn, tokenRefreshed) + pull-to-refresh + login screen can all fire
@@ -4290,6 +4351,12 @@ class Localization extends _$Localization {
             callback: (payload) {
               final newRecord = payload.newRecord;
               final remoteLanguage = newRecord['preferred_language'] as String?;
+              // Only an explicit in-app choice may move this device's UI.
+              // Seeds (the column default or a device-derived value another
+              // session wrote) must never override the device language.
+              final remoteExplicit =
+                  newRecord['preferred_language_explicit'] as bool? ?? false;
+              if (!remoteExplicit) return;
               if (remoteLanguage == null || remoteLanguage.isEmpty) return;
               if (remoteLanguage == state.currentLocale.languageCode) return;
               if (_localeChangeInFlight &&
@@ -4326,10 +4393,16 @@ class Localization extends _$Localization {
     try {
       final response = await Supabase.instance.client
           .from('users')
-          .select('preferred_language')
+          .select('preferred_language, preferred_language_explicit')
           .eq('id', userId)
           .maybeSingle();
       final remoteLanguage = response?['preferred_language'] as String?;
+      final remoteExplicit =
+          response?['preferred_language_explicit'] as bool? ?? false;
+      // Only an explicit in-app choice may move this device's UI language;
+      // a seeded/default value is not a choice and must not override the
+      // device language resolved at startup.
+      if (!remoteExplicit) return;
       if (remoteLanguage == null || remoteLanguage.isEmpty) return;
       if (remoteLanguage == state.currentLocale.languageCode) return;
       await setLocale(remoteLanguage, null, false);
@@ -4388,31 +4461,40 @@ class Localization extends _$Localization {
 
     final prefs = await SharedPreferences.getInstance();
     String? langCode = prefs.getString('user_language_code');
+    if (langCode != null && !supported.any((l) => l.code == langCode)) {
+      // A persisted code the app no longer ships: treat it as no saved choice.
+      langCode = null;
+    }
 
     if (langCode == null) {
-      // Cold start with empty prefs: prefer the user's saved language from
-      // the DB over the device locale. Without this, on devices where the
-      // system language differs from the user's account preference
-      // (e.g. device=`he`, account=`en`), every launch races:
-      //   1. _init sets UI to the device locale
-      //   2. syncLanguageAfterLogin (~750ms later) overwrites DB with
-      //      the device locale
-      //   3. _syncLanguageFromRemote re-reads DB and flips back to the
-      //      account preference
-      // Net effect: 2x DB writes + 2x smart-retranslation passes.
+      // Cold start with no saved choice on this device. The initial language
+      // must follow the device's UI language — unless the account holds a
+      // language the user actually picked in-app
+      // (users.preferred_language_explicit). The column default ('en') and
+      // the device-derived seeds are deliberately NOT consulted: they are not
+      // choices, and treating them as one is what used to pin the UI to
+      // English on a Spanish/Hebrew device. Seeds always mirror the UI
+      // language anyway, so honoring only explicit values cannot race:
+      //   1. _init resolves the device language,
+      //   2. syncLanguageAfterLogin re-seeds the (non-explicit) row with it,
+      //   3. _syncLanguageFromRemote sees a non-explicit row and leaves the
+      //      device language alone.
       if (!isOffline) {
         final initUserId = Supabase.instance.client.auth.currentUser?.id;
         if (initUserId != null) {
           try {
             final remote = await Supabase.instance.client
                 .from('users')
-                .select('preferred_language')
+                .select('preferred_language, preferred_language_explicit')
                 .eq('id', initUserId)
                 .maybeSingle()
                 .timeout(const Duration(seconds: 5));
             if (!ref.mounted) return;
             final remoteLang = remote?['preferred_language'] as String?;
-            if (remoteLang != null &&
+            final remoteExplicit =
+                remote?['preferred_language_explicit'] as bool? ?? false;
+            if (remoteExplicit &&
+                remoteLang != null &&
                 remoteLang.isNotEmpty &&
                 supported.any((l) => l.code == remoteLang)) {
               langCode = remoteLang;
@@ -4428,12 +4510,10 @@ class Localization extends _$Localization {
       }
       if (langCode == null) {
         try {
-          final Locale deviceLocale =
-              WidgetsBinding.instance.platformDispatcher.locale;
-          langCode =
-              supported.any((lang) => lang.code == deviceLocale.languageCode)
-              ? deviceLocale.languageCode
-              : 'en';
+          langCode = resolveDeviceLanguageCode(
+            supported.map((lang) => lang.code),
+            WidgetsBinding.instance.platformDispatcher.locale,
+          );
         } catch (e) {
           langCode = 'en';
         }
@@ -4472,26 +4552,49 @@ class Localization extends _$Localization {
         unawaited(_refreshTranslationCache(initialLang.code));
       }
     } else {
-      // No cache (genuine first run): use the bundled default strings so the
-      // router gate clears instantly, then fetch the full set from the DB in
-      // the background and update in place. Blocking here kept the whole app
-      // behind the localization gate on first launch.
-      final defaults = Map<String, String>.from(
+      // No cache (genuine first run, or a language never opened before).
+      // The bundled defaults are English-only, so painting them under a
+      // Spanish/Hebrew device locale showed an English UI until a background
+      // fetch landed — or forever when it failed. The router's localization
+      // gate is already up while _init runs, so fetching the initial
+      // language's strings here costs no extra loader: first paint lands in
+      // the device's language. Anything slower than the timeout falls back to
+      // the defaults plus the background load, exactly as before.
+      var strings = Map<String, String>.from(
         LocalizationState._defaultTranslations,
       );
+      var loadedFromDb = false;
+      if (initialLang.code != 'en' && offlineCacheManager.isSupabaseAvailable) {
+        try {
+          final fetched = await _fetchTranslationsFromDB(
+            initialLang.code,
+          ).timeout(const Duration(seconds: 6));
+          if (_lastFetchedDbKeys.isNotEmpty) {
+            strings = fetched;
+            await _saveTranslationsToCache(initialLang.code, fetched);
+            loadedFromDb = true;
+          }
+        } catch (e) {
+          debugPrint(
+            '[L10N] Initial translation fetch for $langCode failed, using bundled defaults: $e',
+          );
+        }
+      }
       if (!ref.mounted) return;
       state = LocalizationState(
         currentLocale: Locale(initialLang.code),
         textDirection: initialLang.direction,
-        strings: defaults,
+        strings: strings,
         supportedLanguages: supported,
         isLoading: false,
       );
       debugPrint(
-        '[L10N] First run: using bundled default translations for $langCode, fetching DB set in background',
+        loadedFromDb
+            ? '[L10N] First run: loaded DB translations for $langCode (${strings.length} strings)'
+            : '[L10N] First run: using bundled default translations for $langCode, fetching DB set in background',
       );
-      _syncNativeBackgroundNotificationStrings(defaults);
-      if (offlineCacheManager.isSupabaseAvailable) {
+      _syncNativeBackgroundNotificationStrings(strings);
+      if (!loadedFromDb && offlineCacheManager.isSupabaseAvailable) {
         unawaited(_loadTranslationsInBackground(initialLang.code));
       }
     }
@@ -4887,6 +4990,13 @@ class Localization extends _$Localization {
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('user_language_code', lang.code);
+      if (syncToDatabase) {
+        // syncToDatabase=true only for in-app language pickers. The marker
+        // lets syncLanguageAfterLogin push the choice as explicit later even
+        // when this first write happens before the user is signed in (auth
+        // screen) or while offline.
+        await prefs.setBool('user_language_picked', true);
+      }
       if (!ref.mounted) return;
 
       // Update UI immediately — don't block on DB sync.
@@ -4905,7 +5015,9 @@ class Localization extends _$Localization {
       // never await it here.
       final currentUserId = Supabase.instance.client.auth.currentUser?.id;
       if (syncToDatabase && currentUserId != null) {
-        unawaited(_updateLanguageInDatabase(lang.code));
+        // This path only runs for in-app pickers (syncToDatabase=true), so
+        // the row is being marked as an explicit choice.
+        unawaited(_updateLanguageInDatabase(lang.code, explicit: true));
       } else if (syncToDatabase) {
         debugPrint(
           '[L10N] Skipping DB language update: user not authenticated (login screen)',
@@ -4919,8 +5031,17 @@ class Localization extends _$Localization {
     }
   }
 
-  /// Updates the user's preferred language in the database and all their chat translation settings
-  Future<void> _updateLanguageInDatabase(String langCode) async {
+  /// Updates the user's preferred language in the database and all their chat translation settings.
+  ///
+  /// [explicit] is true only for in-app language picks. Seeds (the startup
+  /// device-language resolution, syncLanguageAfterLogin on a device where the
+  /// user never picked) still write the value so notifications and broadcasts
+  /// target the right locale, but they must never mark the row explicit and
+  /// must never overwrite a value the user did pick.
+  Future<void> _updateLanguageInDatabase(
+    String langCode, {
+    required bool explicit,
+  }) async {
     // Skip entirely when offline to avoid noisy SocketException logs.
     if (!offlineCacheManager.isSupabaseAvailable) return;
     // A dead/rotated refresh token means every authenticated call fails.
@@ -4937,9 +5058,12 @@ class Localization extends _$Localization {
       // Skip if we already pushed this exact language for this user during
       // the current session. Multiple callers (locale init,
       // syncLanguageAfterLogin, home pull-to-refresh) otherwise duplicate
-      // the same UPDATE + smart-retranslation pass on cold start.
+      // the same UPDATE + smart-retranslation pass on cold start. An explicit
+      // push is never deduped away by an earlier seed of the same code —
+      // that push is what records the choice itself.
       if (_lastSyncedLanguageInDb == langCode &&
-          _lastSyncedLanguageUserId == userId) {
+          _lastSyncedLanguageUserId == userId &&
+          (!explicit || _lastSyncedLanguageExplicit)) {
         debugPrint(
           '[L10N] Skipping DB update: language already synced this session',
         );
@@ -4952,32 +5076,23 @@ class Localization extends _$Localization {
       // which on the moto g54 5G added a noticeable 1+ second after the
       // first frame was already rendered.
       if (!ref.mounted) return;
+      String? stored;
+      var storedExplicit = false;
       try {
         final existing = await Supabase.instance.client
             .from('users')
-            .select('preferred_language')
+            .select('preferred_language, preferred_language_explicit')
             .eq('id', userId)
             .maybeSingle();
         if (!ref.mounted) return;
-        final stored =
+        stored =
             (existing == null
                     ? null
                     : existing['preferred_language'] as String?)
                 ?.trim();
-        if (stored != null && stored.isNotEmpty && stored == langCode) {
-          debugPrint(
-            '[L10N] Skipping DB update: language already stored (no change)',
-          );
-          _lastSyncedLanguageInDb = langCode;
-          _lastSyncedLanguageUserId = userId;
-          // NOTE: Do NOT set _lastRetranslatedLanguage here. That flag is only set
-          // after _retranslateAllMessages() actually completes. Setting it here
-          // would cause a subsequent call to _retranslateAllMessages() with the same
-          // language to skip due to the dedup guard, even though retranslation never
-          // actually happened. This bug manifests on the 3rd+ language switch when
-          // the user switches to a previously-used language that's already in the DB.
-          return;
-        }
+        storedExplicit = existing == null
+            ? false
+            : (existing['preferred_language_explicit'] as bool? ?? false);
       } catch (e) {
         // When the pre-check itself is rejected (dead session, 429 rate
         // limit, RLS 42501), the UPDATE below is guaranteed to fail too —
@@ -4994,13 +5109,70 @@ class Localization extends _$Localization {
         );
       }
 
-      debugPrint('[L10N] Updating preferred_language to $langCode');
+      final valueChanged = stored != langCode;
+      final flagNeedsSet = explicit && !storedExplicit;
+
+      if (!valueChanged && !flagNeedsSet) {
+        debugPrint(
+          '[L10N] Skipping DB update: language already stored (no change)',
+        );
+        _lastSyncedLanguageInDb = langCode;
+        _lastSyncedLanguageUserId = userId;
+        _lastSyncedLanguageExplicit = storedExplicit;
+        // NOTE: Do NOT set _lastRetranslatedLanguage here. That flag is only set
+        // after _retranslateAllMessages() actually completes. Setting it here
+        // would cause a subsequent call to _retranslateAllMessages() with the same
+        // language to skip due to the dedup guard, even though retranslation never
+        // actually happened. This bug manifests on the 3rd+ language switch when
+        // the user switches to a previously-used language that's already in the DB.
+        return;
+      }
+
+      if (!valueChanged) {
+        // Same value, but never recorded as an explicit choice: the user just
+        // confirmed the language that was only a device-derived seed. Record
+        // the choice so it survives fresh installs and syncs to other
+        // devices. Value unchanged -> no chats/retranslation pass.
+        try {
+          await Supabase.instance.client
+              .from('users')
+              .update({'preferred_language_explicit': true})
+              .eq('id', userId);
+        } catch (e) {
+          if (isAuthRateLimitFailure(e) || isExpectedOfflineFailure(e)) {
+            _lastLanguageSyncFailureAt = DateTime.now();
+          }
+          debugPrint('[L10N] Could not mark stored language as explicit: $e');
+          return;
+        }
+        _lastSyncedLanguageInDb = langCode;
+        _lastSyncedLanguageUserId = userId;
+        _lastSyncedLanguageExplicit = true;
+        debugPrint('[L10N] Marked $langCode as an explicit language choice');
+        return;
+      }
+
+      if (!explicit && storedExplicit) {
+        // A device-derived seed must never overwrite an explicit choice.
+        debugPrint(
+          '[L10N] Skipping DB update: stored language was explicitly chosen by the user',
+        );
+        return;
+      }
+
+      debugPrint(
+        '[L10N] Updating preferred_language to $langCode (explicit: $explicit)',
+      );
 
       try {
-        // Update users.preferred_language
+        // Update users.preferred_language; explicit picks also record that
+        // this is a real choice (seeds leave the flag untouched/false).
         await Supabase.instance.client
             .from('users')
-            .update({'preferred_language': langCode})
+            .update({
+              'preferred_language': langCode,
+              if (explicit) 'preferred_language_explicit': true,
+            })
             .eq('id', userId);
 
         // Update translation_language for all user's chats
@@ -5022,6 +5194,7 @@ class Localization extends _$Localization {
 
       _lastSyncedLanguageInDb = langCode;
       _lastSyncedLanguageUserId = userId;
+      _lastSyncedLanguageExplicit = explicit;
 
       debugPrint('[L10N] Successfully updated language in database');
       debugPrint('[L10N] Synced language preference to database: $langCode');
@@ -5639,8 +5812,17 @@ class Localization extends _$Localization {
       '[L10N] syncLanguageAfterLogin: currentLangCode=$currentLangCode',
     );
 
-    // Update database with current language preference
-    final future = _updateLanguageInDatabase(currentLangCode);
+    // Update database with current language preference. Push as an explicit
+    // choice only when the user actually picked a language on this device
+    // (see setLocale); otherwise this is just re-seeding the resolved UI
+    // language for notifications/broadcasts and must not lock the account to
+    // it over the next device's language.
+    final prefs = await SharedPreferences.getInstance();
+    final pickedOnThisDevice = prefs.getBool('user_language_picked') ?? false;
+    final future = _updateLanguageInDatabase(
+      currentLangCode,
+      explicit: pickedOnThisDevice,
+    );
     _languageSyncInFlight = future;
     try {
       await future;

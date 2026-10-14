@@ -1,6 +1,7 @@
 // lib/models/match_model.dart
 import 'dart:convert';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:matchme/utils/match_map_view.dart';
 
 final supabase = Supabase.instance.client;
 
@@ -43,6 +44,37 @@ class MatchLocation {
   bool get hasCoarseCenter => mapCenterLat != null && mapCenterLng != null;
 
   bool get hasDisplayableLocation => hasValidCoords || hasCoarseCenter;
+
+  /// Privacy-coarse viewport the minimap and full-screen map should render.
+  ///
+  /// Prefers the stored 2-decimal center; for legacy rows that only carry
+  /// exact coordinates it derives the same coarse point client-side, so a
+  /// precise pin is never drawn. The zoom guarantees the frame contains the
+  /// real match area (rounding cell + each user's side of the pair).
+  /// Returns null when there is nothing displayable (old matches).
+  MatchMapView? displayView({
+    double viewportHeightPx = kMatchMapNominalViewportHeightPx,
+  }) {
+    double? cLat = mapCenterLat;
+    double? cLng = mapCenterLng;
+    if (cLat == null || cLng == null) {
+      if (!hasValidCoords) return null;
+      cLat = roundCoarseCoordinate((user1Lat! + user2Lat!) / 2);
+      cLng = roundCoarseCoordinate((user1Lng! + user2Lng!) / 2);
+    }
+    final pairDistanceMeters = hasValidCoords
+        ? haversineMeters(user1Lat!, user1Lng!, user2Lat!, user2Lng!)
+        : null;
+    return buildMatchMapView(
+      centerLat: cLat,
+      centerLng: cLng,
+      pairHalfMeters: matchMapPairHalfMeters(
+        storedZoom: mapZoom,
+        pairDistanceMeters: pairDistanceMeters,
+      ),
+      viewportHeightPx: viewportHeightPx,
+    );
+  }
 
   factory MatchLocation.fromJson(Map<String, dynamic> json) {
     double? parseCoord(dynamic v) => v == null

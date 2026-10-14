@@ -18,6 +18,7 @@ import 'package:matchme/providers/external_ad_provider.dart';
 import 'package:matchme/providers/theme_provider.dart';
 import 'package:matchme/providers/user_preferences_provider.dart';
 import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/utils/directional_icons.dart';
 import 'package:matchme/utils/greeting_utils.dart';
 import 'package:matchme/utils/home_refresh_utils.dart';
 import 'package:matchme/utils/string_extensions.dart';
@@ -31,6 +32,7 @@ import 'package:matchme/screens/paywall/paywall_screen.dart';
 import 'package:matchme/widgets/ad_slot.dart';
 import 'package:matchme/widgets/match_box.dart';
 import 'package:matchme/widgets/chat_list_item.dart';
+import 'package:matchme/widgets/multi_select.dart';
 import 'package:matchme/providers/new_options_provider.dart';
 import 'package:matchme/utils/shared_intent_utils.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -45,14 +47,6 @@ import 'package:matchme/providers/chat_search_provider.dart';
 import 'package:matchme/services/chat_archive_service.dart';
 import 'package:matchme/services/local_db_service.dart';
 
-/// How many rows the Recent Matches and Recent Chats sections show.
-///
-/// Home is a preview of the app, not a second copy of it. Five rows is enough
-/// to show what is there and to make "See all" worth tapping, without
-/// duplicating the Matches and Chats tabs on the screen users see most.
-const int _kHomePreviewLimit = 5;
-
-
 final supabase = Supabase.instance.client;
 
 Widget _buildStatCard(
@@ -63,55 +57,105 @@ Widget _buildStatCard(
   String? subValue,
   VoidCallback? onTap,
 }) {
+  final colors = Theme.of(context).colorScheme;
+  final clickable = onTap != null;
+
   return Expanded(
     child: Semantics(
       container: true,
-      button: onTap != null,
+      button: clickable,
       label: '$label: $value${subValue == null ? '' : ', $subValue'}',
       excludeSemantics: true,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: onTap,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              icon,
-              size: 30,
-              color: Theme.of(context).colorScheme.secondary,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              value,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              textAlign: TextAlign.center,
-              maxLines: 2,
-              overflow: TextOverflow.visible,
-            ),
-            if (subValue != null) ...[
-              const SizedBox(height: 2),
-              Text(
-                subValue,
-                style: TextStyle(
-                  fontSize: 11,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+      child: Padding(
+        // Gap between the three stat chips. Kept outside the Material so the
+        // ink splash is clipped to the chip itself, not the surrounding gap.
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+        child: MouseRegion(
+          cursor: clickable ? SystemMouseCursors.click : MouseCursor.defer,
+          child: Material(
+            color: Colors.transparent,
+            borderRadius: BorderRadius.circular(12),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: onTap,
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(6, 10, 6, 8),
+                decoration: BoxDecoration(
+                  color: colors.primary.withValues(alpha: 0.07),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: colors.primary.withValues(
+                      alpha: clickable ? 0.22 : 0.10,
+                    ),
+                  ),
                 ),
-                textAlign: TextAlign.center,
-                maxLines: 2,
-                overflow: TextOverflow.visible,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      icon,
+                      size: 30,
+                      color: colors.secondary,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      value,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.visible,
+                    ),
+                    if (subValue != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        subValue,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: colors.onSurfaceVariant,
+                        ),
+                        textAlign: TextAlign.center,
+                        maxLines: 2,
+                        overflow: TextOverflow.visible,
+                      ),
+                    ],
+                    // The trailing chevron is the "opens a screen" cue; only
+                    // tappable stats get one.
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Flexible(
+                          child: Text(
+                            label,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: colors.onSurfaceVariant,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.visible,
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                        if (clickable) ...[
+                          const SizedBox(width: 1),
+                          Icon(
+                            directionalChevron(context),
+                            size: 14,
+                            color: colors.primary.withValues(alpha: 0.7),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ],
+                ),
               ),
-            ],
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 12,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-              maxLines: 2,
-              overflow: TextOverflow.visible,
-              textAlign: TextAlign.center,
             ),
-          ],
+          ),
         ),
       ),
     ),
@@ -190,6 +234,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   final TextEditingController _chatsSearchController = TextEditingController();
   String _chatsSearchQuery = '';
 
+  /// Multi-select state for Recent Chats. Mirrors the Chats tab: a long-press
+  /// (or the row menu's "Select") enters selection mode, the section header
+  /// swaps for a [SelectionHeaderBar], and a [SelectionBottomBar] offers the
+  /// bulk archive action.
+  final SelectionController _chatsSelection = SelectionController();
+
   static const List<ListSortOption> _matchSortOptions = [
     ListSortOption.recent,
     ListSortOption.nameAsc,
@@ -226,30 +276,38 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     });
   }
 
-  /// Archive/unarchive one chat from the Recent Chats row menu. Same shared
-  /// path as the Chats tab (optimistic local write + best-effort server
-  /// write); only the confirmation snackbar is added here. No selection mode
-  /// exists on Home, so this is always a single chat.
-  Future<void> _archiveChatFromHome(ChatModel chat) async {
+  /// Archive (or unarchive) the given chats from the Recent Chats section.
+  ///
+  /// Same shared path as the Chats tab (optimistic local write + best-effort
+  /// server write). Used both by the per-row ⋮ menu (a single chat) and by the
+  /// bulk-selection bottom bar. The selection is cleared first so archived
+  /// chats dropping out of the list cannot leave stale selected ids behind.
+  Future<void> _archiveChatsFromHome(
+    Set<String> ids, {
+    required bool archived,
+  }) async {
+    if (ids.isEmpty) return;
+    _chatsSelection.clear();
     final userId = supabase.auth.currentUser?.id;
     if (userId == null || userId.isEmpty) return;
-    final archived = !chat.isArchived;
     await ChatArchiveService.archiveChats(
       userId: userId,
       localDb: ref.read(localDbProvider),
-      matchIds: {chat.matchId},
+      matchIds: ids,
       archived: archived,
     );
     if (!mounted) return;
     final l10n = ref.read(localizationProvider);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          l10n.getString(
+    final message = ids.length == 1
+        ? l10n.getString(
             archived ? 'chatsArchivedOne' : 'chatsUnarchivedOne',
-          ),
-        ),
-      ),
+          )
+        : l10n.getString(
+            archived ? 'chatsArchivedCount' : 'chatsUnarchivedCount',
+            params: {'count': ids.length.toString()},
+          );
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
     );
   }
 
@@ -518,6 +576,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    _chatsSelection.addListener(_onChatsSelectionChanged);
     developer.log('🏠 HomeScreen init', name: 'MatchMeTrace');
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
@@ -734,6 +793,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final l10n = ref.watch(localizationProvider);
+    final homePreviewLimit = ref.watch(homePreviewLimitProvider);
     final isVisible = ref.watch(isVisibleProvider);
     final backgroundMatchingEnabled = ref.watch(
       userPreferencesProvider.select((state) => state.backgroundMatchingMode),
@@ -762,6 +822,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       _unreadOnlyChats = false;
       _chatsSearchController.clear();
       _chatsSearchQuery = '';
+      _chatsSelection.clear();
       try {
         ref.read(chatFullTextSearchProvider('home').notifier).clear();
       } catch (_) {}
@@ -846,9 +907,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         // must be invalidated explicitly or pull-to-refresh shows stale stars.
         ref.invalidate(userRatingSummaryProvider);
       },
-      child: ListView(
-        physics: const AlwaysScrollableScrollPhysics(),
+      // The ListView is wrapped in Column + Expanded so the Recent Chats
+      // SelectionBottomBar can sit pinned at the bottom of the Home area
+      // (above the main bottom nav) instead of scrolling away with the list.
+      child: Column(
         children: [
+          Expanded(
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              children: [
           Padding(
             padding: const EdgeInsets.only(
               left: 16.0,
@@ -1071,9 +1138,32 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               final afterSearchMatches = normalizedSearchMatches.isEmpty
                   ? filteredByIntent
                   : filteredByIntent.where((match) {
+                      final otherProfile = match.otherUserId.isEmpty
+                          ? null
+                          : ref
+                              .watch(userProfileProvider(match.otherUserId))
+                              .asData
+                              ?.value;
+                      // Flatten the other person's interests (both personal
+                      // and business) into a single searchable string.
+                      final interests = [
+                        ...?otherProfile?.personalInterests.values
+                            .expand((v) => v),
+                        ...?otherProfile?.businessInterests.values
+                            .expand((v) => v),
+                      ].join(' ');
                       final haystack = [
                         match.matchedIntent,
                         match.eventName ?? '',
+                        match.matchType,
+                        otherProfile?.name ?? '',
+                        otherProfile?.firstName ?? '',
+                        otherProfile?.lastName ?? '',
+                        otherProfile?.bio ?? '',
+                        otherProfile?.occupation ?? '',
+                        otherProfile?.education ?? '',
+                        otherProfile?.zodiacSign ?? '',
+                        interests,
                       ].join(' ').toLowerCase();
                       return haystack.contains(normalizedSearchMatches);
                     }).toList();
@@ -1150,7 +1240,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       hintKey: 'matchesSearchHint',
                     ),
                     ResultCountLabel(
-                      shown: sortedMatches.length,
+                      // The preview section only renders homePreviewLimit
+                      // rows, so the "shown" count must be capped at that
+                      // limit — otherwise the label would claim "23 results"
+                      // while only 5 are visible.
+                      shown: sortedMatches.length.clamp(0, homePreviewLimit),
                       total: nonExpiredMatches.length,
                       l10n: l10n,
                       countKey: 'matchesResultsCount',
@@ -1176,7 +1270,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     )
                   else
                     MatchBoxList(
-                      matches: sortedMatches.take(_kHomePreviewLimit).toList(),
+                      matches: sortedMatches.take(homePreviewLimit).toList(),
                       showTitle: false,
                     ),
                 ],
@@ -1329,17 +1423,39 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               final hasActiveChatsFilter =
                   activeFilterCount > 0 || normalizedSearchChats.isNotEmpty;
 
+              // Multi-select state for this section. Only the chats actually
+              // rendered (capped at homePreviewLimit) are selectable here —
+              // the full list lives on the Chats tab.
+              final selectingChats = _chatsSelection.isActive;
+              final visibleChatIds = sortedChats
+                  .take(homePreviewLimit)
+                  .map((c) => c.matchId)
+                  .toList(growable: false);
+
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _buildSectionTitle(
-                    context,
-                    l10n.getString('homeRecentChats'),
-                    onSeeAll: () {
-                      ref.read(navigationIndexProvider.notifier).setIndex(2);
-                    },
-                  ),
-                  if (activeChats.isNotEmpty) ...[
+                  if (selectingChats)
+                    SelectionHeaderBar(
+                      controller: _chatsSelection,
+                      allIds: visibleChatIds,
+                      selectedLabel: l10n.getString(
+                        'inboxSelectedCount',
+                        params: {'count': _chatsSelection.count.toString()},
+                      ),
+                      closeTooltip: l10n.getString('cancel'),
+                      selectAllTooltip: l10n.getString('inboxSelectAll'),
+                      deselectAllTooltip: l10n.getString('inboxDeselectAll'),
+                    )
+                  else
+                    _buildSectionTitle(
+                      context,
+                      l10n.getString('homeRecentChats'),
+                      onSeeAll: () {
+                        ref.read(navigationIndexProvider.notifier).setIndex(2);
+                      },
+                    ),
+                  if (activeChats.isNotEmpty && !selectingChats) ...[
                     ListSearchBar(
                       controller: _chatsSearchController,
                       onQueryChanged: (value) {
@@ -1389,7 +1505,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       hintKey: 'chatsSearchHint',
                     ),
                       ResultCountLabel(
-                        shown: sortedChats.length,
+                        // The preview section only renders homePreviewLimit
+                        // rows, so the "shown" count must be capped at that
+                        // limit — otherwise the label would claim "23
+                        // conversations" while only 5 are visible.
+                        shown: sortedChats.length.clamp(0, homePreviewLimit),
                         total: activeChats.length,
                         l10n: l10n,
                       ),
@@ -1441,14 +1561,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           : _buildEmptyList(l10n.getString('homeNoChats')),
                     )
                   else
-                    // While searching, show every match (not just the
-                    // preview limit) and hand each row its newest matching
-                    // snippet, exactly like the Chats screen.
-                    ...(hasChatsSearch ? sortedChats : sortedChats.take(_kHomePreviewLimit))
-                        .map((chat) {
-                          final hit = hasChatsSearch
-                              ? newestHitsChats[chat.matchId]
-                              : null;
+                    // The Home preview is always capped at homePreviewLimit,
+                    // even while searching — it is a preview, and the full
+                    // list lives on the Chats tab.
+                    ...sortedChats.take(homePreviewLimit).map((chat) {
+                      final hit = hasChatsSearch
+                          ? newestHitsChats[chat.matchId]
+                          : null;
                           return ChatListItem(
                             chat: chat,
                             showUnreadBorder: true,
@@ -1457,11 +1576,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                 : null,
                             searchSnippet: hit?.snippet,
                             searchMessageId: hit?.messageId,
-                            // Per-row ⋮ menu: archive from Home too. No
-                            // "Select" entry here — multi-select lives on
-                            // the Chats tab, Home is a preview.
-                            onRowMenuArchive: () =>
-                                _archiveChatFromHome(chat),
+                            // Multi-select: long-press (or the row menu's
+                            // "Select") enters selection mode; while active
+                            // taps toggle the row and the ⋮ menu hides.
+                            selectionMode: selectingChats,
+                            selected: _chatsSelection.isSelected(chat.matchId),
+                            onToggleSelect: () =>
+                                _chatsSelection.toggle(chat.matchId),
+                            onLongPress: () =>
+                                _chatsSelection.toggle(chat.matchId),
+                            // Per-row ⋮ menu: archive + select. Hidden while
+                            // selecting (the bottom bar covers archive).
+                            onRowMenuArchive: selectingChats
+                                ? null
+                                : () => _archiveChatsFromHome(
+                                    {chat.matchId},
+                                    archived: !chat.isArchived,
+                                  ),
+                            onRowMenuSelect: selectingChats
+                                ? null
+                                : () => _chatsSelection.toggle(chat.matchId),
                           );
                         }),
                 ],
@@ -1523,6 +1657,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             },
           ),
           const SizedBox(height: 20),
+              ],
+            ),
+          ),
+          // Bulk-action bar for Recent Chats multi-select. Home only shows
+          // active (non-archived) chats, so the single action is archive.
+          if (_chatsSelection.isActive)
+            SelectionBottomBar(
+              actions: [
+                SelectionAction(
+                  icon: Icons.archive_outlined,
+                  label: l10n.getString('chatsArchive'),
+                  onPressed: () => _archiveChatsFromHome(
+                    _chatsSelection.selected.toSet(),
+                    archived: true,
+                  ),
+                ),
+              ],
+            ),
         ],
       ),
     );
@@ -1532,7 +1684,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void dispose() {
     _matchesSearchController.dispose();
     _chatsSearchController.dispose();
+    _chatsSelection.removeListener(_onChatsSelectionChanged);
+    _chatsSelection.dispose();
     super.dispose();
+  }
+
+  /// Rebuild when the Recent Chats selection changes (entering/leaving selection
+  /// mode or toggling a row).
+  void _onChatsSelectionChanged() {
+    if (mounted) setState(() {});
   }
 }
 

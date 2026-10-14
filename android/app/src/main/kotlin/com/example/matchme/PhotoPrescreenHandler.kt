@@ -1,5 +1,6 @@
 package com.example.matchme
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Rect
 import android.util.Log
@@ -28,7 +29,7 @@ import kotlinx.coroutines.tasks.await
 class PhotoPrescreenHandler {
     companion object {
         private const val TAG = "PhotoPrescreenHandler"
-        const val PRESCREEN_VERSION = 3
+        const val PRESCREEN_VERSION = 4
         
         suspend fun analyzePhoto(
             bytes: ByteArray
@@ -159,16 +160,23 @@ class PhotoPrescreenHandler {
                     // unknown as not-closed so unsupported devices never
                     // falsely reject. Threshold is deliberately lenient: a
                     // blink is a valid reject for a face-only primary selfie,
-                    // but a squint must not be.
+                    // but a squint must not be. Eyeglasses/sunglasses are
+                    // allowed: dark sunglass lenses drive ML Kit's eye-open
+                    // probabilities toward 0 even though the eyes are not
+                    // shut, so the closed verdict is dropped when the eye
+                    // regions read as lenses (much darker than the
+                    // surrounding skin — closed lids match the skin tone).
                     val largestFace = if (containsFace) {
                         faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
                     } else null
                     val bothEyesClosed = if (largestFace != null) {
                         val left = largestFace.leftEyeOpenProbability
                         val right = largestFace.rightEyeOpenProbability
-                        left != null && right != null &&
+                        val probsSayClosed = left != null && right != null &&
                             left >= 0f && right >= 0f &&
                             left < 0.2f && right < 0.2f
+                        probsSayClosed &&
+                            !eyeRegionsLikelySunglasses(largestFace.boundingBox, bitmap)
                     } else false
 
                     // Body analysis
@@ -496,6 +504,65 @@ class PhotoPrescreenHandler {
                 (boundingBox.right + dx).coerceAtMost(imageWidth),
                 (boundingBox.bottom + dy).coerceAtMost(imageHeight)
             )
+        }
+
+        /// Eyewear tolerance for the eyes-closed check: true when the eye
+        /// regions of [boundingBox] look like dark sunglass lenses rather
+        /// than closed eyelids. Eye/cheek positions are estimated from the
+        /// face box (landmark mode is off): eyes sit ~28-50% down the face
+        /// height, each ~30% of face width, centered at ~30% and ~70% of
+        /// face width; the cheek reference is the mid-lower face. Closed
+        /// lids are skin-toned and match the cheek luminance for every
+        /// complexion, while opaque sunglass lenses are dramatically darker
+        /// than the surrounding skin — that contrast is the signal.
+        private fun eyeRegionsLikelySunglasses(boundingBox: Rect, bitmap: Bitmap): Boolean {
+            return try {
+                val faceW = boundingBox.width().toDouble()
+                val faceH = boundingBox.height().toDouble()
+                if (faceW < 16 || faceH < 16) return false
+                val eyeTop = (boundingBox.top + faceH * 0.28).toInt()
+                val eyeBottom = (boundingBox.top + faceH * 0.50).toInt()
+                val eyeW = (faceW * 0.30).toInt().coerceAtLeast(2)
+                val cheekTop = (boundingBox.top + faceH * 0.55).toInt()
+                val cheekBottom = (boundingBox.top + faceH * 0.80).toInt()
+                val cheekLeft = (boundingBox.left + faceW * 0.15).toInt()
+                val cheekRight = (boundingBox.left + faceW * 0.85).toInt()
+                val cheekMean = regionMeanLuma(bitmap, cheekLeft, cheekTop, cheekRight, cheekBottom)
+                    ?: return false
+                listOf(0.30, 0.70).any { cxFraction ->
+                    val eyeLeft = (boundingBox.left + faceW * cxFraction - eyeW / 2).toInt()
+                    val eyeMean = regionMeanLuma(bitmap, eyeLeft, eyeTop, eyeLeft + eyeW, eyeBottom)
+                        ?: return@any false
+                    // Lens-like: eye patch far darker than the face's own skin
+                    // tone, with an absolute ceiling so a dimly lit face is
+                    // never mistaken for sunglasses.
+                    eyeMean < cheekMean * 0.6 && eyeMean < 100.0
+                }
+            } catch (_: Exception) {
+                false
+            }
+        }
+
+        /// Mean luminance (0..255) of the [left, top, right, bottom] region,
+        /// sampled from [bitmap]; null when the region is empty or out of
+        /// bounds.
+        private fun regionMeanLuma(bitmap: Bitmap, left: Int, top: Int, right: Int, bottom: Int): Double? {
+            val l = left.coerceIn(0, bitmap.width - 1)
+            val t = top.coerceIn(0, bitmap.height - 1)
+            val r = right.coerceIn(l + 1, bitmap.width)
+            val b = bottom.coerceIn(t + 1, bitmap.height)
+            val w = r - l
+            val h = b - t
+            val pixels = IntArray(w * h)
+            bitmap.getPixels(pixels, 0, w, l, t, w, h)
+            var sum = 0.0
+            for (px in pixels) {
+                val red = (px shr 16) and 0xFF
+                val green = (px shr 8) and 0xFF
+                val blue = px and 0xFF
+                sum += 0.299 * red + 0.587 * green + 0.114 * blue
+            }
+            return sum / pixels.size
         }
 
         /// Intersection area of [a] and [b] divided by the area of [a].

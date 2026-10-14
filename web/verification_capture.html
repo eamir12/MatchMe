@@ -17,8 +17,10 @@
     #overlay { position: absolute; inset: 0; }
     #topHud { pointer-events: none; position: absolute; top: var(--capture-top-inset); left: 12px; right: 58px; display: flex; justify-content: center; z-index: 4; }
     #instruction { text-align: center; padding: 8px 14px; background: rgba(0, 0, 0, 0.62); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 999px; font-size: 0.92rem; font-weight: 600; max-width: min(70vw, 320px); white-space: normal; line-height: 1.2; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28); backdrop-filter: blur(8px); }
-    #gestureExample { pointer-events: none; width: 50px; height: 50px; border-radius: 14px; background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.18); display: flex; align-items: center; justify-content: center; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.24); flex: 0 0 auto; }
-    #gestureExampleEmoji { font-size: 28px; line-height: 1; }
+    #gestureExample { pointer-events: none; position: relative; width: 78px; height: 78px; border-radius: 18px; background: rgba(0, 200, 83, 0.14); border: 2px solid rgba(0, 200, 83, 0.55); display: flex; align-items: center; justify-content: center; box-shadow: 0 8px 22px rgba(0, 0, 0, 0.35); flex: 0 0 auto; }
+    #gestureExampleEmoji { font-size: 48px; line-height: 1; filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.45)); }
+    #gestureExampleEmoji.mirror-x { display: inline-block; transform: scaleX(-1); }
+    #gestureExampleHand { position: absolute; left: 50%; bottom: -10px; transform: translateX(-50%); padding: 1px 9px; border-radius: 999px; background: #00c853; color: #06281a; font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; line-height: 1.6; white-space: nowrap; }
     #feedback { pointer-events: none; position: absolute; top: var(--capture-top-inset); right: 12px; width: 36px; height: 36px; border-radius: 999px; background: rgba(0, 0, 0, 0.58); border: 1px solid rgba(255, 255, 255, 0.15); display: flex; align-items: center; justify-content: center; transition: background 0.25s, border-color 0.25s, opacity 0.25s; opacity: 0.78; z-index: 4; }
     #feedback.ready { background: rgba(0, 200, 83, 0.92); border-color: rgba(0, 200, 83, 0.95); opacity: 1; }
     #feedback svg { width: 18px; height: 18px; opacity: 0.72; }
@@ -80,7 +82,7 @@
       <div id="bottomPanel">
         <div id="detailCard">
           <div id="detailHeader">
-            <div id="gestureExample"><span id="gestureExampleEmoji"></span></div>
+            <div id="gestureExample"><span id="gestureExampleEmoji"></span><span id="gestureExampleHand" class="hidden"></span></div>
             <div id="detailText">
               <div id="gestureDescription"></div>
             </div>
@@ -161,6 +163,12 @@
   // Minimum face-centering quality (0..1, distance of the face-box center to
   // the oval center) for the face to count as "inside the green circle".
   var FACE_ROI_SCORE_MIN = 0.55;
+  // FACE_ONLY captures are cropped to the green oval: for a primary face
+  // picture, the area inside the oval is the photo and everything outside it
+  // is irrelevant. The minimum crop size (in sensor pixels) keeps the result
+  // above the photo prescreen's resolution floor; the crop expands
+  // symmetrically around the oval when the oval maps to a smaller region.
+  var FACE_CROP_MIN_DIM = 520;
   // Minimum page-open time before a primary selfie may auto-capture, so the
   // spoken instructions always finish first even if TTS signalling is lost.
   var FACE_ONLY_MIN_OPEN_MS = 4500;
@@ -305,6 +313,23 @@
   var checkGestureLabelEl = document.getElementById('checkGestureLabel');
   if (gestureExampleEmojiEl) {
     gestureExampleEmojiEl.textContent = gestureSymbols[gestureParam] || '🖐️';
+    // Hand emoji default to right hands; mirror for left-hand gestures so
+    // the icon shows the hand the user must actually use.
+    gestureExampleEmojiEl.classList.toggle(
+      'mirror-x',
+      typeof gestureParam === 'string' && gestureParam.indexOf('_LEFT_HAND') !== -1,
+    );
+  }
+  var gestureExampleHandEl = document.getElementById('gestureExampleHand');
+  if (gestureExampleHandEl) {
+    // Explicit hand badge under the example so left/right is unmistakable.
+    var isLeftHandGesture =
+      typeof gestureParam === 'string' && gestureParam.indexOf('_LEFT_HAND') !== -1;
+    gestureExampleHandEl.textContent = t(
+      isLeftHandGesture ? 'verificationCaptureHandLeft' : 'verificationCaptureHandRight',
+      isLeftHandGesture ? 'left' : 'right',
+    );
+    gestureExampleHandEl.classList.remove('hidden');
   }
   if (isFaceOnlyMode) {
     // Primary selfie: hide the gesture ROI, gesture example, and the
@@ -418,6 +443,12 @@
       if (cardEl) cardEl.classList.remove('hidden');
     } catch (_) {}
     try { setStatus(title); } catch (_) {}
+    // Accessibility: the error title and detail are shown, so they are
+    // spoken — verbatim, in the user's language. The Retry button label is
+    // never spoken.
+    announcePageText([title, detail].filter(function(part) {
+      return typeof part === 'string' && part.trim().length;
+    }).join('. '));
     var shortDetail = '';
     try { shortDetail = String(detail || '').slice(0, 500); } catch (_) {}
     reportLog('error', { stage: 'boot', title: title, detail: shortDetail }, true);
@@ -458,6 +489,9 @@
       statusEl.textContent = usingInputImage
         ? t('verificationCaptureStatusGestureDetected', 'Gesture detected. Tap to continue')
         : t('verificationCaptureStatusGestureDetected', 'Ready! Tap to capture');
+      // This status is written straight to the element, so voice it here —
+      // the ready line is shown, therefore spoken.
+      try { emitVoiceStatus(statusEl.textContent); } catch (_) {}
     } else {
       feedback.classList.remove('ready');
       captureBtn.classList.remove('ready');
@@ -476,6 +510,81 @@
 
   function setStatus(text) {
     statusEl.textContent = text;
+    emitVoiceStatus(text);
+  }
+
+  // Voice guidance bridge (mirrors assets/verification_capture/index.html):
+  // when the on-screen status maps to one of the whitelisted coaching keys,
+  // emit a 'voice' event so the host app can speak it in the user's language.
+  // Reverse lookup from the localized text back to its key; suppressed for
+  // repeats and rapid transitions.
+  var voiceStatusKeys = {
+    'verificationCaptureLoading': 1,
+    'verificationCaptureStatusShowGesture': 1,
+    'verificationCaptureStatusShowFace': 1,
+    'verificationCaptureStatusAlignFace': 1,
+    'verificationCaptureStatusPositionHand': 1,
+    'verificationCaptureStatusHoldSteady': 1,
+    'verificationCaptureStatusCapturingBestFrame': 1,
+    'verificationCaptureStatusGestureDetected': 1,
+    'verificationCaptureStatusUseCorrectHand': 1
+  };
+  var statusKeyByText = {};
+  (function() {
+    try {
+      Object.keys(strings || {}).forEach(function(k) {
+        if (voiceStatusKeys[k] && typeof strings[k] === 'string' && strings[k].trim().length) {
+          statusKeyByText[strings[k]] = k;
+        }
+      });
+    } catch (_) {}
+  })();
+  var lastVoiceStatusTs = 0;
+  var voiceKeyLastTs = {};
+
+  function emitVoiceStatus(text) {
+    try {
+      var key = statusKeyByText[text];
+      if (!key) return;
+      var now = Date.now();
+      if (now - lastVoiceStatusTs < 2000) return;
+      if (voiceKeyLastTs[key] && now - voiceKeyLastTs[key] < 8000) return;
+      lastVoiceStatusTs = now;
+      voiceKeyLastTs[key] = now;
+      reportLog('voice', { key: key }, true);
+    } catch (_) {}
+  }
+
+  // Speaks shown-but-unkeyed page text (checklist labels, fatal error card)
+  // via the host's voice bridge. The host speaks it after the current
+  // utterance, so it is never dropped by the rate limiter.
+  function announcePageText(text) {
+    try {
+      var value = String(text || '').trim();
+      if (value) reportLog('voice', { text: value }, true);
+    } catch (_) {}
+  }
+
+  // Wrong-hand feedback: shows the localized instruction on screen AND asks
+  // the host app to speak it (unless guidance is muted). Throttled so the
+  // per-frame evaluation can't spam speech.
+  var lastWrongHandVoiceTs = 0;
+  function announceWrongHand(e) {
+    try {
+      var handKey = requiredHand === 'Right' ? 'verificationCaptureHandRight' : 'verificationCaptureHandLeft';
+      var handLabel = t(handKey, requiredHand.toLowerCase());
+      setStatus(
+        t('verificationCaptureStatusUseCorrectHand', 'Wrong hand — use your {hand} hand').replace(
+          '{hand}',
+          handLabel,
+        ),
+      );
+      var now = Date.now();
+      if (now - lastWrongHandVoiceTs < 8000) return;
+      lastWrongHandVoiceTs = now;
+      reportLog('voice', { key: 'verificationCaptureStatusUseCorrectHand', params: { hand: handLabel } }, true);
+      reportLog('wrongHand', { required: requiredHand, detected: (e && e.hand) || null, gesture: gestureParam }, false);
+    } catch (_) {}
   }
 
   function setChecklistState(faceReady, handReady, gestureReady) {
@@ -507,6 +616,14 @@
   }
   setChecklistState(false, false, false);
   setInstruction(gestureLabel);
+  // Accessibility: the three checklist labels are shown on this page, so
+  // they are read out too (once per page load — spoken after the current
+  // utterance by the host, i.e. after Flutter's gesture instruction).
+  announcePageText([
+    t('verificationCaptureChecklistFaceVisible', 'Face visible'),
+    t('verificationCaptureChecklistHandPositioned', 'Hand in position'),
+    t('verificationCaptureChecklistGestureRecognized', 'Gesture recognized'),
+  ].join('. '));
   setStatus(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
 
   function canonicalGestureName(name) {
@@ -754,6 +871,51 @@
         ox: (vw - visW) / 2,
         oy: (vh - visH) / 2
       };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // Inverse of detectorToDisplayPoint: a point in display space (the mirrored,
+  // cover-cropped preview the user sees) back into raw sensor-frame space
+  // (0..1, unmirrored).
+  function displayToDetectorPoint(p) {
+    if (!p) return null;
+    var dx = p.x;
+    var dy = p.y;
+    if (MIRRORED_PREVIEW) dx = 1 - dx;
+    var crop = getCoverCrop();
+    if (crop) {
+      dx = (dx * crop.visW + crop.ox) / crop.vw;
+      dy = (dy * crop.visH + crop.oy) / crop.vh;
+    }
+    return { x: dx, y: dy };
+  }
+
+  // Sensor-frame pixel rect of the green face oval — the area a FACE_ONLY
+  // (primary selfie) capture is cropped to. Null when the layout is not
+  // measurable, so callers fall back to the full frame.
+  function getFaceOvalCropRect() {
+    try {
+      var vw = video.videoWidth || 0;
+      var vh = video.videoHeight || 0;
+      if (!vw || !vh) return null;
+      var rect = getNormalizedRect(faceRoiEl);
+      if (!rect) return null;
+      var tl = displayToDetectorPoint({ x: rect.cx - rect.width / 2, y: rect.cy - rect.height / 2 });
+      var br = displayToDetectorPoint({ x: rect.cx + rect.width / 2, y: rect.cy + rect.height / 2 });
+      if (!tl || !br) return null;
+      var cx = ((tl.x + br.x) / 2) * vw;
+      var cy = ((tl.y + br.y) / 2) * vh;
+      var w = Math.abs(br.x - tl.x) * vw;
+      var h = Math.abs(br.y - tl.y) * vh;
+      // The oval defines the photo; enlarge only as needed to clear the
+      // prescreen's minimum-resolution floor (the face stays centered).
+      w = Math.max(w, Math.min(FACE_CROP_MIN_DIM, vw));
+      h = Math.max(h, Math.min(FACE_CROP_MIN_DIM, vh));
+      var x0 = Math.max(0, Math.min(cx - w / 2, vw - w));
+      var y0 = Math.max(0, Math.min(cy - h / 2, vh - h));
+      return { x: x0, y: y0, w: w, h: h };
     } catch (_) {
       return null;
     }
@@ -1103,14 +1265,23 @@
     // during toDataURL and can OOM low-memory devices.
     var vw = video.videoWidth || 0;
     var vh = video.videoHeight || 0;
+    // Primary selfie (FACE_ONLY): the photo is the area inside the green
+    // oval — a face picture. Everything outside the oval is irrelevant, so
+    // the snapshot is cropped to it. Gesture captures keep the full frame
+    // (hand and body context matter there).
+    var ovalRect = isFaceOnlyMode ? getFaceOvalCropRect() : null;
+    var sx = ovalRect ? ovalRect.x : 0;
+    var sy = ovalRect ? ovalRect.y : 0;
+    var sw = ovalRect ? ovalRect.w : vw;
+    var sh = ovalRect ? ovalRect.h : vh;
     var scale = 1;
-    var longest = Math.max(vw, vh);
+    var longest = Math.max(sw, sh);
     if (longest > MAX_SNAPSHOT_DIM) scale = MAX_SNAPSHOT_DIM / longest;
-    canvas.width = Math.max(2, Math.round(vw * scale));
-    canvas.height = Math.max(2, Math.round(vh * scale));
+    canvas.width = Math.max(2, Math.round(sw * scale));
+    canvas.height = Math.max(2, Math.round(sh * scale));
     ctx.save();
     ctx.scale(-1, 1);
-    ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
+    ctx.drawImage(video, sx, sy, sw, sh, -canvas.width, 0, canvas.width, canvas.height);
     ctx.restore();
     return canvas.toDataURL('image/jpeg', slowDevice ? 0.85 : 0.92);
   }
@@ -1456,14 +1627,7 @@
             setStatus(t('verificationCaptureStatusAlignFace', 'Center your face inside the guide'));
           }
           } else if (e.matchesGesture && requiredHand && e.hand && (e.handVerdict === 'wrong' || e.hintWrongHand)) {
-          var handKey = requiredHand === 'Right' ? 'verificationCaptureHandRight' : 'verificationCaptureHandLeft';
-          var handLabel = t(handKey, requiredHand.toLowerCase());
-          setStatus(
-            t('verificationCaptureStatusUseCorrectHand', 'Use your {hand} hand').replace(
-              '{hand}',
-              handLabel,
-            ),
-          );
+            announceWrongHand(e);
         } else if (!e.handPlacementOk) {
           setStatus(t('verificationCaptureStatusPositionHand', 'Place your hand in the gesture area and show the gesture'));
         } else if (!e.matchesGesture) {
@@ -1691,14 +1855,7 @@
           if (!e.faceOk) {
             setStatus(t('verificationCaptureStatusAlignFace', 'Center your face inside the guide'));
         } else if (e.matchesGesture && requiredHand && e.hand && (e.handVerdict === 'wrong' || e.hintWrongHand)) {
-            var handKey = requiredHand === 'Right' ? 'verificationCaptureHandRight' : 'verificationCaptureHandLeft';
-            var handLabel = t(handKey, requiredHand.toLowerCase());
-            setStatus(
-              t('verificationCaptureStatusUseCorrectHand', 'Use your {hand} hand').replace(
-                '{hand}',
-                handLabel,
-              ),
-            );
+            announceWrongHand(e);
           } else if (!e.handPlacementOk) {
             setStatus(t('verificationCaptureStatusPositionHand', 'Place your hand in the gesture area and show the gesture'));
           } else if (!e.matchesGesture) {

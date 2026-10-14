@@ -520,7 +520,6 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
                   _buildProfilePhoto(
                     otherProfileAsync,
                     context,
-                    l10n,
                     fallbackPhotos,
                   ),
                   const SizedBox(width: 12),
@@ -571,12 +570,12 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     );
   }
 
-  /// Identity column: bold name (+ "Verified"/"New here!" pills when
-  /// applicable) on line 1, quiet "67 · Male" on line 2 — no "Age:"/"Gender:"
-  /// labels, and the name's trailing last-initial period never collides with
-  /// the age. The avatar keeps a bare check overlay as a quick status mark,
-  /// so the pill spells the status out for anyone who does not know what the
-  /// check means; rating sits top-right of the card (rendered by the caller).
+  /// Identity column: bold name (+ "New here!" pill when applicable) on line
+  /// 1, quiet "67 · Male" on line 2 with the "Verified" pill riding the same
+  /// line — no "Age:"/"Gender:" labels, and the name's trailing last-initial
+  /// period never collides with the age. The avatar stays clean: the status is
+  /// spelled out in words instead of stamped on the photo. Rating sits
+  /// top-right of the card (rendered by the caller).
   Widget _buildContentColumn(
     BuildContext context,
     WidgetRef ref,
@@ -632,39 +631,47 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
                 textDirection: nameLayout.textDirection,
               ),
             ),
-            if (isVerified) ...[
-              const SizedBox(width: 6),
-              _buildVerifiedPill(context, l10n, profile!),
-            ],
             if (isNewUser) ...[
               const SizedBox(width: 6),
               _buildNewUserPill(context, l10n, profile!),
             ],
           ],
         ),
-        if (metaParts.isNotEmpty) ...[
+        if (metaParts.isNotEmpty || isVerified) ...[
           const SizedBox(height: 1),
-          Text(
-            metaParts.join('  ·  '),
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w400,
-              color: Theme.of(context).colorScheme.onSurface.withValues(
-                alpha: 0.55,
-              ),
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            textAlign: TextAlign.start,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              if (metaParts.isNotEmpty)
+                Flexible(
+                  child: Text(
+                    metaParts.join('  ·  '),
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w400,
+                      color: Theme.of(context).colorScheme.onSurface.withValues(
+                        alpha: 0.55,
+                      ),
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.start,
+                  ),
+                ),
+              if (isVerified) ...[
+                if (metaParts.isNotEmpty) const SizedBox(width: 6),
+                _buildVerifiedPill(context, l10n, profile!),
+              ],
+            ],
           ),
         ],
       ],
     );
   }
 
-  /// Compact "Verified" pill shown inline after the name. The avatar check
-  /// overlay alone was not self-explanatory, so the card always spells the
-  /// status out next to the name it belongs to.
+  /// "Verified" pill riding the age/gender line, sized to read as a status
+  /// chip at a glance (12px label, 14px icon). The avatar carries no check of
+  /// its own any more: this word is the status mark.
   Widget _buildVerifiedPill(
     BuildContext context,
     LocalizationState l10n,
@@ -672,7 +679,7 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
   ) {
     final color = Theme.of(context).colorScheme.primary;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(999),
@@ -681,15 +688,15 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
         mainAxisSize: MainAxisSize.min,
         textDirection: Directionality.of(context),
         children: [
-          Icon(Icons.verified, size: 12, color: color),
-          const SizedBox(width: 2),
+          Icon(Icons.verified, size: 14, color: color),
+          const SizedBox(width: 3),
           Flexible(
             child: Text(
               _verifiedBadgeText(l10n, profile.gender),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                fontSize: 10,
+                fontSize: 12,
                 fontWeight: FontWeight.w700,
                 color: color,
               ),
@@ -1152,17 +1159,14 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     );
   }
 
-  /// 56px avatar with a small verified check overlaid on the leading corner —
-  /// replaces the old full-width "Verified" pill. Semantics keep the
-  /// localized verified label so screen readers still announce it.
+  /// 56px avatar. The verified status is spelled out on the meta row, so the
+  /// photo no longer wears a check that only repeated the same word.
   Widget _buildProfilePhoto(
     AsyncValue<UserProfile?> otherProfileAsync,
     BuildContext context,
-    LocalizationState l10n,
     List<String> fallbackPhotos,
   ) {
     final profile = otherProfileAsync.asData?.value;
-    final isVerified = profile?.isVerified ?? false;
     final placeholderColor = Theme.of(
       context,
     ).colorScheme.primary.withValues(alpha: 0.08);
@@ -1205,39 +1209,7 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
       );
     }
 
-    return Semantics(
-      label: isVerified
-          ? _verifiedBadgeText(l10n, profile?.gender)
-          : null,
-      excludeSemantics: isVerified,
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          avatar,
-          if (isVerified)
-            PositionedDirectional(
-              end: -2,
-              bottom: -2,
-              child: Container(
-                padding: const EdgeInsets.all(3),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primary,
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: Theme.of(context).colorScheme.surface,
-                    width: 2,
-                  ),
-                ),
-                child: Icon(
-                  Icons.check_rounded,
-                  size: 10,
-                  color: Theme.of(context).colorScheme.onPrimary,
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
+    return avatar;
   }
 
   int _calculateAge(DateTime birthDate) {

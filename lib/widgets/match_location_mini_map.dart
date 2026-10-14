@@ -56,18 +56,6 @@ class MatchLocationMiniMap extends ConsumerWidget {
     return s.isNotEmpty ? s : numbered;
   }
 
-  double _zoomForDistanceKm(double distanceKm) {
-    if (distanceKm < 0.3) return 16.5;
-    if (distanceKm < 0.6) return 15.5;
-    if (distanceKm < 1.0) return 14.5;
-    if (distanceKm < 2.0) return 13.5;
-    if (distanceKm < 5.0) return 12.5;
-    if (distanceKm < 10.0) return 11.5;
-    if (distanceKm < 20.0) return 10.5;
-    if (distanceKm < 50.0) return 9.5;
-    return 8.5;
-  }
-
   // Areas (center/zoom pairs) already queued for tile pre-warming in this
   // session, so build() can fire-and-forget without re-fetching on rebuild.
   static final Set<String> _warmedAreas = {};
@@ -114,10 +102,16 @@ class MatchLocationMiniMap extends ConsumerWidget {
     // pre-warmed on every online view so the map renders offline later. The
     // match profile AppBar already shows the "You are offline" chip.
 
-    // Coarse privacy map: truncated center + capped zoom, no exact pins, tappable - more zoomed in
-    if (location.hasCoarseCenter) {
-      final center = LatLng(location.mapCenterLat!, location.mapCenterLng!);
-      final zoom = ((location.mapZoom ?? 12) + 1.5).clamp(1.0, 16.0).toDouble();
+    // Privacy-coarse map: the server stores only a 2-decimal-rounded midpoint
+    // (~1.1 km cell) plus a distance bucket — never an exact spot.
+    // displayView() turns those into a viewport guaranteed to contain the real
+    // match area (the coverage circle below always fits inside the frame).
+    // No pin or dot is ever drawn: we must not imply an exact location.
+    // Legacy rows carrying only exact coordinates are coarsened client-side.
+    final view = location.displayView(viewportHeightPx: height);
+    if (view != null) {
+      final center = LatLng(view.centerLat, view.centerLng);
+      final zoom = view.zoom;
       _warmTilesForOffline(center, zoom);
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -203,7 +197,7 @@ class MatchLocationMiniMap extends ConsumerWidget {
                         circles: [
                           CircleMarker(
                             point: center,
-                            radius: 1500,
+                            radius: view.coverageRadiusMeters,
                             useRadiusInMeter: true,
                             color: Colors.blueAccent.withValues(alpha: 0.12),
                             borderColor: Colors.blueAccent.withValues(
@@ -213,32 +207,8 @@ class MatchLocationMiniMap extends ConsumerWidget {
                           ),
                         ],
                       ),
-                      MarkerLayer(
-                        markers: [
-                          Marker(
-                            point: center,
-                            width: 22,
-                            height: 22,
-                            child: Container(
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: Colors.blue.shade600
-                                    .withValues(alpha: 0.75),
-                                border: Border.all(
-                                  color: Colors.white,
-                                  width: 2,
-                                ),
-                                boxShadow: const [
-                                  BoxShadow(
-                                    color: Colors.black26,
-                                    blurRadius: 3,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
+                      // Intentionally no MarkerLayer: the minimap must never
+                      // pinpoint a spot — only the approximate area above.
                     ],
                   ),
                   Positioned.fill(
@@ -288,215 +258,8 @@ class MatchLocationMiniMap extends ConsumerWidget {
       );
     }
 
-    if (!location.hasValidCoords) {
-      // No displayable location (old matches) -> hide per requirement
-      return const SizedBox.shrink();
-    }
-
-    final p1 = LatLng(location.user1Lat!, location.user1Lng!);
-    final p2 = LatLng(location.user2Lat!, location.user2Lng!);
-    const distance = Distance();
-    final distKm = distance.as(LengthUnit.Kilometer, p1, p2);
-    final center = LatLng(
-      (p1.latitude + p2.latitude) / 2,
-      (p1.longitude + p2.longitude) / 2,
-    );
-    final zoom = _zoomForDistanceKm(distKm);
-    _warmTilesForOffline(center, zoom);
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (showTitle)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 6, left: 4),
-            child: Row(
-              children: [
-                Icon(Icons.location_on, size: 14, color: Colors.blue.shade700),
-                const SizedBox(width: 4),
-                Flexible(
-                  child: Text(
-                    effectiveTitle,
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.grey.shade700,
-                    ),
-                    maxLines: 2,
-                    overflow: TextOverflow.visible,
-                  ),
-                ),
-                if (location.createdAt != null) ...[
-                  const SizedBox(width: 6),
-                  Text(
-                    '• ${_formatDateTime(context, ref, location.createdAt!, l10n)}',
-                    style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
-                    maxLines: 2,
-                    softWrap: true,
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(12),
-          child: SizedBox(
-            height: height,
-            width: double.infinity,
-            child: Stack(
-              children: [
-                FlutterMap(
-                  options: MapOptions(
-                    initialCenter: center,
-                    initialZoom: zoom,
-                    backgroundColor: const Color(0xFFF4F0E8),
-                    interactionOptions: const InteractionOptions(
-                      flags: InteractiveFlag.none,
-                    ),
-                    onTap: (_, _) => Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => MatchLocationFullMapScreen(
-                          location: location,
-                          showOccurrenceNumber: showOccurrenceNumber,
-                        ),
-                      ),
-                    ), // ignore: unnecessary_underscores
-                  ),
-                  children: [
-                    const _OfflineMapBackgroundPattern(),
-                    TileLayer(
-                      urlTemplate:
-                          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                      userAgentPackageName: 'matchme.app',
-                      tileProvider: CachedMapTileProvider(),
-                    ),
-                    RichAttributionWidget(
-                      attributions: [
-                        TextSourceAttribution('OpenStreetMap contributors'),
-                      ],
-                    ),
-                    MarkerLayer(
-                      markers: [
-                        Marker(
-                          point: p1,
-                          width: 36,
-                          height: 36,
-                          child: _MapDot(
-                            color: Colors.blue.shade700,
-                            label: 'A',
-                          ),
-                        ),
-                        Marker(
-                          point: p2,
-                          width: 36,
-                          height: 36,
-                          child: _MapDot(
-                            color: Colors.orange.shade700,
-                            label: 'B',
-                          ),
-                        ),
-                      ],
-                    ),
-                    PolylineLayer(
-                      polylines: [
-                        Polyline(
-                          points: [p1, p2],
-                          strokeWidth: 2,
-                          color: Colors.blue.withValues(alpha: 0.4),
-                          pattern: StrokePattern.dashed(segments: const [6, 4]),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-                Positioned.fill(
-                  child: Material(
-                    color: Colors.transparent,
-                    child: InkWell(
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => MatchLocationFullMapScreen(
-                            location: location,
-                            showOccurrenceNumber: showOccurrenceNumber,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                Positioned(
-                  left: 8,
-                  bottom: 8,
-                  child: IgnorePointer(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 3,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.9),
-                        borderRadius: BorderRadius.circular(8),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.1),
-                            blurRadius: 4,
-                          ),
-                        ],
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.straighten,
-                            size: 10,
-                            color: Colors.grey.shade700,
-                          ),
-                          const SizedBox(width: 3),
-                          Text(
-                            distKm < 1
-                                ? '${(distKm * 1000).round()} m'
-                                : '${distKm.toStringAsFixed(1)} km',
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: Colors.grey.shade800,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                Positioned(
-                  right: 8,
-                  bottom: 8,
-                  child: IgnorePointer(
-                    child: Container(
-                      padding: const EdgeInsets.all(6),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.9),
-                        borderRadius: BorderRadius.circular(8),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.12),
-                            blurRadius: 4,
-                          ),
-                        ],
-                      ),
-                      child: Icon(
-                        Icons.open_in_full,
-                        size: 14,
-                        color: Colors.grey.shade700,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
+    // No displayable location (old matches) -> hide per requirement
+    return const SizedBox.shrink();
   }
 
   String _formatDate(DateTime dt, LocalizationState l10n) {
@@ -529,44 +292,6 @@ class MatchLocationMiniMap extends ConsumerWidget {
     } catch (_) {
       return _formatDate(dt, l10n);
     }
-  }
-}
-
-class _MapDot extends StatelessWidget {
-  final Color color;
-  final String label;
-  const _MapDot({required this.color, required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Container(
-        width: 22,
-        height: 22,
-        decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
-          border: Border.all(color: Colors.white, width: 2),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.25),
-              blurRadius: 6,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Center(
-          child: Text(
-            label,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 10,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ),
-      ),
-    );
   }
 }
 
@@ -690,40 +415,14 @@ class _MatchLocationFullMapScreenState
   }
 
   /// Initial center/zoom for this location (same values passed to FlutterMap).
+  /// Coverage-based: the view always contains the real match area, never a
+  /// precise spot (see utils/match_map_view.dart).
   ({LatLng center, double zoom}) _initialView() {
-    final loc = widget.location;
-    if (loc.hasCoarseCenter) {
-      return (
-        center: LatLng(loc.mapCenterLat!, loc.mapCenterLng!),
-        zoom: ((loc.mapZoom ?? 12) + 1.5).clamp(1.0, 16.0).toDouble(),
-      );
-    }
-    if (loc.hasValidCoords) {
-      final p1 = LatLng(loc.user1Lat!, loc.user1Lng!);
-      final p2 = LatLng(loc.user2Lat!, loc.user2Lng!);
-      const d = Distance();
-      final distKm = d.as(LengthUnit.Kilometer, p1, p2);
-      return (
-        center: LatLng(
-          (p1.latitude + p2.latitude) / 2,
-          (p1.longitude + p2.longitude) / 2,
-        ),
-        zoom: _zoomForDistanceKm(distKm),
-      );
+    final view = widget.location.displayView();
+    if (view != null) {
+      return (center: LatLng(view.centerLat, view.centerLng), zoom: view.zoom);
     }
     return (center: const LatLng(20, 0), zoom: 2);
-  }
-
-  double _zoomForDistanceKm(double distKm) {
-    if (distKm < 0.3) return 16.5;
-    if (distKm < 0.6) return 15.5;
-    if (distKm < 1.0) return 14.5;
-    if (distKm < 2.0) return 13.5;
-    if (distKm < 5.0) return 12.5;
-    if (distKm < 10.0) return 11.5;
-    if (distKm < 20.0) return 10.5;
-    if (distKm < 50.0) return 9.5;
-    return 8.5;
   }
 
   @override
@@ -763,50 +462,23 @@ class _MatchLocationFullMapScreenState
           )
         : _singleLocationTitle(l10n);
     final loc = widget.location;
-    final isCoarse = loc.hasCoarseCenter;
-    final isExact = loc.hasValidCoords;
 
     final initial = _initialView();
     final LatLng center = initial.center;
     final double zoom = initial.zoom;
-    List<Marker> markers = [];
-    List<Polyline> polylines = [];
+    // Approximate-area circle only: no markers/polylines — the full map must
+    // never pinpoint an exact location either.
+    final view = loc.displayView();
     List<CircleMarker> circles = [];
-
-    if (isCoarse) {
+    if (view != null) {
       circles = [
         CircleMarker(
           point: center,
-          radius: 1500,
+          radius: view.coverageRadiusMeters,
           useRadiusInMeter: true,
           color: Colors.blueAccent.withValues(alpha: 0.12),
           borderColor: Colors.blueAccent.withValues(alpha: 0.35),
           borderStrokeWidth: 2,
-        ),
-      ];
-    } else if (isExact) {
-      final p1 = LatLng(loc.user1Lat!, loc.user1Lng!);
-      final p2 = LatLng(loc.user2Lat!, loc.user2Lng!);
-      markers = [
-        Marker(
-          point: p1,
-          width: 40,
-          height: 40,
-          child: _MapDot(color: Colors.blue.shade700, label: 'A'),
-        ),
-        Marker(
-          point: p2,
-          width: 40,
-          height: 40,
-          child: _MapDot(color: Colors.orange.shade700, label: 'B'),
-        ),
-      ];
-      polylines = [
-        Polyline(
-          points: [p1, p2],
-          strokeWidth: 2,
-          color: Colors.blue.withValues(alpha: 0.4),
-          pattern: StrokePattern.dashed(segments: const [6, 4]),
         ),
       ];
     }
@@ -850,18 +522,16 @@ class _MatchLocationFullMapScreenState
                 ],
               ),
               if (circles.isNotEmpty) CircleLayer(circles: circles),
-              if (markers.isNotEmpty) MarkerLayer(markers: markers),
-              if (polylines.isNotEmpty) PolylineLayer(polylines: polylines),
             ],
           ),
-          // My location / recenter
+          // Recenter on the match area (never a device-GPS "my location" dot)
           Positioned(
             right: 12,
             bottom: 110,
             child: FloatingActionButton.small(
               heroTag: null,
               onPressed: () => _mapController.move(center, zoom),
-              child: const Icon(Icons.my_location),
+              child: const Icon(Icons.center_focus_strong),
             ),
           ),
           // Zoom controls

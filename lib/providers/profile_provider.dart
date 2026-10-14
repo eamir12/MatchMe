@@ -907,7 +907,11 @@ class UserProfile {
       'name': name,
       'date_of_birth': dateOfBirth?.toIso8601String().split('T').first,
       'gender': gender,
-      'preferred_language': preferredLanguage,
+      // preferred_language deliberately omitted: the UI language is owned by
+      // locale_provider (setLocale / syncLanguageAfterLogin). Writing the
+      // parsed field here raced those writes with a stale value — typically
+      // the column's 'en' default loaded before the device language had been
+      // seeded — which flipped new users' UI back to English.
       'match_radius_default': matchRadiusDefault,
       'gps_interval_default': gpsIntervalDefault,
       'smart_gps_throttling_enabled': smartGpsThrottlingEnabled,

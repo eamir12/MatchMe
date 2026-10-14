@@ -220,6 +220,8 @@ void main() {
         'name': 'Alexandra Example',
         'photos': ['https://example.com/avatar.jpg?token=valid'],
         'is_verified': true,
+        // Puts an age on the meta line so the pill has a line to share.
+        'date_of_birth': '2000-01-01',
       });
 
       await tester.pumpWidget(
@@ -271,10 +273,40 @@ void main() {
       await tester.pump();
       await tester.pump();
 
-      // The bare check on the avatar is not self-explanatory; the card must
-      // also carry a readable label next to the name it belongs to.
+      // The word is the status mark: the photo no longer carries its own
+      // check, and the label rides the age/gender line instead of the name.
       expect(find.text('Verified'), findsOneWidget);
       expect(find.byIcon(Icons.verified), findsWidgets);
+      expect(find.byIcon(Icons.check_rounded), findsNothing);
+
+      final ageFinder = find.byWidgetPredicate(
+        (widget) =>
+            widget is Text &&
+            widget.style?.fontSize == 13 &&
+            RegExp(r'^\d{1,3}$').hasMatch(widget.data ?? ''),
+      );
+      expect(ageFinder, findsOneWidget, reason: 'expected an age on the card');
+
+      Row? metaRow;
+      tester.element(ageFinder).visitAncestorElements((ancestor) {
+        if (ancestor.widget is Row) {
+          metaRow = ancestor.widget as Row;
+          return false;
+        }
+        return true;
+      });
+      expect(metaRow, isNotNull, reason: 'the age sits inside a row');
+      expect(
+        find.descendant(
+          of: find.byWidget(metaRow!),
+          matching: find.text('Verified'),
+        ),
+        findsOneWidget,
+        reason: 'Verified must share the age/gender row',
+      );
+
+      final verifiedText = tester.widget<Text>(find.text('Verified'));
+      expect(verifiedText.style?.fontSize, greaterThanOrEqualTo(12));
       expect(tester.takeException(), isNull);
 
       await tester.pump(const Duration(seconds: 11));

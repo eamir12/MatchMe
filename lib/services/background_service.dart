@@ -526,14 +526,18 @@ class BackgroundService {
       // print('BackgroundService.stop: failed to mark offline (RPC may handle this): $e');
     }
 
-    // Also try to mark the user's presence offline immediately via RPC
+    // Also try to mark the user's presence offline immediately via RPC.
+    // stop() is only invoked on explicit sign-out (auth signedOut event,
+    // visibility onLogout), so p_clear_pinned: true drops any active
+    // home-base pin — otherwise a logged-out user stays "online" via
+    // is_pinned_location_active() until the pin expires.
     try {
       final targetUserId =
           _userId ?? Supabase.instance.client.auth.currentUser?.id;
       if (targetUserId != null) {
         await Supabase.instance.client.rpc(
           'set_user_offline',
-          params: {'p_user_id': targetUserId},
+          params: {'p_user_id': targetUserId, 'p_clear_pinned': true},
         );
         // print('BackgroundService.stop: set_user_offline RPC called for $targetUserId');
       }

@@ -12,6 +12,7 @@ import 'package:matchme/services/translation_service.dart';
 import 'package:matchme/widgets/please_wait_dialog.dart';
 import 'package:matchme/widgets/voice_guidance_mute_button.dart';
 import 'package:matchme/services/verification_mediapipe.dart';
+import 'package:matchme/widgets/signed_image.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class VerificationGesture {
@@ -117,6 +118,117 @@ const List<VerificationGesture> _availableVerificationGestures = [
 
 VerificationGesture? _cachedVerificationGesture;
 final Random _gestureRandom = Random();
+
+/// One AI-marked mismatch region from `verification_ai_analysis.mismatchRegions`.
+/// Boxes are normalized fractions (0-1) of each photo's own width/height and
+/// are approximate by design — Gemini estimates them from the image pair.
+class _ComparisonRegion {
+  final String feature;
+  final String description;
+  final List<double>? profileBox;
+  final List<double>? verificationBox;
+
+  const _ComparisonRegion({
+    required this.feature,
+    required this.description,
+    this.profileBox,
+    this.verificationBox,
+  });
+
+  static double? _num(dynamic value) {
+    if (value is num) return value.toDouble();
+    return double.tryParse(value?.toString() ?? '');
+  }
+
+  static List<double>? _box(dynamic raw) {
+    if (raw is! Map) return null;
+    final x = _num(raw['x']);
+    final y = _num(raw['y']);
+    final w = _num(raw['width']);
+    final h = _num(raw['height']);
+    if (x == null || y == null || w == null || h == null) return null;
+    final cx = x.clamp(0.0, 1.0).toDouble();
+    final cy = y.clamp(0.0, 1.0).toDouble();
+    final cw = w.clamp(0.0, 1.0 - cx).toDouble();
+    final ch = h.clamp(0.0, 1.0 - cy).toDouble();
+    if (cw <= 0 || ch <= 0) return null;
+    return <double>[cx, cy, cw, ch];
+  }
+
+  static _ComparisonRegion? tryParse(dynamic raw) {
+    if (raw is! Map) return null;
+    final description = raw['description']?.toString().trim() ?? '';
+    final feature = raw['feature']?.toString().trim() ?? '';
+    if (description.isEmpty && feature.isEmpty) return null;
+    return _ComparisonRegion(
+      feature: feature,
+      description: description,
+      profileBox: _box(raw['profileBox']),
+      verificationBox: _box(raw['verificationBox']),
+    );
+  }
+}
+
+/// Paints the AI mismatch rectangles plus a numbered badge over each photo.
+/// Coordinates are approximate (normalized 0-1, rendered over a cover-fitted
+/// image), so boxes are indicative rather than pixel-exact.
+class _MismatchBoxesPainter extends CustomPainter {
+  final List<List<double>?> boxes;
+
+  const _MismatchBoxesPainter(this.boxes);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    var index = 0;
+    for (final box in boxes) {
+      if (box == null) continue;
+      index++;
+      final rect = Rect.fromLTWH(
+        box[0] * size.width,
+        box[1] * size.height,
+        box[2] * size.width,
+        box[3] * size.height,
+      );
+      final rrect = RRect.fromRectAndRadius(rect, const Radius.circular(6));
+      canvas.drawRRect(
+        rrect,
+        Paint()..color = Colors.red.withValues(alpha: 0.15),
+      );
+      canvas.drawRRect(
+        rrect,
+        Paint()
+          ..color = Colors.red
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.5,
+      );
+      final badgeCenter = Offset(
+        (rect.left + 13).clamp(13.0, size.width - 13.0),
+        (rect.top + 13).clamp(13.0, size.height - 13.0),
+      );
+      canvas.drawCircle(badgeCenter, 11, Paint()..color = Colors.red);
+      final label = TextPainter(
+        text: TextSpan(
+          text: '$index',
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      label.paint(
+        canvas,
+        badgeCenter - Offset(label.width / 2, label.height / 2),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_MismatchBoxesPainter oldDelegate) =>
+      oldDelegate.boxes != boxes;
+}
+
 const Map<String, String> _verificationGestureEmojiByCode = <String, String>{
   'CLOSED_FIST_RIGHT_HAND': '✊',
   'OPEN_PALM_RIGHT_HAND': '✋',
@@ -162,7 +274,51 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
   bool _isRequestingManualReview = false;
   bool _didSpeakIntro = false;
 
+  // Accessibility: content on this screen is also spoken, in visual order.
+  // Announcements are serialized on one queue so two sources scheduled in the
+  // same frame cannot race each other into the 2-second rate limiter and get
+  // dropped; each source dedupes with its own signature so rebuilds never
+  // repeat a sentence, and again on the built text so a stale queued item
+  // whose content was already spoken (state changed while queued) is skipped.
+  // Titles, section headers and button labels are deliberately never spoken.
+  Future<void> _spokenQueue = Future<void>.value();
+  final Map<String, String> _lastSpokenBySource = <String, String>{};
+  String? _lastStatusSpokenSig;
+  String? _lastStatusDetailsSpokenSig;
+  String? _lastInstructionsSpokenSig;
+  String? _lastSubmissionSpokenSig;
+  String? _lastApprovedSpokenSig;
+
   VerificationGesture? _currentGesture;
+
+  void _enqueueSpoken(
+    String source,
+    Future<String> Function() buildText, {
+    bool Function()? isRelevant,
+  }) {
+    if (!VoiceGuidanceService.instance.enabled) return;
+    _spokenQueue = _spokenQueue
+        .then((_) async {
+          if (!mounted) return;
+          if (ModalRoute.of(context)?.isCurrent != true) return;
+          String text;
+          try {
+            text = (await buildText()).trim();
+          } catch (_) {
+            return;
+          }
+          if (text.isEmpty || !mounted) return;
+          if (ModalRoute.of(context)?.isCurrent != true) return;
+          if (isRelevant != null && !isRelevant()) return;
+          if (_lastSpokenBySource[source] == text) return;
+          await VoiceGuidanceService.instance.speakTextAfterCurrent(text);
+          _lastSpokenBySource[source] = text;
+          // Hold the queue until this utterance finished so the next
+          // announcement can never start on top of it.
+          await VoiceGuidanceService.instance.waitUntilCurrentSpeechFinished();
+        })
+        .catchError((_) {});
+  }
 
   void _openSelectedImagePreview() {
     final bytes = _selectedImage;
@@ -238,12 +394,18 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
     print('VERIFICATION SCREEN: Gesture label: $gestureLabel');
 
     // Voice guidance: describe the required gesture before the capture page
-    // opens so the user knows exactly what to do.
+    // opens so the user knows exactly what to do. speakAndWait (not speakKey)
+    // so a fresh tap is always heard: it interrupts any pending screen
+    // announcement instead of being dropped by the 2-second rate limiter.
+    final gestureSpeech = l10n.getString(
+      'voiceGuidanceVerificationGesture',
+      params: {'gesture': gestureLabel, 'description': gestureDescription},
+    );
     unawaited(
-      VoiceGuidanceService.instance.speakKey(
-        'voiceGuidanceVerificationGesture',
-        params: {'gesture': gestureLabel, 'description': gestureDescription},
-        fallbackText: '$gestureLabel. $gestureDescription',
+      VoiceGuidanceService.instance.speakAndWait(
+        gestureSpeech.startsWith('[')
+            ? '$gestureLabel. $gestureDescription'
+            : gestureSpeech,
       ),
     );
 
@@ -357,8 +519,8 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
       _isSubmitting = true;
     });
     unawaited(
-      VoiceGuidanceService.instance.speakKey(
-        'voiceGuidanceVerificationSubmitting',
+      VoiceGuidanceService.instance.speakAndWait(
+        l10n.getString('voiceGuidanceVerificationSubmitting'),
       ),
     );
 
@@ -410,7 +572,9 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
             : l10n.getString('verificationSubmittedSuccess');
         final bg = (status == 'rejected') ? Colors.red : Colors.green;
 
-        unawaited(VoiceGuidanceService.instance.speakText(message));
+        // The snackbar text is shown, so it is spoken — queued behind any
+        // announcement already in progress so it can never be dropped.
+        _enqueueSpoken('submitResult', () => Future.value(message));
 
         ScaffoldMessenger.of(
           context,
@@ -426,16 +590,14 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
         );
       }
       if (mounted) {
-        unawaited(
-          VoiceGuidanceService.instance.speakKey('failedToSubmitVerification'),
-        );
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '${l10n.getString('failedToSubmitVerification')}: $e',
-            ),
-          ),
-        );
+        final errorShown =
+            '${l10n.getString('failedToSubmitVerification')}: $e';
+        // Errors are urgent: they interrupt instead of queueing, and the
+        // full shown text (including the error detail) is spoken.
+        unawaited(VoiceGuidanceService.instance.speakAndWait(errorShown));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(errorShown)));
       }
     } finally {
       // Hide loading dialog
@@ -474,6 +636,15 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
 
     final l10n = ref.read(localizationProvider);
 
+    // Accessibility: only the dialog's message content is read — titles and
+    // button labels are never spoken — and only while the dialog is actually
+    // on screen.
+    var dialogVisible = true;
+    _enqueueSpoken('manualReviewDialog', () {
+      final l = ref.read(localizationProvider);
+      return Future.value(l.getString('manualReviewRequestConfirmMessage'));
+    }, isRelevant: () => dialogVisible);
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) {
@@ -493,6 +664,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
         );
       },
     );
+    dialogVisible = false;
 
     if (confirmed != true || !mounted) return;
 
@@ -515,30 +687,21 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
       } catch (_) {}
 
       if (mounted) {
-        unawaited(
-          VoiceGuidanceService.instance.speakText(
-            l10n.getString('manualReviewRequestedSuccess'),
-          ),
-        );
+        final successText = l10n.getString('manualReviewRequestedSuccess');
+        _enqueueSpoken('manualReviewResult', () => Future.value(successText));
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(l10n.getString('manualReviewRequestedSuccess')),
-            backgroundColor: Colors.green,
-          ),
+          SnackBar(content: Text(successText), backgroundColor: Colors.green),
         );
       }
     } catch (e) {
       if (mounted) {
-        unawaited(
-          VoiceGuidanceService.instance.speakKey('failedToSubmitVerification'),
-        );
+        final errorShown =
+            '${l10n.getString('failedToSubmitVerification')}: $e';
+        // Errors are urgent: they interrupt instead of queueing, and the
+        // full shown text (including the error detail) is spoken.
+        unawaited(VoiceGuidanceService.instance.speakAndWait(errorShown));
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '${l10n.getString('failedToSubmitVerification')}: $e',
-            ),
-            backgroundColor: Colors.red,
-          ),
+          SnackBar(content: Text(errorShown), backgroundColor: Colors.red),
         );
       }
     } finally {
@@ -563,6 +726,21 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
     String statusText;
     String statusDescription;
     Widget? geminiReasoning;
+    final mismatchRegions = <_ComparisonRegion>[];
+
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    final profile = userId == null
+        ? null
+        : ref.watch(userProfileProvider(userId)).asData?.value;
+    final profilePhotoPath = (profile != null && profile.photos.isNotEmpty)
+        ? profile.photos.first
+        : null;
+    final verificationPhotoRaw = statusData?['verification_photo_path']
+        ?.toString();
+    final verificationPhotoPath =
+        (verificationPhotoRaw == null || verificationPhotoRaw.trim().isEmpty)
+        ? null
+        : verificationPhotoRaw;
 
     final status = _resolveVerificationStatus(
       statusData: statusData,
@@ -620,12 +798,63 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
           );
         }
 
+        // AI-marked mismatch regions (auto rejections only): drawn on top of
+        // the two photos below so the user sees exactly what differed.
+        final regionsRaw = aiAnalysis is Map
+            ? aiAnalysis['mismatchRegions']
+            : null;
+        if (regionsRaw is List) {
+          for (final raw in regionsRaw) {
+            final region = _ComparisonRegion.tryParse(raw);
+            if (region != null) mismatchRegions.add(region);
+          }
+        }
+
         break;
       default:
         statusColor = Colors.grey;
         statusIcon = Icons.verified_user;
         statusText = l10n.getString('notVerified');
         statusDescription = l10n.getString('notVerifiedDescription');
+    }
+
+    // Accessibility: the status heading (status + description) and the
+    // rejection details (AI analysis, photo comparison, review hint) are
+    // announced as separate sources with separate signatures, so details
+    // arriving later — e.g. after the server response replaces the cached
+    // fallback — never repeat the heading already heard.
+    final showComparison =
+        status == 'rejected' &&
+        (profilePhotoPath != null || verificationPhotoPath != null);
+    final statusSpokenSig = '$status|$statusText|$statusDescription';
+    if (_lastStatusSpokenSig != statusSpokenSig) {
+      _lastStatusSpokenSig = statusSpokenSig;
+      _enqueueSpoken(
+        'status',
+        () => Future.value('$statusText. $statusDescription'),
+      );
+    }
+    final statusDetailsSpokenSig =
+        '$status|$autoRejected|${rejectionReason ?? ''}|'
+        '${mismatchRegions.length}|$profilePhotoPath|$verificationPhotoPath';
+    if (_lastStatusDetailsSpokenSig != statusDetailsSpokenSig) {
+      _lastStatusDetailsSpokenSig = statusDetailsSpokenSig;
+      _enqueueSpoken(
+        'statusDetails',
+        () => _buildStatusDetailsSpokenText(
+          status: status,
+          showAnalysis:
+              autoRejected &&
+              rejectionReason != null &&
+              rejectionReason.isNotEmpty,
+          rejectionReason: rejectionReason ?? '',
+          regions: mismatchRegions,
+          showComparison: showComparison,
+          showNoBoxesNote: autoRejected,
+          l10n: l10n,
+          translationService: translationService,
+        ),
+      );
     }
 
     return Card(
@@ -653,6 +882,19 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
             if (geminiReasoning != null) ...[
               const SizedBox(height: 12),
               geminiReasoning,
+            ],
+            if (status == 'rejected' &&
+                (profilePhotoPath != null ||
+                    verificationPhotoPath != null)) ...[
+              const SizedBox(height: 12),
+              _buildRejectedPhotoComparison(
+                regions: mismatchRegions,
+                showNoBoxesNote: autoRejected,
+                profilePhotoPath: profilePhotoPath,
+                verificationPhotoPath: verificationPhotoPath,
+                l10n: l10n,
+                translationService: translationService,
+              ),
             ],
             if (status == 'rejected') ...[
               const SizedBox(height: 16),
@@ -697,6 +939,66 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
         ),
       ),
     );
+  }
+
+  /// Builds the spoken form of the rejection details shown under the status
+  /// heading: the AI analysis (translated to the UI language), the
+  /// photo-comparison block with each numbered mismatch, and the
+  /// manual-review hint. The heading itself is a separate announcement so it
+  /// is never repeated when only these details change. Returns an empty
+  /// string when there are no details to speak (non-rejected statuses).
+  Future<String> _buildStatusDetailsSpokenText({
+    required String status,
+    required bool showAnalysis,
+    required String rejectionReason,
+    required List<_ComparisonRegion> regions,
+    required bool showComparison,
+    required bool showNoBoxesNote,
+    required LocalizationState l10n,
+    required TranslationService translationService,
+  }) async {
+    final parts = <String>[];
+    if (showAnalysis && rejectionReason.isNotEmpty) {
+      parts
+        ..add(l10n.getString('aiAnalysisPrefix'))
+        ..add(
+          await _translateGeminiReasoning(
+            rejectionReason,
+            l10n,
+            translationService,
+          ),
+        );
+    }
+    if (showComparison) {
+      parts
+        ..add(l10n.getString('verificationComparisonTitle'))
+        ..add(l10n.getString('verificationComparisonProfilePhotoLabel'))
+        ..add(
+          l10n.getString('verificationComparisonVerificationPhotoLabel'),
+        );
+      if (regions.isEmpty && showNoBoxesNote) {
+        parts.add(l10n.getString('verificationComparisonNoBoxes'));
+      } else if (regions.isNotEmpty) {
+        parts.add(l10n.getString('verificationComparisonMismatchHeader'));
+        for (var i = 0; i < regions.length; i++) {
+          final region = regions[i];
+          final raw = region.description.isNotEmpty
+              ? region.description
+              : region.feature;
+          if (raw.isEmpty) continue;
+          final translated = await _translateGeminiReasoning(
+            raw,
+            l10n,
+            translationService,
+          );
+          parts.add('${i + 1}. $translated');
+        }
+      }
+    }
+    if (status == 'rejected') {
+      parts.add(l10n.getString('requestManualReviewHint'));
+    }
+    return parts.join('. ');
   }
 
   Widget _buildApprovedState(LocalizationState l10n) {
@@ -886,7 +1188,230 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
     }
   }
 
+  /// Rejected-result comparison: shows the profile photo next to the
+  /// verification selfie with the AI's mismatch rectangles (numbered badges)
+  /// and a translated, numbered explanation of each difference.
+  Widget _buildRejectedPhotoComparison({
+    required List<_ComparisonRegion> regions,
+    required bool showNoBoxesNote,
+    required String? profilePhotoPath,
+    required String? verificationPhotoPath,
+    required LocalizationState l10n,
+    required TranslationService translationService,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.red.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.red.withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.compare, color: Colors.red, size: 16),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  l10n.getString('verificationComparisonTitle'),
+                  style: const TextStyle(
+                    color: Colors.red,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: _buildComparisonPhoto(
+                  label: l10n.getString(
+                    'verificationComparisonProfilePhotoLabel',
+                  ),
+                  path: profilePhotoPath,
+                  bucket: 'profile-photos',
+                  boxes: regions
+                      .map((region) => region.profileBox)
+                      .toList(growable: false),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _buildComparisonPhoto(
+                  label: l10n.getString(
+                    'verificationComparisonVerificationPhotoLabel',
+                  ),
+                  path: verificationPhotoPath,
+                  bucket: 'verification-photos',
+                  boxes: regions
+                      .map((region) => region.verificationBox)
+                      .toList(growable: false),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (regions.isEmpty && showNoBoxesNote)
+            Text(
+              l10n.getString('verificationComparisonNoBoxes'),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).textTheme.bodySmall?.color,
+              ),
+            )
+          else if (regions.isNotEmpty) ...[
+            Text(
+              l10n.getString('verificationComparisonMismatchHeader'),
+              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+            ),
+            const SizedBox(height: 6),
+            for (var i = 0; i < regions.length; i++)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: 20,
+                      height: 20,
+                      alignment: Alignment.center,
+                      decoration: const BoxDecoration(
+                        color: Colors.red,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Text(
+                        '${i + 1}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _buildTranslatedRegionText(
+                        regions[i],
+                        l10n,
+                        translationService,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildComparisonPhoto({
+    required String label,
+    required String? path,
+    required String bucket,
+    required List<List<double>?> boxes,
+  }) {
+    final hasPhoto = path != null && path.isNotEmpty;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          label,
+          textAlign: TextAlign.center,
+          style: Theme.of(
+            context,
+          ).textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 4),
+        Container(
+          height: 150,
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: Theme.of(context).dividerColor.withValues(alpha: 0.6),
+            ),
+          ),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (hasPhoto)
+                SignedImage(
+                  source: path,
+                  bucket: bucket,
+                  fit: BoxFit.cover,
+                  filterQualityLow: true,
+                  errorWidget: Icon(
+                    Icons.photo_library_outlined,
+                    color: Theme.of(context).disabledColor,
+                  ),
+                )
+              else
+                Center(
+                  child: Icon(
+                    Icons.photo_library_outlined,
+                    color: Theme.of(context).disabledColor,
+                  ),
+                ),
+              if (hasPhoto) CustomPaint(painter: _MismatchBoxesPainter(boxes)),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTranslatedRegionText(
+    _ComparisonRegion region,
+    LocalizationState l10n,
+    TranslationService translationService,
+  ) {
+    final text = region.description.isNotEmpty
+        ? region.description
+        : region.feature;
+    if (text.isEmpty) return const SizedBox.shrink();
+    return FutureBuilder<String>(
+      future: _translateGeminiReasoning(text, l10n, translationService),
+      builder: (context, snapshot) {
+        return Text(
+          snapshot.data ?? text,
+          style: Theme.of(context).textTheme.bodySmall,
+        );
+      },
+    );
+  }
+
   Widget _buildVerificationInstructions(LocalizationState l10n) {
+    // Accessibility: speak the requirements card content (each item title +
+    // description + gesture instruction) once per gesture/locale shown —
+    // the card header is a title and is not spoken.
+    final instructionsSpokenSig =
+        'instructions|${_currentGesture?.code ?? 'none'}|'
+        '${l10n.currentLocale.languageCode}';
+    if (_lastInstructionsSpokenSig != instructionsSpokenSig) {
+      _lastInstructionsSpokenSig = instructionsSpokenSig;
+      _enqueueSpoken('instructions', () {
+        final l = ref.read(localizationProvider);
+        final parts = <String>[
+          '${l.getString('clearSelfiePhoto')}. ${l.getString('clearSelfiePhotoDescription')}',
+          '${l.getString('goodLighting')}. ${l.getString('goodLightingDescription')}',
+          '${l.getString('noFiltersOrEdits')}. ${l.getString('noFiltersOrEditsDescription')}',
+        ];
+        final gesture = _currentGesture;
+        if (gesture != null) {
+          parts.add(
+            '${l.getString(gesture.titleKey)}. ${l.getString(gesture.descriptionKey)}',
+          );
+        }
+        return Future.value(parts.join('. '));
+      });
+    }
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16),
       child: Padding(
@@ -937,16 +1462,58 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
 
   Widget _buildGestureReferencePreview(VerificationGesture gesture) {
     final emoji = _verificationGestureEmojiByCode[gesture.code] ?? '🖐️';
+    // Hand emoji are drawn as right hands; mirror them for left-hand gestures
+    // so the icon shows the hand the user is actually asked to raise.
+    final mirrored = gesture.code.endsWith('_LEFT_HAND');
+    Widget glyph = Text(emoji, style: const TextStyle(fontSize: 88, height: 1.0));
+    if (mirrored) {
+      glyph = Transform(
+        alignment: Alignment.center,
+        transform: Matrix4.diagonal3Values(-1, 1, 1),
+        child: glyph,
+      );
+    }
+    final colorScheme = Theme.of(context).colorScheme;
+    final handLabel = ref
+        .read(localizationProvider)
+        .getString(
+          mirrored ? 'verificationCaptureHandLeft' : 'verificationCaptureHandRight',
+        );
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: Theme.of(
-          context,
-        ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.45),
-        borderRadius: BorderRadius.circular(12),
+        color: colorScheme.primaryContainer.withValues(alpha: 0.4),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: colorScheme.primary.withValues(alpha: 0.5),
+          width: 2,
+        ),
       ),
-      padding: const EdgeInsets.symmetric(vertical: 16),
-      child: Center(child: Text(emoji, style: const TextStyle(fontSize: 58))),
+      padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          glyph,
+          const SizedBox(height: 14),
+          // Hand badge (LEFT / RIGHT) so the requested hand is unmistakable
+          // at a glance, in the user's language.
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+            decoration: BoxDecoration(
+              color: colorScheme.primary,
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              handLabel.toUpperCase(),
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                color: colorScheme.onPrimary,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1.2,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -1051,22 +1618,18 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
           final shouldShowVerificationInstructions =
               effectiveVerificationStatus != 'approved';
           // Voice guidance: announce what verification involves once, the
-          // first time the instructions are shown.
-          // NOTE: scheduled as a microtask, NOT addPostFrameCallback:
-          // post-frame callbacks only run after the next scheduled frame and
-          // an idle engine can delay them for seconds, starting the
-          // announcement after the user already left (it then keeps playing
-          // on the next screen). The isCurrent check covers an already-gone
-          // route; the service generation guard covers the rest.
+          // first time the instructions are shown. Enqueued synchronously
+          // (this runs before the cards below are built) so the intro heads
+          // the queue instead of trailing behind the status/instructions.
+          // Only the guidance text is spoken — never the AppBar title.
           if (shouldShowVerificationInstructions && !_didSpeakIntro) {
             _didSpeakIntro = true;
-            Future.microtask(() {
-              if (!mounted) return;
-              if (ModalRoute.of(context)?.isCurrent != true) return;
-              unawaited(
-                VoiceGuidanceService.instance.speakKey(
-                  'voiceGuidanceVerificationIntro',
-                ),
+            _enqueueSpoken('intro', () {
+              final intro = ref
+                  .read(localizationProvider)
+                  .getString('voiceGuidanceVerificationIntro');
+              return Future.value(
+                intro.isEmpty || intro.startsWith('[') ? '' : intro,
               );
             });
           }
@@ -1084,6 +1647,22 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
                   effectiveVerificationStatus == 'rejected');
 
           if (effectiveVerificationStatus == 'approved') {
+            // Accessibility: the approved card (heading + description) is
+            // spoken once per locale — the Back button is not spoken.
+            final approvedSpokenSig =
+                'approved|${l10n.currentLocale.languageCode}';
+            if (_lastApprovedSpokenSig != approvedSpokenSig) {
+              _lastApprovedSpokenSig = approvedSpokenSig;
+              _enqueueSpoken('approved', () {
+                final l = ref.read(localizationProvider);
+                return Future.value(
+                  [
+                    l.getString('verified'),
+                    l.getString('verifiedDescription'),
+                  ].join('. '),
+                );
+              });
+            }
             return LayoutBuilder(
               builder: (context, constraints) {
                 return SingleChildScrollView(
@@ -1112,6 +1691,34 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
                   _buildVerificationInstructions(l10n),
 
                 if (shouldShowSubmissionSection) ...[
+                  // Accessibility: speak the submission section's privacy
+                  // notice once per locale — the section header and action
+                  // buttons are titles/labels and are not spoken.
+                  Builder(
+                    builder: (context) {
+                      final submissionSpokenSig =
+                          'submission|${l10n.currentLocale.languageCode}';
+                      if (_lastSubmissionSpokenSig != submissionSpokenSig) {
+                        _lastSubmissionSpokenSig = submissionSpokenSig;
+                        _enqueueSpoken('submission', () async {
+                          final l = ref.read(localizationProvider);
+                          String? privacy;
+                          try {
+                            privacy = await _verificationService
+                                .getPrivacyNotice(l.currentLocale.languageCode)
+                                .timeout(const Duration(seconds: 6));
+                          } catch (_) {
+                            privacy = null;
+                          }
+                          if (privacy != null && privacy.trim().isNotEmpty) {
+                            return privacy.trim();
+                          }
+                          return l.getString('verificationPrivacyNotice');
+                        });
+                      }
+                      return const SizedBox.shrink();
+                    },
+                  ),
                   const SizedBox(height: 24),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16),

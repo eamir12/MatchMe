@@ -164,7 +164,7 @@ class VerificationService {
       final response = await _supabase
           .from('users')
           .select(
-            'is_verified, verification_status, verification_submitted_at, verification_reviewed_at, verification_similarity_score, verification_auto_rejected, verification_ai_analysis, verification_reference_generated_at, verification_photo_retention_until',
+            'is_verified, verification_status, verification_submitted_at, verification_reviewed_at, verification_similarity_score, verification_auto_rejected, verification_ai_analysis, verification_reference_generated_at, verification_photo_retention_until, verification_photo_path',
           )
           .eq('id', userId)
           .maybeSingle();

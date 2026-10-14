@@ -801,12 +801,15 @@ Accept ONLY if the photo is:
 - a clear face shot of a SINGLE person (the user).
 - the face is complete, fully inside the frame, and large enough to be the
   obvious subject of the image.
+- Eyeglasses or sunglasses are perfectly fine: glasses are NOT an
+  obstruction and NOT a document, and must never cause a rejection.
 
 Reject if:
 - it is a body shot (full body or upper body without clear focus on face), OR
 - there are multiple people in the photo, OR
 - no person is visible, OR
-- the face is not clearly visible, OR
+- the face is not clearly visible (ordinary eyeglasses or sunglasses do NOT
+  make a face unclear), OR
 - the person is holding any card or document over or in front of their face
   (ID card, passport, driver's license, credit card, badge, or any similar
   object covering part of the face), OR
@@ -834,6 +837,10 @@ Return ONLY valid JSON matching this schema:
 }
 
 Rules:
+- Eyeglasses and sunglasses are allowed. Never treat glasses (frames,
+  lenses, dark or mirrored lenses) as an obstruction, occlusion, or
+  document, and never flag or reject a face photo because the person
+  wears them.
 - If allow is true, shotType must be "face"
 - confidence must be a number from 0 to 1
 - message must be short and user-friendly (no explicit content descriptions)

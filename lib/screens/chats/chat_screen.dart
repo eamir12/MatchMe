@@ -67,6 +67,20 @@ bool _isRtl(String text) {
   return false;
 }
 
+/// Resolves to `true` 10 seconds after first watch.
+///
+/// [_MessageBubble] watches this while an incoming message in a
+/// translation-enabled chat is still waiting for its translation: if the
+/// translation hasn't landed by then, the bubble stops hiding the message
+/// and falls back to the original text — mirroring the 10s notification
+/// deferral window in home_providers.dart so a failed translation can
+/// never hide a message forever.
+final bubbleTranslationWaitTimeoutProvider =
+    FutureProvider.autoDispose.family<bool, String>((ref, messageId) async {
+      await Future<void>.delayed(const Duration(seconds: 10));
+      return true;
+    });
+
 /// Whether [message] matches an in-chat search for [needle].
 ///
 /// [needle] must already be trimmed + lowercased. Every human-readable field
@@ -3338,37 +3352,71 @@ class _MessageBubble extends ConsumerWidget {
 
     AsyncValue<String>? translationAsync;
     String? translatedData;
+    // Auto-translation gating: with translation on for this chat, an
+    // incoming message is not displayed at all until its translation is
+    // ready — then original and translation render together below.
+    // Same-language messages (server-stamped source == UI language) need
+    // no translation and show immediately. If the translation fetch
+    // errors — or never resolves within 10s — the original is shown so a
+    // failed translation can't hide a message forever (mirrors the 10s
+    // notification deferral window in home_providers.dart).
+    bool suppressTranslationDisplay = false;
     if (shouldEvaluateTranslation) {
-      translationAsync = ref.watch(
-        translationFamilyProvider(
-          jsonEncode({
-            'text': message.contentOriginal,
-            'matchId': matchId,
-            'messageId': message.id,
-            'otherUserId': otherUserId,
-          }),
-        ),
+      final target = normalizeLanguageCode(targetLanguage);
+      final sourceLang = normalizeLanguageCode(
+        message.detectedSourceLanguage ?? '',
       );
-      translatedData = translationAsync?.asData?.value;
+      final needsTranslation = sourceLang.isEmpty || sourceLang != target;
+      if (needsTranslation) {
+        translationAsync = ref.watch(
+          translationFamilyProvider(
+            jsonEncode({
+              'text': message.contentOriginal,
+              'matchId': matchId,
+              'messageId': message.id,
+              'otherUserId': otherUserId,
+            }),
+          ),
+        );
+        translatedData = translationAsync?.asData?.value;
+        final hasUsableTranslation =
+            translatedData != null &&
+            translatedData.trim().isNotEmpty &&
+            !looksLikeEncryptedBlob(translatedData);
+        if (!hasUsableTranslation) {
+          final failed =
+              translationAsync?.hasError == true &&
+              translationAsync?.hasValue != true;
+          if (failed) {
+            suppressTranslationDisplay = true;
+          } else {
+            final timedOut =
+                ref
+                        .watch(bubbleTranslationWaitTimeoutProvider(message.id))
+                        .value ==
+                    true;
+            if (!timedOut) {
+              // Translation not available yet: the message must not be
+              // displayed at all — no original text, no placeholder.
+              return const SizedBox.shrink();
+            }
+            suppressTranslationDisplay = true;
+          }
+        }
+      }
     }
 
-    // The bubble shows the decrypted original IMMEDIATELY. The translation
-    // appears below the divider when it arrives (via translationFamilyProvider
-    // or Phase 2). Previously this branch replaced the original text with
-    // l10n.getString('generalLoading') for fresh incoming messages, which
-    // meant even after Phase 2 decrypted the original plaintext, the bubble
-    // stayed on "Loading..." until the translation (an out-of-process Edge
-    // Function + DeepL round-trip) came back. That turned a sub-second
-    // decrypt into a multi-second wait, with no visual feedback that the
-    // original was already readable. The translated sub-line below the
-    // divider still appears as soon as translatedData is non-null, so the
-    // user gets the original first and the translation just below it.
-    // Qualify stored text for display so pre-fix rows (bare ⛱) show color.
+    // The bubble renders once the gating above lets it through: either a
+    // usable translation exists (original + translation shown together),
+    // the message is in the UI language already, or the translation
+    // failed/timed out (original only). Qualify stored text for display
+    // so pre-fix rows (bare ⛱) show color.
     final primaryText = ensureEmojiPresentation(safeDisplayOriginal);
 
     final bool isOriginalRtl = _isRtl(primaryText);
     // Show translated text if we have translation data and it's different from original
     final bool showTranslated =
+        !suppressTranslationDisplay &&
         translatedData != null &&
         translatedData.trim().isNotEmpty &&
         !looksLikeEncryptedBlob(translatedData) &&
@@ -3420,11 +3468,6 @@ class _MessageBubble extends ConsumerWidget {
     final bool hasReactions =
         (message.reactionSummary ?? {}).isNotEmpty ||
         message.myReaction != null;
-
-    // Show original text immediately while translation loads,
-    // then update in-place when translation completes.
-    // Previously used SizedBox.shrink() which caused layout shifts
-    // (messages "bouncing") when hidden bubbles suddenly appeared.
 
     final actionsHint = l10n.getString('chatMessageActionsHint');
     void openMessageActions() {

@@ -1671,6 +1671,9 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
   int _lastOnlineCount = -1;
   bool _isFetchingLocation = false;
   RealtimeChannel? _sessionChannel;
+  RealtimeChannel? _presenceTickChannel;
+  Timer? _presenceTickDebounce;
+  bool _pendingTickRefresh = false;
   static bool _hasFetchedInitialLocation = false;
   static String? _presenceRunForUserId;
 
@@ -1728,6 +1731,44 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
             }
           });
     }
+    // Subscribe to the shared presence tick: a single-row table touched by DB
+    // triggers whenever any user's presence flips (login, explicit logout, or
+    // the stale-online cleanup after heartbeats stop). The raw user_session
+    // channel above only delivers rows this user can read under RLS; the tick
+    // table is readable by every authenticated user, so logon/logoff always
+    // refreshes the country markers immediately. The counts themselves still
+    // come from the SECURITY DEFINER RPC — the tick carries no user data.
+    _presenceTickChannel = Supabase.instance.client
+        .channel('online_map_presence_tick_${userId ?? 'anon'}')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'presence_tick',
+          callback: (payload) {
+            if (!mounted) return;
+            print(
+              '[${_ts()}] 🗺️ OnlineWorldMapScreen: presence_tick event received: $payload',
+            );
+            if (_loading) {
+              // A refresh is already in flight; re-run it right after so the
+              // change that produced this tick is never dropped.
+              _pendingTickRefresh = true;
+              return;
+            }
+            _presenceTickDebounce?.cancel();
+            _presenceTickDebounce = Timer(const Duration(milliseconds: 500), () {
+              if (!mounted || _loading) return;
+              unawaited(_refresh());
+            });
+          },
+        )
+        .subscribe((status, err) {
+          if (err != null) {
+            print(
+              '[${_ts()}] 🗺️ OnlineWorldMapScreen: Presence tick channel status: $status, error: $err',
+            );
+          }
+        });
   }
 
   /// Loads cached localized country names from local storage (pre-fetched at
@@ -1767,9 +1808,14 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
   @override
   void dispose() {
     _refreshTimer?.cancel();
+    _presenceTickDebounce?.cancel();
     if (_sessionChannel != null) {
       Supabase.instance.client.removeChannel(_sessionChannel!);
       _sessionChannel = null;
+    }
+    if (_presenceTickChannel != null) {
+      Supabase.instance.client.removeChannel(_presenceTickChannel!);
+      _presenceTickChannel = null;
     }
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -2225,6 +2271,16 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
           _loading = false;
         });
         print('[${_ts()}] 🗺️ OnlineWorldMapScreen: _refresh() - complete');
+        // A presence tick arrived while this refresh was in flight: run one
+        // more pass so the counters land on the newest server state.
+        if (_pendingTickRefresh) {
+          _pendingTickRefresh = false;
+          _presenceTickDebounce?.cancel();
+          _presenceTickDebounce = Timer(const Duration(milliseconds: 200), () {
+            if (!mounted || _loading) return;
+            unawaited(_refresh());
+          });
+        }
       }
     }
   }

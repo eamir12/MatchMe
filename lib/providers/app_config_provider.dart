@@ -94,6 +94,16 @@ final adDisplayOrderProvider = Provider<String>((ref) {
   return value == 'internal_first' ? 'internal_first' : 'external_first';
 });
 
+/// How many rows the Home "Recent Chats" / "Recent Matches" preview sections
+/// display. The underlying caches hold the full lists (sync.full_items_limit);
+/// this is a display-side cap only, adjustable via app_config.
+final homePreviewLimitProvider = Provider<int>((ref) {
+  final config = ref.watch(appConfigProvider);
+  final parsed = int.tryParse(config['home.recent_items_limit'] ?? '');
+  if (parsed == null || parsed < 1) return 5;
+  return parsed;
+});
+
 class AppConfigNotifier extends Notifier<Map<String, String>>
     with WidgetsBindingObserver {
   final supabase = Supabase.instance.client;

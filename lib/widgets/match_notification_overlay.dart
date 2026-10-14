@@ -136,7 +136,7 @@ class _MatchNotificationOverlayState
     final match = _currentNotification!.match;
     final l10n = ref.read(localizationProvider);
     final cachedProfile = ref
-        .read(userProfileProvider(match.otherUserId))
+        .read(otherUserProfileProvider(match.otherUserId))
         .asData
         ?.value;
     final otherName =
@@ -217,8 +217,12 @@ class _MatchNotificationOverlayState
 
     final match = _currentNotification!.match;
     final l10n = ref.watch(localizationProvider);
-    // Get other user's profile
-    final profileAsync = ref.watch(userProfileProvider(match.otherUserId));
+    // Get other user's profile. Use otherUserProfileProvider (cache-first,
+    // same provider as MatchBox) rather than userProfileProvider, which
+    // watches a different local-DB key and can stay null for matched users
+    // whose profile was never synced through that path — causing the banner
+    // to render "Unknown" instead of the matched user's name.
+    final profileAsync = ref.watch(otherUserProfileProvider(match.otherUserId));
     // Use the new provider for intent display if needed
     final allIntents = ref.watch(allIntentsProvider).asData?.value ?? [];
     final matchedIntentObj = allIntents.firstWhere(

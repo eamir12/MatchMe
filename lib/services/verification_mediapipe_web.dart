@@ -145,7 +145,23 @@ void openMediaPipeVerificationCapture({
           final data = inner['data'];
           final key = data is Map ? data['key']?.toString() : null;
           if (key != null && key.isNotEmpty) {
-            unawaited(VoiceGuidanceService.instance.speakKey(key));
+            final paramsRaw = data is Map ? data['params'] : null;
+            final params = paramsRaw is Map
+                ? paramsRaw.map((k, v) => MapEntry(k.toString(), v.toString()))
+                : null;
+            unawaited(
+              VoiceGuidanceService.instance.speakKey(key, params: params),
+            );
+          } else {
+            // Free-form shown text (checklist labels, fatal error card):
+            // spoken after whatever is currently in progress instead of
+            // interrupting it, so it can never be dropped by the rate limit.
+            final text = data is Map ? data['text']?.toString() : null;
+            if (text != null && text.trim().isNotEmpty) {
+              unawaited(
+                VoiceGuidanceService.instance.speakTextAfterCurrent(text),
+              );
+            }
           }
           return;
         }

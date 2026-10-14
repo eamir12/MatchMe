@@ -3,7 +3,7 @@ import { serve } from 'std/http/server.ts';
 import { createClient } from 'supabase';
 import { RRule } from 'rrule-deno';
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
-import { enforceTitleBody, firstTokenName } from "../_shared/notification_limits.ts";
+import { bidiIsolate, enforceTitleBody, firstTokenName } from "../_shared/notification_limits.ts";
 
 // Initialize Supabase Admin Client
 const supabase = createClient(
@@ -1936,7 +1936,7 @@ async function handleMatchExpiryWarnings(invocationId: string) {
         if (!title || title === 'matchExpiryTitle') title = await getTranslation('en', 'matchExpiryTitle');
         if (!body || body === 'matchExpiryBody') body = await getTranslation('en', 'matchExpiryBody');
         title = String(title).replace('{count}', String(minutesLeft));
-        body = String(body).replace('{count}', String(minutesLeft)).replace('{otherUserName}', otherName);
+        body = String(body).replace('{count}', String(minutesLeft)).replace('{otherUserName}', bidiIsolate(otherName));
         // Transport guard: byte-based truncation (shared limits).
         {
           const enforced = enforceTitleBody(title, body);
@@ -2148,9 +2148,10 @@ async function handlePinnedExpiryWarnings(invocationId: string) {
       let body = await getTranslation(locale, bodyKey);
       if (!title || title === 'pinnedExpiryTitle') title = await getTranslation('en', 'pinnedExpiryTitle');
       if (!body || body === bodyKey) body = await getTranslation('en', bodyKey);
-      const labelPart = c.label ? ` ("${c.label}")` : '';
-      title = String(title).replace('{label}', c.label).replace('{labelPart}', labelPart);
-      body = String(body).replace('{count}', String(count)).replace('{label}', c.label).replace('{labelPart}', labelPart);
+      const safeLabel = bidiIsolate(c.label);
+      const labelPart = c.label ? ` ("${safeLabel}")` : '';
+      title = String(title).replace('{label}', safeLabel).replace('{labelPart}', labelPart);
+      body = String(body).replace('{count}', String(count)).replace('{label}', safeLabel).replace('{labelPart}', labelPart);
       {
         const enforced = enforceTitleBody(title, body);
         title = enforced.title;

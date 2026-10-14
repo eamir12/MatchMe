@@ -22,6 +22,18 @@ class MobileLocalNotificationService {
   static final Map<String, int> _lastNotifiedChatIds = {};
   static final RegExp _rtlScriptRegex = RegExp(r'[\u0590-\u08FF]');
 
+  // Strong LTR scripts (Latin, Latin Extended, etc.). Used together with
+  // _rtlScriptRegex to find the first strong character and decide the
+  // paragraph direction for mixed LTR/RTL notification text.
+  static final RegExp _strongLtrRegex =
+      RegExp(r'[A-Za-z\u00C0-\u024F\u1E00-\u1EFF\u0370-\u03FF\u0400-\u04FF]');
+
+  // Bidi control characters that mean the text's directionality has already
+  // been explicitly handled (isolate / embedding / override marks and their
+  // terminators). If any are present, do not add another outer wrap.
+  static final RegExp _bidiHandledRegex =
+      RegExp(r'[\u2066\u2067\u2068\u2069\u202A\u202B\u202C\u202D\u202E]');
+
   /// Set the ProviderContainer to access preferences
   static void setProviderContainer(ProviderContainer container) {
     _container = container;
@@ -34,20 +46,56 @@ class MobileLocalNotificationService {
     final rtl =
         _rtlScriptRegex.hasMatch(senderName) ||
         _rtlScriptRegex.hasMatch(messageContent);
+    // Isolate the sender name so a name in the opposite direction of the
+    // template (e.g. an English name in the Hebrew title) doesn't scramble
+    // the surrounding sentence.
+    final isolatedName = _bidiIsolate(senderName);
     if (rtl) {
-      return '💬 הודעה חדשה מ-$senderName';
+      return '💬 הודעה חדשה מ-$isolatedName';
     }
-    return '💬 New message from $senderName';
+    return '💬 New message from $isolatedName';
+  }
+
+  /// Wrap [value] in Unicode bidi isolation marks (FSI/PDI) so an embedded
+  /// name/label of opposite directionality does not scramble the surrounding
+  /// sentence. Mirrors the server-side `bidiIsolate` helper.
+  static String _bidiIsolate(String value) {
+    final s = value;
+    if (s.isEmpty) return s;
+    return '\u2068$s\u2069';
   }
 
   static String _wrapRtlIfNeeded(String text) {
     final s = text;
     if (s.isEmpty) return s;
+    // If the text already carries explicit bidi handling (e.g. server-side
+    // FSI/PDI isolation around an embedded RTL name), leave it untouched so we
+    // don't override the isolation with a paragraph-level wrap.
+    if (_bidiHandledRegex.hasMatch(s)) return s;
     if (!_rtlScriptRegex.hasMatch(s)) return s;
-    if (s.contains('\u2067') || s.contains('\u2066') || s.contains('\u202B')) {
-      return s;
+    // Decide the paragraph direction from the FIRST strong character, not from
+    // the mere presence of RTL characters. An English/Spanish template with an
+    // embedded Hebrew name must stay LTR; only a notification that genuinely
+    // starts with an RTL script (e.g. a fully Hebrew notification) gets wrapped
+    // in RLI so Android renders it right-to-left.
+    final firstStrong = _firstStrongCharacter(s);
+    if (firstStrong == null) return s;
+    if (_rtlScriptRegex.hasMatch(firstStrong)) {
+      return '\u2067$s\u2069';
     }
-    return '\u2067$s\u2069';
+    return s;
+  }
+
+  /// Returns the first character of [s] that is a strong LTR or RTL character,
+  /// or `null` if the string has no strong characters (only neutrals/numbers).
+  static String? _firstStrongCharacter(String s) {
+    for (final rune in s.runes) {
+      final ch = String.fromCharCode(rune);
+      if (_rtlScriptRegex.hasMatch(ch) || _strongLtrRegex.hasMatch(ch)) {
+        return ch;
+      }
+    }
+    return null;
   }
 
   static Future<void> initialize() async {

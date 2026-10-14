@@ -36,6 +36,11 @@ class PhotoEditor {
   /// cancelled / could not produce a compliant photo. [ref] is required:
   /// every caller must run the prescreen — there is deliberately no
   /// prescreen-less variant.
+  ///
+  /// [onChooseAnother] is invoked when the prescreen dialog's "Choose
+  /// another photo" action is tapped: it should re-pick a candidate and
+  /// return it (or null when the user backs out). Without it, that action
+  /// aborts the whole flow and returns null.
   static Future<Uint8List?> pickAndEdit({
     required BuildContext context,
     ImageSource source = ImageSource.gallery,
@@ -44,6 +49,41 @@ class PhotoEditor {
     required WidgetRef ref,
     Set<String>? existingHashes,
     Set<String>? existingPerceptualHashes,
+    Future<Uint8List?> Function()? onChooseAnother,
+  }) async {
+    final bytes = await pickCandidateBytes(
+      context: context,
+      source: source,
+      preparingMessage: preparingMessage,
+      isPrimaryPhoto: isPrimaryPhoto,
+      ref: ref,
+    );
+    if (bytes == null || !context.mounted) {
+      return null;
+    }
+
+    final finalBytes = await editWithPrescreen(
+      context: context,
+      bytes: bytes,
+      isPrimaryPhoto: isPrimaryPhoto,
+      ref: ref,
+      existingHashes: existingHashes,
+      existingPerceptualHashes: existingPerceptualHashes,
+      onChooseAnother: onChooseAnother,
+    );
+    return finalBytes;
+  }
+
+  /// Pick stage only — the camera/gallery branch of [pickCandidateBytes]
+  /// without the editor or prescreen. Primary-photo camera picks use the
+  /// live-gated selfie capture; everything else is prepared (compressed)
+  /// and returned. Null when the user cancels or picking fails.
+  static Future<Uint8List?> pickCandidateBytes({
+    required BuildContext context,
+    ImageSource source = ImageSource.gallery,
+    String? preparingMessage,
+    bool isPrimaryPhoto = false,
+    required WidgetRef ref,
   }) async {
     Uint8List? bytes;
     try {
@@ -92,16 +132,7 @@ class PhotoEditor {
     if (bytes == null || !context.mounted) {
       return null;
     }
-
-    final finalBytes = await editWithPrescreen(
-      context: context,
-      bytes: bytes,
-      isPrimaryPhoto: isPrimaryPhoto,
-      ref: ref,
-      existingHashes: existingHashes,
-      existingPerceptualHashes: existingPerceptualHashes,
-    );
-    return finalBytes;
+    return bytes;
   }
 
   /// Open the editor on [bytes], run the prescreen on the edited result and
@@ -110,7 +141,8 @@ class PhotoEditor {
   /// Prescreen runs AFTER the editor so the user can fix issues (crop away
   /// extra people, zoom in on a small face) before being judged. If the
   /// prescreen fails, the dialog offers "Adjust photo" to re-open the editor
-  /// with the same image, or "Choose another photo" to abort and start over.
+  /// with the same image, or "Choose another photo" to pick a different
+  /// candidate via [onChooseAnother] (or abort when it is null).
   static Future<Uint8List?> editWithPrescreen({
     required BuildContext context,
     required Uint8List bytes,
@@ -118,6 +150,7 @@ class PhotoEditor {
     required WidgetRef ref,
     Set<String>? existingHashes,
     Set<String>? existingPerceptualHashes,
+    Future<Uint8List?> Function()? onChooseAnother,
   }) async {
     Uint8List candidate = bytes;
     while (true) {
@@ -146,9 +179,16 @@ class PhotoEditor {
         ref,
         photoBytes: candidate,
       );
-      if (action != PrescreenFailureAction.adjust) {
-        return null; // user chose another photo / dismissed
+      if (action == PrescreenFailureAction.adjust) {
+        continue; // re-open the editor on the same image
       }
+      // "Choose another photo" (or dismissed): re-pick when the caller
+      // supports it, otherwise abort. The caller's old photo — e.g. the
+      // current primary when replacing — is kept either way.
+      if (onChooseAnother == null) return null;
+      final next = await onChooseAnother();
+      if (next == null || next.isEmpty) return null;
+      candidate = next;
     }
   }
 
@@ -442,9 +482,7 @@ Future<PrescreenFailureAction?> showPrescreenFailureDialog(
 
   final reasons = result.failureReasons.isNotEmpty
       ? result.failureReasons
-      : <PrescreenFailureReason?>[
-          result.failureReason,
-        ];
+      : <PrescreenFailureReason?>[result.failureReason];
   final messages = reasons
       .map(
         (reason) => reason == null

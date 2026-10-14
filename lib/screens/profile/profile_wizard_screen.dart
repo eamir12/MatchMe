@@ -35,6 +35,8 @@ import 'package:matchme/services/storage_helper.dart';
 import 'package:matchme/services/translation_service.dart';
 import 'package:matchme/services/voice_guidance_service.dart';
 import 'package:matchme/providers/voice_guidance_provider.dart';
+import 'package:matchme/widgets/language_picker_list.dart';
+import 'package:matchme/widgets/theme_mode_picker.dart';
 import 'package:matchme/widgets/voice_guidance_mute_button.dart';
 import 'package:matchme/widgets/app_empty_state.dart';
 import 'package:matchme/widgets/birthdate_wheel_picker_dialog.dart';
@@ -74,7 +76,10 @@ class _WizardFieldLegend extends StatelessWidget {
     if (allOptional) {
       return Padding(
         padding: const EdgeInsets.only(top: 4.0),
-        child: Text(l10n.getString('profileWizardAllOptionalHint'), style: style),
+        child: Text(
+          l10n.getString('profileWizardAllOptionalHint'),
+          style: style,
+        ),
       );
     }
     return Padding(
@@ -89,7 +94,10 @@ class _WizardFieldLegend extends StatelessWidget {
             ),
           ),
           Expanded(
-            child: Text(l10n.getString('profileWizardRequiredLegend'), style: style),
+            child: Text(
+              l10n.getString('profileWizardRequiredLegend'),
+              style: style,
+            ),
           ),
         ],
       ),
@@ -480,105 +488,82 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         Widget buildFallbackList() {
           final currentLanguageCode = l10n.currentLocale.languageCode
               .toLowerCase();
-          return ListView.builder(
-            shrinkWrap: true,
-            itemCount: fallbackLanguages.length,
-            itemBuilder: (context, index) {
-              final lang = fallbackLanguages[index];
-              final canUseNow =
-                  !isOffline ||
-                  lang.code == currentLanguageCode ||
-                  lang.code == 'en';
-              final textColor = canUseNow ? null : Colors.grey.shade400;
-
-              return ListTile(
-                leading: Icon(
-                  canUseNow ? Icons.language : Icons.lock_outline,
-                  color: textColor,
+          return LanguagePickerList(
+            entries: [
+              for (final lang in fallbackLanguages)
+                LanguagePickerEntry(
+                  code: lang.code,
+                  displayName: lang.displayName,
+                  canUseNow:
+                      !isOffline ||
+                      lang.code == currentLanguageCode ||
+                      lang.code == 'en',
                 ),
-                title: Text(
-                  lang.displayName,
-                  style: TextStyle(color: textColor),
-                ),
-                onTap: () async {
-                  if (!canUseNow) {
-                    Navigator.of(dialogContext).pop();
-                    if (mounted) {
-                      await _showOfflineLanguageUnavailableDialog();
-                    }
-                    return;
-                  }
-
-                  Navigator.of(dialogContext).pop();
-                  await ref
-                      .read(localizationProvider.notifier)
-                      .setLocale(lang.code, fallbackLanguages);
-                  ref
-                      .read(profileEditProvider(widget.user.id).notifier)
-                      .updatePreferredLanguage(lang.code);
-                },
-              );
+            ],
+            onSelected: (entry) async {
+              Navigator.of(dialogContext).pop();
+              await ref
+                  .read(localizationProvider.notifier)
+                  .setLocale(entry.code, fallbackLanguages);
+              ref
+                  .read(profileEditProvider(widget.user.id).notifier)
+                  .updatePreferredLanguage(entry.code);
+            },
+            onUnavailable: (_) async {
+              Navigator.of(dialogContext).pop();
+              if (mounted) {
+                await _showOfflineLanguageUnavailableDialog();
+              }
             },
           );
         }
 
         return AlertDialog(
+          scrollable: true,
           title: Text(l10n.getString('authSelectLanguage')),
-          content: SizedBox(
-            width: double.maxFinite,
-            child: languageOptionsAsync.when(
-              data: (languages) => ListView.builder(
-                shrinkWrap: true,
-                itemCount: languages.length,
-                itemBuilder: (context, index) {
-                  final lang = languages[index];
-                  final langCode = lang['code'] as String;
-                  final display = lang['display'] as String;
-                  final isCached = (lang['cached'] as bool?) ?? true;
-                  final isAvailableOffline =
-                      (lang['availableOffline'] as bool?) ?? isCached;
-                  final isOffline = (lang['offline'] as bool?) ?? false;
-                  final canUseNow = !isOffline || isAvailableOffline;
-                  final textColor = canUseNow ? null : Colors.grey.shade400;
+          // Mirrors the auth screen dialog: the dialog scrolls and sizes its
+          // content intrinsically (no nested ListView, no width box), so the
+          // tile rows lay out and stay hit-testable.
+          content: languageOptionsAsync.when(
+            data: (languages) => LanguagePickerList(
+              entries: [
+                for (final lang in languages)
+                  LanguagePickerEntry(
+                    code: lang['code'] as String,
+                    displayName: lang['display'] as String,
+                    canUseNow:
+                        !(lang['offline'] as bool? ?? false) ||
+                        ((lang['availableOffline'] as bool?) ??
+                            (lang['cached'] as bool? ?? true)),
+                  ),
+              ],
+              onSelected: (entry) async {
+                final selectedLanguage = supportedLanguages.firstWhere(
+                  (language) => language.code == entry.code,
+                  orElse: () => supportedLanguages.firstWhere(
+                    (language) =>
+                        language.code == l10n.currentLocale.languageCode,
+                    orElse: () => supportedLanguages.first,
+                  ),
+                );
 
-                  return ListTile(
-                    leading: Icon(
-                      canUseNow ? Icons.language : Icons.lock_outline,
-                      color: textColor,
-                    ),
-                    title: Text(display, style: TextStyle(color: textColor)),
-                    onTap: () async {
-                      if (!canUseNow) {
-                        Navigator.of(dialogContext).pop();
-                        if (mounted) {
-                          await _showOfflineLanguageUnavailableDialog();
-                        }
-                        return;
-                      }
-
-                      final selectedLanguage = supportedLanguages.firstWhere(
-                        (language) => language.code == langCode,
-                        orElse: () => supportedLanguages.firstWhere(
-                          (language) =>
-                              language.code == l10n.currentLocale.languageCode,
-                          orElse: () => supportedLanguages.first,
-                        ),
-                      );
-
-                      Navigator.of(dialogContext).pop();
-                      await ref
-                          .read(localizationProvider.notifier)
-                          .setLocale(selectedLanguage.code, supportedLanguages);
-                      ref
-                          .read(profileEditProvider(widget.user.id).notifier)
-                          .updatePreferredLanguage(selectedLanguage.code);
-                    },
-                  );
-                },
-              ),
-              loading: buildFallbackList,
-              error: (_, stackTrace) => buildFallbackList(),
+                Navigator.of(dialogContext).pop();
+                await ref
+                    .read(localizationProvider.notifier)
+                    .setLocale(selectedLanguage.code, supportedLanguages);
+                ref
+                    .read(profileEditProvider(widget.user.id).notifier)
+                    .updatePreferredLanguage(selectedLanguage.code);
+              },
+              onUnavailable: (_) async {
+                Navigator.of(dialogContext).pop();
+                if (mounted) {
+                  await _showOfflineLanguageUnavailableDialog();
+                }
+              },
             ),
+            loading: buildFallbackList,
+            error: (_, stackTrace) => buildFallbackList(),
           ),
         );
       },
@@ -2252,19 +2237,13 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
       }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(requiredMsg),
-          backgroundColor: Colors.red,
-        ),
+        SnackBar(content: Text(requiredMsg), backgroundColor: Colors.red),
       );
       unawaited(VoiceGuidanceService.instance.speakText(requiredMsg));
       return;
     }
     try {
-      await _validatePrimaryPhoto(
-        liveProfile.photos.first,
-        showLoading: true,
-      );
+      await _validatePrimaryPhoto(liveProfile.photos.first, showLoading: true);
     } catch (e) {
       if (!mounted) return;
       final msg = e.toString();
@@ -2292,10 +2271,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
       }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(displayMsg),
-          backgroundColor: Colors.red,
-        ),
+        SnackBar(content: Text(displayMsg), backgroundColor: Colors.red),
       );
       unawaited(VoiceGuidanceService.instance.speakText(displayMsg));
       return;
@@ -2773,7 +2749,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         final lf = p.lifestyle ?? const <String, dynamic>{};
         bool has(String key) =>
             lf[key] != null && lf[key].toString().trim().isNotEmpty;
-        if (has('smoking') || has('drinking') || has('exercise') ||
+        if (has('smoking') ||
+            has('drinking') ||
+            has('exercise') ||
             has('diet')) {
           return true;
         }
@@ -2831,9 +2809,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
   /// resume) must not leave the wizard stuck on the current page.
   Future<void> _saveDraftBestEffort(dynamic notifier) async {
     try {
-      await notifier
-          .saveWizardDraft()
-          .timeout(const Duration(seconds: 3));
+      await notifier.saveWizardDraft().timeout(const Duration(seconds: 3));
     } catch (_) {}
   }
 
@@ -3860,8 +3836,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
       builder: (context, value, _) {
         final rawText = value.text;
         final isEmpty = rawText.trim().isEmpty;
-        final isRtl =
-            !isEmpty && rawText.trimLeft().isRtlByFirstStrongChar();
+        final isRtl = !isEmpty && rawText.trimLeft().isRtlByFirstStrongChar();
         return TextField(
           controller: controller,
           textInputAction: TextInputAction.search,
@@ -3891,8 +3866,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12.0),
-              borderSide:
-                  BorderSide(color: Theme.of(context).colorScheme.primary),
+              borderSide: BorderSide(
+                color: Theme.of(context).colorScheme.primary,
+              ),
             ),
             filled: true,
             fillColor: Theme.of(context).colorScheme.surface,
@@ -5742,7 +5718,10 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                       Text(
                         hasBusinessIntent
                             ? l10n.getString('profileEditOccupation')
-                            : _optionalFieldLabel(l10n, 'profileEditOccupation'),
+                            : _optionalFieldLabel(
+                                l10n,
+                                'profileEditOccupation',
+                              ),
                         style: Theme.of(context).textTheme.titleSmall,
                       ),
                       if (hasBusinessIntent)
@@ -5916,9 +5895,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
           ),
           Text(
             l10n.getString('profileWizardPhotosRequiredNote'),
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Colors.grey.shade700,
-            ),
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: Colors.grey.shade700),
           ),
           const SizedBox(height: 20),
           _buildPhotoEditorSection(profile),
@@ -7105,28 +7084,56 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
   /// structured moderation result and the photo bytes are available, a rich
   /// dialog with the photo, highlighted problem regions, and the AI's message;
   /// otherwise the plain text-only dialog.
-  void _showPhotoRejection(Object error, {Uint8List? photoBytes}) {
-    if (!mounted || !context.mounted) return;
+  ///
+  /// Returns true when the user chose "Try again" (only offered when
+  /// [offerRetry] is set — the replace-primary flow, where a previous photo
+  /// is still in place); false when they dismissed with OK. [keepNotice] is
+  /// an optional reassurance line ("Your current primary photo was kept.").
+  Future<bool> _showPhotoRejection(
+    Object error, {
+    Uint8List? photoBytes,
+    bool offerRetry = false,
+    String? keepNotice,
+  }) async {
+    if (!mounted || !context.mounted) return false;
     final l10n = ref.read(localizationProvider);
     if (error is PhotoModerationRejection &&
         photoBytes != null &&
         photoBytes.isNotEmpty) {
-      unawaited(
-        showPhotoRejectionDialog(
-          context: context,
-          rejection: error,
-          l10n: l10n,
-          photoBytes: photoBytes,
-        ),
+      return showPhotoRejectionDialog(
+        context: context,
+        rejection: error,
+        l10n: l10n,
+        photoBytes: photoBytes,
+        offerRetry: offerRetry,
+        keepNotice: keepNotice,
       );
-      return;
     }
-    showDialog(
+    var retryChosen = false;
+    await showDialog(
       context: context,
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
-        content: Text(_photoUploadFailureMessage(l10n, error)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(_photoUploadFailureMessage(l10n, error)),
+            if (keepNotice != null) ...[
+              const SizedBox(height: 12),
+              Text(keepNotice, style: Theme.of(ctx).textTheme.bodySmall),
+            ],
+          ],
+        ),
         actions: [
+          if (offerRetry)
+            TextButton(
+              onPressed: () {
+                retryChosen = true;
+                Navigator.pop(ctx);
+              },
+              child: Text(l10n.getString('photoRejectedTryAgain')),
+            ),
           TextButton(
             onPressed: () => Navigator.pop(ctx),
             child: Text(l10n.getString('generalOk')),
@@ -7134,28 +7141,14 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         ],
       ),
     );
+    return retryChosen;
   }
 
-  Future<void> _handleAddPhoto() async {
+  /// Gallery / camera / cancel chooser shared by the add-photo and
+  /// replace-primary flows. Null when the user dismisses or cancels.
+  Future<ImageSource?> _pickPhotoSourceSheet() {
     final l10n = ref.read(localizationProvider);
-
-    // Voice guidance + early exit when the photo limit is already reached.
-    final photosAtEntry =
-        ref
-            .read(profileEditProvider(widget.user.id))
-            .asData
-            ?.value
-            ?.photos
-            .length ??
-        0;
-    if (photosAtEntry >= 5) {
-      unawaited(
-        VoiceGuidanceService.instance.speakKey('voiceGuidancePhotosMaxReached'),
-      );
-      return;
-    }
-
-    final ImageSource? source = await showModalBottomSheet<ImageSource>(
+    return showModalBottomSheet<ImageSource>(
       context: context,
       showDragHandle: true,
       builder: (context) {
@@ -7185,6 +7178,28 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         );
       },
     );
+  }
+
+  Future<void> _handleAddPhoto() async {
+    final l10n = ref.read(localizationProvider);
+
+    // Voice guidance + early exit when the photo limit is already reached.
+    final photosAtEntry =
+        ref
+            .read(profileEditProvider(widget.user.id))
+            .asData
+            ?.value
+            ?.photos
+            .length ??
+        0;
+    if (photosAtEntry >= 5) {
+      unawaited(
+        VoiceGuidanceService.instance.speakKey('voiceGuidancePhotosMaxReached'),
+      );
+      return;
+    }
+
+    final ImageSource? source = await _pickPhotoSourceSheet();
 
     if (!mounted) return;
 
@@ -7297,6 +7312,190 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         }
       }
     }
+  }
+
+  /// The primary photo's edit button opens a bottom sheet with the new-photo
+  /// sources right there — gallery or camera go straight into the replace
+  /// flow with that source (no extra subscreen). "Edit photo" keeps the
+  /// re-crop action for the photo that is already in place. Secondary
+  /// photos keep the direct edit action.
+  Future<void> _handlePrimaryPhotoActions(int index, String source) async {
+    final l10n = ref.read(localizationProvider);
+    final action = await showModalBottomSheet<Object?>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        return SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.photo_library_outlined),
+                title: Text(l10n.getString('profileWizardAddPhotoFromGallery')),
+                onTap: () => Navigator.pop(context, ImageSource.gallery),
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_camera_outlined),
+                title: Text(l10n.getString('profileWizardAddPhotoFromCamera')),
+                onTap: () => Navigator.pop(context, ImageSource.camera),
+              ),
+              ListTile(
+                leading: const Icon(Icons.edit_outlined),
+                title: Text(l10n.getString('profileWizardEditPhotoAction')),
+                onTap: () => Navigator.pop(context, 'edit'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.close),
+                title: Text(l10n.getString('generalCancel')),
+                onTap: () => Navigator.pop(context, null),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+    if (!mounted || action == null) return;
+    if (action == 'edit') {
+      await _handleEditPhoto(index, source);
+    } else if (action is ImageSource) {
+      await _handleReplacePrimaryPhoto(initialSource: action);
+    }
+  }
+
+  /// Replace the primary photo with a brand-new one from [initialSource]
+  /// (camera selfie or gallery); when absent, the source is asked for up
+  /// front (and again on every retry). The current primary photo is kept
+  /// until the new one passes BOTH the on-device prescreen and the
+  /// server-side AI validation: the swap happens only inside
+  /// [replacePhotoAtIndexDraft] after approval, so every failure path
+  /// leaves the old photo exactly as it was. Abandoning at any step
+  /// (source picker, capture, editor) also keeps it. When the prescreen or
+  /// the AI rejects the new photo, the rejection dialog offers "Try again"
+  /// to correct it — declining keeps the old primary.
+  Future<void> _handleReplacePrimaryPhoto({ImageSource? initialSource}) async {
+    final l10n = ref.read(localizationProvider);
+    ImageSource? nextSource = initialSource;
+    while (true) {
+      final source = nextSource ?? await _pickPhotoSourceSheet();
+      nextSource = null; // retries ask again via the sheet
+      if (source == null || !mounted) return; // abandoned → primary kept
+
+      Uint8List? bytes;
+      setState(() => _isLoading = true);
+      try {
+        bytes = await PhotoEditor.pickAndEdit(
+          context: context,
+          source: source,
+          preparingMessage: l10n.getString('profileWizardPhotoPreparing'),
+          isPrimaryPhoto: true,
+          ref: ref,
+          existingHashes: _sessionPhotoHashByPath.values.toSet(),
+          existingPerceptualHashes: _sessionPhotoPHashByPath.values.toSet(),
+          // Prescreen "Choose another photo": re-ask for the source and
+          // pick a fresh candidate instead of dead-ending the flow.
+          onChooseAnother: () => _pickReplacementCandidate(l10n),
+        );
+      } catch (e) {
+        if (mounted && context.mounted) {
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (ctx) => AlertDialog(
+              content: Text('$e'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: Text(l10n.getString('generalOk')),
+                ),
+              ],
+            ),
+          );
+        }
+        return;
+      } finally {
+        if (mounted) setState(() => _isLoading = false);
+      }
+      // Cancelled at capture/editor, or gave up on the prescreen dialog:
+      // the old primary photo remains.
+      if (bytes == null || !mounted) return;
+
+      final photosBefore = ref
+          .read(profileEditProvider(widget.user.id))
+          .asData
+          ?.value
+          ?.photos;
+      final oldPrimary = photosBefore != null && photosBefore.isNotEmpty
+          ? photosBefore.first
+          : null;
+
+      PleaseWaitDialog.show(
+        context,
+        message: l10n.getString('profileWizardPhotoUploading'),
+      );
+      try {
+        await ref
+            .read(profileEditProvider(widget.user.id).notifier)
+            .replacePhotoAtIndexDraft(0, bytes: bytes);
+      } catch (e) {
+        // Upload / AI rejection: state was never touched, only the new
+        // upload is cleaned up — the old primary photo is still in place.
+        if (mounted && context.mounted) PleaseWaitDialog.hide(context);
+        if (!mounted || !context.mounted) return;
+        final retry = await _showPhotoRejection(
+          e,
+          photoBytes: bytes,
+          offerRetry: true,
+          keepNotice: l10n.getString('photoRejectedPrimaryKept'),
+        );
+        if (!retry) return; // declined → old primary remains
+        continue; // try again with another new photo
+      }
+      if (mounted && context.mounted) PleaseWaitDialog.hide(context);
+
+      // Success: re-key the session duplicate hashes onto the new primary.
+      if (oldPrimary != null) {
+        _sessionPhotoHashByPath.remove(oldPrimary);
+        _sessionPhotoPHashByPath.remove(oldPrimary);
+      }
+      final photosAfter = ref
+          .read(profileEditProvider(widget.user.id))
+          .asData
+          ?.value
+          ?.photos;
+      if (photosAfter != null && photosAfter.isNotEmpty) {
+        _sessionPhotoHashByPath[photosAfter.first] = md5
+            .convert(bytes)
+            .toString();
+        final phash = await computePerceptualHash(bytes);
+        if (phash.isNotEmpty) {
+          _sessionPhotoPHashByPath[photosAfter.first] = phash;
+        }
+      }
+      unawaited(
+        VoiceGuidanceService.instance.speakKey(
+          'voiceGuidancePhotoPrimaryAdded',
+        ),
+      );
+      return;
+    }
+  }
+
+  /// Re-pick stage for the prescreen's "Choose another photo" action while
+  /// replacing the primary: asks for the source again and returns prepared
+  /// candidate bytes, or null when the user backs out (the current primary
+  /// photo is then kept).
+  Future<Uint8List?> _pickReplacementCandidate(LocalizationState l10n) async {
+    final source = await _pickPhotoSourceSheet();
+    if (source == null || !mounted || !context.mounted) return null;
+    return PhotoEditor.pickCandidateBytes(
+      context: context,
+      source: source,
+      preparingMessage: l10n.getString('profileWizardPhotoPreparing'),
+      isPrimaryPhoto: true,
+      ref: ref,
+    );
   }
 
   Future<void> _handleEditPhoto(int index, String source) async {
@@ -7844,7 +8043,11 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                     size: 22,
                     color: Colors.white,
                     tooltip: l10n.getString('profileWizardEditPhotoAction'),
-                    onTap: () => _handleEditPhoto(index, source),
+                    // Primary: sheet with "Edit photo" / "Replace with a
+                    // new photo". Secondary: direct edit.
+                    onTap: index == 0
+                        ? () => _handlePrimaryPhotoActions(index, source)
+                        : () => _handleEditPhoto(index, source),
                   ),
                 ),
                 PositionedDirectional(
@@ -7856,9 +8059,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                     icon: Icons.delete_outline,
                     size: 22,
                     color: Colors.red.shade300,
-                    tooltip: l10n.getString(
-                      'profileWizardRemovePhotoAction',
-                    ),
+                    tooltip: l10n.getString('profileWizardRemovePhotoAction'),
                     onTap: () => _confirmDeletePhoto(index, l10n),
                   ),
                 ),
@@ -7994,9 +8195,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         currentProfile.isProfileComplete &&
         currentProfile.photos.length <= 1) {
       final msg = l10n.getString('profileWizardLastPhotoRequired');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg), backgroundColor: Colors.red),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(msg), backgroundColor: Colors.red));
       unawaited(VoiceGuidanceService.instance.speakText(msg));
       return;
     }
@@ -9764,9 +9965,25 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                   onPressed: () =>
                       _showLanguagePicker(context, l10n.supportedLanguages),
                 ),
+              // First-time profile creation only: once the user is in the
+              // main app they change the theme from Settings > App Display.
               if (!widget.isEditing)
                 IconButton(
-                  icon: const Icon(Icons.logout_rounded),
+                  icon: const Icon(Icons.dark_mode_outlined),
+                  tooltip: l10n.getString('settingsThemeMode'),
+                  onPressed: () => showThemeModePickerDialog(context),
+                ),
+              if (!widget.isEditing)
+                IconButton(
+                  icon: Transform(
+                    alignment: Alignment.center,
+                    transform: Matrix4.diagonal3Values(
+                      isRtl ? -1.0 : 1.0,
+                      1.0,
+                      1.0,
+                    ),
+                    child: const Icon(Icons.logout_rounded),
+                  ),
                   tooltip: l10n.getString('authLogout'),
                   onPressed: _isLoading
                       ? null

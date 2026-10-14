@@ -69,6 +69,19 @@ export function firstTokenName(raw: string, maxChars = NOTIF_LIMITS.senderNameMa
   return t.length > maxChars ? t.slice(0, maxChars) : t;
 }
 
+// Unicode bidi isolation: FSI (U+2068) picks the isolate direction from the
+// first strong character of the content; PDI (U+2069) restores the surrounding
+// direction. Wrap user-supplied names/labels before interpolating them into a
+// notification template so an RTL name (e.g. Hebrew) inside an LTR English or
+// Spanish sentence — or an LTR name inside an RTL Hebrew sentence — does not
+// scramble the surrounding word order (neutral chars like parens/quotes no
+// longer get their directionality from the embedded run).
+export function bidiIsolate(value: string): string {
+  const s = String(value ?? '');
+  if (!s) return s;
+  return `\u2068${s}\u2069`;
+}
+
 export function enforceTitleBody(
   title: string,
   body: string,

@@ -1,7 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
-import { enforceTitleBody, firstTokenName } from "../_shared/notification_limits.ts";
+import { bidiIsolate, enforceTitleBody, firstTokenName } from "../_shared/notification_limits.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -909,7 +909,7 @@ serve(async (req) => {
             : displayNameFor(otherUserId);
           const enforced = enforceTitleBody(
             pushString(locale, "newMatchTitle"),
-            pushString(locale, "newMatchBody").replace("{name}", otherName),
+            pushString(locale, "newMatchBody").replace("{name}", bidiIsolate(otherName)),
           );
           // FCM v1 accepts only title/body/image inside message.notification;
           // enforceTitleBody's extra `truncated` flag must not leak through.

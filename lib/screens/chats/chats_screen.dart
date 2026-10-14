@@ -48,6 +48,20 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
   MatchTypeFilter _matchTypeFilter = MatchTypeFilter.all;
   ListSortOption _sortOption = ListSortOption.recent;
 
+  // ── Archive view filter state (independent of the active list) ──
+  //
+  // The Archived view is its own list, so it keeps its own search, filters
+  // and sort. Switching between the two views does not clear either side's
+  // state — the user can return to a filtered active list after browsing
+  // archived chats, and vice versa.
+  String? _archivedSelectedIntentKey;
+  bool _archivedUnreadOnly = false;
+  final TextEditingController _archivedSearchController =
+      TextEditingController();
+  String _archivedSearchQuery = '';
+  MatchTypeFilter _archivedMatchTypeFilter = MatchTypeFilter.all;
+  ListSortOption _archivedSortOption = ListSortOption.recent;
+
   /// Multi-select state. The controller holds the selected match ids; while
   /// it is non-empty the screen is in selection mode.
   final SelectionController _selection = SelectionController();
@@ -64,6 +78,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
   @override
   void dispose() {
     _searchController.dispose();
+    _archivedSearchController.dispose();
     _selection.removeListener(_onSelectionChanged);
     _selection.dispose();
     super.dispose();
@@ -122,11 +137,15 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
   /// Applies the chosen sort to the filtered list.
   ///
   /// Kept separate from the filtering pipeline so search, filters and sort
-  /// compose in one readable order rather than interleaved.
-  List<ChatModel> _sortChats(List<ChatModel> chats) {
-    if (_sortOption == ListSortOption.recent) return chats;
+  /// compose in one readable order rather than interleaved. Takes [sortOption]
+  /// because the active list and the Archived view each keep their own sort.
+  List<ChatModel> _sortChats(
+    List<ChatModel> chats,
+    ListSortOption sortOption,
+  ) {
+    if (sortOption == ListSortOption.recent) return chats;
     final sorted = List<ChatModel>.from(chats);
-    switch (_sortOption) {
+    switch (sortOption) {
       case ListSortOption.unreadFirst:
         // Conversations with unread messages first, then most recently active.
         // Everything else keeps the provider's recency order.
@@ -157,30 +176,50 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
     return sorted;
   }
 
-  void _clearSearch() {
-    _searchController.clear();
-    ref.read(chatFullTextSearchProvider('chats').notifier).clear();
-    setState(() => _searchQuery = '');
-  }
-
-  void _clearFilters() {
-    _searchController.clear();
-    ref.read(chatFullTextSearchProvider('chats').notifier).clear();
+  /// Clears the search field (and its full-text results) for whichever view
+  /// is currently shown.
+  void _clearViewSearch() {
+    final key = _showArchived ? 'chats_archived' : 'chats';
+    (_showArchived ? _archivedSearchController : _searchController).clear();
+    ref.read(chatFullTextSearchProvider(key).notifier).clear();
     setState(() {
-      _searchQuery = '';
-      _selectedIntentKey = null;
-      _unreadOnly = false;
-      _matchTypeFilter = MatchTypeFilter.all;
-      _sortOption = ListSortOption.recent;
+      if (_showArchived) {
+        _archivedSearchQuery = '';
+      } else {
+        _searchQuery = '';
+      }
     });
   }
 
-  /// Switch between the main chat list and the Archived view. Filters and
-  /// search are cleared on the way in: the two views are independent lists
-  /// and stale filters would silently hide rows in the other view.
+  /// Clears every filter, sort and search for whichever view is currently
+  /// shown. The other view's state is left untouched.
+  void _clearViewFilters() {
+    final key = _showArchived ? 'chats_archived' : 'chats';
+    (_showArchived ? _archivedSearchController : _searchController).clear();
+    ref.read(chatFullTextSearchProvider(key).notifier).clear();
+    setState(() {
+      if (_showArchived) {
+        _archivedSearchQuery = '';
+        _archivedSelectedIntentKey = null;
+        _archivedUnreadOnly = false;
+        _archivedMatchTypeFilter = MatchTypeFilter.all;
+        _archivedSortOption = ListSortOption.recent;
+      } else {
+        _searchQuery = '';
+        _selectedIntentKey = null;
+        _unreadOnly = false;
+        _matchTypeFilter = MatchTypeFilter.all;
+        _sortOption = ListSortOption.recent;
+      }
+    });
+  }
+
+  /// Switch between the main chat list and the Archived view.
+  ///
+  /// Each view keeps its own search/filter/sort state, so switching does not
+  /// clear anything — the user can return to a filtered list on either side.
   void _setShowArchived(bool value) {
     setState(() => _showArchived = value);
-    _clearFilters();
   }
 
   /// Intent keys for a chat, preferring the underlying match's `matched_intent`
@@ -232,19 +271,27 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
     }).length;
   }
 
-  /// Opens the filter sheet and applies the result.
+  /// Opens the filter sheet and applies the result to the active view.
   ///
   /// The sheet edits a local draft and the list only changes when the user
   /// presses "Show N results", so tapping through options does not make the
-  /// list behind the sheet jump around.
-  Future<void> _openFilterSheet(
-    BuildContext context,
-    LocalizationState l10n,
-    List<String> intentKeys,
-    List<AppIntent> allIntents,
-    bool canFilterByMatchType,
-    int Function(ListFilterState draft) countFor,
-  ) async {
+  /// list behind the sheet jump around. The current filter state and the
+  /// apply callback are passed in so the same method works for both the
+  /// active list and the Archived view, which each keep their own state.
+  Future<void> _openFilterSheet({
+    required BuildContext context,
+    required LocalizationState l10n,
+    required List<String> intentKeys,
+    required List<AppIntent> allIntents,
+    required bool canFilterByMatchType,
+    required int Function(ListFilterState draft) countFor,
+    required String? selectedIntentKey,
+    required MatchTypeFilter matchTypeFilter,
+    required bool unreadOnly,
+    required ListSortOption sortOption,
+    required int unreadConversationCount,
+    required void Function(ListFilterState result) apply,
+  }) async {
     final result = await showListFilterSheet(
       context: context,
       l10n: l10n,
@@ -257,21 +304,21 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
       showMatchType: canFilterByMatchType,
       sortOptions: _chatSortOptions,
       initial: ListFilterState(
-        selectedIntentKey: _selectedIntentKey,
-        matchType: _matchTypeFilter,
+        selectedIntentKey: selectedIntentKey,
+        matchType: matchTypeFilter,
         extraToggleKey: 'unread',
-        extraToggleLabel: l10n.getString('chatsUnreadOnly'),
-        extraToggleActive: _unreadOnly,
-        sort: _sortOption,
+        extraToggleLabel: unreadConversationCount == 0
+            ? l10n.getString('chatsUnreadOnly')
+            : l10n.getString(
+                'chatsUnreadOnlyWithCount',
+                params: {'count': '$unreadConversationCount'},
+              ),
+        extraToggleActive: unreadOnly,
+        sort: sortOption,
       ),
     );
     if (result == null || !mounted) return;
-    setState(() {
-      _selectedIntentKey = result.selectedIntentKey;
-      _matchTypeFilter = result.matchType;
-      _unreadOnly = result.extraToggleActive;
-      _sortOption = result.sort;
-    });
+    apply(result);
   }
 
   @override
@@ -332,7 +379,25 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
           return matchTypeById[(chat as dynamic).matchId as String] ?? '';
         }
 
-        final normalizedSearch = _searchQuery.trim().toLowerCase();
+        // ── View-specific filter/sort/search state ──
+        //
+        // The active list and the Archived view keep independent state. Pick
+        // whichever view is currently on screen so the whole pipeline below
+        // uses the right values without branching everywhere.
+        final viewSearchQuery =
+            _showArchived ? _archivedSearchQuery : _searchQuery;
+        final viewUnreadOnly =
+            _showArchived ? _archivedUnreadOnly : _unreadOnly;
+        final viewSelectedIntentKey =
+            _showArchived ? _archivedSelectedIntentKey : _selectedIntentKey;
+        final viewMatchTypeFilter =
+            _showArchived ? _archivedMatchTypeFilter : _matchTypeFilter;
+        final viewSortOption =
+            _showArchived ? _archivedSortOption : _sortOption;
+        final viewSearchProviderKey =
+            _showArchived ? 'chats_archived' : 'chats';
+
+        final normalizedSearch = viewSearchQuery.trim().toLowerCase();
 
         // Preview search: name and last message. This is instant and always
         // available, so it seeds the results while the full-text pass runs.
@@ -352,7 +417,9 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
         // `bodyMatches` is null while it has not resolved, and an empty set once
         // it has resolved with no hits; those are different states and are
         // treated differently below.
-        final searchAsync = ref.watch(chatFullTextSearchProvider('chats'));
+        final searchAsync = ref.watch(
+          chatFullTextSearchProvider(viewSearchProviderKey),
+        );
         final bodyHits = searchAsync.asData?.value;
         final bodyMatches = normalizedSearch.isEmpty
             ? const <String>{}
@@ -374,9 +441,9 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
 
         final afterUnread = filterUnreadChats(
           searchedChats,
-          unreadOnly: _unreadOnly,
+          unreadOnly: viewUnreadOnly,
         );
-        final normalizedSelected = _selectedIntentKey?.trim().toLowerCase();
+        final normalizedSelected = viewSelectedIntentKey?.trim().toLowerCase();
         final filteredChats =
             normalizedSelected == null || normalizedSelected.isEmpty
             ? afterUnread
@@ -387,36 +454,40 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
 
         // Match-basis filter, applied after search/unread/intent so the
         // result count reflects every active filter.
-        final afterMatchType = _matchTypeFilter == MatchTypeFilter.all
+        final afterMatchType = viewMatchTypeFilter == MatchTypeFilter.all
             ? filteredChats
             : filteredChats
                   .where(
-                    (chat) => _matchTypeFilter.matches(chatMatchType(chat)),
+                    (chat) =>
+                        viewMatchTypeFilter.matches(chatMatchType(chat)),
                   )
                   .toList();
 
         // Sort last: filters narrow, sort orders.
-        final finalChats = _sortChats(afterMatchType);
+        final finalChats = _sortChats(afterMatchType, viewSortOption);
 
         // Newest body hit per chat: replaces the last-message preview with
         // the matching text and auto-scrolls the opened chat to it. Shared
         // with Home's Recent Chats so both lists behave identically.
         final newestHits = newestHitByChat(bodyHits);
 
+        // Intent keys available to filter by come from the current view's
+        // chats, so the Archived view offers only the intents present there.
         final filterOptions = <String>{};
-        for (final chat in activeChats) {
+        for (final chat in viewChats) {
           filterOptions.addAll(chatIntentKeysForChat(chat));
         }
         final sortedFilterOptions = getOrderedSharedIntentKeys(filterOptions);
 
         final hasSearch = normalizedSearch.isNotEmpty;
-        final hasUnreadFilter = _unreadOnly;
-        final unreadConversationCount = activeChats
+        final hasUnreadFilter = viewUnreadOnly;
+        final unreadConversationCount = viewChats
             .where((chat) => chat.unreadCount > 0)
             .length;
         final hasIntentFilter =
             normalizedSelected != null && normalizedSelected.isNotEmpty;
-        final hasMatchTypeFilter = _matchTypeFilter != MatchTypeFilter.all;
+        final hasMatchTypeFilter =
+            viewMatchTypeFilter != MatchTypeFilter.all;
         final canFilterByMatchType = MatchTypeFilter.canFilter(
           viewChats.map(chatMatchType).toList(),
         );
@@ -480,112 +551,144 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                   ),
                   const SizedBox(width: 16),
                 ],
-              )
-            else ...[
-              if (activeChats.isNotEmpty)
-                ListSearchBar(
-                  controller: _searchController,
-                  onQueryChanged: (value) {
-                    setState(() => _searchQuery = value);
-                    // Full-text pass over the cached message bodies. Debounced
-                    // inside the provider, and scoped to the chats on screen.
-                    ref
-                        .read(chatFullTextSearchProvider('chats').notifier)
-                        .search(
-                          ChatSearchRequest(
-                            query: value,
-                            matchIds: viewChats
-                                .map((c) => c.matchId)
-                                .toList(growable: false),
-                          ),
-                        );
-                  },
-                  onClearQuery: () => _clearSearch(),
-                  onOpenFilters: () => _openFilterSheet(
-                    context,
-                    l10n,
-                    sortedFilterOptions,
-                    allIntentsAsync.asData?.value ?? const <AppIntent>[],
-                    canFilterByMatchType,
-                    (draft) => _countChats(
-                      viewChats,
-                      matchIntentById,
-                      matchTypeById,
-                      draft,
-                    ),
+              ),
+            // Search + filter bar and result count, shown for whichever view
+            // is active (active list or Archived) as long as that view has
+            // chats to filter.
+            if (!selecting && viewChats.isNotEmpty)
+              ListSearchBar(
+                controller: _showArchived
+                    ? _archivedSearchController
+                    : _searchController,
+                onQueryChanged: (value) {
+                  setState(() {
+                    if (_showArchived) {
+                      _archivedSearchQuery = value;
+                    } else {
+                      _searchQuery = value;
+                    }
+                  });
+                  // Full-text pass over the cached message bodies. Debounced
+                  // inside the provider, and scoped to the chats on screen.
+                  ref
+                      .read(
+                        chatFullTextSearchProvider(viewSearchProviderKey)
+                            .notifier,
+                      )
+                      .search(
+                        ChatSearchRequest(
+                          query: value,
+                          matchIds: viewChats
+                              .map((c) => c.matchId)
+                              .toList(growable: false),
+                        ),
+                      );
+                },
+                onClearQuery: () => _clearViewSearch(),
+                onOpenFilters: () => _openFilterSheet(
+                  context: context,
+                  l10n: l10n,
+                  intentKeys: sortedFilterOptions,
+                  allIntents:
+                      allIntentsAsync.asData?.value ?? const <AppIntent>[],
+                  canFilterByMatchType: canFilterByMatchType,
+                  countFor: (draft) => _countChats(
+                    viewChats,
+                    matchIntentById,
+                    matchTypeById,
+                    draft,
                   ),
-                  activeFilterCount: ListFilterState(
-                    selectedIntentKey: _selectedIntentKey,
-                    matchType: _matchTypeFilter,
-                    extraToggleKey: 'unread',
-                    extraToggleLabel: unreadConversationCount == 0
-                        ? l10n.getString('chatsUnreadOnly')
-                        : l10n.getString(
-                            'chatsUnreadOnlyWithCount',
-                            params: {'count': '$unreadConversationCount'},
-                          ),
-                    extraToggleActive: _unreadOnly,
-                    sort: _sortOption,
-                  ).activeCount,
-                  l10n: l10n,
-                  hintKey: 'chatsSearchHint',
+                  selectedIntentKey: viewSelectedIntentKey,
+                  matchTypeFilter: viewMatchTypeFilter,
+                  unreadOnly: viewUnreadOnly,
+                  sortOption: viewSortOption,
+                  unreadConversationCount: unreadConversationCount,
+                  apply: (result) => setState(() {
+                    if (_showArchived) {
+                      _archivedSelectedIntentKey = result.selectedIntentKey;
+                      _archivedMatchTypeFilter = result.matchType;
+                      _archivedUnreadOnly = result.extraToggleActive;
+                      _archivedSortOption = result.sort;
+                    } else {
+                      _selectedIntentKey = result.selectedIntentKey;
+                      _matchTypeFilter = result.matchType;
+                      _unreadOnly = result.extraToggleActive;
+                      _sortOption = result.sort;
+                    }
+                  }),
                 ),
-              if (activeChats.isNotEmpty)
-                ResultCountLabel(
-                  shown: finalChats.length,
-                  total: activeChats.length,
-                  l10n: l10n,
-                ),
-              // Entry into the Archived view — the WhatsApp pattern. Archived
-              // chats keep receiving notifications; they are just parked here.
-              if (archivedChats.isNotEmpty)
-                InkWell(
-                  onTap: () => _setShowArchived(true),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 10,
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.archive_outlined,
-                          size: 20,
-                          color: Theme.of(context).colorScheme.primary,
+                activeFilterCount: ListFilterState(
+                  selectedIntentKey: viewSelectedIntentKey,
+                  matchType: viewMatchTypeFilter,
+                  extraToggleKey: 'unread',
+                  extraToggleLabel: unreadConversationCount == 0
+                      ? l10n.getString('chatsUnreadOnly')
+                      : l10n.getString(
+                          'chatsUnreadOnlyWithCount',
+                          params: {'count': '$unreadConversationCount'},
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            l10n.getString('chatsArchived'),
-                            style: Theme.of(context)
-                                .textTheme
-                                .bodyMedium
-                                ?.copyWith(fontWeight: FontWeight.w600),
-                          ),
-                        ),
-                        Text(
-                          archivedChats.length.toString(),
+                  extraToggleActive: viewUnreadOnly,
+                  sort: viewSortOption,
+                ).activeCount,
+                l10n: l10n,
+                hintKey: 'chatsSearchHint',
+              ),
+            if (!selecting && viewChats.isNotEmpty)
+              ResultCountLabel(
+                shown: finalChats.length,
+                total: viewChats.length,
+                l10n: l10n,
+              ),
+            // Entry into the Archived view — the WhatsApp pattern. Only
+            // shown from the active (non-selecting) list. Archived chats
+            // keep receiving notifications; they are just parked here.
+            if (!selecting && !_showArchived && archivedChats.isNotEmpty)
+              InkWell(
+                onTap: () => _setShowArchived(true),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 10,
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.archive_outlined,
+                        size: 20,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          l10n.getString('chatsArchived'),
                           style: Theme.of(context)
                               .textTheme
-                              .bodySmall
-                              ?.copyWith(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurfaceVariant,
-                              ),
+                              .bodyMedium
+                              ?.copyWith(fontWeight: FontWeight.w600),
                         ),
-                        const SizedBox(width: 4),
-                        Icon(
-                          Icons.chevron_right,
-                          size: 18,
-                          color:
-                              Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ],
-                    ),
+                      ),
+                      Text(
+                        archivedChats.length.toString(),
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodySmall
+                            ?.copyWith(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
+                            ),
+                      ),
+                      const SizedBox(width: 4),
+                      Icon(
+                        Icons.chevron_right,
+                        size: 18,
+                        color:
+                            Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ],
                   ),
                 ),
-            ],
+              ),
             // A quiet line explaining that the search is still running over
             // message bodies. Without it the list looks "wrong" for a beat:
             // the user types, sees nothing change, and assumes the feature
@@ -680,7 +783,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                                                 )
                                                 .setIndex(1)
                                           : hasActiveFilters
-                                          ? _clearFilters
+                                          ? _clearViewFilters
                                           : null,
                                     ),
                             ),
@@ -711,7 +814,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                         return ChatListItem(
                           chat: chat,
                           showUnreadBorder: true,
-                          searchQuery: hasSearch ? _searchQuery : null,
+                          searchQuery: hasSearch ? viewSearchQuery : null,
                           searchSnippet: hit?.snippet,
                           searchMessageId: hit?.messageId,
                           selectionMode: selecting,

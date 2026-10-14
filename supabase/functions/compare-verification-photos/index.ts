@@ -9,12 +9,27 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+interface MismatchRegionBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface MismatchRegion {
+  feature: string;
+  description: string;
+  profileBox?: MismatchRegionBox;
+  verificationBox?: MismatchRegionBox;
+}
+
 interface FaceComparisonResult {
   similarity: number;
   confidence: number;
   isMatch: boolean;
   reasoning?: string;
   gestureValid?: boolean;
+  mismatchRegions?: MismatchRegion[];
   error?: string;
 }
 
@@ -78,18 +93,26 @@ function determineVerificationDecision(
     ? Math.max(0, Math.min(100, comparisonResult.confidence))
     : 0;
   const reasoning = (comparisonResult.reasoning || "").toLowerCase();
+  // Word-boundary matching: a positive line like "the gesture was noted" or
+  // "no obscured features" must not trip the failure heuristics below.
   const hasGestureFailure =
     reasoning.includes("gesture") &&
     (
-      reasoning.includes("not") ||
-      reasoning.includes("missing") ||
-      reasoning.includes("unclear") ||
-      reasoning.includes("incorrect")
+      /\bnot\b/.test(reasoning) ||
+      /\bmissing\b/.test(reasoning) ||
+      /\bunclear\b/.test(reasoning) ||
+      /\bincorrect\b/.test(reasoning)
     );
+  const mentionsObscured = reasoning.includes("obscured");
+  const obscuredNegated =
+    reasoning.includes("no obscured") ||
+    reasoning.includes("not obscured") ||
+    reasoning.includes("without obscured") ||
+    reasoning.includes("unobscured");
   const hasClearFaceFailure =
     reasoning.includes("no clear face") ||
     reasoning.includes("face not clearly visible") ||
-    reasoning.includes("obscured") ||
+    (mentionsObscured && !obscuredNegated) ||
     reasoning.includes("multiple faces");
 
   if (hasGestureFailure || hasClearFaceFailure) {
@@ -127,6 +150,49 @@ function addDays(days: number): string {
   const target = new Date();
   target.setUTCDate(target.getUTCDate() + days);
   return target.toISOString();
+}
+
+function clampUnit(value: unknown): number | null {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(1, n));
+}
+
+function parseMismatchBox(raw: unknown): MismatchRegionBox | null {
+  if (!raw || typeof raw !== "object") return null;
+  const box = raw as Record<string, unknown>;
+  const x = clampUnit(box.x);
+  const y = clampUnit(box.y);
+  const width = clampUnit(box.width);
+  const height = clampUnit(box.height);
+  if (x === null || y === null || width === null || height === null) return null;
+  if (width <= 0 || height <= 0) return null;
+  return { x, y, width, height };
+}
+
+// Defensive parse of the model's mismatchRegions: coordinates clamped to
+// 0-1, malformed entries dropped, capped at 6 regions so the rejected-state
+// UI can never be flooded with boxes.
+function parseMismatchRegions(raw: unknown): MismatchRegion[] {
+  if (!Array.isArray(raw)) return [];
+  const regions: MismatchRegion[] = [];
+  for (const item of raw) {
+    if (regions.length >= 6) break;
+    if (!item || typeof item !== "object") continue;
+    const region = item as Record<string, unknown>;
+    const feature = typeof region.feature === "string" ? region.feature.trim() : "";
+    const description = typeof region.description === "string"
+      ? region.description.trim()
+      : "";
+    if (!feature && !description) continue;
+    regions.push({
+      feature: feature || "face",
+      description,
+      profileBox: parseMismatchBox(region.profileBox) ?? undefined,
+      verificationBox: parseMismatchBox(region.verificationBox) ?? undefined,
+    });
+  }
+  return regions;
 }
 
 function getVerificationRetentionPolicy(
@@ -203,6 +269,7 @@ You are generating a privacy-preserving identity descriptor for one person's fac
 Rules:
 - Use ONLY stable facial geometry and proportion cues visible in the image.
 - Do NOT include age, race, ethnicity, gender, clothing, hairstyle, makeup, background, or expression-specific details.
+- Eyeglasses, facial hair (beard/mustache), and hairstyle must not change the measurement: infer the underlying bone structure as if they were absent.
 - If there is not exactly one clear face, set "faceVisible" to false, "quality" to 0, and all 16 numbers in "featureVector" to 0.
 - "quality" must be a number from 0 to 1 reflecting how suitable the face is for identity matching.
 - Every number in "featureVector" must be a normalized float from 0 to 1.
@@ -727,6 +794,10 @@ serve(async (req) => {
       verificationReferenceReady: verificationIdentityDescriptor !== null,
       gestureCode: gestureCode || null,
       gesturePrompt: gesturePrompt || null,
+      ...(comparisonResult.mismatchRegions &&
+        comparisonResult.mismatchRegions.length > 0 && {
+          mismatchRegions: comparisonResult.mismatchRegions,
+        }),
       ...(auditResult && { authenticityAudit: { authentic: auditResult.authentic, reasoning: auditResult.reasoning } }),
     };
 
@@ -788,6 +859,7 @@ serve(async (req) => {
       verificationStatus: decision.status,
       decisionReason: decision.reason,
       reasoning: comparisonResult.reasoning,
+      mismatchRegions: comparisonResult.mismatchRegions ?? [],
       userId,
       note: `Using Gemini AI (${visionModels[0]}) for face comparison`,
     };
@@ -1126,7 +1198,22 @@ async function compareFacesWithGemini(
     - The verification photo MUST show a CLEAR, FULL VIEW of the person's FACE
     - Both eyes, nose, mouth, and jawline must be clearly visible
     - Reject any photo that only shows partial face, beard only, hair only, or obscured features
+    - Eyeglasses are NOT an obstruction: if the eyes are clearly visible through the lenses, the photo passes this requirement
     - This prevents fake accounts and catfishing - be extremely strict!
+
+    IDENTITY TOLERANCE (CRITICAL):
+    The same person legitimately looks different across photos. The following must NEVER
+    lower similarity, confidence, or cause isMatch=false on their own — judge them as if
+    they were absent:
+    - Eyeglasses (or sunglasses) worn in one photo but not the other
+    - Facial hair grown, shaved, or trimmed (beard/mustache changes)
+    - Hairstyle, hair length, hair color, or hairline changes
+    - Makeup, earrings, or other accessories
+    - Different lighting, camera angle, facial expression, or an age gap of a few years
+    Judge identity ONLY by stable facial geometry: overall face shape, eye shape and
+    spacing (behind any lenses), nose structure, mouth/lip shape, jawline and bone
+    structure. If the faces match apart from the tolerated differences above, report
+    similarity in the 85-100 range and isMatch=true.
 
     Photo 1: User's profile photo (reference image)
     Photo 2: Verification photo (MUST be a clear facial selfie)
@@ -1150,7 +1237,7 @@ async function compareFacesWithGemini(
     - Eye shape, color, and spacing between eyes
     - Nose shape, bridge, and nostrils
     - Mouth shape, lips, and jawline
-    - Skin tone and facial hair (if present)
+    - Skin tone (facial hair differences are covered by IDENTITY TOLERANCE above)
     - Any distinctive marks, scars, or unique features
 
     ${gestureInstruction}
@@ -1162,8 +1249,16 @@ async function compareFacesWithGemini(
       "similarity": <number 0-100, how similar the FACES are (0 if no clear face in verification)>,
       "isMatch": <boolean - true ONLY if same person with high confidence, clear face shown, AND (if gesture requirement is provided) the gesture is clearly visible and correct>,
       "confidence": <number 0-100, your confidence in the match>,
-      "reasoning": "<brief explanation - include validation results, including whether the gesture requirement was satisfied if provided>"
+      "reasoning": "<brief explanation - include validation results, including whether the gesture requirement was satisfied if provided>",
+      "mismatchRegions": <array - empty when isMatch is true, otherwise up to 4 objects pinpointing which features differ: {
+        "feature": "<short feature name, e.g. jawline, eye shape, nose>",
+        "description": "<one plain-language sentence explaining this specific mismatch>",
+        "profileBox": {"x": <0-1 normalized left edge within Photo 1>, "y": <0-1 normalized top edge>, "width": <0-1>, "height": <0-1>},
+        "verificationBox": {"x": <0-1 within Photo 2>, "y": <0-1>, "width": <0-1>, "height": <0-1>}
+      }>
     }
+    mismatchRegions boxes are approximate: they must roughly bound the feature in each
+    photo using coordinates normalized to that photo's own width/height (0.0-1.0).
 
     Scoring guide (ONLY if verification photo shows clear face):
     - 90-100: Same person, virtually identical facial features
@@ -1254,6 +1349,9 @@ async function compareFacesWithGemini(
       confidence: Math.max(0, Math.min(100, result.confidence || 0)),
       isMatch: Boolean(result.isMatch),
       reasoning: result.reasoning || "Analysis completed",
+      mismatchRegions: result.isMatch === true
+        ? []
+        : parseMismatchRegions(result.mismatchRegions),
     };
 
     console.log("✅ Final comparison result:", JSON.stringify(finalResult, null, 2));

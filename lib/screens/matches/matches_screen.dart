@@ -10,6 +10,7 @@ import 'package:matchme/providers/match_notification_provider.dart';
 import 'package:matchme/providers/app_config_provider.dart';
 import 'package:matchme/providers/external_ad_provider.dart';
 import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/services/global_sync_manager.dart';
 import 'package:matchme/widgets/ad_slot.dart';
 import 'package:matchme/widgets/app_empty_state.dart';
 import 'package:matchme/widgets/app_skeleton.dart';
@@ -299,6 +300,16 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
           },
           child: RefreshIndicator(
             onRefresh: () async {
+              // Pull fresh rows from Supabase first — invalidating providers
+              // alone only re-reads the local cache, so refresh never
+              // reconciled with the server.
+              final syncManager = ref.read(globalSyncManagerProvider);
+              try {
+                await syncManager.syncMatchesNow(userId);
+              } catch (_) {}
+              try {
+                await syncManager.syncChatsNow(userId, force: true);
+              } catch (_) {}
               // Refresh app config and external ad providers
               await appConfigService.refresh();
               ref.invalidate(appConfigProvider);
@@ -337,19 +348,41 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
                         return keys.contains(normalizedSelected);
                       }).toList();
 
-                // Text search over the fields the match model actually
-                // carries. The other person's name is deliberately not
-                // searched: MatchModel stores only other_user_id, and the
-                // display name is resolved per-row from userProfileProvider
-                // inside MatchBox, so there is no name to filter against
-                // without a bulk profile cache.
+                // Text search over every field the match and the matched
+                // user's profile carry: name, matched intent, event, match
+                // type, interests, bio, occupation, education and zodiac.
+                // The other user's profile is resolved per match via
+                // userProfileProvider — the same provider the per-row MatchBox
+                // and the sort pass already watch, so the profiles are almost
+                // always already cached.
                 final normalizedSearch = _searchQuery.trim().toLowerCase();
                 final afterSearch = normalizedSearch.isEmpty
                     ? filteredMatches
                     : filteredMatches.where((match) {
+                        final otherProfile = match.otherUserId.isEmpty
+                            ? null
+                            : ref
+                                .watch(userProfileProvider(match.otherUserId))
+                                .asData
+                                ?.value;
+                        final interests = [
+                          ...?otherProfile?.personalInterests.values
+                              .expand((v) => v),
+                          ...?otherProfile?.businessInterests.values
+                              .expand((v) => v),
+                        ].join(' ');
                         final haystack = [
                           match.matchedIntent,
                           match.eventName ?? '',
+                          match.matchType,
+                          otherProfile?.name ?? '',
+                          otherProfile?.firstName ?? '',
+                          otherProfile?.lastName ?? '',
+                          otherProfile?.bio ?? '',
+                          otherProfile?.occupation ?? '',
+                          otherProfile?.education ?? '',
+                          otherProfile?.zodiacSign ?? '',
+                          interests,
                         ].join(' ').toLowerCase();
                         return haystack.contains(normalizedSearch);
                       }).toList();

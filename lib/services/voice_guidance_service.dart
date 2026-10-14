@@ -199,6 +199,33 @@ class VoiceGuidanceService {
     }
   }
 
+  /// Speaks [text] after the utterance currently in progress has finished,
+  /// waiting out the mandatory gap between messages. Used to read on-screen
+  /// content aloud in order (accessibility: everything the user can see must
+  /// also be spoken) without cutting the previous line short — and without
+  /// being silently dropped by the rate limiter the way back-to-back
+  /// [speakText] calls would be. Resolves once the utterance has *started*;
+  /// callers that must chain further announcements should follow up with
+  /// [waitUntilCurrentSpeechFinished].
+  Future<void> speakTextAfterCurrent(String text) async {
+    if (!_enabled) return;
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return;
+    final genAtCall = _generation;
+    try {
+      await waitUntilCurrentSpeechFinished();
+      if (genAtCall != _generation) return;
+      final sinceLast = DateTime.now().difference(_lastSpeakAt);
+      if (sinceLast < _minGapBetweenMessages) {
+        await Future<void>.delayed(_minGapBetweenMessages - sinceLast);
+      }
+      if (genAtCall != _generation) return;
+      await _speak(trimmed);
+    } catch (e) {
+      print('[VOICE_GUIDANCE] speakTextAfterCurrent failed: $e');
+    }
+  }
+
   /// Bumped by [stop] so utterances that are still awaiting engine setup
   /// when a screen goes away never start speaking on the next screen.
   int _generation = 0;

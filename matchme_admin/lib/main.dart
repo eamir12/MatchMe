@@ -3240,6 +3240,13 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
       // user_locations (15-min freshness), not just user_activity heartbeats.
       // Subscribe to all three so a visibility toggle or location update
       // refreshes the cards instantly instead of waiting for the 5s timer.
+      // presence_tick is the RLS-safe logon/logoff signal: a single-row table
+      // touched by DB triggers whenever any user's presence flips (login,
+      // explicit logout, stale-online cleanup). The raw-table subscriptions
+      // only deliver rows this admin can read under RLS; the tick table is
+      // readable by every authenticated user, so login/logout always lands.
+      // Counts still come from the SECURITY DEFINER RPC — no user data on
+      // the tick itself.
       void onLiveChange(_) {
         // No foreground guard: LIVE cards keep updating in background.
         _liveCountDebounce?.cancel();
@@ -3268,7 +3275,27 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
             table: 'user_locations',
             callback: onLiveChange,
           )
-          .subscribe();
+          .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'presence_tick',
+            callback: onLiveChange,
+          )
+          .subscribe((status, error) {
+            if (error != null) {
+              // Re-subscribe on error with a short delay to avoid reconnect
+              // storms (same recovery as the admin-dashboard tick channel).
+              Future.delayed(const Duration(seconds: 2), () {
+                if (!mounted) return;
+                final old = _liveCountChannel;
+                if (old != null) {
+                  Supabase.instance.client.removeChannel(old);
+                }
+                _liveCountChannel = null;
+                _setupLiveCountChannel();
+              });
+            }
+          });
       _liveCountChannel = channel;
     } catch (_) {}
   }

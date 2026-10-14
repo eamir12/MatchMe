@@ -11,18 +11,34 @@ import 'package:flutter/material.dart';
 import 'package:matchme/models/photo_moderation_rejection.dart';
 import 'package:matchme/providers/locale_provider.dart';
 
-const Set<String> _knownIssueLabels = {'text', 'watermark', 'screenshot', 'meme', 'face', 'document'};
+const Set<String> _knownIssueLabels = {
+  'text',
+  'watermark',
+  'screenshot',
+  'meme',
+  'face',
+  'document',
+};
 
 Color _issueColor(String label) =>
     label == 'face' || label == 'document' ? Colors.orange : Colors.red;
 
 /// Decodes the photo dimensions, then shows the rejection dialog. Falls back
 /// to a plain message dialog when the image cannot be decoded.
-Future<void> showPhotoRejectionDialog({
+///
+/// Returns true when the user chose "Try again" (only offered when
+/// [offerRetry] is true — used when a previous photo is still in place, e.g.
+/// replacing the primary, so the caller can restart the pick flow); false
+/// when the user dismissed with OK (the previous photo is kept).
+/// [keepNotice], when provided, is shown as a reassurance line (e.g. "Your
+/// current primary photo was kept.").
+Future<bool> showPhotoRejectionDialog({
   required BuildContext context,
   required PhotoModerationRejection rejection,
   required LocalizationState l10n,
   Uint8List? photoBytes,
+  bool offerRetry = false,
+  String? keepNotice,
 }) async {
   int? imageWidth;
   int? imageHeight;
@@ -43,14 +59,15 @@ Future<void> showPhotoRejectionDialog({
     }
   }
 
-  if (!context.mounted) return;
+  if (!context.mounted) return false;
 
   final fixedMessage = rejection.translationKey == null
       ? null
       : l10n.getString(rejection.translationKey!);
   final aiMessage = rejection.displayMessage;
   final showAiMessage =
-      aiMessage.isNotEmpty && (fixedMessage == null || fixedMessage != aiMessage);
+      aiMessage.isNotEmpty &&
+      (fixedMessage == null || fixedMessage != aiMessage);
 
   final chips = rejection.issueBoxes
       .map((b) => b.label)
@@ -58,6 +75,7 @@ Future<void> showPhotoRejectionDialog({
       .toSet()
       .toList();
 
+  var retryChosen = false;
   await showDialog<void>(
     context: context,
     barrierDismissible: false,
@@ -78,10 +96,7 @@ Future<void> showPhotoRejectionDialog({
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
-                        Image.memory(
-                          photoBytes!,
-                          fit: BoxFit.contain,
-                        ),
+                        Image.memory(photoBytes!, fit: BoxFit.contain),
                         Positioned.fill(
                           child: CustomPaint(
                             painter: IssueBoxesPainter(
@@ -92,9 +107,7 @@ Future<void> showPhotoRejectionDialog({
                           ),
                         ),
                         if (rejection.fullImageIssue)
-                          Container(
-                            color: Colors.red.withValues(alpha: 0.25),
-                          ),
+                          Container(color: Colors.red.withValues(alpha: 0.25)),
                       ],
                     ),
                   ),
@@ -114,7 +127,9 @@ Future<void> showPhotoRejectionDialog({
                           color: _issueColor(label),
                         ),
                         label: Text(
-                          l10n.getString('photoIssue${label[0].toUpperCase()}${label.substring(1)}'),
+                          l10n.getString(
+                            'photoIssue${label[0].toUpperCase()}${label.substring(1)}',
+                          ),
                           style: Theme.of(ctx).textTheme.bodySmall,
                         ),
                         visualDensity: VisualDensity.compact,
@@ -128,9 +143,9 @@ Future<void> showPhotoRejectionDialog({
             if (fixedMessage != null)
               Text(
                 fixedMessage,
-                style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
+                style: Theme.of(
+                  ctx,
+                ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
               ),
             if (showAiMessage) ...[
               const SizedBox(height: 8),
@@ -152,10 +167,38 @@ Future<void> showPhotoRejectionDialog({
                 ],
               ),
             ],
+            if (keepNotice != null) ...[
+              const SizedBox(height: 12),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    Icons.history,
+                    size: 16,
+                    color: Theme.of(ctx).colorScheme.primary,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      keepNotice,
+                      style: Theme.of(ctx).textTheme.bodySmall,
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ],
         ),
       ),
       actions: [
+        if (offerRetry)
+          TextButton(
+            onPressed: () {
+              retryChosen = true;
+              Navigator.of(ctx).pop();
+            },
+            child: Text(l10n.getString('photoRejectedTryAgain')),
+          ),
         TextButton(
           onPressed: () => Navigator.of(ctx).pop(),
           child: Text(l10n.getString('generalOk')),
@@ -163,6 +206,7 @@ Future<void> showPhotoRejectionDialog({
       ],
     ),
   );
+  return retryChosen;
 }
 
 /// Draws the rejection boxes over the photo, mapping normalized 0..1
@@ -182,10 +226,7 @@ class IssueBoxesPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     if (imageWidth <= 0 || imageHeight <= 0) return;
-    final scale = math.min(
-      size.width / imageWidth,
-      size.height / imageHeight,
-    );
+    final scale = math.min(size.width / imageWidth, size.height / imageHeight);
     final displayedWidth = imageWidth * scale;
     final displayedHeight = imageHeight * scale;
     final offsetX = (size.width - displayedWidth) / 2;

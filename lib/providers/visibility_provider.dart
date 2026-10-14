@@ -2089,13 +2089,16 @@ class IsVisible extends _$IsVisible {
       print('onLogout: BackgroundService.stop failed: $e');
     }
 
-    // Immediately mark the user offline on the server (clear presence)
+    // Immediately mark the user offline on the server (clear presence).
+    // p_clear_pinned: true drops any active home-base pin so a logged-out user
+    // is not counted online via is_pinned_location_active() — critical on
+    // shared devices where the next account replaces this one.
     try {
       final userId = Supabase.instance.client.auth.currentUser?.id;
       if (userId != null) {
         await Supabase.instance.client.rpc(
           'set_user_offline',
-          params: {'p_user_id': userId},
+          params: {'p_user_id': userId, 'p_clear_pinned': true},
         );
         print('onLogout: set_user_offline RPC called');
       }

@@ -853,13 +853,17 @@ class GlobalHomeSyncManager {
             // duration added to the time before the home screen could render.
             final keyReady = _awaitChatKeyReadiness(userId);
 
-            final recentLimit = await appConfigService.getInt(
-              'sync.recent_items_limit',
-              defaultValue: 5,
+            // Full-list sync: the Chats and Matches screens read the same
+            // Hive cache this writes, so the fetch must cover every active
+            // chat — not a Home-sized preview page. The Home "Recent" tabs
+            // cap their own display via home.recent_items_limit.
+            final fullLimit = await appConfigService.getInt(
+              'sync.full_items_limit',
+              defaultValue: 500,
             );
             final recent = await supabase.rpc(
               'get_user_recent_chats',
-              params: {'p_user_id': userId, 'p_limit': recentLimit},
+              params: {'p_user_id': userId, 'p_limit': fullLimit},
             );
 
             await keyReady;
@@ -1370,13 +1374,15 @@ class GlobalHomeSyncManager {
 
       // Use simplified RPC function for better performance
       try {
-        final recentLimit = await appConfigService.getInt(
-          'sync.recent_items_limit',
-          defaultValue: 5,
+        // Full-list sync (see syncChatsNow): the Matches screen reads this
+        // cache, so fetch every active match; Home previews cap in the UI.
+        final fullLimit = await appConfigService.getInt(
+          'sync.full_items_limit',
+          defaultValue: 500,
         );
         final recent = await supabase.rpc(
           'get_user_recent_matches',
-          params: {'p_user_id': userId, 'p_limit': recentLimit},
+          params: {'p_user_id': userId, 'p_limit': fullLimit},
         );
 
         if (recent is List) {

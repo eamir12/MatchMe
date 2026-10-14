@@ -4,8 +4,13 @@ import 'package:flutter/widgets.dart';
 
 const double nearbyMapMaxZoom = 24;
 
-/// Chooses a zoom where the matching-radius circle nearly fills the smaller
-/// map dimension, leaving room for map controls and preventing clipping.
+/// Fraction of the smaller map dimension occupied by the matching-radius
+/// circle, leaving 10% of the map visible around it on every side.
+const double nearbyMapRadiusFillRatio = 0.80;
+
+/// Chooses a zoom where the matching-radius circle (measured as its diameter)
+/// occupies [nearbyMapRadiusFillRatio] of the smaller map dimension, leaving
+/// room for map controls and preventing clipping.
 double nearbyMapZoomForRadius({
   required double radiusMeters,
   required double latitude,
@@ -21,15 +26,17 @@ double nearbyMapZoomForRadius({
 
   const earthCircumferenceMeters = 2 * math.pi * 6378137;
   const tileSize = 256.0;
-  const fillRatio = 0.84;
-  final targetDiameterPixels =
-      math.min(viewportSize.width, viewportSize.height) * fillRatio;
-  final latitudeScale = math.cos(latitude * math.pi / 180).abs().clamp(
-    0.05,
-    1.0,
-  );
-  final zoom = math.log(
-        targetDiameterPixels *
+  final targetRadiusPixels =
+      math.min(viewportSize.width, viewportSize.height) *
+      nearbyMapRadiusFillRatio /
+      2;
+  final latitudeScale = math
+      .cos(latitude * math.pi / 180)
+      .abs()
+      .clamp(0.05, 1.0);
+  final zoom =
+      math.log(
+        targetRadiusPixels *
             latitudeScale *
             earthCircumferenceMeters /
             (radiusMeters * tileSize),
