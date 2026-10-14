@@ -54,6 +54,11 @@
     .checkItem.complete { color: #fff; }
     .checkItem.complete .checkDot { background: rgba(0, 200, 83, 0.95); border-color: rgba(0, 200, 83, 0.95); color: #fff; }
     #status { pointer-events: none; font-size: 0.84rem; margin-top: 8px; text-align: center; min-height: 1.25em; color: rgba(255, 255, 255, 0.95); }
+    @keyframes statusWrongHandFlash {
+      0%, 100% { color: #ffeb3b; background-color: rgba(255, 82, 82, 0); }
+      50% { color: #ffffff; background-color: rgba(255, 82, 82, 0.38); }
+    }
+    #status.wrongHand { font-weight: 700; border-radius: 8px; animation: statusWrongHandFlash 0.65s ease-in-out infinite; }
     #progressWrap { pointer-events: none; position: static; width: 100%; margin-top: 8px; height: 6px; border-radius: 999px; background: rgba(255,255,255,0.2); overflow: hidden; }
     #progressBar { width: 0%; height: 100%; background: linear-gradient(90deg, #42a5f5, #00c853); transition: width 0.15s linear; }
     #captureBar { position: static; width: 0; height: 0; overflow: hidden; pointer-events: none; }
@@ -547,6 +552,8 @@
 
   function setStatus(text) {
     statusEl.textContent = text;
+    // Any new status ends the wrong-hand flash; announceWrongHand re-adds it.
+    statusEl.classList.remove('wrongHand');
     emitVoiceStatus(text);
   }
 
@@ -612,6 +619,12 @@
           handLabel,
         ),
       );
+      // Flash the wrong-hand line so it demands attention: drop the class,
+      // force a reflow, re-add — restarting the CSS animation even when the
+      // message is already on screen from the previous detection loop.
+      statusEl.classList.remove('wrongHand');
+      void statusEl.offsetWidth;
+      statusEl.classList.add('wrongHand');
       var key = 'verificationCaptureStatusUseCorrectHand';
       var now = Date.now();
       if (now - lastVoiceStatusTs < 2000) return;

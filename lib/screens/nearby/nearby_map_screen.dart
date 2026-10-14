@@ -1990,8 +1990,8 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
 
     // Register session FIRST so country is set before marking as online.
     // This prevents a race where other users see this user as "online" (from user_activity)
-    // but the map's get_online_user_counts_by_country RPC can't find them because
-    // their country is not yet set in user_session.
+    // but the map's get_online_dashboard_stats RPC can't find their country
+    // (neither user_locations.country_code nor user_session.country set yet).
     // bypassCooldown is required: the cold-start bootstrap registration (no
     // GPS) may have run seconds earlier and started the 60s per-user
     // cooldown. Without bypass, this GPS-backed registration would be
@@ -2144,21 +2144,24 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
       final userId = Supabase.instance.client.auth.currentUser?.id;
 
       print(
-        '[${_ts()}] 🗺️ OnlineWorldMapScreen: _refresh() - calling get_online_user_counts_by_country_excluding_self RPC immediately',
+        '[${_ts()}] 🗺️ OnlineWorldMapScreen: _refresh() - calling get_online_dashboard_stats RPC',
       );
 
-      // Fetch online user counts immediately (don't wait for presence updates).
-      // The RPC excludes the caller; the caller's own country is added below
-      // from the cached last-known country so it renders instantly.
+      // One round trip: per-country counts (excluding self), self country and
+      // self online state from the same server snapshot. No users query, no
+      // session query — the server derives country from coordinates
+      // (user_locations.country_code, 20262110).
       final rpcResult = await Supabase.instance.client.rpc(
-        'get_online_user_counts_by_country_excluding_self',
-        params: <String, dynamic>{'p_user_id': ?userId},
+        'get_online_dashboard_stats',
+        params: <String, dynamic>{'p_user_id': userId},
       );
 
       print('[${_ts()}] 🗺️ OnlineWorldMapScreen: _refresh() - RPC completed');
 
-      final rows = rpcResult;
-      final list = (rows as List<dynamic>?) ?? const [];
+      final statsMap =
+          (rpcResult as Map?)?.cast<String, dynamic>() ?? const {};
+      final list =
+          (statsMap['countries'] as List<dynamic>?) ?? const <dynamic>[];
       final parsed = <_CountryCount>[];
       for (final row in list) {
         if (row is! Map) continue;
@@ -2168,35 +2171,19 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
         parsed.add(_CountryCount(countryCode: code, count: count));
       }
 
-      // Add the caller's own country so it shows up instantly, before the
-      // presence flow marks them online server-side. Prefer the local cache,
-      // but fall back to the live session row: on first launch / a new
-      // device the cache is empty, and without the fallback self would be
-      // missing (RPC excludes self) so the map would show N-1 users.
+      // Add the caller's own country from the same snapshot so it shows up
+      // instantly, before the presence flow marks them online server-side.
       // Self is only added when their own profile is complete — the RPC
       // excludes incomplete profiles, so an account that has not finished
       // onboarding must not sneak back in here.
-      bool selfCountsOnline = false;
+      final selfCountsOnline =
+          statsMap['self_online'] == true &&
+          statsMap['self_is_complete'] == true;
       String? myCountry;
       if (userId != null) {
-        try {
-          final ownRow = await Supabase.instance.client
-              .from('users')
-              .select('is_profile_complete')
-              .eq('id', userId)
-              .maybeSingle();
-          selfCountsOnline = ownRow?['is_profile_complete'] == true;
-        } catch (_) {
-          selfCountsOnline = false;
-        }
-        myCountry = await _readLastKnownCountry(userId);
-        if (myCountry == null || myCountry.isEmpty) {
-          myCountry = await _fetchOwnCountryFromSession(userId);
-          if (myCountry != null && myCountry.isNotEmpty) {
-            // Backfill the cache so the next refresh is instant.
-            await _cacheLastKnownCountry(userId, myCountry);
-          }
-        }
+        myCountry =
+            (statsMap['self_country'] as String?)?.trim();
+        if (myCountry != null && myCountry.isEmpty) myCountry = null;
         if (selfCountsOnline && myCountry != null && myCountry.isNotEmpty) {
           final idx = parsed.indexWhere((e) => e.countryCode == myCountry);
           if (idx >= 0) {
@@ -2207,9 +2194,9 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
           } else {
             parsed.add(_CountryCount(countryCode: myCountry, count: 1));
           }
-        } else {
+        } else if (myCountry == null || myCountry.isEmpty) {
           print(
-            '[${_ts()}] 🗺️ OnlineWorldMapScreen: _refresh() - own country still unknown (not cached, no session country yet)',
+            '[${_ts()}] 🗺️ OnlineWorldMapScreen: _refresh() - own country still unknown (no location/session country on server yet)',
           );
         }
       }

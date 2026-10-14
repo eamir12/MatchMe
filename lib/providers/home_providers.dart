@@ -35,7 +35,6 @@ import 'package:matchme/services/chat_key_service.dart';
 import 'package:matchme/services/session_service.dart';
 import 'package:matchme/providers/chat_provider.dart' show translationProvider;
 import 'package:matchme/providers/location_share_provider.dart';
-import 'package:matchme/providers/unit_provider.dart';
 import 'package:matchme/services/match_rating_service.dart';
 import 'package:matchme/services/storage_helper.dart';
 import 'package:matchme/services/expiry_local_schedule_service.dart';
@@ -3278,7 +3277,8 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
 /// from the server. Returns the stats map plus the radius actually used for
 /// the nearby query so callers can log it without re-reading config.
 ///
-/// `online` is computed as `get_online_others_count() + 1`: the signed-in
+/// `online` is computed as `get_online_dashboard_stats().online_others + 1`:
+/// the signed-in
 /// user is online by definition, so the count is correct the moment it is
 /// fetched and never has to wait for the user's own user_activity row /
 /// session registration to commit server-side. This eliminates the whole class
@@ -3290,62 +3290,45 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
 /// complete — the RPC excludes incomplete profiles, so a user who has not
 /// finished onboarding is never counted, not even as self.
 Future<({Map<String, int?> stats, int radiusMeters, double radiusKm})>
-_fetchLiveDashboardStats(String userId) async {
-  // The online-others count does not depend on the radius, so start it before
-  // resolving the radius rather than after. That collapses what used to be four
-  // serial round trips (config -> users -> online RPC -> nearby RPC) into two.
-  final onlineOthersFuture = supabase.rpc(
-    'get_online_others_count',
+_fetchLiveDashboardStats(
+  String userId, {
+  void Function(Map<String, int?> partial)? onOnlineReady,
+}) async {
+  // One round trip for the online number, self completeness and the user's
+  // match radius (20262111 get_online_dashboard_stats). No config Edge
+  // Function, no users.single(), no unit/GPS resolution on this path — the
+  // online count must never wait on any of them.
+  final statsResp = await supabase.rpc(
+    'get_online_dashboard_stats',
     params: {'p_user_id': userId},
   );
-
-  // Get the user's radius setting from the users table (stored in meters)
-  int userRadiusMeters = await (() async {
-    try {
-      return await appConfigService.getInt(
-        'profile.match_radius_default_meters',
-        defaultValue: 100,
-      );
-    } catch (e) {
-      return 100;
-    }
-  })();
+  final statsMap = (statsResp as Map?)?.cast<String, dynamic>() ?? const {};
+  final othersOnlineCount = (statsMap['online_others'] as num?)?.toInt() ?? 0;
   // Self only inflates the online count when their own profile is complete;
   // the RPC already excludes incomplete profiles for everyone else.
-  bool selfProfileComplete = false;
-  try {
-    final userResponse = await supabase
-        .from('users')
-        .select('match_radius_default, is_profile_complete')
-        .eq('id', userId)
-        .single();
-    userRadiusMeters = resolveNearbyRadiusMeters(
-      userRadiusMeters,
-      userResponse['match_radius_default'],
-    );
-    selfProfileComplete = userResponse['is_profile_complete'] == true;
-  } catch (e) {
-    if (!isExpectedOfflineFailure(e)) {
-      debugPrint('Could not fetch user radius, using default: $e');
-    }
-  }
+  final selfProfileComplete = statsMap['self_is_complete'] == true;
+  final online = othersOnlineCount + (selfProfileComplete ? 1 : 0);
 
-  // Resolve after fetching the profile: the nearby RPC must use the user's
-  // selected radius, not the app-wide default loaded before the profile.
-  final userRadiusKm = nearbyRadiusKilometers(userRadiusMeters);
-  final nearbyFuture = supabase.rpc(
-    'get_nearby_users_count',
-    params: {'p_user_id': userId, 'p_radius_km': userRadiusKm},
+  // Emit the online number the moment it is known; the nearby count follows
+  // in a second round trip and never holds the online card back.
+  onOnlineReady?.call({'online': online});
+
+  // Radius: user value from the same snapshot; local default when unset
+  // (same 100 m default the config service used to return).
+  final userRadiusMeters = resolveNearbyRadiusMeters(
+    100,
+    statsMap['match_radius_default'],
   );
-
-  final othersOnlineCount = ((await onlineOthersFuture) as int?) ?? 0;
-  final nearbyCount = ((await nearbyFuture) as int?) ?? 0;
+  final userRadiusKm = nearbyRadiusKilometers(userRadiusMeters);
+  final nearbyCount =
+      ((await supabase.rpc(
+            'get_nearby_users_count',
+            params: {'p_user_id': userId, 'p_radius_km': userRadiusKm},
+          )) as int?) ??
+      0;
 
   return (
-    stats: <String, int?>{
-      'nearby': nearbyCount,
-      'online': othersOnlineCount + (selfProfileComplete ? 1 : 0),
-    },
+    stats: <String, int?>{'nearby': nearbyCount, 'online': online},
     radiusMeters: userRadiusMeters,
     radiusKm: userRadiusKm,
   );
@@ -3429,6 +3412,11 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
     }
   }
 
+  /// Set after [fetchStats] is declared (Dart local functions cannot
+  /// forward-reference each other). Schedules one trailing re-fetch when a
+  /// fetch is skipped, so a skip is never a silent drop.
+  void Function()? scheduleTrailingRefresh;
+
   /// Fetches live dashboard stats from the server.
   ///
   /// Live counters are NEVER served from disk cache: they must reflect
@@ -3437,16 +3425,22 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
   /// or the RPC failed) — callers must skip emission so the UI shows a
   /// placeholder rather than a stale number. On failure the last live value
   /// already emitted this session stays on screen (lastEmittedStats).
+  ///
+  /// A fetch skipped because another fetch is in flight (or the 2s throttle
+  /// window) schedules a trailing re-fetch, so a skip is never a silent drop
+  /// — the counters always converge on the latest server state shortly after.
   Future<Map<String, int?>?> fetchStats({bool force = false}) async {
     // Throttle: prevent fetching more than once every 2 seconds unless forced
     // Also prevent concurrent fetches
     if (!force) {
       if (isFetchingStats) {
+        scheduleTrailingRefresh?.call();
         return null;
       }
       final now = DateTime.now();
       if (lastFetchStatsTime != null &&
           now.difference(lastFetchStatsTime!).inMilliseconds < 2000) {
+        scheduleTrailingRefresh?.call();
         return null;
       }
     }
@@ -3497,7 +3491,19 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
     isFetchingStats = true;
 
     try {
-      final live = await _fetchLiveDashboardStats(userId);
+      final live = await _fetchLiveDashboardStats(
+        userId,
+        onOnlineReady: (partial) {
+          // Emit the online number as soon as its RPC returns, merging with
+          // the last known nearby value so the Nearby card is not reset.
+          if (!ref.mounted || controller.isClosed) return;
+          final merged = <String, int?>{
+            if (lastEmittedStats != null) ...lastEmittedStats!,
+            ...partial,
+          };
+          emitIfChanged(merged);
+        },
+      );
       final freshStats = live.stats;
       final userRadiusMeters = live.radiusMeters;
       final userRadiusKm = live.radiusKm;
@@ -3507,28 +3513,12 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
         phase: 'rpc-fetched',
         stats: freshStats,
         reason:
-            'Fresh server query from public.get_online_others_count() (last_activity > NOW() - 61s, excluding self) plus 1 for the signed-in user, so the count is correct immediately and never waits for self to be marked online.',
+            'Fresh server query from public.get_online_dashboard_stats() (heartbeat within 61s, completed profiles, excluding self) plus 1 for the signed-in user, so the count is correct immediately and never waits for self to be marked online.',
         source: 'supabase_rpc',
       );
 
-      // Format radius for log in user's preferred units
-      // Guard: provider may have been disposed during the async supabase calls above
-      if (!ref.mounted) return {'nearby': 0, 'online': 0};
-      final usesImperial = await ref.read(unitSystemProvider.future);
-      String radiusLog;
-      if (usesImperial) {
-        final feet = userRadiusMeters * 3.28084;
-        radiusLog = '${feet.round()} feet';
-      } else {
-        radiusLog = userRadiusMeters >= 1000
-            ? '${(userRadiusMeters / 1000.0).toStringAsFixed(1)} km'
-            : '$userRadiusMeters m';
-      }
-      radiusLog +=
-          ' (DB: ${userRadiusMeters}m → ${userRadiusKm}km used for query)';
-
       debugPrint(
-        'Dashboard stats fetched: online=${freshStats['online']}, nearby=$nearbyCount (radius=$radiusLog)',
+        'Dashboard stats fetched: online=${freshStats['online']}, nearby=$nearbyCount (radius: ${userRadiusMeters}m → ${userRadiusKm}km used for query)',
       );
 
       return freshStats;
@@ -3550,6 +3540,21 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
       isFetchingStats = false;
     }
   }
+
+  /// Schedules a single trailing re-fetch when a fetch is skipped (another
+  /// fetch in flight or inside the 2s throttle window), so a skipped request
+  /// is never silently dropped — the counters always converge on the latest
+  /// server state shortly after the skip.
+  bool trailingRefreshScheduled = false;
+  scheduleTrailingRefresh = () {
+    if (trailingRefreshScheduled) return;
+    trailingRefreshScheduled = true;
+    Future.delayed(const Duration(seconds: 2), () {
+      trailingRefreshScheduled = false;
+      if (!ref.mounted || controller.isClosed) return;
+      fetchStats().then(emitIfChanged);
+    });
+  };
 
   bool shouldRefreshForActivityChange({
     required String changedUserId,

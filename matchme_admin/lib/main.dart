@@ -22,6 +22,7 @@ import 'package:matchme_admin/screens/integrated_ad_dashboard.dart';
 import 'package:matchme_admin/screens/match_comparison_dashboard.dart';
 import 'package:matchme_admin/screens/user_match_management_dashboard.dart';
 import 'package:matchme_admin/screens/notification_delivery_dashboard.dart';
+import 'package:matchme_admin/screens/system_health_dashboard.dart';
 import 'package:matchme_admin/services/admin_local_db_service.dart';
 import 'package:matchme_admin/services/admin_offline_cache_manager.dart';
 import 'package:matchme_admin/services/admin_realtime_refresher.dart';
@@ -29,6 +30,7 @@ import 'package:matchme_admin/services/admin_session_service.dart';
 import 'package:matchme_admin/services/admin_sync_manager.dart';
 import 'package:matchme_admin/services/public_reference_data_service.dart';
 import 'package:matchme_admin/widgets/admin_offline_indicator.dart';
+import 'package:matchme_admin/widgets/system_health_pill.dart';
 import 'package:matchme_admin/utils/open_attachment.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -2186,6 +2188,7 @@ enum _AdminSection {
   matchInspector,
   userMatchManagement,
   delivery,
+  systemHealth,
 }
 
 class _DeliveryScreen extends ConsumerWidget {
@@ -2195,6 +2198,26 @@ class _DeliveryScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final l10n = ref.watch(localizationProvider);
     return AdminNotificationDeliveryDashboard(
+      t: (key, {params}) {
+        var value = l10n.getString(key);
+        params?.forEach((paramKey, paramValue) {
+          value = value.replaceAll('{$paramKey}', paramValue);
+        });
+        return value;
+      },
+      localeCode: l10n.locale.languageCode,
+      textDirection: l10n.textDirection,
+    );
+  }
+}
+
+class _SystemHealthScreen extends ConsumerWidget {
+  const _SystemHealthScreen();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l10n = ref.watch(localizationProvider);
+    return AdminSystemHealthDashboard(
       t: (key, {params}) {
         var value = l10n.getString(key);
         params?.forEach((paramKey, paramValue) {
@@ -2482,6 +2505,11 @@ class _AdminShellState extends ConsumerState<_AdminShell>
         selectedIcon: Icon(Icons.notifications_active),
         label: Text('Delivery'),
       ),
+      _AdminSection.systemHealth: NavigationRailDestination(
+        icon: const Icon(Icons.monitor_heart_outlined),
+        selectedIcon: const Icon(Icons.monitor_heart),
+        label: Text(l10n.getString('adminNavSystemHealth')),
+      ),
     };
 
     return _AdminSection.values
@@ -2562,6 +2590,11 @@ class _AdminShellState extends ConsumerState<_AdminShell>
         icon: Icon(Icons.notifications_active_outlined),
         selectedIcon: Icon(Icons.notifications_active),
         label: Text('Delivery'),
+      ),
+      NavigationDrawerDestination(
+        icon: const Icon(Icons.monitor_heart_outlined),
+        selectedIcon: const Icon(Icons.monitor_heart),
+        label: Text(l10n.getString('adminNavSystemHealth')),
       ),
     ];
   }
@@ -2679,6 +2712,7 @@ class _AdminShellState extends ConsumerState<_AdminShell>
         'adminNavUserMatchManagement',
       ),
       _AdminSection.delivery => 'Delivery',
+      _AdminSection.systemHealth => l10n.getString('adminNavSystemHealth'),
     };
   }
 
@@ -2693,21 +2727,25 @@ class _AdminShellState extends ConsumerState<_AdminShell>
           final selectedIndex = _AdminSection.values.indexOf(_selected);
           final content = _LazyIndexedStack(
             index: selectedIndex,
-            children: const [
-              _DashboardScreen(),
-              _AppConfigScreen(),
-              _TranslationsScreen(),
-              _SubscriptionsScreen(),
-              _SponsoredAdsScreen(),
-              _BroadcastsScreen(),
-              _IntentsInterestsScreen(),
-              _UserVerificationScreen(),
-              _ProfileEditRequestsScreen(),
-              _EventImportFeedbackScreen(),
-              _PromoCodesScreen(),
-              _MatchInspectorScreen(),
-              _UserMatchManagementScreen(),
-              _DeliveryScreen(),
+            children: [
+              _DashboardScreen(
+                onOpenSystemHealth:
+                    () => setState(() => _selected = _AdminSection.systemHealth),
+              ),
+              const _AppConfigScreen(),
+              const _TranslationsScreen(),
+              const _SubscriptionsScreen(),
+              const _SponsoredAdsScreen(),
+              const _BroadcastsScreen(),
+              const _IntentsInterestsScreen(),
+              const _UserVerificationScreen(),
+              const _ProfileEditRequestsScreen(),
+              const _EventImportFeedbackScreen(),
+              const _PromoCodesScreen(),
+              const _MatchInspectorScreen(),
+              const _UserMatchManagementScreen(),
+              const _DeliveryScreen(),
+              const _SystemHealthScreen(),
             ],
           );
           final useDrawerLayout =
@@ -2988,7 +3026,10 @@ class _AdminDashboardWindowHeaderDelegate
 }
 
 class _DashboardScreen extends ConsumerStatefulWidget {
-  const _DashboardScreen();
+  const _DashboardScreen({this.onOpenSystemHealth});
+
+  /// Opens the System Health nav section (set by the admin shell).
+  final VoidCallback? onOpenSystemHealth;
 
   @override
   ConsumerState<_DashboardScreen> createState() => _DashboardScreenState();
@@ -4130,6 +4171,20 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
                                     fontWeight: FontWeight.w700,
                                     letterSpacing: 1.2,
                                   ),
+                            ),
+                            const Spacer(),
+                            SystemHealthPill(
+                              t: (key, {params}) {
+                                var value = l10n.getString(key);
+                                params?.forEach((paramKey, paramValue) {
+                                  value = value.replaceAll(
+                                    '{$paramKey}',
+                                    paramValue,
+                                  );
+                                });
+                                return value;
+                              },
+                              onTap: widget.onOpenSystemHealth,
                             ),
                           ],
                         ),
@@ -5442,10 +5497,28 @@ class _AdminDashboardDrilldownScreenState
 
   List<_AdminDrilldownColumn> _columnsForMetric(String metric) {
     switch (metric) {
-      case 'online_users':
       case 'online_users_live':
-      case 'visible_users':
       case 'visible_users_live':
+        return const [
+          _AdminDrilldownColumn(
+            key: 'user_name',
+            labelKey: 'adminDrilldownUser',
+          ),
+          _AdminDrilldownColumn(
+            key: 'user_id',
+            labelKey: 'adminDrilldownUserId',
+          ),
+          _AdminDrilldownColumn(
+            key: 'last_activity_at',
+            labelKey: 'adminDrilldownLastActivity',
+          ),
+          _AdminDrilldownColumn(
+            key: 'is_pinned',
+            labelKey: 'adminDrilldownPinned',
+          ),
+        ];
+      case 'online_users':
+      case 'visible_users':
         return const [
           _AdminDrilldownColumn(
             key: 'user_name',
@@ -5764,6 +5837,24 @@ class _AdminDashboardDrilldownScreenState
     Object? raw,
   ) {
     if (raw == null) return const SizedBox.shrink();
+    if (key == 'is_pinned') {
+      // LIVE drilldowns: badge users holding an active pinned home-base
+      // location so admins can tell "pinned (available, not heartbeating)"
+      // apart from genuinely live users at a glance.
+      final pinned = raw == true;
+      return Tooltip(
+        message: l10n.getString(
+          pinned ? 'adminDrilldownPinnedActive' : 'adminDrilldownPinnedNone',
+        ),
+        child: Icon(
+          pinned ? Icons.push_pin : Icons.push_pin_outlined,
+          size: 16,
+          color: pinned
+              ? Colors.orange
+              : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.3),
+        ),
+      );
+    }
     if (raw is bool) {
       return raw
           ? const Icon(Icons.check, size: 18)
@@ -22017,6 +22108,9 @@ const Map<String, String> _defaultTranslations = {
   'adminDrilldownMatchType': 'Basis',
   'adminDrilldownMessages': 'Messages',
   'adminDrilldownModel': 'Model',
+  'adminDrilldownPinned': 'Pinned',
+  'adminDrilldownPinnedActive': 'Pinned home-base location is active',
+  'adminDrilldownPinnedNone': 'No pinned location',
   'adminDrilldownProvider': 'Provider',
   'adminDrilldownScheduledAt': 'Scheduled',
   'adminDrilldownSearchHint': 'Search by name or ID...',
@@ -22172,6 +22266,44 @@ const Map<String, String> _defaultTranslations = {
   'adminNavAppConfig': 'App Config',
   'adminNavBroadcasts': 'Broadcasts',
   'adminNavDashboard': 'Dashboard',
+  'adminNavSystemHealth': 'System Health',
+  'adminHealthSubtitle':
+      'Live Supabase status: database, realtime, session, and notification '
+      'queue. Updates automatically.',
+  'adminHealthStatusHealthy': 'Healthy',
+  'adminHealthStatusDegraded': 'Degraded',
+  'adminHealthStatusDown': 'Down',
+  'adminHealthStatusChecking': 'Checking…',
+  'adminHealthUpdatedAgo': 'Updated {age} ago',
+  'adminHealthStaleData': 'Offline — showing the last known status.',
+  'adminHealthDatabase': 'Database',
+  'adminHealthLatency': 'Latency',
+  'adminHealthLatencyMs': '{ms} ms',
+  'adminHealthLastChecked': 'Last checked (ago)',
+  'adminHealthLastOk': 'Last OK (ago)',
+  'adminHealthConsecutiveFailures': 'Consecutive failures',
+  'adminHealthDbError': 'Error: {error}',
+  'adminHealthRealtime': 'Realtime',
+  'adminHealthSocketLabel': 'WebSocket',
+  'adminHealthSocketState': 'Socket: {state}',
+  'adminHealthLastTickLabel': 'Heartbeat (tick)',
+  'adminHealthLastTick': '{age} ago',
+  'adminHealthNoTicksYet': 'No activity tick yet',
+  'adminHealthSession': 'Admin session',
+  'adminHealthSessionActive': 'Signed in',
+  'adminHealthSessionExpires': 'Expires',
+  'adminHealthSessionTimeLeft': 'Time left',
+  'adminHealthSessionExpiringSoon':
+      'Session expiring soon — sign in again soon to avoid interruption.',
+  'adminHealthQueue': 'Notification queue',
+  'adminHealthQueuePending': 'Pending',
+  'adminHealthQueueProcessing': 'Processing',
+  'adminHealthQueueFailedHour': 'Failed (1h)',
+  'adminHealthQueueOldestPending': 'Oldest pending',
+  'adminHealthQueueCheckedAgo': 'Checked {age} ago',
+  'adminHealthQueueAlertDetail':
+      'Queue alert: backlog growing or sender stuck. Check the Delivery '
+      'section.',
   'adminNavIntentsInterests': 'Intents & Interests',
   'adminNavProfileEdits': 'Profile Edit Requests',
   'adminNavPromoCodes': 'Promo Codes',

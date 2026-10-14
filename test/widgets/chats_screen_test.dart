@@ -307,10 +307,12 @@ void main() {
     await tester.pumpAndSettle();
 
     // Open the sheet via the filter button next to the search field.
-    await tester.tap(find.byType(InkWell).at(0));
+    await tester.tap(find.byIcon(Icons.tune_rounded).first);
     await tester.pumpAndSettle();
 
-    expect(find.text('Unread only'), findsOneWidget);
+    // The unread toggle label carries the number of unread CONVERSATIONS
+    // (1 chat has unread messages), not the message count.
+    expect(find.text('Unread only (1)'), findsOneWidget);
     expect(find.text('Show 1 results'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
