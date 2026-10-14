@@ -3,16 +3,24 @@
 // Continuous Supabase health monitor shared by the System Health screen and
 // the dashboard status pill. Probes the database via the `health_check()`
 // RPC (with latency), tracks the Realtime WebSocket connection state plus an
-// `admin_dashboard_tick` heartbeat, inspects the admin session expiry, and
-// polls the notification queue health RPC.
+// `admin_dashboard_tick` heartbeat, and polls the notification queue health
+// RPC. Deliberately limited to signals about Supabase itself — client-side
+// concerns (admin session expiry, local network) are excluded because they
+// auto-heal or are fixed by relogging and would only add noise.
 //
 // Ref-counted: [acquire] starts probing on the first listener and [release]
 // stops it when the last listener goes away. Listeners subscribe via
 // [stream] and can read the latest [current] snapshot synchronously
 // (broadcast streams do not replay past emissions).
+//
+// Anti-flap: worsening transitions (healthy → degraded/down) must persist
+// for [_statusChangeGrace] before being shown, so brief transients — app
+// resume reconnects, a single failed probe, network handoff — display as
+// neutral "checking" instead of false alarms. Improvements show instantly.
 
 import 'dart:async';
 
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme_admin/services/admin_offline_cache_manager.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -32,8 +40,6 @@ class SystemHealthSnapshot {
     required this.socketState,
     this.socketEverConnected = false,
     this.lastTickAt,
-    required this.sessionActive,
-    this.sessionExpiresAt,
     this.queueHealth,
     this.queueCheckedAt,
     required this.updatedAt,
@@ -53,25 +59,10 @@ class SystemHealthSnapshot {
   final bool socketEverConnected;
   final DateTime? lastTickAt;
 
-  final bool sessionActive;
-  final DateTime? sessionExpiresAt;
-
   final Map<String, dynamic>? queueHealth;
   final DateTime? queueCheckedAt;
 
   final DateTime updatedAt;
-
-  Duration? get sessionTimeLeft {
-    final exp = sessionExpiresAt;
-    if (exp == null) return null;
-    final left = exp.difference(DateTime.now());
-    return left.isNegative ? Duration.zero : left;
-  }
-
-  bool get sessionExpiringSoon {
-    final left = sessionTimeLeft;
-    return left != null && left < const Duration(minutes: 15);
-  }
 }
 
 class SystemHealthMonitor {
@@ -111,9 +102,6 @@ class SystemHealthMonitor {
   bool _socketEverConnected = false;
   DateTime? _lastTickAt;
 
-  bool _sessionActive = false;
-  DateTime? _sessionExpiresAt;
-
   Map<String, dynamic>? _queueHealth;
   DateTime? _queueCheckedAt;
 
@@ -122,7 +110,6 @@ class SystemHealthMonitor {
     overall: SystemHealthStatus.checking,
     dbOk: true,
     socketState: 'closed',
-    sessionActive: false,
     updatedAt: DateTime.now(),
   );
 
@@ -310,20 +297,6 @@ class SystemHealthMonitor {
     }
   }
 
-  void _refreshSession() {
-    try {
-      final session = Supabase.instance.client.auth.currentSession;
-      _sessionActive = session != null;
-      final exp = session?.expiresAt;
-      _sessionExpiresAt = exp == null
-          ? null
-          : DateTime.fromMillisecondsSinceEpoch(exp * 1000, isUtc: true);
-    } catch (_) {
-      _sessionActive = false;
-      _sessionExpiresAt = null;
-    }
-  }
-
   SystemHealthStatus _computeOverall() {
     final now = DateTime.now();
 
@@ -349,10 +322,6 @@ class SystemHealthMonitor {
       degraded = true;
     }
     if (_queueHealth?['alert'] == true) degraded = true;
-    if (_sessionExpiresAt != null &&
-        _sessionExpiresAt!.difference(now) < const Duration(minutes: 15)) {
-      degraded = true;
-    }
 
     if (degraded) return SystemHealthStatus.degraded;
     if (!_dbEverSucceeded) return SystemHealthStatus.checking;
@@ -361,7 +330,6 @@ class SystemHealthMonitor {
 
   void _emit() {
     if (_listeners == 0) return;
-    _refreshSession();
     _updatedAt = DateTime.now();
     _current = SystemHealthSnapshot(
       overall: _computeOverall(),
@@ -375,8 +343,6 @@ class SystemHealthMonitor {
       socketState: _socketState,
       socketEverConnected: _socketEverConnected,
       lastTickAt: _lastTickAt,
-      sessionActive: _sessionActive,
-      sessionExpiresAt: _sessionExpiresAt,
       queueHealth: _queueHealth,
       queueCheckedAt: _queueCheckedAt,
       updatedAt: _updatedAt,

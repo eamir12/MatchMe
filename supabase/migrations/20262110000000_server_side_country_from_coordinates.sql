@@ -40,8 +40,14 @@ CREATE TABLE IF NOT EXISTS public.country_geoms (
   geom geography NOT NULL
 );
 
+-- Reference data: never queried directly by clients — only via the
+-- SECURITY DEFINER function get_country_from_coords (reads as owner, which
+-- bypasses RLS). RLS on + zero policies denies anon/authenticated entirely.
+ALTER TABLE public.country_geoms ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE public.country_geoms FROM anon, authenticated;
+
 COMMENT ON TABLE public.country_geoms IS
-  'Country polygons (Natural Earth 110m) used to derive a country code from coordinates server-side.';
+  'Country polygons (Natural Earth 110m) used to derive a country code from coordinates server-side. RLS enabled with no policies: client keys have no access; reads happen only via SECURITY DEFINER functions.';
 
 -- ---------------------------------------------------------------------------
 -- 2. Seed data (generated from ne_110m_admin_0_countries.geojson)

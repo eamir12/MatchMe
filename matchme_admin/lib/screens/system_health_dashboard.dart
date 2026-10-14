@@ -5,15 +5,15 @@
 // Renders the shared [systemHealthProvider] snapshot produced by
 // [SystemHealthMonitor]: overall status banner plus per-area cards for the
 // database (health_check RPC latency), the Realtime WebSocket + tick
-// heartbeat, the admin session, and the notification queue. Everything
-// updates continuously from the monitor's probes and realtime channel —
-// this screen never probes on its own.
+// heartbeat, and the notification queue. Everything updates continuously
+// from the monitor's probes and realtime channel — this screen never probes
+// on its own. Only signals about Supabase itself are shown; client-side
+// concerns (session expiry) are intentionally excluded.
 //
 // Read-only: no mutations. Offline-aware via AdminOfflineCacheManager.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart' show DateFormat;
 import 'package:matchme_admin/services/admin_offline_cache_manager.dart';
 import 'package:matchme_admin/services/system_health_monitor.dart';
 import 'package:matchme_admin/widgets/system_health_pill.dart';
@@ -50,15 +50,6 @@ class _AdminSystemHealthDashboardState
       value = value.replaceAll('{$paramKey}', paramValue);
     });
     return value;
-  }
-
-  String _fmtClock(DateTime dt) {
-    final local = dt.toLocal();
-    try {
-      return DateFormat.yMMMd(widget.localeCode).add_jm().format(local);
-    } catch (_) {
-      return DateFormat.yMMMd().add_jm().format(local);
-    }
   }
 
   String _age(Duration d) => systemHealthAgeLabel(d);
@@ -120,8 +111,6 @@ class _AdminSystemHealthDashboardState
             _databaseCard(theme, snapshot),
             const SizedBox(height: 12),
             _realtimeCard(theme, snapshot),
-            const SizedBox(height: 12),
-            _sessionCard(theme, snapshot),
             const SizedBox(height: 12),
             _queueCard(theme, snapshot),
           ],
@@ -197,9 +186,6 @@ class _AdminSystemHealthDashboardState
     }
     if (s.queueHealth?['alert'] == true) {
       return t('adminHealthQueueAlertDetail');
-    }
-    if (s.sessionExpiringSoon) {
-      return t('adminHealthSessionExpiringSoon');
     }
     return null;
   }
@@ -321,52 +307,6 @@ class _AdminSystemHealthDashboardState
               ? t('adminHealthNoTicksYet')
               : t('adminHealthLastTick', params: {'age': _agoLabel(s.lastTickAt)}),
         ),
-      ],
-    );
-  }
-
-  // ── Session card ──────────────────────────────────────────────────
-
-  Widget _sessionCard(ThemeData theme, SystemHealthSnapshot s) {
-    final status = !s.sessionActive
-        ? SystemHealthStatus.degraded
-        : (s.sessionExpiringSoon
-              ? SystemHealthStatus.degraded
-              : SystemHealthStatus.healthy);
-
-    final left = s.sessionTimeLeft;
-
-    return _card(
-      theme,
-      titleKey: 'adminHealthSession',
-      icon: Icons.person_outline,
-      status: status,
-      children: [
-        _kv(
-          theme,
-          t('adminHealthSessionActive'),
-          s.sessionActive
-              ? t('adminHealthStatusHealthy')
-              : t('adminHealthStatusDown'),
-        ),
-        if (s.sessionExpiresAt != null)
-          _kv(
-            theme,
-            t('adminHealthSessionExpires'),
-            _fmtClock(s.sessionExpiresAt!),
-          ),
-        if (left != null)
-          _kv(theme, t('adminHealthSessionTimeLeft'), _age(left)),
-        if (s.sessionExpiringSoon) ...[
-          const SizedBox(height: 8),
-          Text(
-            t('adminHealthSessionExpiringSoon'),
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: Colors.orange,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
       ],
     );
   }

@@ -22268,8 +22268,8 @@ const Map<String, String> _defaultTranslations = {
   'adminNavDashboard': 'Dashboard',
   'adminNavSystemHealth': 'System Health',
   'adminHealthSubtitle':
-      'Live Supabase status: database, realtime, session, and notification '
-      'queue. Updates automatically.',
+      'Live Supabase status: database, realtime, and notification queue. '
+      'Updates automatically.',
   'adminHealthStatusHealthy': 'Healthy',
   'adminHealthStatusDegraded': 'Degraded',
   'adminHealthStatusDown': 'Down',
@@ -22289,12 +22289,6 @@ const Map<String, String> _defaultTranslations = {
   'adminHealthLastTickLabel': 'Heartbeat (tick)',
   'adminHealthLastTick': '{age} ago',
   'adminHealthNoTicksYet': 'No activity tick yet',
-  'adminHealthSession': 'Admin session',
-  'adminHealthSessionActive': 'Signed in',
-  'adminHealthSessionExpires': 'Expires',
-  'adminHealthSessionTimeLeft': 'Time left',
-  'adminHealthSessionExpiringSoon':
-      'Session expiring soon — sign in again soon to avoid interruption.',
   'adminHealthQueue': 'Notification queue',
   'adminHealthQueuePending': 'Pending',
   'adminHealthQueueProcessing': 'Processing',
