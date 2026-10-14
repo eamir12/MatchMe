@@ -442,12 +442,16 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
           Future.delayed(Duration(milliseconds: staggerMs), () {
             if (!ref.mounted) return;
             if (supabase.auth.currentSession == null) return;
-            ref
-                .read(profileSyncProvider)
-                .syncProfile(
-                  targetId,
-                  source: 'matched-user-subscription-init',
-                );
+            // Skip if a sync for this user is already running (the warm path
+            // schedules the same matched users with source warm-home-refresh).
+            // Without this, both paths fire a full sync per matched user on
+            // startup — roughly double the network work for no benefit.
+            final sync = ref.read(profileSyncProvider);
+            if (sync.isSyncInFlight(targetId)) return;
+            sync.syncProfile(
+              targetId,
+              source: 'matched-user-subscription-init',
+            );
           }),
         );
         staggerMs += 350;

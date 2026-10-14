@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { withInvocationLogging } from "../_shared/edge_function_logger.ts";
 import {
   bytesToBase64Url,
   corsHeaders,
@@ -9,7 +10,7 @@ import {
   storePasskeyChallenge,
 } from "../_shared/passkeys.ts";
 
-serve(async (req) => {
+serve(withInvocationLogging("passkeys-authentication-start", async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
@@ -86,4 +87,4 @@ serve(async (req) => {
       400,
     );
   }
-});
+}));

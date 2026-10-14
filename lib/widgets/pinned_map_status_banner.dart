@@ -43,8 +43,10 @@ class PinnedMapStatusBanner extends ConsumerWidget {
         child: InkWell(
           borderRadius: BorderRadius.circular(12),
           // Same canonical management surface as Home/settings: extend or
-          // unpin right from the map without navigating away.
-          onTap: () => showPinnedLocationSheet(context, ref),
+          // unpin right from the map without navigating away. The map
+          // shortcut stays hidden — this banner only lives on the map.
+          onTap: () =>
+              showPinnedLocationSheet(context, ref, showMapShortcut: false),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(

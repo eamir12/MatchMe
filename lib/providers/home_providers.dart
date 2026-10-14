@@ -418,10 +418,14 @@ final initialHomeSyncProvider = FutureProvider.autoDispose.family<void, String>(
         });
       }),
     );
-    // Warm immediately from existing cache too, but after the first frames
-    // so its box reads and profile refreshes don't starve the first paint.
+    // Warm from the existing local cache shortly after first frames — this
+    // runs the local-only part (ratings memory + photo prefetch from cache)
+    // without waiting for the network sync above. The staggered
+    // per-matched-user syncProfile loop is network work; the re-entry guard
+    // in _warmMatchedUsersAfterHomeSync lets whichever pass wins keep it and
+    // the other return immediately, so it never runs twice.
     unawaited(
-      Future<void>.delayed(const Duration(seconds: 2)).then(
+      Future<void>.delayed(const Duration(milliseconds: 500)).then(
         (_) => _warmMatchedUsersAfterHomeSync(ref, userId),
       ),
     );
@@ -458,9 +462,17 @@ final initialHomeSyncProvider = FutureProvider.autoDispose.family<void, String>(
 // rating summaries (memory + Hive) and photo signed-URLs/image bytes, and
 // refreshes stale other-user profiles in the background (spread to avoid a
 // thundering-herd of RPCs). Best-effort: never throws, never blocks UI.
+//
+// Re-entry guard: scheduled from two places (the post-sync .then and the
+// standalone first-frames delay). Without this flag the whole warm — ratings,
+// photo prefetch, and the staggered per-matched-user syncProfile loop — ran
+// twice per home-ready.
+final Set<String> _matchedUsersWarmInProgress = <String>{};
+
 Future<void> _warmMatchedUsersAfterHomeSync(Ref ref, String userId) async {
+  if (userId.isEmpty) return;
+  if (!_matchedUsersWarmInProgress.add(userId)) return;
   try {
-    if (userId.isEmpty) return;
     if (supabase.auth.currentUser?.id != userId) return;
     final localDb = ref.read(localDbProvider);
     List<Map<String, dynamic>> matches = const [];
@@ -543,7 +555,9 @@ Future<void> _warmMatchedUsersAfterHomeSync(Ref ref, String userId) async {
         );
       }
     } catch (_) {}
-  } catch (_) {}
+  } catch (_) {} finally {
+    _matchedUsersWarmInProgress.remove(userId);
+  }
 }
 
 // Tracks the last time the user-data channel was kicked into a "reconnect

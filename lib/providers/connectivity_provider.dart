@@ -153,6 +153,31 @@ Future<ConnectivityHealth> getCurrentConnectivityHealth({
 Stream<ConnectivityHealth> createConnectivityHealthStream({
   ConnectivityMonitorConfig config = const ConnectivityMonitorConfig(),
 }) {
+  return _sharedConnectivityHealthStream(config);
+}
+
+/// Singleton backing for [createConnectivityHealthStream].
+///
+/// Every caller used to get its OWN stream, each with independent
+/// failureStreak/probe timers/controllers. Three separate streams meant three
+/// independent `health_check` probes against Supabase plus three independent
+/// `OfflineCacheManager.setSupabaseAvailability` flips — the app effectively
+/// probed the backend 3x as often as intended and the availability flag got
+/// written by whichever stream finished last.
+///
+/// The first caller's [config] wins; later callers share that stream. The
+/// lifecycle is bound to the first subscriber via onCancel (see below), so
+/// this is safe: the app-lifecycle listener and connectivity_plus subscription
+/// live exactly once.
+Stream<ConnectivityHealth> _sharedConnectivityHealthStream(
+  ConnectivityMonitorConfig config,
+) =>
+    _sharedHealthStream ??= _buildConnectivityHealthStream(config);
+Stream<ConnectivityHealth>? _sharedHealthStream;
+
+Stream<ConnectivityHealth> _buildConnectivityHealthStream(
+  ConnectivityMonitorConfig config,
+) {
   debugPrint('🌐 [CONNECTIVITY] createConnectivityHealthStream: STARTING');
   bool disposed = false;
   int failureStreak = 0;
@@ -177,6 +202,10 @@ Stream<ConnectivityHealth> createConnectivityHealthStream({
       probeTimer?.cancel();
       appLifecycleListener?.dispose();
       connectivitySubscription?.cancel();
+      // The last listener went away, so the cached singleton is dead.
+      // Clear it so a later subscriber builds a fresh, working stream
+      // instead of subscribing to a closed one.
+      _sharedHealthStream = null;
     },
   );
 

@@ -1256,7 +1256,12 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                       ? pinnedLocationText
                       : l10n.getString('homeNearbyMapPinAction'),
                   child: TextButton.icon(
-                    onPressed: () => showPinnedLocationSheet(context, ref),
+                    onPressed: () => showPinnedLocationSheet(
+                      context,
+                      ref,
+                      // Already on this screen — no map shortcut needed.
+                      showMapShortcut: false,
+                    ),
                     icon: const Icon(Icons.push_pin_outlined, size: 18),
                     label: Text(
                       pin.isActive

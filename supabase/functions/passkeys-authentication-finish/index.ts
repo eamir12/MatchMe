@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { withInvocationLogging } from "../_shared/edge_function_logger.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.4";
 import { verifyAuthenticationResponse } from "npm:@simplewebauthn/server@13";
 import {
@@ -11,7 +12,7 @@ import {
 } from "../_shared/passkeys.ts";
 import { getPasskeyRuntimeConfig } from "../_shared/passkeys.ts";
 
-serve(async (req) => {
+serve(withInvocationLogging("passkeys-authentication-finish", async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
@@ -173,4 +174,4 @@ serve(async (req) => {
       error instanceof Error ? error.message : String(error),
     );
   }
-});
+}));

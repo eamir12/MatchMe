@@ -1403,7 +1403,11 @@ class LocalizationState {
     'homeNoMatches': 'No recent matches',
     'homeOnline': 'Online',
     'homeRecentChats': 'Recent Chats',
+    'homeRecentChatsCount': 'Showing top {count} Conversations',
+    'homeRecentChatsCountOf': 'Showing top {shown} of {total} Conversations',
     'homeRecentMatches': 'Recent Matches',
+    'homeRecentMatchesCount': 'Showing top {count} Matches',
+    'homeRecentMatchesCountOf': 'Showing top {shown} of {total} Matches',
     'homeRecoveryStaleMessage':
         'We couldn’t refresh your home. Showing the last saved data.',
     'homeRecoveryStaleTitle': 'Home may be out of date',

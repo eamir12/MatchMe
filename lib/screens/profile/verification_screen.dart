@@ -283,7 +283,6 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
   // Titles, section headers and button labels are deliberately never spoken.
   Future<void> _spokenQueue = Future<void>.value();
   final Map<String, String> _lastSpokenBySource = <String, String>{};
-  String? _lastStatusSpokenSig;
   String? _lastStatusDetailsSpokenSig;
   String? _lastInstructionsSpokenSig;
   String? _lastSubmissionSpokenSig;
@@ -818,22 +817,13 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
         statusDescription = l10n.getString('notVerifiedDescription');
     }
 
-    // Accessibility: the status heading (status + description) and the
-    // rejection details (AI analysis, photo comparison, review hint) are
-    // announced as separate sources with separate signatures, so details
-    // arriving later — e.g. after the server response replaces the cached
-    // fallback — never repeat the heading already heard.
+    // Accessibility: the current status itself (heading + description) is
+    // deliberately NOT spoken. Only the rejection details — AI analysis,
+    // photo comparison, review hint — are announced, once per distinct
+    // shown content.
     final showComparison =
         status == 'rejected' &&
         (profilePhotoPath != null || verificationPhotoPath != null);
-    final statusSpokenSig = '$status|$statusText|$statusDescription';
-    if (_lastStatusSpokenSig != statusSpokenSig) {
-      _lastStatusSpokenSig = statusSpokenSig;
-      _enqueueSpoken(
-        'status',
-        () => Future.value('$statusText. $statusDescription'),
-      );
-    }
     final statusDetailsSpokenSig =
         '$status|$autoRejected|${rejectionReason ?? ''}|'
         '${mismatchRegions.length}|$profilePhotoPath|$verificationPhotoPath';

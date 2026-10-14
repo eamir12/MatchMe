@@ -290,6 +290,19 @@ SupabaseClient? _supabaseClientOrNull() {
   }
 }
 
+/// Coalescing for the *default* runtime probe (null timeout, no confirm).
+///
+/// At startup several subsystems (connectivity monitor, ad providers, chat)
+/// fire the default probe within the same instant. Running them independently
+/// meant 3-5 concurrent `health_check` round trips against an already-stressed
+/// (or dead) backend, each holding its own socket. We share one in-flight
+/// future so they all observe the same verdict from a single round trip.
+///
+/// Callers that pass an explicit [timeout] or [confirm] (the bootstrap gates,
+/// the connectivity monitor's own budgeted probes) are NOT coalesced — their
+/// budgets and semantics differ, and sharing would corrupt the verdict.
+Future<SupabaseReachResult>? _inFlightDefaultProbe;
+
 /// Probes Supabase with the `health_check` RPC.
 ///
 /// [timeout] replaces the per-attempt budget **verbatim** — the caller decides,
@@ -319,13 +332,36 @@ Future<SupabaseReachResult> probeSupabaseReachability({
     );
   }
 
-  return evaluateSupabaseProbe(
+  final isDefaultRuntimeProbe = timeout == null && !confirm;
+  if (isDefaultRuntimeProbe) {
+    final inFlight = _inFlightDefaultProbe;
+    if (inFlight != null) {
+      log?.call('Joining in-flight default Supabase probe');
+      return inFlight;
+    }
+  }
+
+  final future = evaluateSupabaseProbe(
     (budget) => _runHealthCheck(client, budget),
     budget: timeout ?? platformProbeTimeout(kSupabaseProbeTimeout),
     confirmBudget: platformProbeTimeout(kSupabaseConfirmTimeout),
     confirm: confirm,
     log: log,
   );
+
+  if (isDefaultRuntimeProbe) {
+    _inFlightDefaultProbe = future;
+    // Clear the shared slot once settled so later probes run fresh.
+    unawaited(
+      future.whenComplete(() {
+        if (identical(_inFlightDefaultProbe, future)) {
+          _inFlightDefaultProbe = null;
+        }
+      }),
+    );
+  }
+
+  return future;
 }
 
 /// One `health_check` round trip that is actually cancelled when [budget] wins.

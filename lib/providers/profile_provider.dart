@@ -28,6 +28,7 @@ import 'package:matchme/providers/home_providers.dart'
     show dashboardStatsProvider, warmDashboardStatsForUser;
 import 'package:matchme/utils/resume_diagnostics.dart';
 import 'package:matchme/utils/profile_sync_result.dart';
+import 'package:matchme/utils/offline_utils.dart';
 import 'package:matchme/services/referral_service.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/services/photo_prescreen_service.dart';
@@ -1380,8 +1381,11 @@ class ProfileSyncService {
   final Map<String, int> _syncGenerations = <String, int>{};
   final Map<String, Future<ProfileSyncResult>> _inFlight = {};
   
-  // Debounce: track last successful sync time to prevent rapid redundant calls
-  DateTime? _lastSuccessfulSyncAt;
+  // Debounce: track last successful sync time PER USER to prevent rapid
+  // redundant calls. Keyed by userId — a global timestamp made matched-user
+  // warm-up syncs cancel each other (the first to finish stamped the single
+  // shared timestamp, so the rest hit SKIP debounced and never refreshed).
+  final Map<String, DateTime> _lastSuccessfulSyncAt = <String, DateTime>{};
   static const _debounceWindow = Duration(seconds: 5);
   // Sources that should bypass debounce (explicit user actions)
   static const _debounceBypassSources = {'manual-review-request', 'admin-review-change'};
@@ -1395,7 +1399,7 @@ class ProfileSyncService {
   void invalidateUser(String userId) {
     _inFlight.remove(userId);
     _syncGenerations[userId] = (_syncGenerations[userId] ?? 0) + 1;
-    _lastSuccessfulSyncAt = null;
+    _lastSuccessfulSyncAt.remove(userId);
   }
 
   void _publishStarted(String userId, int generation) {
@@ -1516,15 +1520,22 @@ class ProfileSyncService {
     // Currently no-op; config is read on demand.
   }
 
+  /// True when a sync for [userId] is currently running. Lets callers skip
+  /// scheduling a duplicate instead of piling a second one onto the same user.
+  bool isSyncInFlight(String userId) => _inFlight.containsKey(userId);
+
   Future<ProfileSyncResult> syncProfile(String userId, {String source = ''}) {
     final existing = _inFlight[userId];
     if (existing != null) return existing;
 
-    // Debounce: skip if a sync succeeded within the last 5 seconds
-    // This prevents rapid redundant syncs from bootstrap + realtime + settings-open etc.
+    // Debounce: skip if THIS user's sync succeeded within the last 5 seconds.
+    // This prevents rapid redundant syncs from bootstrap + realtime + settings-open
+    // etc. Scoped per userId so warm-up syncs for different matched users don't
+    // cancel one another.
     final now = DateTime.now();
-    if (_lastSuccessfulSyncAt != null &&
-        now.difference(_lastSuccessfulSyncAt!) < _debounceWindow &&
+    final lastSyncAt = _lastSuccessfulSyncAt[userId];
+    if (lastSyncAt != null &&
+        now.difference(lastSyncAt) < _debounceWindow &&
         !_debounceBypassSources.contains(source)) {
       debugPrint('ProfileSyncService.syncProfile SKIP debounced source=$source');
       return Future.value(ProfileSyncResult(
@@ -1540,11 +1551,11 @@ class ProfileSyncService {
         if (identical(_inFlight[userId], future)) {
           _inFlight.remove(userId);
         }
-        // Update last successful sync time for debounce
+        // Update last successful sync time for debounce (scoped to this user).
         // Note: We check the result asynchronously to avoid blocking
         future.then((result) {
           if (result.status == ProfileSyncStatus.synced) {
-            _lastSuccessfulSyncAt = DateTime.now();
+            _lastSuccessfulSyncAt[userId] = DateTime.now();
           }
         });
       }),
@@ -1581,12 +1592,21 @@ class ProfileSyncService {
     }
 
     final startAll = DateTime.now();
+    // Hard ceiling on the whole sync (all attempts + backoff). Without this a
+    // slow-but-not-dead backend could stretch a single sync past 20s, blocking
+    // callers that await it (e.g. the home-ready warm path).
+    const overallTimeout = Duration(seconds: 20);
 
     try {
       const int maxAttempts = 3;
       int attempt = 0;
 
       while (true) {
+        if (DateTime.now().difference(startAll) > overallTimeout) {
+          throw TimeoutException(
+            'syncProfile exceeded overall ${overallTimeout.inSeconds}s budget',
+          );
+        }
         attempt++;
         try {
           final startAttempt = DateTime.now();
@@ -1596,14 +1616,17 @@ class ProfileSyncService {
           // revert to pre-wizard data right after saving).
           final fetchStartedAt = DateTime.now();
           // Fetch user row (identity + settings only)
-          final userFuture = _fetchUserRowWithFallback(userId);
+          final userFuture = _fetchUserRowWithFallback(userId).timeout(
+            const Duration(seconds: 10),
+          );
 
           // Fetch single user_profiles row
           final profilesFuture = supabase
               .from('user_profiles')
               .select('*')
               .eq('user_id', userId)
-              .maybeSingle();
+              .maybeSingle()
+              .timeout(const Duration(seconds: 10));
 
           final List<dynamic> results = await Future.wait([
             userFuture,
@@ -1705,7 +1728,7 @@ class ProfileSyncService {
                               'p_tier': trialTier,
                               'p_expires_at': trialEndUtc.toIso8601String(),
                             },
-                          );
+                          ).timeout(const Duration(seconds: 10));
 
                           Map<String, dynamic>? result;
                           if (rpcResult is Map) {
@@ -2102,12 +2125,17 @@ class ProfileSyncService {
           // these prefs — without this mirror, the flag enabled on another
           // install leaves offline recording silently OFF while the toggle
           // shows ON.
-          try {
-            final prefs = await SharedPreferences.getInstance();
-            await prefs.setBool('flutter.retro_enabled', profile.retroMatchingEnabled);
-            final retention = profile.retroRetentionHours.clamp(2, 72);
-            await prefs.setInt('flutter.retro_retention_hours', retention);
-          } catch (_) {}
+          // Skipped when Supabase calls are paused (offline): the sync is
+          // best-effort there, and we don't want a per-matched-user warm-up
+          // burst to pay SharedPreferences write latency while offline.
+          if (!shouldSkipSupabaseCalls()) {
+            try {
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.setBool('flutter.retro_enabled', profile.retroMatchingEnabled);
+              final retention = profile.retroRetentionHours.clamp(2, 72);
+              await prefs.setInt('flutter.retro_retention_hours', retention);
+            } catch (_) {}
+          }
 
           // Success — exit retry loop
           final totalDuration = DateTime.now()

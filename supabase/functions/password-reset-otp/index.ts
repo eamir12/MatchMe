@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { withInvocationLogging } from "../_shared/edge_function_logger.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -100,7 +101,7 @@ async function sendPasswordResetEmail(email: string, code: string, language: str
   throw new Error("Email service not configured (RESEND_API_KEY missing)");
 }
 
-Deno.serve(async (req) => {
+Deno.serve(withInvocationLogging("password-reset-otp", async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   const supabaseUrl = normalizeText(Deno.env.get("SUPABASE_URL"));
@@ -196,4 +197,4 @@ Deno.serve(async (req) => {
       status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
-});
+}));

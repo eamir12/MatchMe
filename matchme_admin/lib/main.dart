@@ -7859,14 +7859,10 @@ class _IntentsInterestsScreenState
       );
       if (!mounted) return;
       if (hadCached) {
-        if (!adminOfflineCacheManager.shouldUseCachedData()) {
-          final l10n = ref.read(localizationProvider);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(l10n.getString('adminIntentsInterestsLoadFailed')),
-            ),
-          );
-        }
+        // Cached data is already on screen. A failed background refresh
+        // is usually a transient blip (app resume, network switch); the
+        // offline manager's grace + the global offline banner cover real
+        // outages, so don't alarm with a snackbar here.
       } else if (adminOfflineCacheManager.shouldUseCachedData()) {
         setState(() {
           _isLoading = false;
@@ -7901,14 +7897,8 @@ class _IntentsInterestsScreenState
       );
       if (!mounted) return;
       if (hadCached) {
-        if (!adminOfflineCacheManager.shouldUseCachedData()) {
-          final l10n = ref.read(localizationProvider);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(l10n.getString('adminIntentsInterestsLoadFailed')),
-            ),
-          );
-        }
+        // Same as the PostgREST path: cached data stays on screen silently;
+        // a transient failed refresh must not alarm.
       } else if (adminOfflineCacheManager.shouldUseCachedData()) {
         setState(() {
           _isLoading = false;
@@ -9189,16 +9179,10 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
     } catch (_) {
       if (!mounted) return;
       if (hadCached) {
-        // Suppress error toasts when offline — the cached data is
-        // still displayed and the offline indicator banner is already visible.
-        if (!adminOfflineCacheManager.shouldUseCachedData()) {
-          final l10n = ref.read(localizationProvider);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(l10n.getString('adminBroadcastsLoadFailed')),
-            ),
-          );
-        }
+        // Cached data is already on screen; a failed background refresh
+        // is usually a transient blip (app resume, network switch). The
+        // offline manager's grace + the global offline banner cover real
+        // outages — stay silent here.
       } else if (adminOfflineCacheManager.shouldUseCachedData()) {
         setState(() {
           _errorKey = 'adminBroadcastsOfflineNotCached';
@@ -14642,14 +14626,8 @@ class _TranslationsScreenState extends ConsumerState<_TranslationsScreen> {
     } catch (_) {
       if (!mounted) return;
       if (hadCached) {
-        if (!adminOfflineCacheManager.shouldUseCachedData()) {
-          final l10n = ref.read(localizationProvider);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(l10n.getString('adminTranslationsLoadFailed')),
-            ),
-          );
-        }
+        // Cached data is already on screen; stay silent on transient
+        // refresh failures (see broadcasts list).
       } else if (adminOfflineCacheManager.shouldUseCachedData()) {
         setState(() {
           _errorKey = 'adminTranslationsOfflineNotCached';
@@ -15517,12 +15495,8 @@ class _AppConfigScreenState extends ConsumerState<_AppConfigScreen> {
     } catch (_) {
       if (!mounted) return;
       if (hadCached) {
-        if (!adminOfflineCacheManager.shouldUseCachedData()) {
-          final l10n = ref.read(localizationProvider);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(l10n.getString('adminAppConfigLoadFailed'))),
-          );
-        }
+        // Cached data is already on screen; stay silent on transient
+        // refresh failures (see broadcasts list).
       } else if (adminOfflineCacheManager.shouldUseCachedData()) {
         setState(() {
           _errorKey = 'adminAppConfigOfflineNotCached';
@@ -16418,14 +16392,8 @@ class _SubscriptionsScreenState extends ConsumerState<_SubscriptionsScreen> {
     } catch (_) {
       if (!mounted) return;
       if (hadCached) {
-        if (!adminOfflineCacheManager.shouldUseCachedData()) {
-          final l10n = ref.read(localizationProvider);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(l10n.getString('adminSubscriptionsLoadFailed')),
-            ),
-          );
-        }
+        // Cached data is already on screen; stay silent on transient
+        // refresh failures (see broadcasts list).
       } else if (adminOfflineCacheManager.shouldUseCachedData()) {
         setState(() {
           _errorKey = 'adminSubscriptionsOfflineNotCached';
@@ -18123,14 +18091,8 @@ class _UserVerificationScreenState
         return;
       }
       if (hadCached || _rows.isNotEmpty) {
-        if (!adminOfflineCacheManager.shouldUseCachedData()) {
-          final l10n = ref.read(localizationProvider);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(l10n.getString('adminVerificationLoadFailed')),
-            ),
-          );
-        }
+        // Cached data is already on screen; stay silent on transient
+        // refresh failures (see broadcasts list).
       } else if (adminOfflineCacheManager.shouldUseCachedData()) {
         setState(() {
           _errorKey = 'adminVerificationOfflineNotCached';
@@ -20205,14 +20167,8 @@ class _ProfileEditRequestsScreenState
           _rows = _rows.toList(growable: false);
           _isLoading = false;
         });
-        if (!adminOfflineCacheManager.shouldUseCachedData()) {
-          final l10n = ref.read(localizationProvider);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(l10n.getString('adminProfileEditsLoadFailed')),
-            ),
-          );
-        }
+        // Cached data is already on screen; stay silent on transient
+        // refresh failures (see broadcasts list).
       } else if (adminOfflineCacheManager.shouldUseCachedData()) {
         setState(() {
           _errorKey = 'adminProfileEditsOfflineNotCached';
@@ -22268,8 +22224,25 @@ const Map<String, String> _defaultTranslations = {
   'adminNavDashboard': 'Dashboard',
   'adminNavSystemHealth': 'System Health',
   'adminHealthSubtitle':
-      'Live Supabase status: database, realtime, and notification queue. '
-      'Updates automatically.',
+      "Supabase's official status plus live probes of this project's "
+      'database, realtime, and notification queue. Updates automatically.',
+  'adminHealthSupabaseStatus': 'Supabase status (official)',
+  'adminHealthSupabaseSource': 'status.supabase.com · updated {age} ago',
+  'adminHealthSupabaseUnavailable':
+      'Could not load Supabase’s status page right now.',
+  'adminHealthComponentOperational': 'Operational',
+  'adminHealthComponentDegraded': 'Degraded performance',
+  'adminHealthComponentPartialOutage': 'Partial outage',
+  'adminHealthComponentMajorOutage': 'Major outage',
+  'adminHealthComponentMaintenance': 'Maintenance',
+  'adminHealthRegionsLabel': 'Regions',
+  'adminHealthRegionsAllOk': 'All {total} regions operational',
+  'adminHealthRegionsAffected': '{count} of {total} affected',
+  'adminHealthRegionsMore': '+{count} more regions',
+  'adminHealthIncidents': 'Active incidents',
+  'adminHealthNoIncidents': 'No active incidents',
+  'adminHealthIncidentImpact': 'Impact: {impact}',
+  'adminHealthIncidentUpdated': 'Updated {age} ago',
   'adminHealthStatusHealthy': 'Healthy',
   'adminHealthStatusDegraded': 'Degraded',
   'adminHealthStatusDown': 'Down',
@@ -22279,6 +22252,12 @@ const Map<String, String> _defaultTranslations = {
   'adminHealthDatabase': 'Database',
   'adminHealthLatency': 'Latency',
   'adminHealthLatencyMs': '{ms} ms',
+  'adminHealthLatencyCaption':
+      'Each bar is one probe from this device. Orange = slow (>1.5s), which '
+      'is usually the path (app resume, Wi-Fi/cell switch) — not a Supabase '
+      'outage. Tap a bar for its exact reading.',
+  'adminHealthLatencySlowCount': 'Slow samples in view: {count}',
+  'adminHealthLatencySample': '{ms} ms at {time}',
   'adminHealthLastChecked': 'Last checked (ago)',
   'adminHealthLastOk': 'Last OK (ago)',
   'adminHealthConsecutiveFailures': 'Consecutive failures',

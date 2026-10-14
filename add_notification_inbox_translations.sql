@@ -11,7 +11,7 @@
 --   inboxDeleteAllConfirm, inboxDelete, inboxOpenChat, and the per-type
 --   labels inboxType*.
 --
---   Total: 19 keys x 3 locales (en, es, he) = 57 translation entries
+--   Total: 20 keys x 3 locales (en, es, he) = 60 translation entries
 --
 -- EXECUTION NOTES:
 --   - Run in Supabase SQL Editor (or as part of migration pipeline).
@@ -37,6 +37,7 @@ INSERT INTO translations (locale, key, value, created_at, updated_at) VALUES
 ('en', 'inboxTypeNewMatch', 'New match', NOW(), NOW()),
 ('en', 'inboxTypeMatchExtended', 'Match extended', NOW(), NOW()),
 ('en', 'inboxTypeMatchExpiry', 'Match expiring', NOW(), NOW()),
+('en', 'inboxTypePinnedExpiry', 'Pinned location expiring', NOW(), NOW()),
 ('en', 'inboxTypeAdminBroadcast', 'Announcement', NOW(), NOW()),
 ('en', 'inboxTypeLocationShare', 'Live location', NOW(), NOW()),
 ('en', 'inboxTypeBirthday', 'Birthday', NOW(), NOW()),
@@ -63,6 +64,7 @@ INSERT INTO translations (locale, key, value, created_at, updated_at) VALUES
 ('es', 'inboxTypeNewMatch', 'Nueva coincidencia', NOW(), NOW()),
 ('es', 'inboxTypeMatchExtended', 'Coincidencia ampliada', NOW(), NOW()),
 ('es', 'inboxTypeMatchExpiry', 'Coincidencia por caducar', NOW(), NOW()),
+('es', 'inboxTypePinnedExpiry', 'Ubicación fijada por caducar', NOW(), NOW()),
 ('es', 'inboxTypeAdminBroadcast', 'Anuncio', NOW(), NOW()),
 ('es', 'inboxTypeLocationShare', 'Ubicación en vivo', NOW(), NOW()),
 ('es', 'inboxTypeBirthday', 'Cumpleaños', NOW(), NOW()),
@@ -89,6 +91,7 @@ INSERT INTO translations (locale, key, value, created_at, updated_at) VALUES
 ('he', 'inboxTypeNewMatch', 'התאמה חדשה', NOW(), NOW()),
 ('he', 'inboxTypeMatchExtended', 'התאמה הוארכה', NOW(), NOW()),
 ('he', 'inboxTypeMatchExpiry', 'התאמה עומדת לפוג', NOW(), NOW()),
+('he', 'inboxTypePinnedExpiry', 'הנעיצה עומדת לפוג', NOW(), NOW()),
 ('he', 'inboxTypeAdminBroadcast', 'הכרזה', NOW(), NOW()),
 ('he', 'inboxTypeLocationShare', 'מיקום חי', NOW(), NOW()),
 ('he', 'inboxTypeBirthday', 'יום הולדת', NOW(), NOW()),

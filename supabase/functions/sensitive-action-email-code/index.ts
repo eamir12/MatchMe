@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { withInvocationLogging } from "../_shared/edge_function_logger.ts";
 
 interface RequestBody {
   action: "generate" | "verify" | "resend" | "generate_email_change_code" | "verify_email_change_code" | "complete_email_change" | "send_code_email" | "send_email_changed_notification";
@@ -1158,7 +1159,7 @@ async function handleSendEmailChangedNotification(
   }
 }
 
-Deno.serve(async (req) => {
+Deno.serve(withInvocationLogging("sensitive-action-email-code", async (req) => {
   // Handle CORS
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -1233,4 +1234,4 @@ Deno.serve(async (req) => {
       }
     );
   }
-});
+}));

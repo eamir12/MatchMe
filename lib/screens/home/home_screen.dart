@@ -618,38 +618,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
-  Widget _buildSectionTitle(
-    BuildContext context,
-    String title, {
-    VoidCallback? onSeeAll,
-  }) {
+  Widget _buildSectionTitle(BuildContext context, String title) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16.0, 16.0, 8.0, 8.0),
-      child: Row(
-        children: [
-          // Flexible, not a bare Text: Hebrew/Spanish titles are long enough to
-          // overflow the row (and spill off the leading edge in RTL) where the
-          // short English ones fit.
-          Expanded(
-            child: Text(
-              title,
-              style: Theme.of(
-                context,
-              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
-              maxLines: 2,
-              overflow: TextOverflow.visible,
-            ),
-          ),
-          if (onSeeAll != null) ...[
-            const SizedBox(width: 8),
-            TextButton(
-              onPressed: onSeeAll,
-              child: Text(
-                ref.watch(localizationProvider).getString('homeSeeAll'),
-              ),
-            ),
-          ],
-        ],
+      // Flexible, not a bare Text: Hebrew/Spanish titles are long enough to
+      // overflow the row (and spill off the leading edge in RTL) where the
+      // short English ones fit.
+      child: Text(
+        title,
+        style: Theme.of(
+          context,
+        ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+        maxLines: 2,
+        overflow: TextOverflow.visible,
       ),
     );
   }
@@ -1214,9 +1195,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   _buildSectionTitle(
                     context,
                     l10n.getString('homeRecentMatches'),
-                    onSeeAll: () {
-                      ref.read(navigationIndexProvider.notifier).setIndex(1);
-                    },
                   ),
                   if (nonExpiredMatches.isNotEmpty) ...[
                     ListSearchBar(
@@ -1239,16 +1217,37 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       l10n: l10n,
                       hintKey: 'matchesSearchHint',
                     ),
-                    ResultCountLabel(
-                      // The preview section only renders homePreviewLimit
-                      // rows, so the "shown" count must be capped at that
-                      // limit — otherwise the label would claim "23 results"
-                      // while only 5 are visible.
-                      shown: sortedMatches.length.clamp(0, homePreviewLimit),
-                      total: nonExpiredMatches.length,
-                      l10n: l10n,
-                      countKey: 'matchesResultsCount',
-                      countOfKey: 'matchesResultsCountOf',
+                    // Count line + "See all": the label says how much of the
+                    // full list the preview covers, and the button jumps to
+                    // the Matches tab for the rest.
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ResultCountLabel(
+                            // The preview section only renders
+                            // homePreviewLimit rows, so the "shown" count
+                            // must be capped at that limit — otherwise the
+                            // label would claim "23 results" while only 5
+                            // are visible.
+                            shown: sortedMatches.length.clamp(
+                              0,
+                              homePreviewLimit,
+                            ),
+                            total: nonExpiredMatches.length,
+                            l10n: l10n,
+                            countKey: 'homeRecentMatchesCount',
+                            countOfKey: 'homeRecentMatchesCountOf',
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () {
+                            ref
+                                .read(navigationIndexProvider.notifier)
+                                .setIndex(1);
+                          },
+                          child: Text(l10n.getString('homeSeeAll')),
+                        ),
+                      ],
                     ),
                   ],
                   if (sortedMatches.isEmpty)
@@ -1451,9 +1450,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     _buildSectionTitle(
                       context,
                       l10n.getString('homeRecentChats'),
-                      onSeeAll: () {
-                        ref.read(navigationIndexProvider.notifier).setIndex(2);
-                      },
                     ),
                   if (activeChats.isNotEmpty && !selectingChats) ...[
                     ListSearchBar(
@@ -1504,45 +1500,68 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       l10n: l10n,
                       hintKey: 'chatsSearchHint',
                     ),
-                      ResultCountLabel(
-                        // The preview section only renders homePreviewLimit
-                        // rows, so the "shown" count must be capped at that
-                        // limit — otherwise the label would claim "23
-                        // conversations" while only 5 are visible.
-                        shown: sortedChats.length.clamp(0, homePreviewLimit),
-                        total: activeChats.length,
-                        l10n: l10n,
-                      ),
-                      // While the full-text pass runs, say so — same as the
-                      // Chats screen — instead of showing a stale list.
-                      if (hasChatsSearch && !bodySearchResolvedChats)
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(18, 0, 16, 8),
-                          child: Row(
-                            children: [
-                              const SizedBox(
-                                width: 11,
-                                height: 11,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 1.6,
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  l10n.getString('chatsSearchingMessages'),
-                                  style: Theme.of(context).textTheme.bodySmall
-                                      ?.copyWith(
-                                        color: Theme.of(
-                                          context,
-                                        ).colorScheme.onSurfaceVariant,
-                                      ),
-                                ),
-                              ),
-                            ],
+                    // Count line + "See all": the label says how much of
+                    // the full list the preview covers, and the button
+                    // jumps to the Chats tab for the rest.
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ResultCountLabel(
+                            // The preview section only renders
+                            // homePreviewLimit rows, so the "shown" count
+                            // must be capped at that limit — otherwise the
+                            // label would claim "23 conversations" while
+                            // only 5 are visible.
+                            shown: sortedChats.length.clamp(
+                              0,
+                              homePreviewLimit,
+                            ),
+                            total: activeChats.length,
+                            l10n: l10n,
+                            countKey: 'homeRecentChatsCount',
+                            countOfKey: 'homeRecentChatsCountOf',
                           ),
                         ),
-                    ],
+                        TextButton(
+                          onPressed: () {
+                            ref
+                                .read(navigationIndexProvider.notifier)
+                                .setIndex(2);
+                          },
+                          child: Text(l10n.getString('homeSeeAll')),
+                        ),
+                      ],
+                    ),
+                    // While the full-text pass runs, say so — same as the
+                    // Chats screen — instead of showing a stale list.
+                    if (hasChatsSearch && !bodySearchResolvedChats)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(18, 0, 16, 8),
+                        child: Row(
+                          children: [
+                            const SizedBox(
+                              width: 11,
+                              height: 11,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 1.6,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                l10n.getString('chatsSearchingMessages'),
+                                style: Theme.of(context).textTheme.bodySmall
+                                    ?.copyWith(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.onSurfaceVariant,
+                                    ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
                   if (sortedChats.isEmpty)
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 20.0),

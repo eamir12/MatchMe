@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { withInvocationLogging } from "../_shared/edge_function_logger.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -180,7 +181,7 @@ function filterByRange(
   });
 }
 
-serve(async (req) => {
+serve(withInvocationLogging("fetch-public-calendar-ics", async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
@@ -262,4 +263,4 @@ serve(async (req) => {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
-});
+}));

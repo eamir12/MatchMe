@@ -506,6 +506,16 @@ class StorageHelper {
     } catch (_) {}
   }
 
+  /// Maximum number of images prefetched concurrently. Each prefetch can cost
+  /// a signed-URL round trip plus a download; running them one-by-one made a
+  /// 7-avatar warm take ~16s on a slow network. A small cap keeps the wall
+  /// clock low without bursting the connection.
+  static const int _prefetchConcurrency = 4;
+
+  /// Prefetches [sources] into the OfflineImageCache, up to
+  /// [_prefetchConcurrency] at a time. Individual failures are swallowed
+  /// (best-effort), and one slow/hung image cannot stall the whole batch past
+  /// the per-source budget.
   static Future<void> prefetchImageSources(
     Iterable<String> sources, {
     String? bucket,
@@ -513,9 +523,34 @@ class StorageHelper {
     final uniqueSources = <String>{};
     for (final source in sources) {
       final trimmed = source.trim();
-      if (trimmed.isEmpty || !uniqueSources.add(trimmed)) continue;
-      await prefetchImageSource(trimmed, bucket: bucket);
+      if (trimmed.isEmpty) continue;
+      uniqueSources.add(trimmed);
     }
+    if (uniqueSources.isEmpty) return;
+
+    final it = uniqueSources.iterator;
+    Future<void> worker() async {
+      while (true) {
+        String source;
+        if (!it.moveNext()) return;
+        source = it.current;
+        try {
+          await prefetchImageSource(source, bucket: bucket).timeout(
+            const Duration(seconds: 12),
+          );
+        } on TimeoutException {
+          // Skip this image; let the rest of the batch continue.
+        } catch (_) {}
+      }
+    }
+
+    final workers = List<Future<void>>.generate(
+      _prefetchConcurrency < uniqueSources.length
+          ? _prefetchConcurrency
+          : uniqueSources.length,
+      (_) => worker(),
+    );
+    await Future.wait(workers);
   }
 
   /// Make a string safe for use as a disk cache key / filename.
@@ -748,9 +783,13 @@ class StorageHelper {
     // Use signed URLs for authenticated access only
     // This ensures profile photos are only accessible to logged-in users
     try {
+      // A hung createSignedUrl used to stall its whole prefetch batch (and any
+      // caller awaiting this resolve) with no bound. Cap it so a dead backend
+      // fails fast and the caller can fall back to cache.
       final dynamic resp = await _client.storage
           .from(_bucket)
-          .createSignedUrl(objectPath, ttlSeconds);
+          .createSignedUrl(objectPath, ttlSeconds)
+          .timeout(const Duration(seconds: 8));
 
       String? url;
 

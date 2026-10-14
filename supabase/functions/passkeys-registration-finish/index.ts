@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { withInvocationLogging } from "../_shared/edge_function_logger.ts";
 import { verifyRegistrationResponse } from "npm:@simplewebauthn/server@13";
 import {
   bytesToBase64Url,
@@ -12,7 +13,7 @@ import {
   jsonResponse,
 } from "../_shared/passkeys.ts";
 
-serve(async (req) => {
+serve(withInvocationLogging("passkeys-registration-finish", async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
@@ -151,4 +152,4 @@ serve(async (req) => {
       error instanceof Error ? error.message : String(error),
     );
   }
-});
+}));

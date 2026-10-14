@@ -688,8 +688,9 @@ String _typeLabelKey(String type) {
     case 'match_extended':
       return 'inboxTypeMatchExtended';
     case 'match_expiry':
-    case 'pinned_expiry':
       return 'inboxTypeMatchExpiry';
+    case 'pinned_expiry':
+      return 'inboxTypePinnedExpiry';
     case 'admin_broadcast':
       return 'inboxTypeAdminBroadcast';
     case 'location_share':

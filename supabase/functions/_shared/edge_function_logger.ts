@@ -60,3 +60,52 @@ export async function logEdgeFunctionInvocation(
     );
   }
 }
+
+// Wraps a handler so every invocation is recorded in
+/// `edge_function_invocations` without touching the handler's body.
+// - CORS preflights (OPTIONS) are passed through unlogged.
+// - `success = status < 500`: expected client rejections (wrong OTP,
+//   invalid input → 4xx) are NOT project failures; only 5xx and
+//   unhandled exceptions count (the System Health "Project errors"
+//   card thresholds over these).
+export function withInvocationLogging(
+  functionName: string,
+  handler: (req: Request) => Promise<Response>,
+): (req: Request) => Promise<Response> {
+  return async (req: Request): Promise<Response> => {
+    if (req.method === "OPTIONS") return handler(req);
+    const requestId = crypto.randomUUID();
+    const startedAt = Date.now();
+    let response: Response;
+    try {
+      response = await handler(req);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      await logEdgeFunctionInvocation({
+        requestId,
+        functionName,
+        durationMs: Date.now() - startedAt,
+        success: false,
+        httpStatus: 500,
+        errorType: e instanceof Error ? e.name : "Error",
+        errorMessage: message,
+        meta: { method: req.method },
+      });
+      return new Response(
+        JSON.stringify({ error: "unhandled_exception", message }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    await logEdgeFunctionInvocation({
+      requestId,
+      functionName,
+      durationMs: Date.now() - startedAt,
+      success: response.status < 500,
+      httpStatus: response.status,
+      errorType: response.status < 500 ? null : "HttpError",
+      errorMessage: response.status < 500 ? null : `HTTP ${response.status}`,
+      meta: { method: req.method },
+    });
+    return response;
+  };
+}

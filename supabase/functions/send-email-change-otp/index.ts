@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { withInvocationLogging } from "../_shared/edge_function_logger.ts";
 
 interface RequestBody {
   email: string;
@@ -11,7 +12,7 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, content-type",
 };
 
-Deno.serve(async (req) => {
+Deno.serve(withInvocationLogging("send-email-change-otp", async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
@@ -167,4 +168,4 @@ Deno.serve(async (req) => {
       }
     );
   }
-});
+}));

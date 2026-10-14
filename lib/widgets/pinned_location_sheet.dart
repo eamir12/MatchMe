@@ -16,7 +16,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/pinned_location_provider.dart';
+import 'package:matchme/screens/nearby/nearby_map_screen.dart';
 import 'package:matchme/services/error_localization_service.dart';
+import 'package:matchme/utils/time_format_utils.dart';
 
 /// Duration presets shared by the start and extend forms.
 const List<Duration> kPinnedLocationDurations = <Duration>[
@@ -53,49 +55,13 @@ String pinnedFormatExpiry(DateTime exp) {
   return '${l.day}.${l.month}.${l.year} ${l.hour}:$min';
 }
 
+/// Remaining time in full words ("3 days left", "5 hours left") — never the
+/// abbreviated forms, so the sheet, Settings pill and Home card all read the
+/// same way.
 String pinnedRemainingText(Duration remaining, LocalizationState l10n) {
-  if (remaining.inMinutes < 1) {
-    return l10n.getString(
-      'pinnedLocationRemaining',
-      params: {
-        'duration': l10n.getString(
-          'pinnedLocationRemainingMinutes',
-          params: {'count': '1'},
-        ),
-      },
-    );
-  }
-  if (remaining.inHours < 1) {
-    return l10n.getString(
-      'pinnedLocationRemaining',
-      params: {
-        'duration': l10n.getString(
-          'pinnedLocationRemainingMinutes',
-          params: {'count': '${remaining.inMinutes}'},
-        ),
-      },
-    );
-  }
-  if (remaining.inHours < 48) {
-    return l10n.getString(
-      'pinnedLocationRemaining',
-      params: {
-        'duration': l10n.getString(
-          'pinnedLocationRemainingHours',
-          params: {'count': '${remaining.inHours}'},
-        ),
-      },
-    );
-  }
-  final days = (remaining.inHours / 24).ceil();
   return l10n.getString(
     'pinnedLocationRemaining',
-    params: {
-      'duration': l10n.getString(
-        'pinnedLocationRemainingDays',
-        params: {'count': '$days'},
-      ),
-    },
+    params: {'duration': formatDurationWords(l10n, remaining)},
   );
 }
 
@@ -122,20 +88,34 @@ String pinnedErrorText(Object e, LocalizationState l10n) {
 
 /// Opens the pinned-location management sheet. Pops with one of
 /// 'pinned' | 'extended' | 'unpinned' on success so the caller can toast on
-/// the underlying screen.
+/// the underlying screen, or with 'map' when the Nearby-map shortcut is used
+/// (the sheet closes first, then the map is pushed on the caller's stack).
+///
+/// Set [showMapShortcut] to false when the caller already sits on the Nearby
+/// map, so the shortcut never pushes a duplicate map screen.
 Future<void> showPinnedLocationSheet(
   BuildContext context,
   WidgetRef ref, {
   bool extensionOnly = false,
+  bool showMapShortcut = true,
 }) {
   return showModalBottomSheet<String>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
     showDragHandle: true,
-    builder: (_) => _PinnedLocationSheetBody(extensionOnly: extensionOnly),
+    builder: (_) => _PinnedLocationSheetBody(
+      extensionOnly: extensionOnly,
+      showMapShortcut: showMapShortcut,
+    ),
   ).then((result) async {
     if (result == null || !context.mounted) return;
+    if (result == 'map') {
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const NearbyMapScreen()),
+      );
+      return;
+    }
     final l10n = ref.read(localizationProvider);
     final pin = ref.read(pinnedLocationProvider);
     String? text;
@@ -166,9 +146,13 @@ Future<void> showPinnedLocationSheet(
 }
 
 class _PinnedLocationSheetBody extends ConsumerStatefulWidget {
-  const _PinnedLocationSheetBody({this.extensionOnly = false});
+  const _PinnedLocationSheetBody({
+    this.extensionOnly = false,
+    this.showMapShortcut = true,
+  });
 
   final bool extensionOnly;
+  final bool showMapShortcut;
 
   @override
   ConsumerState<_PinnedLocationSheetBody> createState() =>
@@ -382,43 +366,60 @@ class _PinnedLocationSheetBodyState
               ),
             ),
           ] else ...[
-            if (remaining != null && !remaining.isNegative)
-              Align(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: Colors.green.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 5,
+            if (widget.showMapShortcut) ...[
+              SizedBox(
+                width: double.infinity,
+                child: TextButton.icon(
+                  onPressed: () => _pop('map'),
+                  icon: const Icon(Icons.map_outlined, size: 20),
+                  label: Text(l10n.getString('homeNearbyMap')),
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(
+                  child: Text(
+                    l10n.getString(
+                      'pinnedLocationActiveUntil',
+                      params: {
+                        'label': (pin.label == null || pin.label!.isEmpty)
+                            ? ''
+                            : ' "${pin.label}"',
+                        'date': pin.expiresAt == null
+                            ? ''
+                            : pinnedFormatExpiry(pin.expiresAt!),
+                      },
                     ),
-                    child: Text(
-                      pinnedRemainingText(remaining, l10n),
-                      style: const TextStyle(
-                        color: Colors.green,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 12,
+                    style: TextStyle(fontSize: 13, color: colors.onSurface),
+                  ),
+                ),
+                if (remaining != null && !remaining.isNegative) ...[
+                  const SizedBox(width: 8),
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Colors.green.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 5,
+                      ),
+                      child: Text(
+                        pinnedRemainingText(remaining, l10n),
+                        style: const TextStyle(
+                          color: Colors.green,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12,
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ),
-            const SizedBox(height: 8),
-            Text(
-              l10n.getString(
-                'pinnedLocationActiveUntil',
-                params: {
-                  'label': (pin.label == null || pin.label!.isEmpty)
-                      ? ''
-                      : ' "${pin.label}"',
-                  'date': pin.expiresAt == null
-                      ? ''
-                      : pinnedFormatExpiry(pin.expiresAt!),
-                },
-              ),
-              style: TextStyle(fontSize: 13, color: colors.onSurface),
+                ],
+              ],
             ),
             const SizedBox(height: 12),
             if (pin.isLoading) const LinearProgressIndicator(),
