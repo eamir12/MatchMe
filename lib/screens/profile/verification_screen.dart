@@ -1,6 +1,6 @@
 import 'dart:async';
-import 'dart:typed_data';
 import 'dart:math';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -243,6 +243,23 @@ const Map<String, String> _verificationGestureEmojiByCode = <String, String>{
   'THUMBS_DOWN_LEFT_HAND': '👎',
   'THUMBS_UP_LEFT_HAND': '👍',
 };
+
+/// Whether the platform's default hand emoji must be mirrored to depict the
+/// hand that [code] asks for.
+///
+/// Emoji sets disagree about handedness: Apple (iOS/macOS) and Microsoft
+/// (Segoe, Windows) draw hands as RIGHT hands, while Google's Noto
+/// (Android, Linux, ChromeOS) draws them as LEFT hands. Mirroring the side
+/// that is not the platform default makes the icon match the requested hand
+/// on every platform the app runs on.
+bool _gestureEmojiNeedsMirror(String code) {
+  final notoDefaultHandIsLeft =
+      defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.linux;
+  return notoDefaultHandIsLeft
+      ? code.endsWith('_RIGHT_HAND')
+      : code.endsWith('_LEFT_HAND');
+}
 
 VerificationGesture _getSessionVerificationGesture() {
   if (_cachedVerificationGesture != null) {
@@ -1452,9 +1469,9 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
 
   Widget _buildGestureReferencePreview(VerificationGesture gesture) {
     final emoji = _verificationGestureEmojiByCode[gesture.code] ?? '🖐️';
-    // Hand emoji are drawn as right hands; mirror them for left-hand gestures
-    // so the icon shows the hand the user is actually asked to raise.
-    final mirrored = gesture.code.endsWith('_LEFT_HAND');
+    // Emoji sets disagree about handedness, so mirroring is decided per
+    // platform: see [_gestureEmojiNeedsMirror].
+    final mirrored = _gestureEmojiNeedsMirror(gesture.code);
     Widget glyph = Text(emoji, style: const TextStyle(fontSize: 88, height: 1.0));
     if (mirrored) {
       glyph = Transform(

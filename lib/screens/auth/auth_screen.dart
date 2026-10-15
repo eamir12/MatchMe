@@ -1909,6 +1909,14 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
     // Cancel previous debounce timer
     _passKeyCheckDebounceTimer?.cancel();
 
+    // Devices where passkeys are unsupported (e.g. iOS until domain
+    // association is configured) never show the passkey card, so don't
+    // create server-side WebAuthn challenges for them either.
+    if (_passkeyCapability == PasskeyDeviceCapability.unsupported) {
+      _resetPasskeyAvailabilityState();
+      return;
+    }
+
     final normalizedEmail = _normalizeEmail(_emailController.text);
 
     // If email is empty or invalid, reset passkey state

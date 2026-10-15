@@ -29,4 +29,24 @@ void main() {
       }
     });
   });
+
+  group('emoji font fallback', () {
+    // Regression: with a null fontFamily, dart:ui promotes the first
+    // fontFamilyFallback entry to the preferred font. That entry is an emoji
+    // font, and Apple Color Emoji (iOS) has a very wide space glyph, which
+    // rendered chat text with 2-3x wider word gaps on iOS only.
+    test('never leaves the preferred font family unset', () {
+      final style = withEmojiFallback(const TextStyle());
+      expect(style.fontFamily, kAppDefaultTextFontFamily);
+      expect(style.fontFamilyFallback, isNotEmpty);
+      expect(style.fontFamilyFallback!.first, isNot(style.fontFamily));
+    });
+
+    test('keeps an explicitly provided font family', () {
+      final style = withEmojiFallback(
+        const TextStyle(fontFamily: 'Noto Sans Hebrew'),
+      );
+      expect(style.fontFamily, 'Noto Sans Hebrew');
+    });
+  });
 }

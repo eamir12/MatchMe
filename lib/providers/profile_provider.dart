@@ -3388,6 +3388,14 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
         if (sanitizedPath.isNotEmpty && sanitizedPath != photoPath) {
           approved.add(sanitizedPath);
           await localDb.setApprovedPrimaryPhotos(userId, approved);
+          // Keep wizard bookkeeping in sync with the swap (mirrors the
+          // local sanitize path in _sanitizePrimaryPhoto): callers add the
+          // original upload to _wizardUploadedPhotoPaths before validation,
+          // so without this the sanitized copy is never draft-cleaned and
+          // the stale original would be.
+          if (_wizardUploadedPhotoPaths.remove(photoPath)) {
+            _wizardUploadedPhotoPaths.add(sanitizedPath);
+          }
           return sanitizedPath;
         }
       }
@@ -3605,13 +3613,68 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     StorageHelper.evict(photoPath);
     StorageHelper.evict(finalPath);
     final current = state.asData?.value;
-    if (current == null) return;
+    if (current == null) {
+      // State is mid-reload (AsyncLoading): remember the swap and apply it
+      // on the next data emission so the profile can't keep referencing the
+      // object the sanitize flow just deleted.
+      _pendingPhotoPathSwaps[photoPath] = finalPath;
+      return;
+    }
     final photos = List<String>.from(current.photos);
-    final idx = photos.indexOf(photoPath);
-    if (idx < 0) return;
+    // Match by normalized identity too: state may hold a URL form of the
+    // same object, and an exact-only match previously bailed out here,
+    // stranding the deleted original as the primary photo.
+    final idx = _photoIndexMatching(photos, photoPath);
+    if (idx < 0) {
+      _pendingPhotoPathSwaps[photoPath] = finalPath;
+      return;
+    }
     photos[idx] = finalPath;
     state = AsyncData(current.copyWith(photos: photos));
     await saveWizardDraft();
+  }
+
+  /// Sanitize/validation swaps that completed while `state` was momentarily
+  /// unavailable. Applied on the next data emission (see
+  /// [_withPendingPhotoSwapsApplied]) so a reload racing a photo swap can't
+  /// resurrect the deleted original path.
+  final Map<String, String> _pendingPhotoPathSwaps = {};
+
+  /// Index of [path] in [photos], matching on exact string first and then on
+  /// the normalized cache identity (so object paths and their URL forms are
+  /// recognized as the same photo).
+  int _photoIndexMatching(List<String> photos, String path) {
+    final exact = photos.indexOf(path);
+    if (exact >= 0) return exact;
+    final key = StorageHelper.cacheKeyForSource(path);
+    if (key.isEmpty) return -1;
+    for (var i = 0; i < photos.length; i++) {
+      if (StorageHelper.cacheKeyForSource(photos[i]) == key) return i;
+    }
+    return -1;
+  }
+
+  UserProfile _withPendingPhotoSwapsApplied(UserProfile profile) {
+    if (_pendingPhotoPathSwaps.isEmpty) return profile;
+    final photos = List<String>.from(profile.photos);
+    final applied = <String>[];
+    for (final entry in _pendingPhotoPathSwaps.entries) {
+      final idx = _photoIndexMatching(photos, entry.key);
+      if (idx < 0) continue;
+      final newIdx = _photoIndexMatching(photos, entry.value);
+      if (newIdx >= 0 && newIdx != idx) {
+        // The replacement is already present; just drop the stale original.
+        photos.removeAt(idx);
+      } else {
+        photos[idx] = entry.value;
+      }
+      applied.add(entry.key);
+    }
+    for (final key in applied) {
+      _pendingPhotoPathSwaps.remove(key);
+    }
+    if (applied.isEmpty) return profile;
+    return profile.copyWith(photos: photos);
   }
 
   int _wizardCurrentPageIndex = 0;
@@ -3643,6 +3706,7 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
         if (applyWizardDraft) {
           p = await _mergeWizardDraft(p);
         }
+        p = _withPendingPhotoSwapsApplied(p);
         state = AsyncData(p);
         unawaited(_prewarmSignedUrls(p.photos));
       } else {
@@ -3663,6 +3727,7 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
         if (applyWizardDraft) {
           p = await _mergeWizardDraft(p);
         }
+        p = _withPendingPhotoSwapsApplied(p);
         if (ref.mounted) {
           state = AsyncData(p);
           unawaited(_prewarmSignedUrls(p.photos));
@@ -3697,17 +3762,46 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     // until the next loadInitialProfile() starts a fresh wizard session.
     _wizardDraftSuppressed = true;
     final localDb = ref.read(localDbProvider);
-    final current = state.asData?.value;
-    final keep = current == null ? const <String>{} : current.photos.toSet();
-    final toDelete = _wizardUploadedPhotoPaths
-        .where((p) => p.isNotEmpty && !keep.contains(p))
-        .toList();
-    for (final path in toDelete) {
+    // The keep-set must never be derived from a null/loading state: a
+    // concurrent loadInitialProfile() flips the provider to AsyncLoading,
+    // and treating that as "the user has no photos" previously deleted
+    // already-saved uploads from storage while user_profiles.photos still
+    // referenced them (permanently broken photo tile on the next edit).
+    // Fall back to the persisted local profile; if that is unavailable
+    // too, skip storage deletion entirely — leaking an abandoned upload
+    // is recoverable, deleting a saved photo is not.
+    Set<String>? keep = state.asData?.value?.photos.toSet();
+    if (keep == null) {
       try {
-        await _deleteStorageObject(path);
-      } catch (_) {}
-      StorageHelper.evict(path);
-      _wizardUploadedPhotoPaths.remove(path);
+        final persisted = await localDb.getLocalProfile(userId);
+        keep = persisted == null
+            ? null
+            : _toStringList(persisted['photos']).toSet();
+      } catch (_) {
+        keep = null;
+      }
+    }
+    if (keep != null) {
+      final keepSet = keep;
+      final keepIds = keepSet
+          .where((p) => p.isNotEmpty)
+          .map(StorageHelper.cacheKeyForSource)
+          .toSet();
+      final toDelete = _wizardUploadedPhotoPaths
+          .where(
+            (p) =>
+                p.isNotEmpty &&
+                !keepSet.contains(p) &&
+                !keepIds.contains(StorageHelper.cacheKeyForSource(p)),
+          )
+          .toList();
+      for (final path in toDelete) {
+        try {
+          await _deleteStorageObject(path);
+        } catch (_) {}
+        StorageHelper.evict(path);
+        _wizardUploadedPhotoPaths.remove(path);
+      }
     }
     _wizardUploadedPhotoPaths.clear();
     _wizardCurrentPageIndex = 0;

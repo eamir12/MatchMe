@@ -40,7 +40,7 @@ async function getTranslation(key: string, locale: string = 'en'): Promise<strin
       return result.data.value;
     }
   } catch (e) {
-    console.log(`Translation not found for key: ${key}, locale: ${locale}`, e.message);
+    console.log(`Translation not found for key: ${key}, locale: ${locale}`, e instanceof Error ? e.message : e);
   }
   
   // Fallback: English fallback text
@@ -83,7 +83,7 @@ function extractMainText(doc: any): string {
     let text = doc.querySelector('body')?.textContent || "";
     return text.replace(/\s+/g, ' ').trim();
   } catch (e) {
-    console.error("Error extracting text:", e.message);
+    console.error("Error extracting text:", e instanceof Error ? e.message : e);
     return "";
   }
 }
@@ -357,7 +357,7 @@ async function callGemini(text: string, apiKey: string) {
       const data = await res.json();
       return { parsed: JSON.parse(data.candidates[0].content.parts[0].text), model: modelName };
     } catch (error) {
-      console.warn(`${modelName} error: ${error.message}, trying next...`);
+      console.warn(`${modelName} error: ${error instanceof Error ? error.message : String(error)}, trying next...`);
     }
   }
   throw new Error(`Gemini API failed: All ${textModels.length} models exhausted`);
@@ -428,7 +428,7 @@ async function callGeminiForJoinability(eventData: Record<string, unknown>, apiK
       const data = await res.json();
       return { parsed: JSON.parse(data.candidates[0].content.parts[0].text), model: modelName };
     } catch (error) {
-      console.warn(`Joinability: ${modelName} error: ${error.message}, trying next...`);
+      console.warn(`Joinability: ${modelName} error: ${error instanceof Error ? error.message : String(error)}, trying next...`);
     }
   }
   throw new Error(`Gemini Joinability API failed: All ${textModels.length} models exhausted`);

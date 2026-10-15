@@ -288,8 +288,11 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
     }
   }
 
-  /// Pin the last known position. Never triggers a fresh GPS fix here;
-  /// if nothing is cached yet, one single refresh is attempted.
+  /// Pin the last known position. The server pins only its own live-GPS
+  /// observation (anti-fraud, migration 20262087000000), so when it has no
+  /// fresh row — e.g. the user has been invisible, which suppresses every
+  /// GPS upload — a single silent fix is acquired and handed to Supabase
+  /// before the pin request is retried.
   Future<void> pinCurrent({required Duration duration, String? label}) async {
     if (state.isLoading) return;
     if (duration <= Duration.zero || duration > const Duration(days: 14)) {
@@ -330,7 +333,7 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
       // here (kept for signature compatibility). A missing local cached fix
       // is therefore not fatal — the server decides whether its own
       // observation is fresh enough to pin.
-      final res = await client.rpc(
+      Future<Object?> requestPin() => client.rpc(
         'pin_current_location',
         params: {
           'p_user_id': userId,
@@ -340,6 +343,35 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
           'p_duration_seconds': duration.inSeconds,
         },
       );
+      Object? res;
+      try {
+        res = await requestPin();
+      } catch (e) {
+        if (!_missingOrStaleServerObservation(e)) rethrow;
+        // The server has no fresh observation to freeze — typical while
+        // invisible, since every GPS upload path is gated off. Silently
+        // grab one fix, hand it to Supabase, then retry the pin once.
+        Position fresh;
+        try {
+          fresh = await _acquireFreshPosition(label: 'pinCurrentLocation');
+        } catch (_) {
+          // No fix/permission available — surface the original localized
+          // server error rather than an internal retry failure.
+          throw e;
+        }
+        pos = fresh;
+        await client.rpc(
+          'update_user_location',
+          params: {
+            'p_user_id': userId,
+            'p_latitude': fresh.latitude,
+            'p_longitude': fresh.longitude,
+            'p_speed': fresh.speed,
+            'p_heading': fresh.heading,
+          },
+        );
+        res = await requestPin();
+      }
       final expiresAt = DateTime.parse(res.toString()).toUtc();
       await PinnedLocationGate.writePinCache(
         expiresAt: expiresAt,
@@ -601,13 +633,23 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
     }
   }
 
-  Future<Position> _acquireFreshPosition() async {
+  /// True when the server rejected a pin because it has no fresh GPS
+  /// observation for the user (anti-fraud rule, migration 20262087000000).
+  bool _missingOrStaleServerObservation(Object e) {
+    final msg = e.toString().toLowerCase();
+    return msg.contains('no observed location') ||
+        msg.contains('observed location too old');
+  }
+
+  Future<Position> _acquireFreshPosition({
+    String label = 'offlinePinnedLocationSync',
+  }) async {
     final locationService = ref.read(locationServiceProvider);
     if (!await locationService.handleLocationPermission()) {
       throw StateError('Location permission is required to finish pin setup');
     }
     final position = await LocationDeduplicator.getPosition(
-      label: 'offlinePinnedLocationSync',
+      label: label,
       fetcher: () => Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.best,

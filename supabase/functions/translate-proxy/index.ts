@@ -57,7 +57,7 @@ async function getSupabaseKeyPair(): Promise<{
   const privateKeyBytes = base64Decode(SUPABASE_TRANSLATION_PRIVATE_KEY_BASE64);
   const privateKey = await crypto.subtle.importKey(
     "pkcs8",
-    privateKeyBytes.buffer,
+    privateKeyBytes.slice(),
     { name: "X25519" } as any,
     false,
     ["deriveBits"],
@@ -72,7 +72,7 @@ async function x25519SharedSecret(
 ): Promise<Uint8Array> {
   const importedPublic = await crypto.subtle.importKey(
     "raw",
-    publicKeyBytes.buffer,
+    publicKeyBytes.slice(),
     { name: "X25519" } as any,
     false,
     [],
@@ -93,7 +93,7 @@ async function hkdfSha256(
 ): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey(
     "raw",
-    inputKeyMaterial,
+    inputKeyMaterial.slice(),
     "HKDF",
     false,
     ["deriveBits"],
@@ -102,7 +102,7 @@ async function hkdfSha256(
     {
       name: "HKDF",
       hash: "SHA-256",
-      salt: salt,
+      salt: salt.slice(),
       info: new TextEncoder().encode(info),
     },
     key,
@@ -117,11 +117,11 @@ async function aesGcmDecrypt(
   nonce: Uint8Array,
   aad: Uint8Array,
 ): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]);
+  const key = await crypto.subtle.importKey("raw", keyBytes.slice(), "AES-GCM", false, ["decrypt"]);
   const result = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: nonce, additionalData: aad },
+    { name: "AES-GCM", iv: nonce.slice(), additionalData: aad.slice() },
     key,
-    ciphertext,
+    ciphertext.slice(),
   );
   return new Uint8Array(result);
 }
@@ -132,11 +132,11 @@ async function aesGcmEncrypt(
   nonce: Uint8Array,
   aad: Uint8Array,
 ): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["encrypt"]);
+  const key = await crypto.subtle.importKey("raw", keyBytes.slice(), "AES-GCM", false, ["encrypt"]);
   const result = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv: nonce, additionalData: aad },
+    { name: "AES-GCM", iv: nonce.slice(), additionalData: aad.slice() },
     key,
-    plaintext,
+    plaintext.slice(),
   );
   return new Uint8Array(result);
 }

@@ -302,10 +302,12 @@ import Vision
         // a rectangle even when its text is too small or low-contrast for OCR
         // to read — the exact case the text-only gate misses. Faces are not
         // rectangular, so this does not fire on ordinary portraits.
+        // 0.15 (above Vision's 0.1 default): below that, background décor such
+        // as pillow embroidery and tile motifs was detected as "documents".
         let rectangleRequest = VNDetectRectanglesRequest()
         rectangleRequest.minimumAspectRatio = 0.3
         rectangleRequest.maximumAspectRatio = 3.0
-        rectangleRequest.minimumSize = 0.08
+        rectangleRequest.minimumSize = 0.15
         rectangleRequest.minimumConfidence = 0.5
         rectangleRequest.quadratureTolerance = 20.0
         rectangleRequest.maximumObservations = 5
@@ -359,10 +361,13 @@ import Vision
             box.maxX < 1 - edgeTolerance && box.maxY < 1 - edgeTolerance
         }
 
-        // Check for face obstruction (using roll/yaw if available)
+        // Check for face obstruction (using roll/yaw if available).
+        // 0.75 rad (~43°): a handheld selfie taken from a low angle or while
+        // lying down routinely passed the old 0.5 rad (~29°) limit as a
+        // "not clearly visible" failure on a perfectly sharp face.
         let faceObstructed = faceObservations.contains { face in
           if let roll = face.roll, let yaw = face.yaw {
-            return abs(roll.doubleValue) > 0.5 || abs(yaw.doubleValue) > 0.5
+            return abs(roll.doubleValue) > 0.75 || abs(yaw.doubleValue) > 0.75
           }
           return false
         }
@@ -394,6 +399,13 @@ import Vision
         // (low-contrast cards often yield almost no OCR hits, which is exactly
         // the case that used to slip through).
         let largestFaceObservation = faceObservations.max(by: { $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height })
+        // Diagnostics for the failure dialog: worst-case head rotation of the
+        // largest face in degrees (Vision exposes roll/yaw only, in radians).
+        let headTiltDegrees: Double? = largestFaceObservation.map { face in
+          let rollDeg = abs(face.roll?.doubleValue ?? 0) * 180 / .pi
+          let yawDeg = abs(face.yaw?.doubleValue ?? 0) * 180 / .pi
+          return max(rollDeg, yawDeg)
+        }
         // Two zones so the user message stays accurate: text/objects over the
         // CORE face box mean "covering"; objects only near the face (or a
         // coarse merged person+card box) mean "document visible" — still a
@@ -458,11 +470,35 @@ import Vision
         // (card/document) intersecting the face zones. Only the first
         // (highest-confidence) match flags and draws — one box tells the
         // story; a stack of boxes is noise.
+        //
+        // A rectangle counts as a held document only with corroborating
+        // evidence — readable text lying on it, or card-sized area with
+        // card-like proportions. VNDetectRectangles happily matches
+        // background décor (pillow embroidery, tiles, screens), and a
+        // close-up selfie's face zones reach the whole background, so
+        // without corroboration those patterns were reported as "ID cards"
+        // and "something covering your face".
+        func isCorroboratedDocument(_ box: CGRect) -> Bool {
+          let hasText = textObservations.contains { observation in
+            guard let candidate = observation.topCandidates(1).first,
+              !candidate.string.isEmpty
+            else { return false }
+            return self.intersectionRatio(observation.boundingBox, box) >= 0.2
+          }
+          if hasText { return true }
+          let area = Double(box.width * box.height)
+          let longer = max(box.width, box.height)
+          let shorter = min(box.width, box.height)
+          guard shorter > 0 else { return false }
+          return area >= 0.03 && Double(longer / shorter) <= 2.5
+        }
+
         if let nearZone = nearFaceZone, let faceObservation = largestFaceObservation {
           let faceArea = Double(
             faceObservation.boundingBox.width * faceObservation.boundingBox.height)
           for rectangle in rectangleObservations {
             let rectBox = rectangle.boundingBox
+            guard isCorroboratedDocument(rectBox) else { continue }
             let overlapCore = coreFaceZone.map { self.intersectionRatio(rectBox, $0) } ?? 0
             let overlapNear = self.intersectionRatio(rectBox, nearZone)
             guard overlapCore >= 0.25 || overlapNear >= 0.25 else { continue }
@@ -474,10 +510,14 @@ import Vision
               continue
             }
             if overlapCore >= 0.25 {
-              if ratioToFace <= 3.0 {
+              // "Covering your face" only when most of the rectangle sits ON
+              // the face box itself. Merely reaching the expanded face zone is
+              // exactly what the background behind the user does.
+              if overlapWithFace >= 0.5 && ratioToFace <= 3.0 {
                 objectOverFace = true
               } else {
-                // Coarse merged box cannot localize the occlusion.
+                // Near the face but not on it: visible document, no occlusion —
+                // and the message must not claim the face is covered.
                 documentNearFace = true
               }
               if overlapWithFace < 0.7 && rectArea < 0.6 && ratioToFace <= 3.0 {
@@ -498,7 +538,7 @@ import Vision
         DispatchQueue.main.async {
           result([
             "supported": true,
-            "prescreenVersion": 3,
+            "prescreenVersion": 4,
             "containsFace": containsFace,
             "containsBody": containsBody,
             "uncertain": uncertain,
@@ -510,6 +550,7 @@ import Vision
             "faceTouchesImageEdge": faceTouchesImageEdge,
             "completeFaceDetected": completeFaceDetected,
             "faceObstructed": faceObstructed,
+            "headTiltDegrees": headTiltDegrees as Any,
             "bothEyesClosed": false,
             "textOverFace": textOverFace,
             "objectOverFace": objectOverFace,

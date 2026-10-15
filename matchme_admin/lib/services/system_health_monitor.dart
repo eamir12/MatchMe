@@ -124,7 +124,7 @@ class ProjectErrorsStatus {
 /// `project-logs-health` edge function (Supabase Management API: ClickHouse
 /// logs for auth, disk utilization, API request counts). Null until the
 /// first successful probe; [configured] is false while the function has no
-/// `SUPABASE_ACCESS_TOKEN` secret (rows render as unavailable, not alarmed).
+/// `MANAGEMENT_API_TOKEN` secret (rows render as unavailable, not alarmed).
 class ProjectLogsStatus {
   const ProjectLogsStatus({
     required this.checkedAt,
@@ -259,6 +259,145 @@ class SystemHealthSnapshot {
     return now.difference(opened) > staleAfter &&
         now.difference(tick) > staleAfter;
   }
+
+  /// Builds a snapshot from stored `admin_health_snapshots` samples (the
+  /// System Health History screen's instant-replay view). Each map is the
+  /// raw `payload` JSON of the nearest sample at or before the replay time.
+  /// Components/regions/incidents are not stored, so the official Supabase
+  /// card renders from indicator + description only.
+  factory SystemHealthSnapshot.replay({
+    required DateTime at,
+    Map<String, dynamic>? db,
+    Map<String, dynamic>? queue,
+    Map<String, dynamic>? errors,
+    Map<String, dynamic>? auth,
+    Map<String, dynamic>? usage,
+    Map<String, dynamic>? statuspage,
+    String? socketState,
+  }) {
+    int asInt(Object? v) => v is num ? v.toInt() : int.tryParse('$v') ?? 0;
+
+    // Database.
+    final dbOk = db?['ok'] == true;
+    final dbLatency = db?['latency_ms'] is num
+        ? (db!['latency_ms'] as num).toInt()
+        : null;
+    final dbError = db?['error']?.toString();
+
+    // Realtime.
+    final state = socketState ?? 'unknown';
+
+    // Project errors.
+    ProjectErrorsStatus? projectErrors;
+    if (errors != null) {
+      final tasks = <String>[
+        if (errors['cron_last_failed_tasks'] is List)
+          for (final x in errors['cron_last_failed_tasks'] as List) '$x',
+      ];
+      projectErrors = ProjectErrorsStatus(
+        checkedAt:
+            DateTime.tryParse('${errors['checked_at']}') ?? at,
+        edgeFailed15m: asInt(errors['edge_failed_15m']),
+        edgeLastFailedAt: DateTime.tryParse('${errors['edge_last_failed_at']}'),
+        edgeLastError: errors['edge_last_error']?.toString(),
+        cronFailed1h: asInt(errors['cron_failed_1h']),
+        cronLastFailedAt: DateTime.tryParse('${errors['cron_last_failed_at']}'),
+        cronLastFailedTasks: tasks,
+        appErrors15m: asInt(errors['app_errors_15m']),
+        appLastErrorAt: DateTime.tryParse('${errors['app_last_error_at']}'),
+        appLastSource: errors['app_last_source']?.toString(),
+        appLastMessage: errors['app_last_message']?.toString(),
+      );
+    }
+
+    // Sign-ins / auth + usage (stored as two slices; the live screen keeps
+    // them in one object, so merge here).
+    ProjectLogsStatus? projectLogs;
+    if (auth != null || usage != null) {
+      final warnings = <String>[
+        if (auth?['warnings'] is List)
+          for (final w in auth!['warnings'] as List) '$w',
+        if (usage?['warnings'] is List)
+          for (final w in usage!['warnings'] as List) '$w',
+      ];
+      projectLogs = ProjectLogsStatus(
+        checkedAt: at,
+        configured: auth?['configured'] == true || usage?['configured'] == true,
+        signins15m: auth?['signins_15m'] is num
+            ? (auth!['signins_15m'] as num).toInt()
+            : null,
+        signinsLastAt: DateTime.tryParse('${auth?['signins_last_at']}'),
+        authErrors15m: auth?['auth_errors_15m'] is num
+            ? (auth!['auth_errors_15m'] as num).toInt()
+            : null,
+        authLastErrorAt: DateTime.tryParse('${auth?['auth_last_error_at']}'),
+        authLastErrorAction: auth?['auth_last_error_action']?.toString(),
+        authLastErrorMessage: auth?['auth_last_error_message']?.toString(),
+        diskUsedBytes: usage?['disk_used_bytes'] is num
+            ? (usage!['disk_used_bytes'] as num).toInt()
+            : null,
+        diskSizeBytes: usage?['disk_size_bytes'] is num
+            ? (usage!['disk_size_bytes'] as num).toInt()
+            : null,
+        diskAvailBytes: usage?['disk_avail_bytes'] is num
+            ? (usage!['disk_avail_bytes'] as num).toInt()
+            : null,
+        apiRequestsCount: usage?['api_requests_count'] is num
+            ? (usage!['api_requests_count'] as num).toInt()
+            : null,
+        warnings: warnings,
+      );
+    }
+
+    // Official Supabase status (indicator only — components not stored).
+    final spIndicator = statuspage?['indicator']?.toString();
+    final spDescription = statuspage?['description']?.toString();
+
+    // Overall verdict, recomputed with the same precedence rules the live
+    // monitor uses (down beats degraded beats healthy).
+    SystemHealthStatus overall;
+    if (!dbOk) {
+      overall = SystemHealthStatus.down;
+    } else if ((state != 'open' && state != 'unknown') ||
+        (projectErrors?.alert ?? false) ||
+        (projectLogs?.alert ?? false) ||
+        (spIndicator != null &&
+            spIndicator != 'none' &&
+            (spIndicator == 'major' ||
+                spIndicator == 'critical' ||
+                spIndicator == 'minor' ||
+                spIndicator == 'maintenance'))) {
+      overall = SystemHealthStatus.degraded;
+    } else {
+      overall = SystemHealthStatus.healthy;
+    }
+
+    return SystemHealthSnapshot(
+      overall: overall,
+      dbOk: dbOk,
+      dbLatencyMs: dbLatency,
+      dbLastCheckedAt: at,
+      dbLastOkAt: dbOk ? at : null,
+      dbConsecutiveFailures: db == null ? 0 : (dbOk ? 0 : 1),
+      dbError: dbError,
+      dbLatencyHistory: [
+        if (dbOk && dbLatency != null)
+          SystemHealthLatencySample(at: at, ms: dbLatency),
+      ],
+      socketState: state,
+      socketEverConnected: socketState != null,
+      lastTickAt: socketState == 'open' ? at : null,
+      queueHealth: queue,
+      queueCheckedAt: queue != null ? at : null,
+      projectErrors: projectErrors,
+      projectLogs: projectLogs,
+      spIndicator: spIndicator,
+      spDescription: spDescription,
+      spCheckedAt: statuspage != null ? at : null,
+      spAvailable: statuspage != null,
+      updatedAt: at,
+    );
+  }
 }
 
 class SystemHealthMonitor with WidgetsBindingObserver {
@@ -273,9 +412,10 @@ class SystemHealthMonitor with WidgetsBindingObserver {
   // Statuspage asks callers not to poll faster than once per 60 seconds.
   static const Duration _statusPageInterval = Duration(seconds: 60);
   static const Duration _projectErrorsInterval = Duration(seconds: 60);
-  // Management API calls are rate-limited (30/min for logs/usage) — a
-  // 5-minute cadence keeps this probe far below the quota.
-  static const Duration _projectLogsInterval = Duration(minutes: 5);
+  // Management API calls are rate-limited (30/min for logs/usage). One probe
+  // makes ~6 calls, so a 60s cadence (~6 calls/min) stays well under the
+  // quota while matching the Project errors card's refresh rate.
+  static const Duration _projectLogsInterval = Duration(seconds: 60);
   static const Duration _slowLatencyThreshold = Duration(milliseconds: 1500);
   static const Duration _heartbeatStaleAfter = Duration(minutes: 3);
   static const Duration _statusChangeGrace = Duration(seconds: 15);
@@ -470,6 +610,7 @@ class SystemHealthMonitor with WidgetsBindingObserver {
         _socketState = 'open';
         _socketEverConnected = true;
         _socketOpenedAt = DateTime.now();
+        _recordSocketEvent('open');
         // Fresh reconnect: give the tick subscription a clean retry budget
         // and re-establish it if retries were exhausted while backgrounded.
         _tickChannelRetries = 0;
@@ -504,8 +645,24 @@ class SystemHealthMonitor with WidgetsBindingObserver {
       // or the client may have reconnected.
       if (!_appInForeground || _socketOpenActual) return;
       _socketState = 'closed';
+      _recordSocketEvent('closed');
       _emit();
     });
+  }
+
+  /// Records a socket state transition into `admin_health_snapshots`
+  /// (source='socket') for the System Health History screen. Fire-and-forget
+  /// and best-effort: history must never disturb live monitoring. RLS on the
+  /// table allows only admins to insert socket rows.
+  Future<void> _recordSocketEvent(String state) async {
+    try {
+      await Supabase.instance.client.from('admin_health_snapshots').insert({
+        'source': 'socket',
+        'payload': {'state': state},
+      });
+    } catch (_) {
+      // History is an enhancement; drop silently.
+    }
   }
 
   @override
@@ -534,10 +691,14 @@ class SystemHealthMonitor with WidgetsBindingObserver {
       }
       // Snap the UI back to the reverted verdict immediately, then probe
       // so the display recovers to a fresh value instead of sitting on
-      // whatever the suspended app last saw.
+      // whatever the suspended app last saw. The slow remote probes
+      // (errors, Management API) fire immediately too so the screen does
+      // not wait out their periodic tick after a resume.
       if (_listeners > 0) {
         _emit();
         unawaited(_probeDatabase());
+        unawaited(_probeProjectErrors());
+        unawaited(_probeProjectLogs());
       }
     } else {
       // inactive / hidden / paused / detached: nothing is on screen.
@@ -708,7 +869,7 @@ class SystemHealthMonitor with WidgetsBindingObserver {
   /// Polls the `project-logs-health` edge function: sign-ins and auth
   /// failures (ClickHouse auth logs) plus disk/API usage (Management API).
   /// On failure the last known data is kept (same pattern as the queue
-  /// probe); a `configured: false` response (no `SUPABASE_ACCESS_TOKEN`)
+  /// probe); a `configured: false` response (no `MANAGEMENT_API_TOKEN`)
   /// is a valid state and replaces the last known value so the screen
   /// shows the setup hint instead of stale metrics.
   Future<void> _probeProjectLogs() async {

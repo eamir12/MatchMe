@@ -36,14 +36,16 @@ Future<Uint8List?> openPrimarySelfieCapture({
     gestureDescription: l10n.getString('primarySelfieCaptureDescription'),
     localeCode: l10n.currentLocale.languageCode,
     captureStrings: <String, String>{
+      // Face-only overrides only. The primary photo never asks for a hand
+      // gesture, so none of the verification gesture/hand vocabulary
+      // (ShowGesture, PositionHand, UseCorrectHand, HandLeft/Right,
+      // hand/gesture checklist rows) is forwarded to the capture page — it
+      // would only ever describe a step that does not exist in this flow.
       'verificationCaptureLoading': l10n.getString(
         'primarySelfieCaptureLoading',
       ),
       'verificationCaptureInstruction': l10n.getString(
         'primarySelfieCaptureInstruction',
-      ),
-      'verificationCaptureStatusShowGesture': l10n.getString(
-        'verificationCaptureStatusShowGesture',
       ),
       'verificationCaptureStatusShowFace': l10n.getString(
         'verificationCaptureStatusShowFace',
@@ -51,35 +53,19 @@ Future<Uint8List?> openPrimarySelfieCapture({
       'verificationCaptureStatusAlignFace': l10n.getString(
         'verificationCaptureStatusAlignFace',
       ),
-      'verificationCaptureStatusPositionHand': l10n.getString(
-        'verificationCaptureStatusPositionHand',
-      ),
       'verificationCaptureStatusHoldSteady': l10n.getString(
         'verificationCaptureStatusHoldSteady',
       ),
       'verificationCaptureStatusCapturingBestFrame': l10n.getString(
         'verificationCaptureStatusCapturingBestFrame',
       ),
+      // Page fallback for this key is "Gesture detected…" — always override
+      // it so the ready line can never surface verification wording.
       'verificationCaptureStatusGestureDetected': l10n.getString(
         'verificationCaptureStatusGestureDetected',
       ),
-      'verificationCaptureStatusUseCorrectHand': l10n.getString(
-        'verificationCaptureStatusUseCorrectHand',
-      ),
       'verificationCaptureChecklistFaceVisible': l10n.getString(
         'verificationCaptureChecklistFaceVisible',
-      ),
-      'verificationCaptureChecklistHandPositioned': l10n.getString(
-        'verificationCaptureChecklistHandPositioned',
-      ),
-      'verificationCaptureChecklistGestureRecognized': l10n.getString(
-        'verificationCaptureChecklistGestureRecognized',
-      ),
-      'verificationCaptureHandLeft': l10n.getString(
-        'verificationCaptureHandLeft',
-      ),
-      'verificationCaptureHandRight': l10n.getString(
-        'verificationCaptureHandRight',
       ),
       'verificationCaptureCameraOrModelError': l10n.getString(
         'verificationCaptureCameraOrModelError',

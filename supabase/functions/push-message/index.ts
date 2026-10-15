@@ -48,7 +48,7 @@ function maskFullName(rawFullName: string | null | undefined): string {
 // The fallback below is best-effort only — it exists for the rare case where
 // the RPC itself errors out (e.g. not yet migrated into the database).
 async function resolveSenderName(
-  client: ReturnType<typeof createClient>,
+  client: SupabaseClient<any, "public", "public", any, any>,
   params: { senderId: string; matchId: string; recipientId: string; requestId: string },
 ): Promise<string> {
   const { senderId, requestId } = params;
@@ -169,7 +169,7 @@ async function getFcmAccessToken(serviceAccount: ServiceAccount): Promise<string
   const keyBytes = pemToDerBytes(serviceAccount.private_key);
   const cryptoKey = await crypto.subtle.importKey(
     "pkcs8",
-    keyBytes.buffer,
+    keyBytes.slice(),
     { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
     false,
     ["sign"],
@@ -296,7 +296,7 @@ function pushString(locale: string, key: string): string {
 }
 
 async function fetchRecipientProfile(
-  client: ReturnType<typeof createClient>,
+  client: SupabaseClient<any, "public", "public", any, any>,
   userId: string,
 ): Promise<{ prefs: unknown; locale: string }> {
   try {
@@ -316,7 +316,7 @@ async function fetchRecipientProfile(
 }
 
 async function fetchBadgeCount(
-  client: ReturnType<typeof createClient>,
+  client: SupabaseClient<any, "public", "public", any, any>,
   userId: string,
 ): Promise<number> {
   try {
@@ -349,7 +349,7 @@ async function sendOfflineMentionEmail({
   locale,
   requestId,
 }: {
-  adminClient: ReturnType<typeof createClient>;
+  adminClient: SupabaseClient<any, "public", "public", any, any>;
   recipientId: string;
   senderName: string;
   matchId: string;
@@ -431,7 +431,7 @@ async function recordInboxNotification(
           body: params.body,
           data: params.data,
         },
-        { ignoreDuplicates: true },
+        { ignoreDuplicates: true } as any,
       );
     if (error) {
       console.log(`[push-message] inbox_insert_failed id=${params.requestId}`, {
@@ -990,17 +990,17 @@ serve(async (req) => {
       const perRecipient: unknown[] = sends.map((s) =>
         s.status === "fulfilled" ? s.value : { error: String(s.reason) }
       );
-      const totalRequested = perRecipient.reduce((acc, r) => {
+      const totalRequested = perRecipient.reduce((acc: number, r) => {
         const rr = r as Record<string, unknown>;
         const n = typeof rr["requested"] === "number" ? rr["requested"] as number : 0;
         return acc + n;
       }, 0);
-      const totalSent = perRecipient.reduce((acc, r) => {
+      const totalSent = perRecipient.reduce((acc: number, r) => {
         const rr = r as Record<string, unknown>;
         const n = typeof rr["sent"] === "number" ? rr["sent"] as number : 0;
         return acc + n;
       }, 0);
-      const totalFailed = perRecipient.reduce((acc, r) => {
+      const totalFailed = perRecipient.reduce((acc: number, r) => {
         const rr = r as Record<string, unknown>;
         const n = typeof rr["failed"] === "number" ? rr["failed"] as number : 0;
         return acc + n;
@@ -1068,7 +1068,7 @@ serve(async (req) => {
         .maybeSingle();
       const recipientId = (matchRow?.user1_id === tSenderId)
         ? String(matchRow.user2_id ?? "").trim()
-        : String(matchRow.user1_id ?? "").trim();
+        : String(matchRow?.user1_id ?? "").trim();
       if (!recipientId) return jsonResponse({ error: "recipient not found" }, 400);
 
       const profile = await fetchRecipientProfile(adminClient, recipientId);

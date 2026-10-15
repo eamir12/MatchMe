@@ -46,6 +46,11 @@ class PhotoPrescreenResult {
 
   /// 64-bit dHash of the analyzed image, for perceptual duplicate checks.
   final String perceptualHash;
+
+  /// Native analyzer contract version reported by this build (absent on
+  /// web/desktop/stale binaries). Shown in the failure dialog's details so a
+  /// stale Kotlin/Swift binary is identifiable from a screenshot.
+  final int? nativePrescreenVersion;
   final String? errorMessage;
 
   const PhotoPrescreenResult({
@@ -63,6 +68,7 @@ class PhotoPrescreenResult {
     this.faceBox,
     this.issueBoxes = const [],
     this.perceptualHash = '',
+    this.nativePrescreenVersion,
     this.errorMessage,
   });
 
@@ -78,6 +84,7 @@ class PhotoPrescreenResult {
     Map<String, double>? faceBox,
     List<Map<String, dynamic>> issueBoxes = const [],
     String perceptualHash = '',
+    int? nativePrescreenVersion,
   }) {
     return PhotoPrescreenResult(
       passed: true,
@@ -92,6 +99,7 @@ class PhotoPrescreenResult {
       faceBox: faceBox,
       issueBoxes: issueBoxes,
       perceptualHash: perceptualHash,
+      nativePrescreenVersion: nativePrescreenVersion,
     );
   }
 
@@ -101,6 +109,10 @@ class PhotoPrescreenResult {
     double confidence = 0.0,
     Map<String, double>? faceBox,
     List<Map<String, dynamic>> issueBoxes = const [],
+    ImageQuality? imageQuality,
+    FaceAnalysis? faceAnalysis,
+    TextAnalysis? textAnalysis,
+    int? nativePrescreenVersion,
   }) {
     final ordered = orderPrescreenFailures(reasons);
     return PhotoPrescreenResult(
@@ -110,6 +122,10 @@ class PhotoPrescreenResult {
       confidence: confidence,
       faceBox: faceBox,
       issueBoxes: issueBoxes,
+      imageQuality: imageQuality,
+      faceAnalysis: faceAnalysis,
+      textAnalysis: textAnalysis,
+      nativePrescreenVersion: nativePrescreenVersion,
       errorMessage: errorMessage,
     );
   }
@@ -213,6 +229,11 @@ class FaceAnalysis {
   final bool completeFaceDetected;
   final bool faceObstructed;
 
+  /// Worst-case head rotation in degrees as reported by the native detector
+  /// (iOS Vision roll/yaw, ML Kit euler angles). Null on platforms that do
+  /// not report it. Diagnostics for the failure dialog — never a rule itself.
+  final double? headTiltDegrees;
+
   /// Both eyes of the largest face are confidently closed (Android ML Kit
   /// eye classification). False on platforms without classification.
   final bool bothEyesClosed;
@@ -226,6 +247,7 @@ class FaceAnalysis {
     required this.faceTouchesImageEdge,
     required this.completeFaceDetected,
     required this.faceObstructed,
+    this.headTiltDegrees,
     this.bothEyesClosed = false,
   });
 
@@ -382,6 +404,12 @@ class PrescreenConfig {
   final double minBrightness;
   final double maxBrightness;
 
+  /// Whole-frame brightness floor, checked before the face region is known.
+  /// Below this the entire photo is black; the face-region rule
+  /// ([minBrightness]) runs afterwards so a dark background with a lit face
+  /// is not rejected.
+  final double minGlobalBrightness;
+
   const PrescreenConfig({
     this.minFileSize = 10240, // 10KB
     this.maxFileSize = 10485760, // 10MB
@@ -394,6 +422,7 @@ class PrescreenConfig {
     this.minBlurScore = 0.3,
     this.minBrightness = 0.15,
     this.maxBrightness = 0.95,
+    this.minGlobalBrightness = 0.12,
   });
 
   /// Config for primary photos (stricter requirements)
@@ -404,11 +433,16 @@ class PrescreenConfig {
     minAspectRatio: 0.33,
     maxAspectRatio: 3.0,
     minFaceSizeRatio: 0.15,
-    minFaceConfidence: 0.75,
+    // 0.65, not 0.75: Apple Vision's confidence is poorly calibrated for
+    // dim or low-angle faces and rejected sharp, clearly visible selfies as
+    // "face not clearly visible". Face size, crop, and blur are enforced by
+    // their own rules and do not depend on this score.
+    minFaceConfidence: 0.65,
     minBodyConfidence: 0.6,
     minBlurScore: 0.4,
     minBrightness: 0.2,
     maxBrightness: 0.9,
+    minGlobalBrightness: 0.12,
   );
 
   /// Config for secondary photos (more lenient)
@@ -565,6 +599,74 @@ double _calculateBrightnessScoreSync(img.Image image) {
   }
 }
 
+/// Normalized region used for face brightness sampling: the detector's face
+/// box grown by [margin] of its own size on every side (the skin around the
+/// face counts as lit too), clamped to the frame. Null when no usable face
+/// box exists — callers then fall back to the global brightness score.
+@visibleForTesting
+Map<String, double>? faceRegionRect(
+  Map<String, double>? faceBox, {
+  double margin = 0.15,
+}) {
+  if (faceBox == null) return null;
+  final x = faceBox['x'] ?? 0;
+  final y = faceBox['y'] ?? 0;
+  final w = faceBox['w'] ?? 0;
+  final h = faceBox['h'] ?? 0;
+  if (w <= 0 || h <= 0) return null;
+  final dx = w * margin;
+  final dy = h * margin;
+  final left = (x - dx).clamp(0.0, 1.0);
+  final top = (y - dy).clamp(0.0, 1.0);
+  final right = (x + w + dx).clamp(0.0, 1.0);
+  final bottom = (y + h + dy).clamp(0.0, 1.0);
+  if (right - left <= 0 || bottom - top <= 0) return null;
+  return {'x': left, 'y': top, 'w': right - left, 'h': bottom - top};
+}
+
+/// Mean brightness (0..1) of [rect] (normalized) inside [bytes], decoded off
+/// the UI thread. Only called when the global score is already near the
+/// threshold, so the extra decode cost is limited to dim photos.
+Future<double> _faceRegionBrightness(
+  Uint8List bytes,
+  Map<String, double> rect,
+) async {
+  try {
+    return await compute(_faceRegionBrightnessIsolate, (bytes, rect));
+  } catch (_) {
+    // Fail closed: the caller only reaches here when the frame is already
+    // below the global threshold, so treating it as dark is conservative.
+    return 0.0;
+  }
+}
+
+double _faceRegionBrightnessIsolate(
+  (Uint8List, Map<String, double>) args,
+) {
+  final (bytes, rect) = args;
+  final image = img.decodeImage(bytes);
+  if (image == null) return 0.0;
+  final left = (rect['x']! * image.width).round().clamp(0, image.width - 1);
+  final top = (rect['y']! * image.height).round().clamp(0, image.height - 1);
+  final right = ((rect['x']! + rect['w']!) * image.width)
+      .round()
+      .clamp(left + 1, image.width);
+  final bottom = ((rect['y']! + rect['h']!) * image.height)
+      .round()
+      .clamp(top + 1, image.height);
+  var total = 0.0;
+  var count = 0;
+  for (var y = top; y < bottom; y += 4) {
+    for (var x = left; x < right; x += 4) {
+      final pixel = image.getPixel(x, y);
+      total += (pixel.r + pixel.g + pixel.b) / (3 * 255);
+      count++;
+    }
+  }
+  if (count == 0) return 0.0;
+  return (total / count).clamp(0.0, 1.0);
+}
+
 /// Photo prescreening service
 class PhotoPrescreenService {
   static const MethodChannel _prescreenChannel = MethodChannel(
@@ -649,7 +751,11 @@ class PhotoPrescreenService {
       if (quality.blurScore < config.minBlurScore) {
         failures.add(PrescreenFailureReason.imageTooBlurry);
       }
-      if (quality.brightnessScore < config.minBrightness) {
+      // Global floor: reject only a nearly black frame here. The real
+      // "too dark" verdict needs the face region — a dark background with a
+      // well-lit face is perfectly usable — and runs after the detector
+      // reports where the face is (see step 7.5).
+      if (quality.brightnessScore < config.minGlobalBrightness) {
         failures.add(PrescreenFailureReason.imageTooDark);
       }
       if (quality.brightnessScore > config.maxBrightness) {
@@ -722,6 +828,22 @@ class PhotoPrescreenService {
       }
     }
 
+    // 7.5. Face-region darkness: the global score is dragged down by dark
+    // backgrounds, so a well-lit face in a dim room passes while a genuinely
+    // underexposed face still fails. Only runs when the global score is
+    // below the face threshold — a bright frame skips the extra decode.
+    if (isPrimary &&
+        !failures.contains(PrescreenFailureReason.imageTooDark) &&
+        quality.brightnessScore < config.minBrightness) {
+      final faceRect = faceRegionRect(mlResult.faceBox);
+      final faceScore = faceRect == null
+          ? quality.brightnessScore
+          : await _faceRegionBrightness(bytes, faceRect);
+      if (faceScore < config.minBrightness) {
+        failures.add(PrescreenFailureReason.imageTooDark);
+      }
+    }
+
     if (failures.isEmpty) {
       return PhotoPrescreenResult.passedWithConfidence(
         confidence: mlResult.confidence,
@@ -732,8 +854,24 @@ class PhotoPrescreenService {
         textOverFace: mlResult.textOverFace,
         objectOverFace: mlResult.objectOverFace,
         perceptualHash: metrics.perceptualHash,
+        nativePrescreenVersion: mlResult.nativePrescreenVersion,
       );
     }
+
+    // Diagnostics: one structured line per rejected photo so regressions
+    // (e.g. background décor reported as documents) are visible without a
+    // device attached. The failure dialog shows the same numbers under
+    // "Details".
+    debugPrint(
+      '[photoPrescreen] failed isPrimary=$isPrimary '
+      'reasons=${failures.join(',')} '
+      'brightness=${quality.brightnessScore.toStringAsFixed(2)} '
+      'blur=${quality.blurScore.toStringAsFixed(2)} '
+      'faceConfidence=${faceAnalysis?.faceConfidence.toStringAsFixed(2)} '
+      'headTilt=${faceAnalysis?.headTiltDegrees?.toStringAsFixed(0)} '
+      'issueBoxes=${mlResult.issueBoxes.length} '
+      'nativeV=${mlResult.nativePrescreenVersion}',
+    );
 
     // Propagate the problem-region boxes so the failure dialog can draw the
     // overlay on the exact spots (face + offending text/object regions).
@@ -742,6 +880,10 @@ class PhotoPrescreenService {
       confidence: mlResult.confidence,
       faceBox: mlResult.faceBox,
       issueBoxes: mlResult.issueBoxes,
+      imageQuality: quality,
+      faceAnalysis: faceAnalysis,
+      textAnalysis: textAnalysis,
+      nativePrescreenVersion: mlResult.nativePrescreenVersion,
     );
   }
 
@@ -878,6 +1020,8 @@ class PhotoPrescreenService {
               faceTouchesImageEdge: result['faceTouchesImageEdge'] == true,
               completeFaceDetected: result['completeFaceDetected'] == true,
               faceObstructed: result['faceObstructed'] == true,
+              headTiltDegrees:
+                  (result['headTiltDegrees'] as num?)?.toDouble(),
               bothEyesClosed: result['bothEyesClosed'] == true,
             )
           : FaceAnalysis(
@@ -948,6 +1092,7 @@ class PhotoPrescreenService {
         documentNearFace: result['documentNearFace'] == true,
         faceBox: _parseNormalizedBox(result['faceBox']),
         issueBoxes: _parseIssueBoxes(result['issueBoxes']),
+        nativePrescreenVersion: (result['prescreenVersion'] as num?)?.toInt(),
       );
     } catch (_) {
       return PhotoPrescreenResult.passedWithConfidence(confidence: 0.0);

@@ -490,6 +490,7 @@ Future<PrescreenFailureAction?> showPrescreenFailureDialog(
             : l10n.getString(prescreenFailureL10nKey(reason)),
       )
       .toList();
+  final detailRows = _prescreenDetailRows(result, reasons, l10n.getString);
 
   // Decode the photo dimensions so the overlay boxes can be mapped onto the
   // BoxFit.contain rect (same approach as the AI-moderation rejection
@@ -641,6 +642,19 @@ Future<PrescreenFailureAction?> showPrescreenFailureDialog(
                     ),
                   ),
                 ),
+              if (issueBoxes.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text(
+                  l10n.getString('photoPrescreenOverlayCaption'),
+                  style: Theme.of(
+                    dialogContext,
+                  ).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(
+                      dialogContext,
+                    ).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
               const SizedBox(height: 16),
               // Every failed rule, each with its own bullet — not just the
               // first — so one retake can address them all.
@@ -658,6 +672,32 @@ Future<PrescreenFailureAction?> showPrescreenFailureDialog(
                       Expanded(child: Text(message)),
                     ],
                   ),
+                ),
+              // Measured values behind the bullets, collapsed by default:
+              // a false positive can then be reported with numbers
+              // (brightness vs threshold, Vision confidence, head tilt,
+              // analyzer build) instead of adjectives.
+              if (detailRows.isNotEmpty)
+                ExpansionTile(
+                  dense: true,
+                  tilePadding: EdgeInsets.zero,
+                  title: Text(
+                    l10n.getString('photoPrescreenDetailsLabel'),
+                    style: Theme.of(dialogContext).textTheme.bodySmall,
+                  ),
+                  childrenPadding: const EdgeInsets.only(left: 16, bottom: 8),
+                  children: [
+                    for (final row in detailRows)
+                      Text(
+                        row,
+                        style: Theme.of(dialogContext).textTheme.bodySmall
+                            ?.copyWith(
+                              color: Theme.of(
+                                dialogContext,
+                              ).colorScheme.onSurfaceVariant,
+                            ),
+                      ),
+                  ],
                 ),
             ],
           ),
@@ -678,4 +718,71 @@ Future<PrescreenFailureAction?> showPrescreenFailureDialog(
       );
     },
   );
+}
+
+/// Technical detail rows for the prescreen failure dialog: the measured
+/// value and threshold behind each failed rule plus the analyzer build, so a
+/// rejection can be evaluated from a screenshot instead of taken on trust.
+List<String> _prescreenDetailRows(
+  PhotoPrescreenResult result,
+  List<PrescreenFailureReason?> reasons,
+  String Function(String) getString,
+) {
+  const primary = PrescreenConfig.primaryPhoto;
+  final rows = <String>[];
+  final quality = result.imageQuality;
+  final minLabel = getString('photoPrescreenDetailMinimum');
+
+  if (quality != null &&
+      reasons.contains(PrescreenFailureReason.imageTooDark)) {
+    rows.add(
+      '${getString('photoPrescreenDetailBrightness')} '
+      '${quality.brightnessScore.toStringAsFixed(2)} / '
+      '${primary.minBrightness.toStringAsFixed(2)} $minLabel',
+    );
+  }
+  if (quality != null &&
+      reasons.contains(PrescreenFailureReason.imageTooBlurry)) {
+    rows.add(
+      '${getString('photoPrescreenDetailSharpness')} '
+      '${quality.blurScore.toStringAsFixed(2)} / '
+      '${primary.minBlurScore.toStringAsFixed(2)} $minLabel',
+    );
+  }
+  final face = result.faceAnalysis;
+  if (face != null &&
+      face.faceDetected &&
+      reasons.contains(PrescreenFailureReason.faceNotVisible)) {
+    rows.add(
+      '${getString('photoPrescreenDetailFaceConfidence')} '
+      '${face.faceConfidence.toStringAsFixed(2)} / '
+      '${primary.minFaceConfidence.toStringAsFixed(2)} $minLabel',
+    );
+    final tilt = face.headTiltDegrees;
+    if (tilt != null) {
+      rows.add('${getString('photoPrescreenDetailHeadTilt')} ${tilt.round()}°');
+    }
+  }
+  final version = result.nativePrescreenVersion;
+  rows.add(
+    '${getString('photoPrescreenDetailAnalyzer')} '
+    '${version != null ? 'v$version' : '—'} · ${_analyzerPlatformLabel()}',
+  );
+  return rows;
+}
+
+String _analyzerPlatformLabel() {
+  if (kIsWeb) return 'web';
+  switch (defaultTargetPlatform) {
+    case TargetPlatform.android:
+      return 'Android';
+    case TargetPlatform.iOS:
+      return 'iOS';
+    case TargetPlatform.linux:
+    case TargetPlatform.macOS:
+    case TargetPlatform.windows:
+      return 'desktop';
+    case TargetPlatform.fuchsia:
+      return 'fuchsia';
+  }
 }

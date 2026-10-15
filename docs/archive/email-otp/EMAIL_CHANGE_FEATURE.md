@@ -1,5 +1,16 @@
 # Email Change Feature Implementation
 
+> **ARCHIVED / SUPERSEDED.** The dedicated `send-email-change-otp` and
+> `verify-email-change-otp` edge functions described here were removed from the
+> codebase (2026-10-15). They were never called by the app; the live email-change
+> flow is handled by the `sensitive-action-email-code` edge function (actions:
+> `generate_email_change_code`, `verify_email_change_code`,
+> `complete_email_change`, `send_email_changed_notification`) plus the
+> `generate_email_change_code` / `verify_email_change_code` /
+> `complete_email_change` RPCs — see `lib/services/email_change_service.dart`.
+> Additionally, `send-email-change-otp` called `auth.admin.sendEmail`, a
+> non-existent Supabase API, so it could never have delivered email.
+
 ## Overview
 This feature allows users to change their email address with a secure two-step verification process:
 1. **MFA Verification** - User must verify their identity with MFA

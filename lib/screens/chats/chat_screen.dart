@@ -3591,11 +3591,30 @@ class _MessageBubble extends ConsumerWidget {
                             builder: (context) {
                               final originalSecondary =
                                   withEmojiFallback(
-                                    TextStyle(
-                                      color: textColor.withValues(alpha: 0.65),
-                                      fontStyle: FontStyle.italic,
-                                      fontSize: showTranslated ? 13 : null,
-                                    ),
+                                    // Derive from the theme so the style keeps
+                                    // the app font family. The bubble renders
+                                    // through RichText with inherit:false, so
+                                    // a bare TextStyle can never pick one up,
+                                    // and iOS would then treat the emoji
+                                    // fallback as the preferred font and widen
+                                    // every word gap.
+                                    Theme.of(context)
+                                        .textTheme
+                                        .bodyLarge
+                                        ?.copyWith(
+                                          color: textColor.withValues(
+                                            alpha: 0.65,
+                                          ),
+                                          fontStyle: FontStyle.italic,
+                                          fontSize: showTranslated ? 13 : null,
+                                        ) ??
+                                        TextStyle(
+                                          color: textColor.withValues(
+                                            alpha: 0.65,
+                                          ),
+                                          fontStyle: FontStyle.italic,
+                                          fontSize: showTranslated ? 13 : null,
+                                        ),
                                   );
                               return Align(
                                 alignment: isOriginalRtl
@@ -3621,12 +3640,24 @@ class _MessageBubble extends ConsumerWidget {
                                 );
                                 final bool isTranslatedRtl = _isRtl(td);
                                 // Hero style: full-size normal, full color.
+                                // Derive from the theme so the style keeps the
+                                // app font family (see originalSecondary above
+                                // for why a bare TextStyle breaks spacing on
+                                // iOS).
                                 final translatedStyle = withEmojiFallback(
-                                  TextStyle(
-                                    color: textColor,
-                                    fontStyle: FontStyle.normal,
-                                    fontSize: 16,
-                                  ),
+                                  Theme.of(context)
+                                      .textTheme
+                                      .bodyLarge
+                                      ?.copyWith(
+                                        color: textColor,
+                                        fontStyle: FontStyle.normal,
+                                        fontSize: 16,
+                                      ) ??
+                                      TextStyle(
+                                        color: textColor,
+                                        fontStyle: FontStyle.normal,
+                                        fontSize: 16,
+                                      ),
                                 );
                                 return Align(
                                   alignment: isTranslatedRtl

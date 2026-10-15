@@ -1048,9 +1048,42 @@ class AdminApp extends ConsumerWidget {
         GlobalCupertinoLocalizations.delegate,
       ],
       builder: (context, child) {
+        // Keep OS system UI (navigation bar / gesture area / screen
+        // cutouts) clear of app content on every route, platform,
+        // orientation and screen size. SafeArea consumes the bottom and
+        // side view paddings (the top stays with per-screen AppBars /
+        // SafeAreas, as Flutter's Material scaffold already extends them
+        // under the status bar). The residual system-gesture area (if it
+        // exceeds the padding being consumed) is subtracted from
+        // MediaQuery so manual MediaQuery-based offsets stay exact.
+        final mq = MediaQuery.of(context);
+        final sgi = mq.systemGestureInsets;
+        final residualGesture = EdgeInsets.only(
+          left:
+              sgi.left > mq.padding.left ? sgi.left - mq.padding.left : 0.0,
+          top: sgi.top,
+          right:
+              sgi.right > mq.padding.right
+                  ? sgi.right - mq.padding.right
+                  : 0.0,
+          bottom:
+              sgi.bottom > mq.padding.bottom
+                  ? sgi.bottom - mq.padding.bottom
+                  : 0.0,
+        );
         return Directionality(
           textDirection: l10n.textDirection,
-          child: child ?? const SizedBox.shrink(),
+          child: SafeArea(
+            top: false,
+            child: Builder(
+              builder: (inner) => MediaQuery(
+                data: MediaQuery.of(inner).copyWith(
+                  systemGestureInsets: residualGesture,
+                ),
+                child: child ?? const SizedBox.shrink(),
+              ),
+            ),
+          ),
         );
       },
       theme: ThemeData(
@@ -22225,7 +22258,8 @@ const Map<String, String> _defaultTranslations = {
   'adminNavSystemHealth': 'System Health',
   'adminHealthSubtitle':
       "Supabase's official status plus live probes of this project's "
-      'database, realtime, and notification queue. Updates automatically.',
+      'database, realtime, notification queue, recent failures, sign-ins, '
+      'and usage. Updates automatically.',
   'adminHealthSupabaseStatus': 'Supabase status (official)',
   'adminHealthSupabaseSource': 'status.supabase.com · updated {age} ago',
   'adminHealthSupabaseUnavailable':
@@ -22277,6 +22311,59 @@ const Map<String, String> _defaultTranslations = {
   'adminHealthQueueAlertDetail':
       'Queue alert: backlog growing or sender stuck. Check the Delivery '
       'section.',
+  'adminHealthErrorsTitle': 'Project errors',
+  'adminHealthErrorsNone': 'None',
+  'adminHealthErrorsValue': '{count} · {age} ago',
+  'adminHealthErrorsEdge': 'Edge functions (15m)',
+  'adminHealthErrorsCron': 'Cron jobs (1h)',
+  'adminHealthErrorsApp': 'App errors (15m)',
+  'adminHealthErrorsFailedTasks': 'Failed tasks: {tasks}',
+  'adminHealthErrorsAppLast': 'Last: {source} — {message}',
+  'adminHealthErrorsAlertDetail':
+      'Recent project failures are above the alert threshold.',
+  'adminHealthSignInsTitle': 'Sign-ins',
+  'adminHealthSignIns15m': 'Sign-ins (15m)',
+  'adminHealthSignInsLast': 'Last sign-in {age} ago',
+  'adminHealthAuthErrors15m': 'Auth errors (15m)',
+  'adminHealthAuthLastError': 'Last error: {action} — {message}',
+  'adminHealthAuthAlertDetail': '{count} auth failures in the last 15 minutes',
+  'adminHealthUsageTitle': 'Project usage',
+  'adminHealthDiskUsage': 'Database disk',
+  'adminHealthDiskUsageValue': '{used} GB of {size} GB ({pct}%)',
+  'adminHealthDiskAlertDetail': 'Database disk {pct}% full',
+  'adminHealthApiRequests': 'API requests',
+  'adminHealthNotConfigured':
+      'Not configured — set MANAGEMENT_API_TOKEN on the project-logs-health '
+      'function to enable these signals.',
+  'adminHealthLogsWarnings': 'Some sources unavailable: {warnings}',
+  'adminHealthHistoryButton': 'History',
+  'adminHealthHistoryTitle': 'System health history',
+  'adminHealthHistorySubtitle': 'Snapshots every ~5 minutes · last 7 days',
+  'adminHealthHistoryRangeFrom': 'From',
+  'adminHealthHistoryRangeTo': 'To',
+  'adminHealthHistoryPreset1h': '1 hour',
+  'adminHealthHistoryPreset6h': '6 hours',
+  'adminHealthHistoryPreset24h': '24 hours',
+  'adminHealthHistoryPreset7d': '7 days',
+  'adminHealthHistoryApply': 'Apply',
+  'adminHealthHistoryViewRange': 'Charts',
+  'adminHealthHistoryViewReplay': 'Replay',
+  'adminHealthHistoryReplayBanner': 'Replay — as of {time}',
+  'adminHealthHistoryReplayAsOf': 'As of',
+  'adminHealthHistoryEmpty': 'No snapshots in this range yet.',
+  'adminHealthHistoryLoading': 'Loading history…',
+  'adminHealthHistoryError': 'Could not load history: {error}',
+  'adminHealthHistoryOutOfRange': 'Pick a range within the last 7 days.',
+  'adminHealthHistoryChartQueue': 'Queue pending',
+  'adminHealthHistoryChartApiRate': 'API requests per interval',
+  'adminHealthHistoryErrorsTitle': 'Failures in selected range',
+  'adminHealthHistoryErrorsEdge': 'Edge function failures (5xx)',
+  'adminHealthHistoryErrorsCron': 'Cron invocations with failed tasks',
+  'adminHealthHistoryErrorsApp': 'App errors',
+  'adminHealthHistoryStatuspageTitle': 'Supabase status timeline',
+  'adminHealthHistorySocketTitle': 'Realtime socket transitions',
+  'adminHealthHistorySocketOpen': 'Open',
+  'adminHealthHistorySocketClosed': 'Closed',
   'adminNavIntentsInterests': 'Intents & Interests',
   'adminNavProfileEdits': 'Profile Edit Requests',
   'adminNavPromoCodes': 'Promo Codes',

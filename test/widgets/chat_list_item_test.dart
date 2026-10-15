@@ -82,6 +82,11 @@ void main() {
       expect(messageStyle.letterSpacing, 0);
       expect(messageStyle.wordSpacing, 0);
       expect(messageStyle.inherit, isFalse);
+      // Regression: a preview style without a font family makes the emoji
+      // fallback the preferred font, and Apple Color Emoji (iOS) resolves
+      // the space glyph from there, widening every word gap on iOS.
+      expect(messageStyle.fontFamily, isNotNull);
+      expect(messageStyle.fontFamilyFallback, isNotNull);
       expect(preview.textAlign, TextAlign.start);
       expect(preview.textDirection, TextDirection.ltr);
       expect(find.text('Loading'), findsNothing);

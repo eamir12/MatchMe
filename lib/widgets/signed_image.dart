@@ -188,6 +188,7 @@ class _SignedImageState extends State<SignedImage> {
       request.url,
       headers: request.headers,
       cacheKey: cacheKey,
+      objectPath: src,
     );
     if (!mounted || generation != _loadGeneration) return;
     if (bytes == null) {
@@ -224,10 +225,14 @@ class _SignedImageState extends State<SignedImage> {
       headers = null;
     }
     if (url == null || url.isEmpty) return null;
+    // objectPath is only honored for authorized requests (see
+    // StorageHelper._isAuthorizedImageRequest), so passing it for the
+    // public-URL fallback is safe.
     return StorageHelper.fetchImageBytesFromUrl(
       url,
       headers: headers,
       cacheKey: cacheKey,
+      objectPath: widget.source,
     );
   }
 

@@ -29,7 +29,7 @@ import kotlinx.coroutines.tasks.await
 class PhotoPrescreenHandler {
     companion object {
         private const val TAG = "PhotoPrescreenHandler"
-        const val PRESCREEN_VERSION = 4
+        const val PRESCREEN_VERSION = 5
         
         suspend fun analyzePhoto(
             bytes: ByteArray
@@ -145,13 +145,16 @@ class PhotoPrescreenHandler {
                         !faceTouchesImageEdge(face.boundingBox, bitmap.width, bitmap.height)
                     }
 
-                    // Check for face obstruction (basic check using head pose estimation)
+                    // Check for face obstruction (basic check using head pose
+                    // estimation). 40/40/50 degrees: a handheld selfie taken
+                    // from a low angle or while lying down routinely passed the
+                    // old 30/30/45 limits as a "not clearly visible" failure on
+                    // a perfectly sharp face.
                     val faceObstructed = if (containsFace) {
                         faces.any { face ->
-                            // Face is obstructed if head is turned too far
-                            Math.abs(face.headEulerAngleX) > 30f ||
-                                Math.abs(face.headEulerAngleY) > 30f ||
-                                Math.abs(face.headEulerAngleZ) > 45f
+                            Math.abs(face.headEulerAngleX) > 40f ||
+                                Math.abs(face.headEulerAngleY) > 40f ||
+                                Math.abs(face.headEulerAngleZ) > 50f
                         }
                     } else false
 
@@ -169,6 +172,16 @@ class PhotoPrescreenHandler {
                     val largestFace = if (containsFace) {
                         faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
                     } else null
+                    // Diagnostics for the failure dialog: worst-case head
+                    // rotation of the largest face in degrees (ML Kit euler
+                    // angles: X pitch, Y yaw, Z roll).
+                    val headTiltDegrees = largestFace?.let {
+                        maxOf(
+                            Math.abs(it.headEulerAngleX),
+                            Math.abs(it.headEulerAngleY),
+                            Math.abs(it.headEulerAngleZ),
+                        ).toDouble()
+                    }
                     val bothEyesClosed = if (largestFace != null) {
                         val left = largestFace.leftEyeOpenProbability
                         val right = largestFace.rightEyeOpenProbability
@@ -289,6 +302,28 @@ class PhotoPrescreenHandler {
                         val nearZone = expandRect(faceBox, bitmap.width, bitmap.height, 0.5f)
                         val faceArea = (faceBox.width().toDouble() * faceBox.height().toDouble()).coerceAtLeast(1.0)
 
+                        // An object counts as a held document only with
+                        // corroborating evidence — readable text lying on it,
+                        // or card-sized area with card-like proportions. ML Kit
+                        // object detection matches background décor (pillow
+                        // embroidery, tiles), and a close-up selfie's face
+                        // zones reach the whole background, so without
+                        // corroboration those patterns were reported as "ID
+                        // cards" and "something covering your face".
+                        fun isCorroboratedDocument(ob: Rect): Boolean {
+                            val obW = ob.width().toDouble()
+                            val obH = ob.height().toDouble()
+                            if (obW <= 0 || obH <= 0) return false
+                            val onText = mergedBlocks.any { (textBox, charCount) ->
+                                charCount >= 1 && intersectionRatio(textBox, ob) >= 0.2
+                            }
+                            if (onText) return true
+                            val longer = maxOf(obW, obH)
+                            val shorter = minOf(obW, obH)
+                            if (shorter <= 0) return false
+                            return obW * obH / totalArea >= 0.03 && longer / shorter <= 2.5
+                        }
+
                         // Object detection first — it is the box-locatable
                         // signal, so its region wins the overlay.
                         for (obj in detectedObjects) {
@@ -301,14 +336,15 @@ class PhotoPrescreenHandler {
                             // The detected face itself: high overlap with the
                             // face box at a comparable size.
                             if (overlapWithFace >= 0.7 && ratioToFace in 0.4..3.0) continue
+                            if (!isCorroboratedDocument(ob)) continue
                             val overlapCore = intersectionRatio(ob, coreZone)
                             val overlapNear = intersectionRatio(ob, nearZone)
                             if (overlapCore >= 0.25) {
-                                // Over the face itself — but only claim
-                                // "covering" when the box is card-sized; a
-                                // coarse merged person+card box cannot
-                                // localize the occlusion.
-                                if (ratioToFace <= 3.0) {
+                                // "Covering your face" only when most of the
+                                // object sits ON the face box itself. Merely
+                                // reaching the expanded face zone is exactly
+                                // what the background behind the user does.
+                                if (overlapWithFace >= 0.5 && ratioToFace <= 3.0) {
                                     objectOverFace = true
                                 } else {
                                     documentNearFace = true
@@ -423,6 +459,7 @@ class PhotoPrescreenHandler {
                         "faceTouchesImageEdge" to faceTouchesImageEdge,
                         "completeFaceDetected" to completeFaceDetected,
                         "faceObstructed" to faceObstructed,
+                        "headTiltDegrees" to headTiltDegrees,
                         "bothEyesClosed" to bothEyesClosed,
                         "textOverFace" to textOverFace,
                         "objectOverFace" to objectOverFace,

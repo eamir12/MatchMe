@@ -25,9 +25,12 @@ import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/pinned_location_provider.dart';
+import 'package:matchme/providers/location_share_provider.dart';
+import 'package:matchme/models/location_share_session.dart';
 import 'package:matchme/widgets/pinned_location_sheet.dart';
 import 'package:matchme/providers/visibility_provider.dart';
 import 'package:matchme/screens/nearby/nearby_map_screen.dart';
+import 'package:matchme/screens/location_share/location_share_map_screen.dart';
 import 'package:matchme/screens/paywall/paywall_screen.dart';
 import 'package:matchme/widgets/ad_slot.dart';
 import 'package:matchme/widgets/match_box.dart';
@@ -197,6 +200,159 @@ class _SubscriptionTierCard extends ConsumerWidget {
       l10n.getString('homeTier'),
       subValue: remainingText,
       onTap: onTap,
+    );
+  }
+}
+
+/// Home-surface card for an active live-location share. Covers every
+/// situation (outgoing-only, incoming-only and mutual) and links into the
+/// shared-location map. Ticks once a second so the countdown stays honest,
+/// mirroring the match-profile banner.
+class _LiveLocationShareCard extends ConsumerStatefulWidget {
+  const _LiveLocationShareCard();
+
+  @override
+  ConsumerState<_LiveLocationShareCard> createState() =>
+      _LiveLocationShareCardState();
+}
+
+class _LiveLocationShareCardState
+    extends ConsumerState<_LiveLocationShareCard> {
+  Timer? _tickTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _tickTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _tickTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final session = ref.watch(locationShareProvider);
+    final l10n = ref.watch(localizationProvider);
+    if (session == null) return const SizedBox.shrink();
+
+    final iAmSharing = session.myStatus == ShareStatus.sharing;
+    final otherIsSharing = session.otherStatus == ShareStatus.sharing;
+    final isMutual = iAmSharing && otherIsSharing;
+
+    final colorScheme = Theme.of(context).colorScheme;
+    final String title;
+    final String description;
+    final IconData icon;
+    final Color accent;
+    if (isMutual) {
+      title = l10n.getString('locationShareMutualActive');
+      description = l10n.getString('locationShareTapToView');
+      icon = Icons.people;
+      accent = colorScheme.tertiary;
+    } else if (otherIsSharing) {
+      title = l10n
+          .getString('locationShareReceiving')
+          .replaceAll('{name}', session.otherUserName);
+      description = l10n.getString('locationShareTapToView');
+      icon = Icons.location_on;
+      accent = colorScheme.tertiary;
+    } else if (iAmSharing) {
+      title = l10n.getString('locationShareBannerYouAreSharing');
+      description = l10n
+          .getString('locationShareBannerSharingWith')
+          .replaceAll('{name}', session.otherUserName);
+      icon = Icons.share_location;
+      accent = colorScheme.primary;
+    } else {
+      return const SizedBox.shrink();
+    }
+
+    final remaining = session.timeRemaining;
+    final String remainingText;
+    if (session.expiresAt == null) {
+      remainingText = l10n.getString('locationShareUntilOff');
+    } else if (remaining == null || remaining.isNegative) {
+      remainingText = l10n.getString('locationShareExpired');
+    } else {
+      remainingText = formatDurationWords(l10n, remaining);
+    }
+
+    return Semantics(
+      container: true,
+      button: true,
+      label: '$title. $description. $remainingText',
+      excludeSemantics: true,
+      child: Card(
+        margin: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const LocationShareMapScreen()),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: accent.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Icon(icon, color: accent),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        description,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 8),
+                      DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: accent.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 5,
+                          ),
+                          child: Text(
+                            remainingText,
+                            style: TextStyle(
+                              color: accent,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                // chevron_right auto-mirrors in RTL (matchTextDirection).
+                const Icon(Icons.chevron_right),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -939,6 +1095,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           // remains available in Matching settings.
           if (isVisible)
             _buildPinnedLocationCard(context, ref, l10n, pinnedLocationState),
+          // Any active live-location share (outgoing, incoming or mutual)
+          // surfaces here with a one-tap entry into the shared map.
+          const _LiveLocationShareCard(),
           Padding(
             padding: const EdgeInsets.symmetric(
               horizontal: 16.0,

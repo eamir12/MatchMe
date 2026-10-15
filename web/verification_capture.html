@@ -316,13 +316,21 @@
   var checkFaceLabelEl = document.getElementById('checkFaceLabel');
   var checkHandLabelEl = document.getElementById('checkHandLabel');
   var checkGestureLabelEl = document.getElementById('checkGestureLabel');
+  // Emoji sets disagree about handedness: Apple (iOS/macOS) and Microsoft
+  // (Segoe, Windows) draw hands as RIGHT hands, while Google's Noto
+  // (Android, Linux, ChromeOS) draws them as LEFT hands. Mirror the side
+  // that is not the platform default so the example matches the requested
+  // hand on every platform.
+  var emojiDefaultHandIsLeft = /Android|CrOS|Linux/i.test(navigator.userAgent || '');
   if (gestureExampleEmojiEl) {
     gestureExampleEmojiEl.textContent = gestureSymbols[gestureParam] || '🖐️';
-    // Hand emoji default to right hands; mirror for left-hand gestures so
-    // the icon shows the hand the user must actually use.
+    // Mirror the opposite of the platform default so the icon shows the
+    // hand the user must actually use.
     gestureExampleEmojiEl.classList.toggle(
       'mirror-x',
-      typeof gestureParam === 'string' && gestureParam.indexOf('_LEFT_HAND') !== -1,
+      typeof gestureParam === 'string' && (emojiDefaultHandIsLeft
+        ? gestureParam.indexOf('_RIGHT_HAND') !== -1
+        : gestureParam.indexOf('_LEFT_HAND') !== -1),
     );
   }
   var gestureExampleHandEl = document.getElementById('gestureExampleHand');
@@ -494,9 +502,6 @@
       statusEl.textContent = usingInputImage
         ? t('verificationCaptureStatusGestureDetected', 'Gesture detected. Tap to continue')
         : t('verificationCaptureStatusGestureDetected', 'Ready! Tap to capture');
-      // This status is written straight to the element, so voice it here —
-      // the ready line is shown, therefore spoken.
-      try { emitVoiceStatus(statusEl.textContent); } catch (_) {}
     } else {
       feedback.classList.remove('ready');
       captureBtn.classList.remove('ready');
@@ -523,19 +528,12 @@
   // Voice guidance bridge (mirrors assets/verification_capture/index.html):
   // when the on-screen status maps to one of the whitelisted coaching keys,
   // emit a 'voice' event so the host app can speak it in the user's language.
-  // Reverse lookup from the localized text back to its key; suppressed for
-  // repeats and rapid transitions.
-  var voiceStatusKeys = {
-    'verificationCaptureLoading': 1,
-    'verificationCaptureStatusShowGesture': 1,
-    'verificationCaptureStatusShowFace': 1,
-    'verificationCaptureStatusAlignFace': 1,
-    'verificationCaptureStatusPositionHand': 1,
-    'verificationCaptureStatusHoldSteady': 1,
-    'verificationCaptureStatusCapturingBestFrame': 1,
-    'verificationCaptureStatusGestureDetected': 1,
-    'verificationCaptureStatusUseCorrectHand': 1
-  };
+  // Reverse lookup from the localized text back to its key.
+  // NOTE: deliberately EMPTY. Progress indicators (face visible, hand in
+  // position, gesture recognized, hold steady, capturing, ready, …) are
+  // shown but never spoken. The only spoken capture-page feedback left is
+  // the wrong-hand correction, emitted directly from announceWrongHand.
+  var voiceStatusKeys = {};
   var statusKeyByText = {};
   (function() {
     try {
@@ -616,7 +614,15 @@
   }
 
   if (gestureDescriptionEl) {
-    gestureDescriptionEl.textContent = gestureDescription || t('verificationCaptureStatusPositionHand', 'Place your hand in the gesture area and show the gesture');
+    if (isFaceOnlyMode) {
+      // Primary selfie: the hand/gesture description does not apply, so it is
+      // never used as a fallback — show nothing rather than an instruction
+      // about hands, and keep the element out of the layout when empty.
+      gestureDescriptionEl.textContent = gestureDescription || '';
+      if (!gestureDescription) gestureDescriptionEl.classList.add('hidden');
+    } else {
+      gestureDescriptionEl.textContent = gestureDescription || t('verificationCaptureStatusPositionHand', 'Place your hand in the gesture area and show the gesture');
+    }
   }
   if (checkFaceLabelEl) {
     checkFaceLabelEl.textContent = t('verificationCaptureChecklistFaceVisible', 'Face visible');
@@ -629,14 +635,6 @@
   }
   setChecklistState(false, false, false);
   setInstruction(gestureLabel);
-  // Accessibility: the three checklist labels are shown on this page, so
-  // they are read out too (once per page load — spoken after the current
-  // utterance by the host, i.e. after Flutter's gesture instruction).
-  announcePageText([
-    t('verificationCaptureChecklistFaceVisible', 'Face visible'),
-    t('verificationCaptureChecklistHandPositioned', 'Hand in position'),
-    t('verificationCaptureChecklistGestureRecognized', 'Gesture recognized'),
-  ].join('. '));
   setStatus(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
 
   function canonicalGestureName(name) {

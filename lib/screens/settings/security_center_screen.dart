@@ -1669,6 +1669,17 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
               ? resolvedData[3] as bool
               : false;
 
+          // Hide the passkey card entirely when the platform can't run a
+          // ceremony and the account has no passkeys to manage — don't
+          // advertise a feature that can't work here (e.g. iOS until domain
+          // association is configured). Existing passkeys stay visible so
+          // they can still be revoked.
+          final showPasskeyCard =
+              passkeyState.isEnabled &&
+              (passkeyState.isPlatformSupported ||
+                  hasPasskeys ||
+                  _hasAddedPasskeyThisSession);
+
           return RefreshIndicator(
             onRefresh: () async {
               _refreshMfaStatus();
@@ -1722,7 +1733,7 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
                     hasPasskeys: hasPasskeys || _hasAddedPasskeyThisSession,
                     authMethod: authMethod,
                   ),
-                  if (passkeyState.isEnabled)
+                  if (showPasskeyCard)
                     _buildPasskeyCard(
                       l10n,
                       state: passkeyState,
@@ -1730,7 +1741,7 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
                       authMethod: authMethod,
                       canManageSensitiveActions: canManageSensitiveActions,
                     ),
-                  if (passkeyState.isEnabled) const SizedBox(height: 10),
+                  if (showPasskeyCard) const SizedBox(height: 10),
                   _buildAuthenticatorCard(
                     l10n,
                     status: mfaStatus,

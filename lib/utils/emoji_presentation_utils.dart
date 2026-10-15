@@ -412,6 +412,9 @@ TextStyle emojiRunStyle(TextStyle base) {
   );
 }
 
+/// App default text family, matching the theme built in `main.dart`.
+const String kAppDefaultTextFontFamily = 'Noto Sans';
+
 /// Returns a copy of [style] with platform-best color emoji fonts first and
 /// bundled monochrome symbol fonts last. Use for every chat text style so
 /// `⛱️` cannot resolve to `Noto Sans Symbols` before the color font.
@@ -430,6 +433,15 @@ TextStyle withEmojiFallback(TextStyle style) {
       )
       .toList();
   return style.copyWith(
+    // When `fontFamily` is null, dart:ui promotes the FIRST
+    // `fontFamilyFallback` entry to the preferred font. That entry is an
+    // emoji font, and Apple Color Emoji (iOS only) ships a very wide
+    // U+0020 glyph, so chat text styled without a font family rendered
+    // with 2-3x wider word gaps on iOS: letters fell through to the next
+    // font that had them while only the space came from the emoji font.
+    // Android's emoji fonts carry no space glyph, so it fell through to a
+    // normal one there. A text font must always win the first slot.
+    fontFamily: style.fontFamily ?? kAppDefaultTextFontFamily,
     fontFamilyFallback: [
       ...platform,
       ...filtered,

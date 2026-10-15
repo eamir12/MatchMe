@@ -82,12 +82,6 @@ serve(withInvocationLogging("passkeys-authentication-finish", async (req) => {
         publicKey: base64UrlToBytes(credential.public_key),
         counter: Number(credential.counter ?? 0),
         transports: Array.isArray(credential.transports) ? credential.transports : [],
-        deviceType:
-          credential.credential_device_type === "singleDevice" ||
-              credential.credential_device_type === "multiDevice"
-            ? credential.credential_device_type
-            : "multiDevice",
-        backedUp: Boolean(credential.credential_backed_up ?? false),
       },
       requireUserVerification: false,
     });

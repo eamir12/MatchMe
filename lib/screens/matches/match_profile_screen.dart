@@ -735,11 +735,42 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
       icon: const Icon(Icons.chat_bubble_outline),
       label: Text(l10n.getString('chatButton')),
     );
-    final shareButton = OutlinedButton.icon(
-      onPressed: enabled ? () => _handleLocationShare(context, ref) : null,
-      icon: const Icon(Icons.share_location),
-      label: Text(l10n.getString('locationShareStart')),
-    );
+    // Reflect the live location-share state on the button itself: mutual and
+    // incoming shares become filled "enter the map" buttons; an outgoing-only
+    // share keeps the outlined style but shows that sharing is in progress.
+    final session = ref.watch(locationShareProvider);
+    final activeSession =
+        session != null && session.matchId == widget.matchId ? session : null;
+    final iAmSharing = activeSession?.myStatus == ShareStatus.sharing;
+    final otherIsSharing = activeSession?.otherStatus == ShareStatus.sharing;
+    final isMutual = iAmSharing && otherIsSharing;
+
+    final Widget shareButton;
+    if (isMutual) {
+      shareButton = FilledButton.icon(
+        onPressed: enabled ? () => _handleLocationShare(context, ref) : null,
+        icon: const Icon(Icons.people),
+        label: Text(l10n.getString('locationShareButtonMutualActive')),
+      );
+    } else if (otherIsSharing) {
+      shareButton = FilledButton.icon(
+        onPressed: enabled ? () => _handleLocationShare(context, ref) : null,
+        icon: const Icon(Icons.location_on),
+        label: Text(l10n.getString('locationShareView')),
+      );
+    } else if (iAmSharing) {
+      shareButton = OutlinedButton.icon(
+        onPressed: enabled ? () => _handleLocationShare(context, ref) : null,
+        icon: const Icon(Icons.share_location),
+        label: Text(l10n.getString('locationShareButtonSharing')),
+      );
+    } else {
+      shareButton = OutlinedButton.icon(
+        onPressed: enabled ? () => _handleLocationShare(context, ref) : null,
+        icon: const Icon(Icons.share_location),
+        label: Text(l10n.getString('locationShareStart')),
+      );
+    }
 
     return LayoutBuilder(
       builder: (context, constraints) {

@@ -258,16 +258,19 @@ class StorageHelper {
   }
 
   /// Perform the DB cleanup: fetch the user's current photos array, remove
-  /// the missing path, and write back to Supabase.
+  /// the missing path, and write back to Supabase. Photos live on
+  /// `user_profiles` (the `users.photos` column was dropped by the
+  /// 2026-07-10 migration — updating it silently failed, so stale
+  /// references were never healed).
   static Future<void> _removeMissingPhotoFromDb(
     String objectPath,
     String userId,
   ) async {
     try {
       final response = await _client
-          .from('users')
+          .from('user_profiles')
           .select('photos')
-          .eq('id', userId)
+          .eq('user_id', userId)
           .single();
       final raw = response['photos'];
       if (raw == null) return;
@@ -280,7 +283,10 @@ class StorageHelper {
       if (!photos.contains(objectPath)) return;
       final cleaned = List<String>.from(photos)..remove(objectPath);
       if (cleaned.length == photos.length) return;
-      await _client.from('users').update({'photos': cleaned}).eq('id', userId);
+      await _client
+          .from('user_profiles')
+          .update({'photos': cleaned})
+          .eq('user_id', userId);
       // Evict local caches so SignedImage doesn't re-request the same object
       _cache.remove(objectPath);
       _missingUntil.remove(_missingKey(objectPath, bucket: _bucket));
@@ -451,11 +457,17 @@ class StorageHelper {
     String url, {
     Map<String, String>? headers,
     String? cacheKey,
+    String? objectPath,
   }) {
     if (url.trim().isEmpty) return Future<Uint8List?>.value();
     final pending = _imageFetches[url];
     if (pending != null) return pending;
-    final future = _fetchImageBytesImpl(url, headers: headers, cacheKey: cacheKey);
+    final future = _fetchImageBytesImpl(
+      url,
+      headers: headers,
+      cacheKey: cacheKey,
+      objectPath: objectPath,
+    );
     _imageFetches[url] = future;
     return future.whenComplete(() => _imageFetches.remove(url));
   }
@@ -464,12 +476,25 @@ class StorageHelper {
     String url, {
     Map<String, String>? headers,
     String? cacheKey,
+    String? objectPath,
   }) async {
     try {
       final response = await http
           .get(Uri.parse(url), headers: headers)
           .timeout(const Duration(seconds: 20));
       if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
+        // A 404 from an *authorized* request (signed URL token or bearer
+        // header) proves the object is gone — remember it so the renderer
+        // stops showing a broken-image tile and the auto-heal can drop the
+        // stale reference. A 404 from an unauthenticated public URL means
+        // nothing for a private bucket, so it must never mark the object
+        // missing.
+        if (response.statusCode == 404 &&
+            objectPath != null &&
+            objectPath.isNotEmpty &&
+            _isAuthorizedImageRequest(url, headers)) {
+          _markMissing(objectPath);
+        }
         return null;
       }
       final bytes = Uint8List.fromList(response.bodyBytes);
@@ -479,6 +504,21 @@ class StorageHelper {
       return bytes;
     } catch (_) {
       return null;
+    }
+  }
+
+  /// Whether the request that fetched [url] carried credentials (signed-URL
+  /// token or Authorization header), i.e. a 404 response is authoritative.
+  static bool _isAuthorizedImageRequest(String url, Map<String, String>? headers) {
+    if (headers != null) {
+      for (final key in headers.keys) {
+        if (key.toLowerCase() == 'authorization') return true;
+      }
+    }
+    try {
+      return Uri.parse(url).queryParameters.containsKey('token');
+    } catch (_) {
+      return false;
     }
   }
 
@@ -502,6 +542,7 @@ class StorageHelper {
         request.url,
         headers: request.headers,
         cacheKey: cacheKey.isNotEmpty ? cacheKey : request.url,
+        objectPath: urlOrObjectPath,
       );
     } catch (_) {}
   }

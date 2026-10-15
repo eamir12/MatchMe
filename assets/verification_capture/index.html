@@ -48,7 +48,7 @@
     #detailHeader { display: flex; align-items: center; gap: 10px; }
     #detailText { min-width: 0; flex: 1 1 auto; }
     #gestureDescription { font-size: 0.84rem; line-height: 1.25; color: rgba(255, 255, 255, 0.9); }
-    #checklist { margin-top: 8px; width: 100%; display: flex; flex-wrap: nowrap; justify-content: flex-start; align-items: center; gap: 6px 12px; }
+    #checklist { margin-top: 8px; width: 100%; display: flex; flex-wrap: wrap; justify-content: flex-start; align-items: center; gap: 6px 12px; }
     .checkItem { display: inline-flex; align-items: center; justify-content: flex-start; gap: 7px; color: rgba(255, 255, 255, 0.72); font-size: 0.8rem; line-height: 1.15; white-space: nowrap; flex: 0 0 auto; }
     .checkDot { width: 16px; height: 16px; border-radius: 999px; border: 1.5px solid rgba(255, 255, 255, 0.38); display: flex; align-items: center; justify-content: center; font-size: 10px; color: transparent; flex: 0 0 auto; }
     .checkItem.complete { color: #fff; }
@@ -104,6 +104,7 @@
             <div class="checkItem" id="checkFace"><span class="checkDot">✓</span><span id="checkFaceLabel"></span></div>
             <div class="checkItem" id="checkHand"><span class="checkDot">✓</span><span id="checkHandLabel"></span></div>
             <div class="checkItem" id="checkGesture"><span class="checkDot">✓</span><span id="checkGestureLabel"></span></div>
+            <div class="checkItem" id="checkLight"><span class="checkDot">✓</span><span id="checkLightLabel"></span></div>
           </div>
           <div id="status"></div>
           <div id="progressWrap"><div id="progressBar"></div></div>
@@ -169,6 +170,11 @@
   // Minimum page-open time before a primary selfie may auto-capture, so the
   // spoken instructions always finish first even if TTS signalling is lost.
   var FACE_ONLY_MIN_OPEN_MS = 4500;
+  // Live lighting gate: mean luma (0..255) of the detected face box must
+  // reach this before any readiness gate counts a frame. 51 = 0.20 x 255
+  // matches the face-region darkness rule in photo_prescreen_service.dart so
+  // live gating and the post-capture prescreen agree on "too dark".
+  var FACE_LUMA_MIN = 51;
   var FACE_STALE_MS = 900;
   var FACE_STALE_MS_SLOW = 1800;
   var MAX_CAPTURE_ATTEMPTS = 12;
@@ -320,13 +326,23 @@
   var checkFaceLabelEl = document.getElementById('checkFaceLabel');
   var checkHandLabelEl = document.getElementById('checkHandLabel');
   var checkGestureLabelEl = document.getElementById('checkGestureLabel');
+  var checkLightEl = document.getElementById('checkLight');
+  var checkLightLabelEl = document.getElementById('checkLightLabel');
+  // Emoji sets disagree about handedness: Apple (iOS/macOS) and Microsoft
+  // (Segoe, Windows) draw hands as RIGHT hands, while Google's Noto
+  // (Android, Linux, ChromeOS) draws them as LEFT hands. Mirror the side
+  // that is not the platform default so the example matches the requested
+  // hand on every platform.
+  var emojiDefaultHandIsLeft = /Android|CrOS|Linux/i.test(navigator.userAgent || '');
   if (gestureExampleEmojiEl) {
     gestureExampleEmojiEl.textContent = gestureSymbols[gestureParam] || '🖐️';
-    // Hand emoji default to right hands; mirror for left-hand gestures so
-    // the icon shows the hand the user must actually use.
+    // Mirror the opposite of the platform default so the icon shows the
+    // hand the user must actually use.
     gestureExampleEmojiEl.classList.toggle(
       'mirror-x',
-      typeof gestureParam === 'string' && gestureParam.indexOf('_LEFT_HAND') !== -1,
+      typeof gestureParam === 'string' && (emojiDefaultHandIsLeft
+        ? gestureParam.indexOf('_RIGHT_HAND') !== -1
+        : gestureParam.indexOf('_LEFT_HAND') !== -1),
     );
   }
   var gestureExampleHandEl = document.getElementById('gestureExampleHand');
@@ -367,6 +383,8 @@
   }
   var usingInputImage = !!(inputImageBase64 && inputImageBase64.trim().length > 0);
   var strings = (window.__CAPTURE_STRINGS__ && typeof window.__CAPTURE_STRINGS__ === 'object') ? window.__CAPTURE_STRINGS__ : {};
+  var smoothedFaceLuma = null;
+  var lumaSampleCanvas = null;
   var scoreWindow = [];
   var readySince = null;
   var captureSelectionStartedAt = null;
@@ -531,9 +549,6 @@
       statusEl.textContent = usingInputImage
         ? t('verificationCaptureStatusGestureDetected', 'Gesture detected. Tap to continue')
         : t('verificationCaptureStatusGestureDetected', 'Ready! Tap to capture');
-      // This status is written straight to the element, so voice it here —
-      // the ready line is shown, therefore spoken.
-      try { emitVoiceStatus(statusEl.textContent); } catch (_) {}
     } else {
       feedback.classList.remove('ready');
       captureBtn.classList.remove('ready');
@@ -560,20 +575,12 @@
   // Voice guidance bridge: when the on-screen status maps to one of the
   // whitelisted coaching keys, emit a 'voice' event so the host app can speak
   // it in the user's language. Uses a reverse lookup from the localized text
-  // back to its key so status call sites don't need to change. Suppressed for
-  // repeats and rapid transitions; composed strings (e.g. status + countdown)
-  // intentionally don't match — their base status is already voiced.
-  var voiceStatusKeys = {
-    'verificationCaptureLoading': 1,
-    'verificationCaptureStatusShowGesture': 1,
-    'verificationCaptureStatusShowFace': 1,
-    'verificationCaptureStatusAlignFace': 1,
-    'verificationCaptureStatusPositionHand': 1,
-    'verificationCaptureStatusHoldSteady': 1,
-    'verificationCaptureStatusCapturingBestFrame': 1,
-    'verificationCaptureStatusGestureDetected': 1,
-    'verificationCaptureStatusUseCorrectHand': 1
-  };
+  // back to its key so status call sites don't need to change.
+  // NOTE: deliberately EMPTY. Progress indicators (face visible, hand in
+  // position, gesture recognized, hold steady, capturing, ready, …) are
+  // shown but never spoken. The only spoken capture-page feedback left is
+  // the wrong-hand correction, emitted directly from announceWrongHand.
+  var voiceStatusKeys = {};
   var statusKeyByText = {};
   (function() {
     try {
@@ -636,10 +643,28 @@
     } catch (_) {}
   }
 
-  function setChecklistState(faceReady, handReady, gestureReady) {
+  // Low-light correction: shown AND spoken like the wrong-hand message. The
+  // voiceStatusKeys whitelist is deliberately empty for progress lines, but
+  // corrective blockers are the exception (announceWrongHand emits directly
+  // too). Rate-limited so a dark scene can't chatter the speech queue.
+  function announceTooDark() {
+    try {
+      setStatus(t('verificationCaptureStatusTooDark', 'It\u2019s too dark here \u2014 move to a brighter spot'));
+      var key = 'verificationCaptureStatusTooDark';
+      var now = Date.now();
+      if (now - lastVoiceStatusTs < 2000) return;
+      if (voiceKeyLastTs[key] && now - voiceKeyLastTs[key] < 8000) return;
+      lastVoiceStatusTs = now;
+      voiceKeyLastTs[key] = now;
+      reportLog('voice', { key: key }, true);
+    } catch (_) {}
+  }
+
+  function setChecklistState(faceReady, handReady, gestureReady, lightReady) {
     if (checkFaceEl) checkFaceEl.classList.toggle('complete', !!faceReady);
     if (checkHandEl) checkHandEl.classList.toggle('complete', !!handReady);
     if (checkGestureEl) checkGestureEl.classList.toggle('complete', !!gestureReady);
+    if (checkLightEl) checkLightEl.classList.toggle('complete', !!lightReady);
   }
 
   function clamp(v, min, max) {
@@ -652,7 +677,15 @@
   }
 
   if (gestureDescriptionEl) {
-    gestureDescriptionEl.textContent = gestureDescription || t('verificationCaptureStatusPositionHand', 'Place your hand in the gesture area and show the gesture');
+    if (isFaceOnlyMode) {
+      // Primary selfie: the hand/gesture description does not apply, so it is
+      // never used as a fallback — show nothing rather than an instruction
+      // about hands, and keep the element out of the layout when empty.
+      gestureDescriptionEl.textContent = gestureDescription || '';
+      if (!gestureDescription) gestureDescriptionEl.classList.add('hidden');
+    } else {
+      gestureDescriptionEl.textContent = gestureDescription || t('verificationCaptureStatusPositionHand', 'Place your hand in the gesture area and show the gesture');
+    }
   }
   if (checkFaceLabelEl) {
     checkFaceLabelEl.textContent = t('verificationCaptureChecklistFaceVisible', 'Face visible');
@@ -663,17 +696,12 @@
   if (checkGestureLabelEl) {
     checkGestureLabelEl.textContent = t('verificationCaptureChecklistGestureRecognized', 'Gesture recognized');
   }
+  if (checkLightLabelEl) {
+    checkLightLabelEl.textContent = t('verificationCaptureChecklistLighting', 'Good lighting');
+  }
   setChecklistState(false, false, false);
   setInstruction(gestureLabel);
   setStatus(t('verificationCaptureLoading', 'Loading camera & gesture recognition...'));
-  // Accessibility: the three checklist labels are shown on this page, so
-  // they are read out too (once per page load — spoken after the current
-  // utterance by the host, i.e. after Flutter's gesture instruction).
-  announcePageText([
-    t('verificationCaptureChecklistFaceVisible', 'Face visible'),
-    t('verificationCaptureChecklistHandPositioned', 'Hand in position'),
-    t('verificationCaptureChecklistGestureRecognized', 'Gesture recognized'),
-  ].join('. '));
 
   function canonicalGestureName(name) {
     if (!name) return '';
@@ -1202,6 +1230,60 @@
     }
   }
 
+  // Samples the raw face-box region of the current frame and returns its
+  // mean luma (0..255), or null when no sample can be taken. Uses raw
+  // detector space (video-intrinsic pixels, before the mirror/cover display
+  // mapping) so the sampled region is where the face actually is in the
+  // sensor frame. During static input-image analysis the bitmap held by
+  // <canvas> is sampled instead of the camera.
+  function sampleFaceBoxLuma(faceLandmarks) {
+    try {
+      if (!faceLandmarks || !faceLandmarks.length) return null;
+      var minX = 1, minY = 1, maxX = 0, maxY = 0;
+      for (var i = 0; i < faceLandmarks.length; i++) {
+        var p = faceLandmarks[i];
+        if (!p) continue;
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+      }
+      if (maxX <= minX || maxY <= minY) return null;
+      var src = null, srcW = 0, srcH = 0;
+      if (video && video.readyState >= 2 && video.videoWidth) {
+        src = video;
+        srcW = video.videoWidth;
+        srcH = video.videoHeight;
+      } else if (usingInputImage && canvas && canvas.width) {
+        src = canvas;
+        srcW = canvas.width;
+        srcH = canvas.height;
+      }
+      if (!src || !srcW || !srcH) return null;
+      // 10% pad keeps a stray landmark from shrinking the sample region.
+      var padX = (maxX - minX) * 0.1;
+      var padY = (maxY - minY) * 0.1;
+      var sx = Math.max(0, minX - padX) * srcW;
+      var sy = Math.max(0, minY - padY) * srcH;
+      var sw = Math.min(1, maxX + padX) * srcW - sx;
+      var sh = Math.min(1, maxY + padY) * srcH - sy;
+      if (!(sw >= 4) || !(sh >= 4)) return null;
+      if (!lumaSampleCanvas) lumaSampleCanvas = document.createElement('canvas');
+      lumaSampleCanvas.width = 32;
+      lumaSampleCanvas.height = 32;
+      var lc = lumaSampleCanvas.getContext('2d', { willReadFrequently: true });
+      lc.drawImage(src, sx, sy, sw, sh, 0, 0, 32, 32);
+      var data = lc.getImageData(0, 0, 32, 32).data;
+      var sum = 0;
+      for (var j = 0; j < data.length; j += 4) {
+        sum += 0.299 * data[j] + 0.587 * data[j + 1] + 0.114 * data[j + 2];
+      }
+      return sum / (data.length / 4);
+    } catch (_) {
+      return null;
+    }
+  }
+
   function computeFaceQuality(faceLandmarks) {
     var box = getFaceBox(faceLandmarks);
     if (!box) return { score: 0, centered: 0, sizeScore: 0, stability: 0, box: null };
@@ -1417,6 +1499,27 @@
     var faceObstructed = facePresent && handLandmarks && isFaceObstructed(faceLandmarks, handLandmarks);
     var faceOk = fullFaceVisible && !faceObstructed;
     var faceQuality = facePresent ? computeFaceQuality(faceLandmarks) : { score: 0, box: null };
+    // Live lighting gate: mean luma of the face box, temporally smoothed so
+    // exposure flicker cannot flap the gate. Fail-open on sampling errors —
+    // without a measurement the gate stays permissive and the post-capture
+    // prescreen still enforces darkness rules; this gate only blocks when
+    // darkness is actually measured. No face box => unknown => not lit.
+    var faceLitOk = false;
+    if (facePresent && faceQuality.box) {
+      var lumaNow = sampleFaceBoxLuma(faceLandmarks);
+      if (lumaNow != null) {
+        smoothedFaceLuma = (smoothedFaceLuma == null)
+          ? lumaNow
+          : smoothedFaceLuma * 0.7 + lumaNow * 0.3;
+        faceLitOk = smoothedFaceLuma >= FACE_LUMA_MIN;
+      } else {
+        smoothedFaceLuma = null;
+        faceLitOk = true;
+      }
+    } else {
+      smoothedFaceLuma = null;
+    }
+    var faceLuma = smoothedFaceLuma;
     var roiScores = computeRoiScores(faceQuality, handCenter);
     // "Inside the green circle": the face-box center must be close to the
     // oval center (not merely visible somewhere in the frame). The green
@@ -1483,6 +1586,8 @@
       faceInsideOval: faceInsideOval,
       facePresent: facePresent,
       faceObstructed: faceObstructed,
+      faceLitOk: faceLitOk,
+      faceLuma: faceLuma,
       matchesGesture: matchesGesture,
       matchesHand: matchesHand,
       matchesHandStrict: matchesHandStrict,
@@ -1606,17 +1711,24 @@
         var holdProgress = Math.min(stableFrames / stableFramesNeed, (now - readySince) / stableMsNeed);
         progressValue = Math.max(progressValue, clamp(holdProgress, 0, 1));
       }
+      // A measured-dark face shows no capture progress at all: the bar must
+      // never advance while the lighting gate is failing.
+      if (e.facePresent && !e.faceLitOk) progressValue = 0;
       setProgress(progressValue);
       var visualHandReady = e.handPlacementOk || e.gestureStrong;
-      setChecklistState(e.faceOk, visualHandReady, e.gestureChecklistReady);
+      setChecklistState(e.faceOk, visualHandReady, e.gestureChecklistReady, e.faceLitOk);
       // The green oval lights up only while the face is inside it in
-      // primary-selfie mode (not merely visible somewhere in the frame).
+      // primary-selfie mode (not merely visible somewhere in the frame) and
+      // the lighting gate passes.
       var faceRoiActive = isFaceOnlyMode ? (e.faceOk && e.faceInsideOval) : e.faceOk;
+      faceRoiActive = faceRoiActive && e.faceLitOk;
       setRoiState(faceRoiActive, visualHandReady);
 
       // Primary selfies additionally require the face inside the oval; a
       // face at the frame edge can satisfy faceOk but must never capture.
+      // Every mode additionally requires the lighting gate.
       var faceGateOk = isFaceOnlyMode ? (e.faceOk && e.faceInsideOval) : e.faceOk;
+      faceGateOk = faceGateOk && e.faceLitOk;
       var passNow = faceGateOk && visualHandReady && e.gestureChecklistReady;
       // Hysteresis: the smoothed window can carry a single marginal frame so
       // one jittery detection doesn't reset the whole hold-still progress.
@@ -1686,7 +1798,18 @@
         setStatus(t('verificationCaptureStatusHoldSteady', 'Great, hold steady...') + ' ' + countdown);
       }
 
-      if (!ready) {
+      // Live lighting gate: the face is found but the scene is too dark —
+      // refuse immediately. The ready state (and its enabled capture button)
+      // drops on the first measured-dark frame instead of waiting for the
+      // stability window to decay, and the reason is shown AND spoken like
+      // the wrong-hand correction.
+      if (e.facePresent && !e.faceLitOk) {
+        if (ready) {
+          ready = false;
+          setReady(false);
+        }
+        announceTooDark();
+      } else if (!ready) {
         if (isFaceOnlyMode) {
           // Primary selfie guidance: face framing only, no hand prompts.
           // A visible face that is NOT inside the oval must keep hearing

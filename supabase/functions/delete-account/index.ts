@@ -1,6 +1,6 @@
 // supabase/functions/delete-account/index.ts
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
 
 // Helper function to decode JWT token and extract user ID
@@ -45,7 +45,7 @@ const USER_STORAGE_BUCKETS = [
 
 // Recursively delete everything under `folder` (e.g. "{userId}") in a bucket
 async function deleteFolderContents(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient<any, "public", "public", any, any>,
   bucketName: string,
   folder: string,
 ) {
@@ -85,7 +85,7 @@ async function deleteFolderContents(
   return deleted;
 }
 
-async function deleteAllUserStorage(supabase: ReturnType<typeof createClient>, userId: string) {
+async function deleteAllUserStorage(supabase: SupabaseClient<any, "public", "public", any, any>, userId: string) {
   let deleted = 0;
   for (const bucket of USER_STORAGE_BUCKETS) {
     try {
@@ -98,12 +98,12 @@ async function deleteAllUserStorage(supabase: ReturnType<typeof createClient>, u
 }
 
 async function userHasVerifiedMfaFactor(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient<any, "public", "public", any, any>,
   userId: string,
   fallbackUser: unknown,
 ) {
   try {
-    const adminMfa = (supabase.auth.admin as Record<string, unknown>)['mfa'] as Record<string, unknown> | undefined;
+    const adminMfa = (supabase.auth.admin as unknown as Record<string, unknown>)['mfa'] as Record<string, unknown> | undefined;
     const listFactors = adminMfa?.['listFactors'];
     if (typeof listFactors === 'function') {
       const response = await listFactors({ userId });

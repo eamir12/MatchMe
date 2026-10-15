@@ -4,6 +4,7 @@ import { createClient } from 'supabase';
 import { RRule } from 'rrule-deno';
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
 import { bidiIsolate, enforceTitleBody, firstTokenName } from "../_shared/notification_limits.ts";
+import { handleHealthSampler } from "./health_sampler.ts";
 
 // Initialize Supabase Admin Client
 const supabase = createClient(
@@ -174,7 +175,7 @@ async function getFcmAccessToken(serviceAccount: ServiceAccount): Promise<string
   const keyBytes = pemToDerBytes(serviceAccount.private_key);
   const cryptoKey = await crypto.subtle.importKey(
     'pkcs8',
-    keyBytes.buffer,
+    keyBytes.slice(),
     { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
     false,
     ['sign'],
@@ -243,7 +244,7 @@ async function getGoogleAccessToken({
   const keyBytes = pemToDerBytes(serviceAccount.private_key);
   const cryptoKey = await crypto.subtle.importKey(
     'pkcs8',
-    keyBytes.buffer,
+    keyBytes.slice(),
     { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
     false,
     ['sign'],
@@ -996,7 +997,7 @@ async function cleanupExpiredMatches() {
     const deletedCount = typeof data === 'number' ? data : Number(data ?? 0);
     console.log(`Expired Match Cleanup completed successfully. Deleted: ${deletedCount}`);
   } catch (error) {
-    console.error('Error during Expired Match Cleanup:', error.message);
+    console.error('Error during Expired Match Cleanup:', error instanceof Error ? error.message : String(error));
     throw error;
   }
 }
@@ -1018,7 +1019,7 @@ async function cleanupOldPresenceEvents() {
     const deletedCount = typeof data === 'number' ? data : Number(data ?? 0);
     console.log(`Old Presence Events Cleanup completed successfully. Deleted: ${deletedCount}`);
   } catch (error) {
-    console.error('Error during Old Presence Events Cleanup:', error.message);
+    console.error('Error during Old Presence Events Cleanup:', error instanceof Error ? error.message : String(error));
     throw error;
   }
 }
@@ -1041,7 +1042,7 @@ async function cleanupStaleOnlineUsers() {
     const updatedCount = typeof data === 'number' ? data : Number(data ?? 0);
     console.log(`Stale Online Users Cleanup completed. Users set offline: ${updatedCount}`);
   } catch (error) {
-    console.error('Error during Stale Online Users Cleanup:', error.message);
+    console.error('Error during Stale Online Users Cleanup:', error instanceof Error ? error.message : String(error));
     throw error;
   }
 }
@@ -1096,7 +1097,7 @@ async function handleInvisibilitySchedules() {
             usersToMakeInvisible.add(schedule.user_id);
         }
       } catch (rruleError) {
-        console.error(`Scheduler: Skipping bad rrule for user ${schedule.user_id}: ${schedule.rrule} - ${rruleError.message}`);
+        console.error(`Scheduler: Skipping bad rrule for user ${schedule.user_id}: ${schedule.rrule} - ${rruleError instanceof Error ? rruleError.message : String(rruleError)}`);
       }
     }
 
@@ -1114,7 +1115,7 @@ async function handleInvisibilitySchedules() {
     }
 
   } catch (error) {
-    console.error('Error during Invisibility scheduling:', error.message);
+    console.error('Error during Invisibility scheduling:', error instanceof Error ? error.message : String(error));
     throw error;
   }
 }
@@ -1134,7 +1135,7 @@ async function handleContinuousEventMatching() {
 
     console.log('Continuous Event Matching completed successfully.');
   } catch (error) {
-    console.error('Error during Continuous Event Matching:', error.message);
+    console.error('Error during Continuous Event Matching:', error instanceof Error ? error.message : String(error));
     throw error;
   }
 }
@@ -1154,7 +1155,7 @@ async function handleContinuousUserMatching() {
 
     console.log('Continuous User Matching completed successfully.');
   } catch (error) {
-    console.error('Error during Continuous User Matching:', error.message);
+    console.error('Error during Continuous User Matching:', error instanceof Error ? error.message : String(error));
     throw error;
   }
 }
@@ -1174,7 +1175,7 @@ async function handleCleanupExpiredEmailCodes(invocationId: string) {
       deletedCount,
     });
   } catch (error) {
-    console.error('Error during Email Code Cleanup:', error.message);
+    console.error('Error during Email Code Cleanup:', error instanceof Error ? error.message : String(error));
     throw error;
   }
 }
@@ -1195,7 +1196,7 @@ async function handleCleanupPendingEmailChanges(invocationId: string) {
       deletedCount,
     });
   } catch (error) {
-    console.error('Error during Pending Email Changes Cleanup:', error.message);
+    console.error('Error during Pending Email Changes Cleanup:', error instanceof Error ? error.message : String(error));
     throw error;
   }
 }
@@ -3102,7 +3103,7 @@ async function handleCleanupOrphanSponsoredAdImages(invocationId: string) {
     log(invocationId, 'Found referenced sponsored ad images', { count: referencedImages.size, sample: Array.from(referencedImages).slice(0, 5) });
 
     // List all objects in the sponsored-ad-images bucket (root level and campaigns/ subdir)
-    const allStorageObjects: Array<{ name: string; created_at?: string }> = [];
+    const allStorageObjects: Array<{ name: string; created_at?: string | null }> = [];
 
     // List root level objects
     const { data: rootObjects, error: rootListError } = await supabase
@@ -3361,9 +3362,9 @@ async function handleCleanupStaleProfilePhotoRefs(invocationId: string) {
         // Build a set of existing filenames (just the filename, not the full path)
         const existingFiles = new Set<string>();
         for (const f of (storageFiles || [])) {
-          const isFolder = (f as Record<string, unknown>).id === null;
+          const isFolder = f.id === null;
           if (!isFolder) {
-            const name = String((f as Record<string, unknown>).name ?? '');
+            const name = String(f.name ?? '');
             if (name) existingFiles.add(name);
           }
         }
@@ -3650,7 +3651,7 @@ async function runCronTask(
   }
 }
 
-serve(async (req) => {
+serve(async (req: Request) => {
   const invocationId = crypto.randomUUID();
   const startedAtMs = Date.now();
   const functionName = "cron-jobs";
@@ -3723,6 +3724,7 @@ serve(async (req) => {
       await runCronTask(invocationId, 'cleanup_old_profile_edit_requests', () => handleCleanupOldProfileEditRequests(invocationId)),
       await runCronTask(invocationId, 'process_pending_referrals', () => handleProcessPendingReferrals(invocationId)),
       await runCronTask(invocationId, 'disposable_email_domains_sync', () => handleDisposableEmailDomainsSync(invocationId)),
+      await runCronTask(invocationId, 'health_sampler', () => handleHealthSampler()),
     ];
 
     const failed = results.filter((r) => !r.ok);
@@ -3761,7 +3763,7 @@ serve(async (req) => {
     errorType = error instanceof Error ? error.name : "Error";
     errorMessage = error instanceof Error ? error.message : String(error);
     httpStatus = 500;
-    return new Response(JSON.stringify({ success: false, error: error.message }), {
+    return new Response(JSON.stringify({ success: false, error: errorMessage }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });

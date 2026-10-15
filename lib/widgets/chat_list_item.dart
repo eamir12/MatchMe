@@ -452,9 +452,19 @@ class ChatListItem extends ConsumerWidget {
                             // Unread preview stays w500 for text, but emoji
                             // runs force normal weight (bold CBDT goes
                             // transparent on Android).
+                            // `inherit: false` drops the DefaultTextStyle, so
+                            // the app font family has to be stated explicitly:
+                            // without it the emoji fallback list becomes the
+                            // preferred font and iOS resolves the space glyph
+                            // from Apple Color Emoji (very wide word gaps).
                             final base = withEmojiFallback(
                               TextStyle(
                                 inherit: false,
+                                fontFamily:
+                                    Theme.of(context)
+                                        .textTheme
+                                        .bodyMedium
+                                        ?.fontFamily,
                                 fontSize: 14,
                                 color: chat.unreadCount > 0
                                     ? Theme.of(context).colorScheme.onSurface

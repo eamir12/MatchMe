@@ -882,10 +882,11 @@ serve(async (req) => {
     );
 
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
     console.error("❌ EDGE FUNCTION: Error in compare-verification-photos function:", error);
-    console.error("🔍 EDGE FUNCTION: Error type:", error.constructor.name);
-    console.error("🔍 EDGE FUNCTION: Error message:", error.message);
-    console.error("🔍 EDGE FUNCTION: Stack trace:", error.stack);
+    console.error("🔍 EDGE FUNCTION: Error type:", err.constructor.name);
+    console.error("🔍 EDGE FUNCTION: Error message:", err.message);
+    console.error("🔍 EDGE FUNCTION: Stack trace:", err.stack);
 
     if (
       supabase &&
@@ -920,7 +921,7 @@ serve(async (req) => {
 
     const errorResponse = {
       success: false,
-      error: error.message,
+      error: error instanceof Error ? error.message : String(error),
     };
 
     console.log("🚨 EDGE FUNCTION: Returning error response:", errorResponse);
@@ -1030,7 +1031,7 @@ Return ONLY a JSON object with this exact structure (no markdown, no extra text)
     },
   };
 
-  let response: Response;
+  let response: Response | undefined;
   try {
     for (let i = 0; i < geminiUrls.length; i++) {
       response = await fetch(geminiUrls[i], {

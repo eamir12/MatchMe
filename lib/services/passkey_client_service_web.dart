@@ -9,6 +9,9 @@ import 'passkey_client_exception.dart';
 /// Raw availability for the browser. The web path has no separate platform
 /// authenticator concept, so `hasPlatformAuthenticator` mirrors support.
 Future<PasskeyDeviceAvailability> getDeviceAvailability() async {
+  if (_passkeysTemporarilyDisabledOnIos) {
+    return PasskeyDeviceAvailability.unavailable;
+  }
   if (web.window.isSecureContext != true) {
     return PasskeyDeviceAvailability.unavailable;
   }
@@ -19,6 +22,32 @@ Future<PasskeyDeviceAvailability> getDeviceAvailability() async {
     );
   } catch (_) {
     return PasskeyDeviceAvailability.unavailable;
+  }
+}
+
+/// iOS passkeys are temporarily disabled in the browser too: every browser
+/// on iOS is WebKit, and ceremonies fail there for the same reason they
+/// fail in the native app — the relying party is not associated with a
+/// domain. Until that domain setup exists, report the feature as
+/// unavailable on iOS so the UI never offers it. Re-enable by removing
+/// this gate once the AASA/origin configuration is in place.
+///
+/// Every non-Safari iOS browser still reports WebKit's UA tokens, and
+/// iPadOS 13+ masquerades as desktop macOS — hence the `maxTouchPoints`
+/// cross-check for that case.
+bool get _passkeysTemporarilyDisabledOnIos {
+  try {
+    final userAgent = web.window.navigator.userAgent;
+    if (userAgent.contains('iPhone') ||
+        userAgent.contains('iPad') ||
+        userAgent.contains('iPod')) {
+      return true;
+    }
+    // iPadOS 13+ desktop-mode: identified as "Macintosh" but still touch.
+    return userAgent.contains('Macintosh') &&
+        web.window.navigator.maxTouchPoints > 1;
+  } catch (_) {
+    return false;
   }
 }
 
@@ -35,6 +64,9 @@ external JSPromise<JSString> _authenticatorRegister(JSString options);
 external JSBoolean _hasPasskeySupport();
 
 Future<bool> isAuthenticationSupported() async {
+  if (_passkeysTemporarilyDisabledOnIos) {
+    return false;
+  }
   if (web.window.isSecureContext != true) {
     return false;
   }
@@ -47,6 +79,9 @@ Future<bool> isAuthenticationSupported() async {
 }
 
 Future<bool> isRegistrationSupported() async {
+  if (_passkeysTemporarilyDisabledOnIos) {
+    return false;
+  }
   if (web.window.isSecureContext != true) {
     return false;
   }
