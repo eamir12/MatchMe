@@ -27,6 +27,7 @@ import 'package:matchme/services/map_tile_cache_service.dart';
 import 'package:matchme/services/user_activity_service.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/utils/country_localized_names.dart';
+import 'package:matchme/utils/map_theme_utils.dart';
 import 'package:matchme/utils/unit_utils.dart';
 import 'package:matchme/utils/nearby_map_camera.dart';
 import 'package:matchme/utils/offline_utils.dart';
@@ -35,6 +36,9 @@ import 'package:matchme/widgets/app_empty_state.dart';
 import 'package:matchme/widgets/app_skeleton.dart';
 import 'package:matchme/widgets/pinned_location_sheet.dart';
 import 'package:matchme/widgets/pinned_map_status_banner.dart';
+import 'package:matchme/widgets/onboarding_section_prompt.dart';
+import 'package:matchme/screens/onboarding/onboarding_content.dart';
+import 'package:matchme/widgets/safe_text.dart';
 import 'package:permission_handler/permission_handler.dart'
     show openAppSettings;
 
@@ -131,6 +135,10 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
   ProviderSubscription<AsyncValue<bool>>? _connectivitySub;
   RealtimeChannel? _activityChannel;
   RealtimeChannel? _locationChannel;
+  RealtimeChannel? _presenceTickChannel;
+  Timer? _presenceTickDebounce;
+  Timer? _throttledRefreshTimer;
+  Timer? _visibilityFollowUpTimer;
   LatLng? _lastUserCenter;
   double? _lastDefaultRadiusKm;
   LatLng? _lastCameraCenter;
@@ -490,9 +498,50 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
             '[${_ts()}] 🗺️ NearbyMapScreen: Location channel status: $status, error: $err',
           );
         });
+
+    // The users/user_activity channels above only deliver rows this user may
+    // SELECT under RLS, so visibility toggles of the (mostly unmatched) users
+    // this map aggregates never arrive through them. presence_tick is the
+    // readable-by-all signal: DB triggers touch it on every visibility flip
+    // (and login/logout/pin change), so the map re-queries the aggregated
+    // cells RPC immediately instead of waiting for the 30s fallback poll.
+    _presenceTickChannel = Supabase.instance.client
+        .channel('nearby_map_presence_tick_$userId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'presence_tick',
+          callback: (payload) {
+            if (!mounted) return;
+            print(
+              '[${_ts()}] 🗺️ NearbyMapScreen: presence_tick received, refreshing nearby cells',
+            );
+            _presenceTickDebounce?.cancel();
+            _presenceTickDebounce = Timer(
+              const Duration(milliseconds: 500),
+              () {
+                if (!mounted) return;
+                // Bypass the throttle: a visibility flip must reach the map
+                // right away. The 350ms fetch debounce inside _scheduleFetch
+                // still coalesces tick bursts (the DB fires two ticks per
+                // manual toggle).
+                _triggerRefresh(bypassThrottle: true);
+                // A user turning visible may not have a fresh location /
+                // heartbeat yet (GPS restarts on the visible transition), so
+                // refresh once more shortly after to let them appear.
+                _scheduleVisibilityFollowUpRefresh();
+              },
+            );
+          },
+        )
+        .subscribe((status, err) {
+          print(
+            '[${_ts()}] 🗺️ NearbyMapScreen: Presence tick channel status: $status, error: $err',
+          );
+        });
   }
 
-  void _triggerRefresh() {
+  void _triggerRefresh({bool bypassThrottle = false}) {
     if (!mounted) return;
     final isOnline = ref.read(connectivityProvider).value ?? false;
     if (!isOnline) return;
@@ -500,14 +549,44 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
     final radiusKm = _lastDefaultRadiusKm;
     if (center == null || radiusKm == null) return;
     // Throttle realtime-triggered refreshes to at most once every 10 seconds
-    // to avoid flooding _fetchCells when many user_activity changes arrive
+    // to avoid flooding _fetchCells when many user_activity changes arrive.
+    // Coalesce instead of dropping: a trailing refresh is scheduled at the
+    // end of the throttle window so the map still converges to the latest
+    // server state (a plain drop would only be caught by the 30s poll).
     final now = DateTime.now();
-    if (_lastTriggerRefreshAt != null &&
+    if (!bypassThrottle &&
+        _lastTriggerRefreshAt != null &&
         now.difference(_lastTriggerRefreshAt!) < const Duration(seconds: 10)) {
+      _throttledRefreshTimer ??= Timer(
+        const Duration(seconds: 10) - now.difference(_lastTriggerRefreshAt!),
+        () {
+          _throttledRefreshTimer = null;
+          _triggerRefresh();
+        },
+      );
       return;
     }
+    _throttledRefreshTimer?.cancel();
+    _throttledRefreshTimer = null;
     _lastTriggerRefreshAt = now;
     _scheduleFetch(userCenter: center, defaultRadiusKm: radiusKm);
+  }
+
+  /// Re-queries once more a few seconds after a presence tick: a user who just
+  /// turned visible sends their first GPS fix / heartbeat a moment later, so
+  /// the immediate refresh can be too early to see them.
+  void _scheduleVisibilityFollowUpRefresh() {
+    _visibilityFollowUpTimer?.cancel();
+    _visibilityFollowUpTimer = Timer(const Duration(seconds: 3), () {
+      _visibilityFollowUpTimer = null;
+      if (!mounted) return;
+      final isOnline = ref.read(connectivityProvider).value ?? false;
+      if (!isOnline) return;
+      final center = _lastUserCenter;
+      final radiusKm = _lastDefaultRadiusKm;
+      if (center == null || radiusKm == null) return;
+      _scheduleFetch(userCenter: center, defaultRadiusKm: radiusKm);
+    });
   }
 
   @override
@@ -519,6 +598,10 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
     _connectivitySub?.close();
     _activityChannel?.unsubscribe();
     _locationChannel?.unsubscribe();
+    _presenceTickChannel?.unsubscribe();
+    _presenceTickDebounce?.cancel();
+    _throttledRefreshTimer?.cancel();
+    _visibilityFollowUpTimer?.cancel();
     // Leaving the map hands GPS back to the interval timer's one-shot mode.
     try {
       ref.read(locationServiceProvider).stopMapLiveStream();
@@ -617,7 +700,9 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
             );
             _lastAppliedCenter = center;
           } catch (error) {
-            debugPrint('[NearbyMap] Failed to refocus after radius change: $error');
+            debugPrint(
+              '[NearbyMap] Failed to refocus after radius change: $error',
+            );
           }
         }
         setState(() => _selectedCell = null);
@@ -768,8 +853,8 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
     final cellMeters = _cellMetersForRadiusKm(queryRadiusKm);
     final queryKey =
         '${queryCenter.latitude.toStringAsFixed(6)}_'
-        '${queryCenter.longitude.toStringAsFixed(6)}_'
-        '${queryRadiusKm.toStringAsFixed(6)}_$cellMeters'
+                '${queryCenter.longitude.toStringAsFixed(6)}_'
+                '${queryRadiusKm.toStringAsFixed(6)}_$cellMeters'
             .replaceAll('.', '_')
             .replaceAll('-', 'm');
     LocalDbService? localDb;
@@ -781,9 +866,7 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
       debugPrint('Nearby map cache read failed: $error');
     }
 
-    List<NearbyMapCell> decodeCells(
-      List<Map<String, dynamic>> rows,
-    ) {
+    List<NearbyMapCell> decodeCells(List<Map<String, dynamic>> rows) {
       final parsed = <NearbyMapCell>[];
       for (final row in rows) {
         final lat = (row['cell_center_lat'] as num?)?.toDouble();
@@ -1237,9 +1320,7 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                             ),
                             style: Theme.of(context).textTheme.bodySmall
                                 ?.copyWith(
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.primary,
+                                  color: Theme.of(context).colorScheme.primary,
                                   fontWeight: FontWeight.w500,
                                 ),
                             maxLines: 2,
@@ -1263,12 +1344,10 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                       showMapShortcut: false,
                     ),
                     icon: const Icon(Icons.push_pin_outlined, size: 18),
-                    label: Text(
+                    label: ShrinkText(
                       pin.isActive
                           ? pinnedLocationText
                           : l10n.getString('homeNearbyMapPinAction'),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
                     ),
                     style: TextButton.styleFrom(
                       alignment: AlignmentDirectional.centerStart,
@@ -1300,312 +1379,346 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                     ),
                   ],
                 )
-              : Stack(
+              : Column(
                   children: [
-                    if (pin.isActive)
-                      Positioned(
-                        top: 12,
-                        left: 12,
-                        right: 150,
-                        child: PinnedMapStatusBanner(pin: pin, l10n: l10n),
-                      ),
-                    LayoutBuilder(
-                      builder: (context, constraints) {
-                        final viewportSize = constraints.biggest;
-                        return FlutterMap(
-                      mapController: _mapController,
-                      options: MapOptions(
-                        crs: _noWrap3857Crs,
-                        initialCenter: userLatLng,
-                        initialZoom: _zoomForRadiusKm(
-                          defaultRadiusKm,
-                          userLatLng,
-                          viewportSize,
-                        ),
-                        minZoom: 1,
-                        maxZoom: nearbyMapMaxZoom,
-                        cameraConstraint: CameraConstraint.contain(
-                          bounds: _worldBounds,
-                        ),
-                        interactionOptions: _interaction,
-                        onPositionChanged: (camera, hasGesture) {
-                          _cameraZoom.value = camera.zoom;
-                          _cameraCenter.value = camera.center;
-                          if (!hasGesture) return;
-                          // User panned: pause camera-follow so realtime
-                          // fixes don't snap the view back mid-gesture.
-                          _stopFollowAnimation();
-                          _lastUserPanAt = DateTime.now();
-                          // Only refetch when the center position changes significantly (panning), not when just zooming
-                          // This prevents markers from disappearing/reappearing when zooming
-                          final currentCenter = camera.center;
-                          final lastCenter = _lastCameraCenter;
-                          if (lastCenter != null) {
-                            final distance = _distance(
-                              lastCenter,
-                              currentCenter,
-                            );
-                            // Only refetch if panned more than 100 meters
-                            if (distance < 100) return;
-                          }
-                          _lastCameraCenter = currentCenter;
-                          _scheduleFetch(
-                            userCenter: userLatLng,
-                            defaultRadiusKm: defaultRadiusKm,
-                          );
-                        },
-                        onMapReady: () {
-                          _mapReady = true;
-                          // onPositionChanged never fires for the initial
-                          // camera, so seed the scale bar listeners here.
-                          final camera = _mapController.camera;
-                          _cameraZoom.value = camera.zoom;
-                          _cameraCenter.value = camera.center;
-                          // Apply any center that arrived before the map was
-                          // ready (first cached fix racing map creation).
-                          final pending = _lastAppliedCenter;
-                          if (pending != null) {
-                            try {
-                              _mapController.move(pending, _cameraZoom.value);
-                            } catch (_) {}
-                          }
-                          _scheduleFetch(
-                            userCenter: userLatLng,
-                            defaultRadiusKm: defaultRadiusKm,
-                          );
-                        },
-                        onTap: (tapPosition, point) {
-                          if (_selectedCell == null) return;
-                          setState(() {
-                            _selectedCell = null;
-                          });
-                        },
-                      ),
-                      children: [
-                        // Always mounted: cached tiles paint instantly even
-                        // when connectivity flutters, and stay available
-                        // offline. Missing tiles fail gracefully per-tile.
-                        TileLayer(
-                          urlTemplate:
-                              'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                          userAgentPackageName: 'matchme.app',
-                          tileProvider: CachedMapTileProvider(),
-                          tileBounds: _worldBounds,
-                          maxNativeZoom: 19,
-                        ),
-                        RichAttributionWidget(
-                          attributions: [
-                            TextSourceAttribution('OpenStreetMap contributors'),
-                          ],
-                        ),
-                        AnimatedBuilder(
-                          animation: _pulseAnimation,
-                          builder: (context, _) {
-                            final t = _pulseAnimation.value;
-                            final fullRadius = defaultRadiusKm * 1000.0;
-                            return CircleLayer(
-                              circles: [
-                                // Static faint fill at full radius
-                                CircleMarker(
-                                  point: userLatLng,
-                                  radius: fullRadius,
-                                  useRadiusInMeter: true,
-                                  color: Colors.blueAccent.withValues(
-                                    alpha: 0.08,
-                                  ),
-                                  borderColor: Colors.blueAccent.withValues(
-                                    alpha: 0.25,
-                                  ),
-                                  borderStrokeWidth: 1.5,
-                                ),
-                                // Expanding ring from center to full radius
-                                CircleMarker(
-                                  point: userLatLng,
-                                  radius: fullRadius * t,
-                                  useRadiusInMeter: true,
-                                  color: Colors.blueAccent.withValues(
-                                    alpha: 0.12 * (1.0 - t),
-                                  ),
-                                  borderColor: Colors.blueAccent.withValues(
-                                    alpha: 0.5 * (1.0 - t),
-                                  ),
-                                  borderStrokeWidth: 2.5 * (1.0 - t),
-                                ),
-                              ],
-                            );
-                          },
-                        ),
-                        MarkerLayer(
-                          markers: _buildCellMarkers(
-                            context,
-                            requestingUserId: userId,
-                            radiusKm: defaultRadiusKm,
-                          ),
-                        ),
-                        MarkerLayer(markers: [_buildUserMarker(userLatLng)]),
-                      ],
-                    );
-                      },
-                    ),
-                    Positioned(
-                      right: 12,
-                      bottom: 110,
-                      child: Padding(
-                        padding: const EdgeInsets.all(4),
-                        child: FloatingActionButton.small(
-                          heroTag: null,
-                          tooltip: l10n.getString('locationShareCenter'),
-                          onPressed: () {
-                            _mapController.move(
-                              userLatLng,
-                              _zoomForRadiusKm(
-                                defaultRadiusKm,
-                                userLatLng,
-                                _mapController.camera.size,
+                    OnboardingSectionPrompt(tour: kOnboardingNearbySectionTour),
+                    Expanded(
+                      child: Stack(
+                        children: [
+                          if (pin.isActive)
+                            Positioned(
+                              top: 12,
+                              left: 12,
+                              right: 150,
+                              child: PinnedMapStatusBanner(
+                                pin: pin,
+                                l10n: l10n,
                               ),
-                            );
-                            _lastUserPanAt = null;
-                            _lastAppliedCenter = userLatLng;
-                            _scheduleFetch(
-                              userCenter: userLatLng,
-                              defaultRadiusKm: defaultRadiusKm,
-                            );
-                          },
-                          child: const Icon(Icons.my_location),
-                        ),
-                      ),
-                    ),
-                    Positioned(
-                      right: 12,
-                      bottom: 12,
-                      child: _MapZoomControls(
-                        controller: _mapController,
-                        minZoom: 1,
-                        maxZoom: nearbyMapMaxZoom,
-                        l10n: l10n,
-                      ),
-                    ),
-                    if (_loading)
-                      const Positioned(
-                        top: 12,
-                        left: 12,
-                        child: SizedBox(
-                          width: 22,
-                          height: 22,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                      ),
-                    Positioned(
-                      top: 12,
-                      right: 12,
-                      child: _legend(context, l10n),
-                    ),
-                    Positioned(
-                      top: 12,
-                      left: 44,
-                      child: Material(
-                        elevation: 0,
-                        borderRadius: BorderRadius.circular(999),
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.surface.withValues(alpha: 0.92),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 8,
-                          ),
-                          child: Text(
-                            l10n.getString(
-                              'mapShowingApproxUsers',
-                              params: {
-                                'count': displayedNearbyCount.toString(),
-                              },
                             ),
-                            style: Theme.of(context).textTheme.labelMedium,
-                          ),
-                        ),
-                      ),
-                    ),
-                    if (_selectedCell != null)
-                      Positioned(
-                        bottom: 120,
-                        left: 12,
-                        right: 12,
-                        child: Material(
-                          elevation: 2,
-                          borderRadius: BorderRadius.circular(12),
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.surface.withValues(alpha: 0.95),
-                          child: Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Text(
-                                  l10n.getString(
-                                    'mapApproxUsersHere',
-                                    params: {
-                                      'count': _selectedCell!.count.toString(),
-                                    },
+                          LayoutBuilder(
+                            builder: (context, constraints) {
+                              final viewportSize = constraints.biggest;
+                              return FlutterMap(
+                                mapController: _mapController,
+                                options: MapOptions(
+                                  crs: _noWrap3857Crs,
+                                  initialCenter: userLatLng,
+                                  initialZoom: _zoomForRadiusKm(
+                                    defaultRadiusKm,
+                                    userLatLng,
+                                    viewportSize,
                                   ),
-                                  style: Theme.of(context).textTheme.titleSmall,
-                                ),
-                                TextButton(
-                                  onPressed: () {
+                                  minZoom: 1,
+                                  maxZoom: nearbyMapMaxZoom,
+                                  backgroundColor: Theme.of(
+                                    context,
+                                  ).colorScheme.surfaceContainerHighest,
+                                  cameraConstraint: CameraConstraint.contain(
+                                    bounds: _worldBounds,
+                                  ),
+                                  interactionOptions: _interaction,
+                                  onPositionChanged: (camera, hasGesture) {
+                                    _cameraZoom.value = camera.zoom;
+                                    _cameraCenter.value = camera.center;
+                                    if (!hasGesture) return;
+                                    // User panned: pause camera-follow so realtime
+                                    // fixes don't snap the view back mid-gesture.
+                                    _stopFollowAnimation();
+                                    _lastUserPanAt = DateTime.now();
+                                    // Only refetch when the center position changes significantly (panning), not when just zooming
+                                    // This prevents markers from disappearing/reappearing when zooming
+                                    final currentCenter = camera.center;
+                                    final lastCenter = _lastCameraCenter;
+                                    if (lastCenter != null) {
+                                      final distance = _distance(
+                                        lastCenter,
+                                        currentCenter,
+                                      );
+                                      // Only refetch if panned more than 100 meters
+                                      if (distance < 100) return;
+                                    }
+                                    _lastCameraCenter = currentCenter;
+                                    _scheduleFetch(
+                                      userCenter: userLatLng,
+                                      defaultRadiusKm: defaultRadiusKm,
+                                    );
+                                  },
+                                  onMapReady: () {
+                                    _mapReady = true;
+                                    // onPositionChanged never fires for the initial
+                                    // camera, so seed the scale bar listeners here.
+                                    final camera = _mapController.camera;
+                                    _cameraZoom.value = camera.zoom;
+                                    _cameraCenter.value = camera.center;
+                                    // Apply any center that arrived before the map was
+                                    // ready (first cached fix racing map creation).
+                                    final pending = _lastAppliedCenter;
+                                    if (pending != null) {
+                                      try {
+                                        _mapController.move(
+                                          pending,
+                                          _cameraZoom.value,
+                                        );
+                                      } catch (_) {}
+                                    }
+                                    _scheduleFetch(
+                                      userCenter: userLatLng,
+                                      defaultRadiusKm: defaultRadiusKm,
+                                    );
+                                  },
+                                  onTap: (tapPosition, point) {
+                                    if (_selectedCell == null) return;
                                     setState(() {
                                       _selectedCell = null;
                                     });
                                   },
-                                  child: Text(l10n.getString('generalClose')),
                                 ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    if (!isOnline)
-                      Positioned(
-                        top: 12,
-                        left: 12,
-                        right: 12,
-                        child: Material(
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.surfaceContainerHighest,
-                          borderRadius: BorderRadius.circular(8),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 8,
-                            ),
-                            child: Text(
-                              l10n.getString('generalOffline'),
-                              textAlign: TextAlign.center,
-                            ),
-                          ),
-                        ),
-                      ),
-                    Positioned(
-                      bottom: 12,
-                      left: 12,
-                      child: ValueListenableBuilder<double>(
-                        valueListenable: _cameraZoom,
-                        builder: (context, zoom, _) {
-                          return ValueListenableBuilder<LatLng?>(
-                            valueListenable: _cameraCenter,
-                            builder: (context, center, _) {
-                              return _buildScaleIndicator(
-                                context,
-                                zoom,
-                                center,
-                                userLatLng,
-                                _usesImperial,
-                                l10n,
+                                children: [
+                                  // Always mounted: cached tiles paint instantly even
+                                  // when connectivity flutters, and stay available
+                                  // offline. Missing tiles fail gracefully per-tile.
+                                  TileLayer(
+                                    urlTemplate:
+                                        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                                    userAgentPackageName: 'matchme.app',
+                                    tileProvider: CachedMapTileProvider(),
+                                    tileBounds: _worldBounds,
+                                    maxNativeZoom: 19,
+                                    tileBuilder: darkMapTileBuilderFor(
+                                      Theme.of(context).brightness,
+                                    ),
+                                  ),
+                                  RichAttributionWidget(
+                                    attributions: [
+                                      TextSourceAttribution(
+                                        'OpenStreetMap contributors',
+                                      ),
+                                    ],
+                                  ),
+                                  AnimatedBuilder(
+                                    animation: _pulseAnimation,
+                                    builder: (context, _) {
+                                      final t = _pulseAnimation.value;
+                                      final fullRadius =
+                                          defaultRadiusKm * 1000.0;
+                                      return CircleLayer(
+                                        circles: [
+                                          // Static faint fill at full radius
+                                          CircleMarker(
+                                            point: userLatLng,
+                                            radius: fullRadius,
+                                            useRadiusInMeter: true,
+                                            color: Colors.blueAccent.withValues(
+                                              alpha: 0.08,
+                                            ),
+                                            borderColor: Colors.blueAccent
+                                                .withValues(alpha: 0.25),
+                                            borderStrokeWidth: 1.5,
+                                          ),
+                                          // Expanding ring from center to full radius
+                                          CircleMarker(
+                                            point: userLatLng,
+                                            radius: fullRadius * t,
+                                            useRadiusInMeter: true,
+                                            color: Colors.blueAccent.withValues(
+                                              alpha: 0.12 * (1.0 - t),
+                                            ),
+                                            borderColor: Colors.blueAccent
+                                                .withValues(
+                                                  alpha: 0.5 * (1.0 - t),
+                                                ),
+                                            borderStrokeWidth: 2.5 * (1.0 - t),
+                                          ),
+                                        ],
+                                      );
+                                    },
+                                  ),
+                                  MarkerLayer(
+                                    markers: _buildCellMarkers(
+                                      context,
+                                      requestingUserId: userId,
+                                      radiusKm: defaultRadiusKm,
+                                    ),
+                                  ),
+                                  MarkerLayer(
+                                    markers: [_buildUserMarker(userLatLng)],
+                                  ),
+                                ],
                               );
                             },
-                          );
-                        },
+                          ),
+                          Positioned(
+                            right: 12,
+                            bottom: 110,
+                            child: Padding(
+                              padding: const EdgeInsets.all(4),
+                              child: FloatingActionButton.small(
+                                heroTag: null,
+                                tooltip: l10n.getString('locationShareCenter'),
+                                onPressed: () {
+                                  _mapController.move(
+                                    userLatLng,
+                                    _zoomForRadiusKm(
+                                      defaultRadiusKm,
+                                      userLatLng,
+                                      _mapController.camera.size,
+                                    ),
+                                  );
+                                  _lastUserPanAt = null;
+                                  _lastAppliedCenter = userLatLng;
+                                  _scheduleFetch(
+                                    userCenter: userLatLng,
+                                    defaultRadiusKm: defaultRadiusKm,
+                                  );
+                                },
+                                child: const Icon(Icons.my_location),
+                              ),
+                            ),
+                          ),
+                          Positioned(
+                            right: 12,
+                            bottom: 12,
+                            child: _MapZoomControls(
+                              controller: _mapController,
+                              minZoom: 1,
+                              maxZoom: nearbyMapMaxZoom,
+                              l10n: l10n,
+                            ),
+                          ),
+                          if (_loading)
+                            const Positioned(
+                              top: 12,
+                              left: 12,
+                              child: SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                            ),
+                          Positioned(
+                            top: 12,
+                            right: 12,
+                            child: _legend(context, l10n),
+                          ),
+                          Positioned(
+                            top: 12,
+                            left: 44,
+                            child: Material(
+                              elevation: 0,
+                              borderRadius: BorderRadius.circular(999),
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.surface.withValues(alpha: 0.92),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 8,
+                                ),
+                                child: Text(
+                                  l10n.getString(
+                                    'mapShowingApproxUsers',
+                                    params: {
+                                      'count': displayedNearbyCount.toString(),
+                                    },
+                                  ),
+                                  style: Theme.of(
+                                    context,
+                                  ).textTheme.labelMedium,
+                                ),
+                              ),
+                            ),
+                          ),
+                          if (_selectedCell != null)
+                            Positioned(
+                              bottom: 120,
+                              left: 12,
+                              right: 12,
+                              child: Material(
+                                elevation: 2,
+                                borderRadius: BorderRadius.circular(12),
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.surface.withValues(alpha: 0.95),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(12),
+                                  child: Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text(
+                                        l10n.getString(
+                                          'mapApproxUsersHere',
+                                          params: {
+                                            'count': _selectedCell!.count
+                                                .toString(),
+                                          },
+                                        ),
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.titleSmall,
+                                      ),
+                                      TextButton(
+                                        onPressed: () {
+                                          setState(() {
+                                            _selectedCell = null;
+                                          });
+                                        },
+                                        child: Text(
+                                          l10n.getString('generalClose'),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          if (!isOnline)
+                            Positioned(
+                              top: 12,
+                              left: 12,
+                              right: 12,
+                              child: Material(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.surfaceContainerHighest,
+                                borderRadius: BorderRadius.circular(8),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 8,
+                                  ),
+                                  child: Text(
+                                    l10n.getString('generalOffline'),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          Positioned(
+                            bottom: 12,
+                            left: 12,
+                            child: ValueListenableBuilder<double>(
+                              valueListenable: _cameraZoom,
+                              builder: (context, zoom, _) {
+                                return ValueListenableBuilder<LatLng?>(
+                                  valueListenable: _cameraCenter,
+                                  builder: (context, center, _) {
+                                    return _buildScaleIndicator(
+                                      context,
+                                      zoom,
+                                      center,
+                                      userLatLng,
+                                      _usesImperial,
+                                      l10n,
+                                    );
+                                  },
+                                );
+                              },
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
@@ -1644,7 +1757,6 @@ class OnlineWorldMapScreen extends ConsumerStatefulWidget {
 
 class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
     with WidgetsBindingObserver {
-  static const Color _mapBackgroundColor = Color(0xFFD4EBF4);
   static final LatLngBounds _worldBounds = LatLngBounds(
     const LatLng(-85, -180),
     const LatLng(85, 180),
@@ -1761,10 +1873,13 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
               return;
             }
             _presenceTickDebounce?.cancel();
-            _presenceTickDebounce = Timer(const Duration(milliseconds: 500), () {
-              if (!mounted || _loading) return;
-              unawaited(_refresh());
-            });
+            _presenceTickDebounce = Timer(
+              const Duration(milliseconds: 500),
+              () {
+                if (!mounted || _loading) return;
+                unawaited(_refresh());
+              },
+            );
           },
         )
         .subscribe((status, err) {
@@ -2163,8 +2278,7 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
 
       print('[${_ts()}] 🗺️ OnlineWorldMapScreen: _refresh() - RPC completed');
 
-      final statsMap =
-          (rpcResult as Map?)?.cast<String, dynamic>() ?? const {};
+      final statsMap = (rpcResult as Map?)?.cast<String, dynamic>() ?? const {};
       final list =
           (statsMap['countries'] as List<dynamic>?) ?? const <dynamic>[];
       final parsed = <_CountryCount>[];
@@ -2186,8 +2300,7 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
           statsMap['self_is_complete'] == true;
       String? myCountry;
       if (userId != null) {
-        myCountry =
-            (statsMap['self_country'] as String?)?.trim();
+        myCountry = (statsMap['self_country'] as String?)?.trim();
         if (myCountry != null && myCountry.isEmpty) myCountry = null;
         if (selfCountsOnline && myCountry != null && myCountry.isNotEmpty) {
           final idx = parsed.indexWhere((e) => e.countryCode == myCountry);
@@ -3086,10 +3199,12 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
       error: (_, e) => null,
     );
 
+    final mapBackground = Theme.of(context).colorScheme.surfaceContainerHighest;
+
     return Scaffold(
-      backgroundColor: _mapBackgroundColor,
+      backgroundColor: mapBackground,
       appBar: AppBar(
-        title: Text(l10n.getString('homeOnline')),
+        title: ShrinkText(l10n.getString('homeOnline')),
         elevation: 0,
         scrolledUnderElevation: 0,
         actions: [
@@ -3130,87 +3245,103 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
           ),
         ],
       ),
-      body: Stack(
-        fit: StackFit.expand,
+      body: Column(
         children: [
-          const ColoredBox(color: _mapBackgroundColor),
-          if (pin.isActive)
-            Positioned(
-              top: 12,
-              left: 12,
-              right: 12,
-              child: PinnedMapStatusBanner(pin: pin, l10n: l10n),
-            ),
-          FlutterMap(
-            mapController: _mapController,
-            options: MapOptions(
-              initialCenter: const LatLng(20, 0),
-              initialZoom: 1.6,
-              initialCameraFit: _initialWorldCameraFit,
-              minZoom: 1,
-              maxZoom: 18,
-              backgroundColor: _mapBackgroundColor,
-              cameraConstraint: const CameraConstraint.containLatitude(85, -85),
-              interactionOptions: _interaction,
-            ),
-            children: [
-              if (isOnline)
-                TileLayer(
-                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                  userAgentPackageName: 'matchme.app',
-                ),
-              if (isOnline)
-                RichAttributionWidget(
-                  attributions: [
-                    TextSourceAttribution('OpenStreetMap contributors'),
+          OnboardingSectionPrompt(tour: kOnboardingWorldMapSectionTour),
+          Expanded(
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                ColoredBox(color: mapBackground),
+                if (pin.isActive)
+                  Positioned(
+                    top: 12,
+                    left: 12,
+                    right: 12,
+                    child: PinnedMapStatusBanner(pin: pin, l10n: l10n),
+                  ),
+                FlutterMap(
+                  mapController: _mapController,
+                  options: MapOptions(
+                    initialCenter: const LatLng(20, 0),
+                    initialZoom: 1.6,
+                    initialCameraFit: _initialWorldCameraFit,
+                    minZoom: 1,
+                    maxZoom: 18,
+                    backgroundColor: mapBackground,
+                    cameraConstraint: const CameraConstraint.containLatitude(
+                      85,
+                      -85,
+                    ),
+                    interactionOptions: _interaction,
+                  ),
+                  children: [
+                    if (isOnline)
+                      TileLayer(
+                        urlTemplate:
+                            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                        userAgentPackageName: 'matchme.app',
+                        tileBuilder: darkMapTileBuilderFor(
+                          Theme.of(context).brightness,
+                        ),
+                      ),
+                    if (isOnline)
+                      RichAttributionWidget(
+                        attributions: [
+                          TextSourceAttribution('OpenStreetMap contributors'),
+                        ],
+                      ),
+                    MarkerLayer(markers: _buildMarkers(context)),
                   ],
                 ),
-              MarkerLayer(markers: _buildMarkers(context)),
-            ],
-          ),
-          Positioned(
-            right: 12,
-            bottom: 110,
-            child: Padding(
-              padding: const EdgeInsets.all(4),
-              child: FloatingActionButton.small(
-                heroTag: null,
-                tooltip: l10n.getString('locationShareCenter'),
-                onPressed: _loading ? null : _moveToUserCountry,
-                child: const Icon(Icons.my_location),
-              ),
-            ),
-          ),
-          Positioned(
-            right: 12,
-            bottom: 12,
-            child: _MapZoomControls(
-              controller: _mapController,
-              minZoom: 1,
-              maxZoom: 18,
-              l10n: l10n,
-            ),
-          ),
-          if (!isOnline)
-            Positioned(
-              top: 12,
-              left: 12,
-              right: 12,
-              child: Material(
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(8),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
-                  child: Text(
-                    l10n.getString('generalOffline'),
-                    textAlign: TextAlign.center,
+                Positioned(
+                  right: 12,
+                  bottom: 110,
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: FloatingActionButton.small(
+                      heroTag: null,
+                      tooltip: l10n.getString('locationShareCenter'),
+                      onPressed: _loading ? null : _moveToUserCountry,
+                      child: const Icon(Icons.my_location),
+                    ),
                   ),
                 ),
-              ),
+                Positioned(
+                  right: 12,
+                  bottom: 12,
+                  child: _MapZoomControls(
+                    controller: _mapController,
+                    minZoom: 1,
+                    maxZoom: 18,
+                    l10n: l10n,
+                  ),
+                ),
+                if (!isOnline)
+                  Positioned(
+                    top: 12,
+                    left: 12,
+                    right: 12,
+                    child: Material(
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(8),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        child: Text(
+                          l10n.getString('generalOffline'),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
+          ),
         ],
       ),
     );

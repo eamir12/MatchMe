@@ -7,6 +7,7 @@ import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/services/signup_email_otp_service.dart';
 import 'package:matchme/services/error_localization_service.dart';
 import 'package:matchme/utils/otp_utils.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class SignupEmailCodeScreen extends ConsumerStatefulWidget {
   const SignupEmailCodeScreen({super.key, required this.email});
@@ -194,7 +195,7 @@ class _SignupEmailCodeScreenState extends ConsumerState<SignupEmailCodeScreen> {
     final l10n = ref.watch(localizationProvider);
 
     return Scaffold(
-      appBar: AppBar(title: Text(l10n.getString('authSignupCodeTitle'))),
+      appBar: AppBar(title: ShrinkText(l10n.getString('authSignupCodeTitle'))),
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(

@@ -10,6 +10,7 @@ import 'package:matchme/providers/user_preferences_provider.dart';
 import 'package:matchme/providers/theme_provider.dart';
 import 'package:matchme/providers/voice_guidance_provider.dart';
 import 'package:matchme/widgets/currency_picker_bottom_sheet.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class AppDisplaySettingsScreen extends ConsumerStatefulWidget {
   const AppDisplaySettingsScreen({super.key});
@@ -49,7 +50,7 @@ class _AppDisplaySettingsScreenState
     final allCurrencyOptions = ref.watch(allCurrencyOptionsProvider);
 
     return Scaffold(
-      appBar: AppBar(title: Text(l10n.getString('settingsAppDisplay'))),
+      appBar: AppBar(title: ShrinkText(l10n.getString('settingsAppDisplay'))),
       body: ListView(
         padding: const EdgeInsets.all(16.0),
         children: [
@@ -420,6 +421,31 @@ class _AppDisplaySettingsScreenState
                     if (mode == null) return;
                     ref.read(themeModeProvider.notifier).setThemeMode(mode);
                   },
+                ),
+
+                const SizedBox(height: 8),
+
+                SwitchListTile(
+                  value: ref.watch(amoledThemeProvider),
+                  onChanged: theme.brightness == Brightness.dark
+                      ? (value) {
+                          ref
+                              .read(amoledThemeProvider.notifier)
+                              .setEnabled(value);
+                        }
+                      : null,
+                  contentPadding: EdgeInsets.zero,
+                  secondary: Icon(
+                    Icons.contrast_outlined,
+                    color: colors.primary,
+                  ),
+                  title: Text(l10n.getString('settingsAmoledMode')),
+                  subtitle: Text(
+                    l10n.getString('settingsAmoledModeDescription'),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
                 ),
 
                 const SizedBox(height: 16),

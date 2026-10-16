@@ -23,6 +23,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 /// Identifies which bundled document to show.
 enum LegalDocument {
@@ -121,7 +122,7 @@ class _LegalDocumentScreenState extends ConsumerState<LegalDocumentScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(l10n.getString(widget.document.titleKey)),
+        title: ShrinkText(l10n.getString(widget.document.titleKey)),
         centerTitle: false,
       ),
       body: _loading

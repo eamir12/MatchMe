@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/pinned_partner_provider.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 /// Small "📌 Pinned location" chip shown when the match partner currently
 /// matches from a pinned home-base location (i.e. they are physically
@@ -42,10 +43,8 @@ class PinnedPartnerChip extends ConsumerWidget {
                   Icon(Icons.push_pin_outlined, size: 12, color: color),
                   const SizedBox(width: 4),
                   Flexible(
-                    child: Text(
+                    child: ShrinkText(
                       l10n.getString('pinnedPartnerBadge'),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w600,

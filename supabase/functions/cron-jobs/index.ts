@@ -335,7 +335,7 @@ async function sendFcmV1({
     String(dataChannelId || channelId || channelIdForType(data)).trim() ||
     'chat_messages';
   const resolvedBadge = typeof badge === 'number' && Number.isFinite(badge)
-    ? Math.min(99, Math.max(1, Math.floor(badge)))
+    ? Math.min(99, Math.max(0, Math.floor(badge)))
     : 1;
   // 7-day TTL: queue pushes (expiry/admin) must survive device-off,
   // reboot, and browser-closed gaps. 60s dropped anything offline > 1 min.
@@ -1614,16 +1614,21 @@ async function handleNotificationQueueProcessing(invocationId: string) {
           if (key) collapseTag = `match_${key}`;
         }
         const rowBadge = Number(data.badge ?? 1);
+        // >= 0 (not > 0): an explicit badge of 0 must survive so retractions
+        // clear the iOS icon badge instead of resurrecting a phantom "1".
+        const safeRowBadge = Number.isFinite(rowBadge) && rowBadge >= 0
+          ? Math.min(99, Math.floor(rowBadge))
+          : 1;
         const result = await sendFcmV1({
           serviceAccount,
           accessToken,
           token,
           notification: { title, body },
-          data: { ...data, badge: String(Number.isFinite(rowBadge) && rowBadge > 0 ? Math.min(99, Math.floor(rowBadge)) : 1) },
+          data: { ...data, badge: String(safeRowBadge) },
           tag: collapseTag,
           collapseKey: collapseTag,
           channelId: channelIdForType(data),
-          badge: Number.isFinite(rowBadge) && rowBadge > 0 ? Math.min(99, Math.floor(rowBadge)) : 1,
+          badge: safeRowBadge,
         });
 
         if (result.ok) {

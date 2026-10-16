@@ -53,6 +53,10 @@ class EmailChangeService {
     } catch (_) {}
   }
 
+  /// Drop any pending email-change request. Called on logout so the pending
+  /// new address never survives the session that requested it.
+  static Future<void> clearPendingEmailChange() => _secureDeletePendingEmail();
+
   static Future<void> _securePersistPendingEmail(
     String email,
     DateTime? expiry,

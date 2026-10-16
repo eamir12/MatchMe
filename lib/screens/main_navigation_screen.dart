@@ -34,8 +34,11 @@ import 'package:matchme/services/session_service.dart';
 import 'package:matchme/services/offline_cache_manager.dart';
 import 'package:matchme/providers/chat_key_provider.dart';
 import 'package:matchme/services/chat_key_service.dart';
+import 'package:matchme/providers/connected_online_accounts_provider.dart';
+import 'package:matchme/providers/calendar_sync_provider.dart';
 import 'package:matchme/utils/resume_route_restore.dart';
 import 'package:matchme/screens/onboarding/onboarding_intro_screen.dart';
+import 'package:matchme/screens/onboarding/onboarding_content.dart';
 import 'package:matchme/services/onboarding_intro_service.dart';
 import 'package:matchme/screens/profile/verification_screen.dart';
 import 'package:matchme/services/verification_service.dart';
@@ -630,7 +633,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
       await Navigator.of(context).push(
         MaterialPageRoute(
           fullscreenDialog: true,
-          builder: (_) => const OnboardingIntroScreen(),
+          builder: (_) => OnboardingIntroScreen(tour: kOnboardingCoreTour),
         ),
       );
     } catch (e) {
@@ -867,143 +870,185 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
       } catch (_) {}
     }
 
-    try {
-      // Stop any active live location sharing immediately before logout.
-      // This ensures the peer sees our share stop and our DB signal is cleaned up,
-      // even before the Supabase session is invalidated below.
-      final locationShare = ref.read(locationShareProvider);
-      if (locationShare != null) {
-        print('LocationShare: Stopping active share on logout');
-        await ref.read(locationShareProvider.notifier).stopSharing();
-      }
+    // Capture the outgoing identity BEFORE any teardown: the server-side
+    // cleanup below and the auth listener both need it.
+    final loggedOutUser = supabase.auth.currentUser;
+    final outgoingUserId = loggedOutUser?.id;
+    // Offline-aware gate. When Supabase is unreachable we must not await a
+    // single network round trip — logout has to stay instant and local.
+    final canReachServer = OfflineCacheManager.instance.isSupabaseAvailable;
 
-      final userId = supabase.auth.currentUser?.id;
-      if (userId == null || userId.isEmpty) {
-        throw StateError('Cannot log out without identifying the active user.');
-      }
-      // Keep the session active if a privacy wipe fails. The shared-device
-      // cleanup must complete before sign-out, not continue as a success.
-      await OfflineCacheManager.instance.clearAllOfflineCache(userId: userId);
-      clearUserScopedHomeMemoryCaches();
-      ref.read(globalSyncManagerProvider).dispose();
-      await clearLoginState();
+    // Best-effort remote cleanup. Every action swallows its own errors so a
+    // dead/slow backend can never abort the logout.
+    Future<void> quiet(Future<void> Function() action) async {
+      try {
+        await action();
+      } catch (_) {}
+    }
+
+    // Stop any active live location sharing (best-effort; the peer sees our
+    // share stop and our DB signal is cleaned up). The local teardown inside
+    // stopSharing() is instant; only the remote signal/broadcast is bounded.
+    final locationShare = ref.read(locationShareProvider);
+    // This cleanup needs the active session to authenticate, so it must run
+    // BEFORE sign-out. It is bounded and never awaited when offline.
+    final authBoundCleanup = <Future<void>>[
+      if (locationShare != null)
+        quiet(() => ref.read(locationShareProvider.notifier).stopSharing()),
       // Immediately mark the user offline on the server BEFORE the session is
       // invalidated, so the online count drops right away. This is a direct,
-      // trigger-independent backup to revoke_all_user_sessions below (the
+      // trigger-independent backup to revoke_all_user_sessions (the
       // session-change trigger normally flips is_online via that RPC, but the
       // heartbeat in update_user_activity must never resurrect a logged-out
       // user — see migration 20260814000000_only_mark_online_with_active_session).
-      try {
-        final user = supabase.auth.currentUser;
-        if (user != null) {
-          await supabase.rpc(
+      if (canReachServer && outgoingUserId != null) ...[
+        quiet(
+          () => supabase.rpc(
             'set_user_offline',
-            params: {'p_user_id': user.id, 'p_clear_pinned': true},
-          );
-        }
-      } catch (e) {
-        print('set_user_offline on logout failed: $e');
-      }
-      try {
-        final user = supabase.auth.currentUser;
-        if (user != null) {
-          await supabase.rpc(
-            'revoke_all_user_sessions',
-            params: {'p_user_id': user.id},
-          );
-        }
-      } catch (e) {
-        print('revoke_all_user_sessions failed: $e');
-      }
-      // Clear this device's FCM token mapping so the next account that logs
-      // in here doesn't inherit pushes meant for the signed-out user.
-      // upsert_user_session also steals tokens server-side, this is the
-      // client half: rotate the token + drop the cached copy.
-      try {
-        await SessionService.deleteFcmToken();
-      } catch (e) {
-        print('deleteFcmToken on logout failed: $e');
-      }
-      try {
-        await SessionService.clearLocalFcmToken();
-      } catch (e) {
-        print('clearLocalFcmToken on logout failed: $e');
-      }
-      final loggedOutUser = supabase.auth.currentUser;
-      SessionService.markExplicitUserSignOut();
-      // Invalidate the outgoing user's home-screen providers (and the shared
-      // dashboard/unread/tab state) BEFORE the session is torn down, while
-      // this widget's ref is still usable. Otherwise the next account on this
-      // device can briefly reuse the previous account's already-resolved
-      // providers and skip the home-screen loading gate.
-      try {
-        final outgoingUserId = loggedOutUser?.id;
-        if (outgoingUserId != null && outgoingUserId.isNotEmpty && mounted) {
-          ref.invalidate(recentMatchesProvider(outgoingUserId));
-          ref.invalidate(recentChatsProvider(outgoingUserId));
-          ref.invalidate(userChatIdsProvider(outgoingUserId));
-          ref.invalidate(userProfileProvider(outgoingUserId));
-          try {
-            ref.read(profileSyncStateProvider(outgoingUserId).notifier).reset();
-            ref.read(profileSyncProvider).invalidateUser(outgoingUserId);
-          } catch (_) {}
-          // Re-arm the initial-server-sync gate so the next login (even the
-          // same account) waits for fresh server data instead of reusing a
-          // completed gate with a now-wiped cache.
-          ref.invalidate(initialHomeSyncProvider(outgoingUserId));
-        }
-        if (mounted) {
-          ref.invalidate(dashboardStatsProvider);
-          ref.invalidate(totalUnreadChatCountProvider);
-          try {
-            ref.read(navigationIndexProvider.notifier).setIndex(0);
-          } catch (_) {}
-        }
-      } catch (_) {}
-      await supabase.auth.signOut();
-      // Awaited (the auth listener also fires this, unawaited): if the app is
-      // killed right after logout, an unfinished wipe leaves recoverable
-      // credentials on disk and the next launch re-authenticates the
-      // signed-out user instead of showing the login screen.
-      await SessionService.clearPersistedSupabaseSessionSnapshot();
-      // Reset the singleton heartbeat coalescer so the next user starts with
-      // a clean ping window.
-      UserActivityService.instance.reset();
-      // Reset the chat key provider: it is a process-lifetime singleton, so
-      // without this the next login (any user) would start from the previous
-      // user's state. Also purge in-memory decryption/peer-key caches.
-      // Note: signOut() above triggers the auth state change which can unmount
-      // this widget before we get here, so the widget's `ref` may no longer be
-      // usable. The invalidation is also performed on the root container by
-      // the auth listener in main.dart, so this widget-level call is just a
-      // best-effort early reset.
-      try {
-        if (mounted) {
-          ref.invalidate(chatKeyProvider);
-        }
-        ChatKeyService.instance.clearMemoryCaches();
-        debugPrint('[AUTH] Chat key provider invalidated on logout');
-      } catch (e) {
-        print('Chat key provider reset on logout failed: $e');
-      }
-      print(
-        '[AUTH] User logged out: id=${loggedOutUser?.id}, email=${loggedOutUser?.email}',
-      );
-    } catch (e) {
-      debugPrint('[AUTH] Logout aborted: $e');
-      if (mounted) {
-        setState(() => _isLoggingOut = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              ref
-                  .read(localizationProvider)
-                  .getString('authLogoutCleanupFailed'),
-            ),
+            params: {'p_user_id': outgoingUserId, 'p_clear_pinned': true},
           ),
-        );
+        ),
+        quiet(
+          () => supabase.rpc(
+            'revoke_all_user_sessions',
+            params: {'p_user_id': outgoingUserId},
+          ),
+        ),
+      ],
+    ];
+
+    // Clear this device's FCM token mapping so the next account that logs in
+    // here doesn't inherit pushes meant for the signed-out user.
+    // upsert_user_session also steals tokens server-side; this is the client
+    // half: rotate the token + drop the cached copy. It does not need the
+    // session and is pure best-effort, so it never blocks the critical path.
+    unawaited(quiet(SessionService.deleteFcmToken));
+
+    if (canReachServer) {
+      // Bounded: if the backend is slow, move on and let sign-out proceed.
+      try {
+        await Future.wait(
+          authBoundCleanup,
+        ).timeout(const Duration(seconds: 3), onTimeout: () => const []);
+      } catch (_) {}
+    } else {
+      // Offline: never wait on the network. Fire the cleanup and log out now.
+      for (final future in authBoundCleanup) {
+        unawaited(future);
       }
     }
+
+    // LOCAL cleanup (offline-safe). Each step is isolated so a failure in one
+    // never blocks the sign-out below.
+    try {
+      if (outgoingUserId != null && outgoingUserId.isNotEmpty) {
+        await OfflineCacheManager.instance.clearAllOfflineCache(
+          userId: outgoingUserId,
+        );
+      }
+    } catch (e) {
+      debugPrint('[AUTH] Offline cache wipe on logout failed: $e');
+    }
+    clearUserScopedHomeMemoryCaches();
+    try {
+      ref.read(globalSyncManagerProvider).dispose();
+    } catch (_) {}
+    await clearLoginState();
+    try {
+      await SessionService.clearLocalFcmToken();
+    } catch (e) {
+      print('clearLocalFcmToken on logout failed: $e');
+    }
+
+    // Invalidate the outgoing user's home-screen providers (and the shared
+    // dashboard/unread/tab state) BEFORE the session is torn down, while this
+    // widget's ref is still usable. Otherwise the next account on this device
+    // can briefly reuse the previous account's already-resolved providers and
+    // skip the home-screen loading gate.
+    SessionService.markExplicitUserSignOut();
+    try {
+      if (outgoingUserId != null && outgoingUserId.isNotEmpty && mounted) {
+        ref.invalidate(recentMatchesProvider(outgoingUserId));
+        ref.invalidate(recentChatsProvider(outgoingUserId));
+        ref.invalidate(userChatIdsProvider(outgoingUserId));
+        ref.invalidate(userProfileProvider(outgoingUserId));
+        try {
+          ref.read(profileSyncStateProvider(outgoingUserId).notifier).reset();
+          ref.read(profileSyncProvider).invalidateUser(outgoingUserId);
+        } catch (_) {}
+        // Re-arm the initial-server-sync gate so the next login (even the same
+        // account) waits for fresh server data instead of reusing a completed
+        // gate with a now-wiped cache.
+        ref.invalidate(initialHomeSyncProvider(outgoingUserId));
+      }
+      if (mounted) {
+        ref.invalidate(dashboardStatsProvider);
+        ref.invalidate(totalUnreadChatCountProvider);
+        ref.invalidate(connectedOnlineAccountsProvider);
+        // Drop the calendar service instance so its in-memory Google token /
+        // account caches cannot be reused by the next user in this process.
+        ref.invalidate(calendarSyncServiceProvider);
+        try {
+          ref.read(navigationIndexProvider.notifier).setIndex(0);
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    // SIGN OUT LOCALLY, IMMEDIATELY. `signOut` clears the in-memory session
+    // synchronously and then fires the `signedOut` event (which routes the app
+    // to the login screen) BEFORE it attempts the SDK's server-side revocation
+    // round trip. We deliberately do NOT await that round trip: an unreachable
+    // or slow Supabase must never keep the user on the logout spinner. The
+    // bounded timeout drops a hung future after 3s.
+    try {
+      unawaited(
+        supabase.auth
+            .signOut(scope: SignOutScope.local)
+            .timeout(const Duration(seconds: 3))
+            .catchError((Object e) {
+              debugPrint('[AUTH] signOut network revocation failed: $e');
+            }),
+      );
+    } catch (e) {
+      debugPrint('[AUTH] signOut call failed: $e');
+    }
+
+    // Safety net: the local session removal and the `signedOut` event are
+    // synchronous-ish, but if a wedged platform channel ever prevented the
+    // event from propagating, release the logout spinner instead of leaving
+    // the user permanently stuck. A successful logout unmounts this widget, so
+    // this is a no-op in the normal case.
+    Future<void>.delayed(const Duration(seconds: 10), () {
+      if (mounted && _isLoggingOut) {
+        setState(() => _isLoggingOut = false);
+      }
+    });
+
+    // Post-sign-out local resets. The auth listener also fires an unawaited
+    // snapshot clear, but awaiting it here guarantees the credentials are gone
+    // from disk even if the app is killed immediately after logout (otherwise
+    // the next launch re-authenticates the signed-out user).
+    try {
+      await SessionService.clearPersistedSupabaseSessionSnapshot();
+    } catch (_) {}
+    // Reset the singleton heartbeat coalescer so the next user starts with a
+    // clean ping window.
+    UserActivityService.instance.reset();
+    // Reset the chat key provider: it is a process-lifetime singleton, so
+    // without this the next login (any user) would start from the previous
+    // user's state. Also purge in-memory decryption/peer-key caches.
+    try {
+      if (mounted) {
+        ref.invalidate(chatKeyProvider);
+      }
+      ChatKeyService.instance.clearMemoryCaches();
+      debugPrint('[AUTH] Chat key provider invalidated on logout');
+    } catch (e) {
+      print('Chat key provider reset on logout failed: $e');
+    }
+    print(
+      '[AUTH] User logged out: id=${loggedOutUser?.id}, email=${loggedOutUser?.email}',
+    );
   }
 
   @override
@@ -1068,38 +1113,38 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
           color: Theme.of(context).colorScheme.surface,
           child: SafeArea(
             right: false,
-          // Short windows (landscape) cannot fit the 5 full-size labeled
-          // destinations (~500px). Below 520px of rail height switch to a
-          // compact LABELED rail whose 5 buttons share the height exactly
-          // (Expanded) - every icon and name stays visible with no sliding,
-          // and the spare room spreads evenly instead of pooling above and
-          // below. At/above 520px the full-size rail fits, centered. The
-          // scroll view on the full rail is only an extreme-case safety net
-          // (huge fonts); in normal use nothing scrolls.
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final railHeight = constraints.hasBoundedHeight
-                  ? constraints.maxHeight
-                  : 520.0;
-              if (railHeight < 520) {
-                return _CompactRail(
-                  safeIndex: safeIndex,
-                  onSelectTab: _selectTab,
-                );
-              }
-              return SingleChildScrollView(
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(minHeight: railHeight),
-                  child: IntrinsicHeight(
-                    child: _MainNavRail(
-                      safeIndex: safeIndex,
-                      onSelectTab: _selectTab,
+            // Short windows (landscape) cannot fit the 5 full-size labeled
+            // destinations (~500px). Below 520px of rail height switch to a
+            // compact LABELED rail whose 5 buttons share the height exactly
+            // (Expanded) - every icon and name stays visible with no sliding,
+            // and the spare room spreads evenly instead of pooling above and
+            // below. At/above 520px the full-size rail fits, centered. The
+            // scroll view on the full rail is only an extreme-case safety net
+            // (huge fonts); in normal use nothing scrolls.
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final railHeight = constraints.hasBoundedHeight
+                    ? constraints.maxHeight
+                    : 520.0;
+                if (railHeight < 520) {
+                  return _CompactRail(
+                    safeIndex: safeIndex,
+                    onSelectTab: _selectTab,
+                  );
+                }
+                return SingleChildScrollView(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(minHeight: railHeight),
+                    child: IntrinsicHeight(
+                      child: _MainNavRail(
+                        safeIndex: safeIndex,
+                        onSelectTab: _selectTab,
+                      ),
                     ),
                   ),
-                ),
-              );
-            },
-          ),
+                );
+              },
+            ),
           ),
         ),
       );
@@ -1145,7 +1190,10 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
       children: [
         if (useRail)
           Row(
-            children: [railPane(), Expanded(child: contentScaffold())],
+            children: [
+              railPane(),
+              Expanded(child: contentScaffold()),
+            ],
           )
         else
           contentScaffold(),
@@ -1250,9 +1298,9 @@ class _MainNavAppBar extends ConsumerWidget implements PreferredSizeWidget {
         tooltip: l10n.getString('inboxTitle'),
         onPressed: () {
           if (userId == null) return;
-          Navigator.of(context).pushNamed(
-            ResumeRouteRestore.notificationInboxRoute,
-          );
+          Navigator.of(
+            context,
+          ).pushNamed(ResumeRouteRestore.notificationInboxRoute);
         },
       ),
       IconButton(
@@ -1413,7 +1461,9 @@ class _CompactRail extends ConsumerWidget {
         case 0:
           icon = selected ? Icons.home : Icons.home_outlined;
         case 3:
-          icon = selected ? Icons.calendar_today : Icons.calendar_today_outlined;
+          icon = selected
+              ? Icons.calendar_today
+              : Icons.calendar_today_outlined;
         default:
           icon = selected ? Icons.person : Icons.person_outline;
       }

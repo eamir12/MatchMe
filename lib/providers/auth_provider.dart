@@ -321,7 +321,21 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
         }
       }),
     );
-    ref.onDispose(() => controller.close());
+    // Even offline, an explicit user logout MUST route to the login screen.
+    // The SDK clears the in-memory session synchronously on signOut() and then
+    // fires `signedOut`; the online branch below is not active on this path, so
+    // we observe the raw event and forward a null-session state. Non-explicit
+    // signedOut events stay suppressed to honour the offline session policy.
+    sub = auth.onAuthStateChange.listen((authState) {
+      if (disposed || controller.isClosed) return;
+      if (authState.event != AuthChangeEvent.signedOut) return;
+      if (!SessionService.consumeExplicitUserSignOutFlag()) return;
+      controller.add(AuthState(AuthChangeEvent.signedOut, null));
+    });
+    ref.onDispose(() {
+      sub?.cancel();
+      controller.close();
+    });
     unawaited(() async {
       try {
         if (auth.currentSession == null) {
@@ -332,8 +346,6 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
         }
       } catch (e) {
         controller.add(AuthState(AuthChangeEvent.initialSession, null));
-      } finally {
-        controller.close();
       }
     }());
     return controller.stream;

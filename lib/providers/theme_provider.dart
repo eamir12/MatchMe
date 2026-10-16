@@ -13,6 +13,44 @@ final themeModeProvider = NotifierProvider<ThemeModeNotifier, ThemeMode>(
   () => ThemeModeNotifier(),
 );
 
+/// True-black (AMOLED) dark mode toggle.
+///
+/// Device-local display preference: persisted to SharedPreferences only,
+/// never synced to the backend, so it can diverge per device.
+final amoledThemeProvider = NotifierProvider<AmoledThemeNotifier, bool>(
+  () => AmoledThemeNotifier(),
+);
+
+class AmoledThemeNotifier extends Notifier<bool> {
+  static const prefsKey = 'amoled_black_enabled';
+  bool _changedByUser = false;
+
+  @override
+  bool build() {
+    Future.microtask(() async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        // A stored value must not clobber a toggle that happened while the
+        // preferences were still loading.
+        if (_changedByUser) return;
+        state = prefs.getBool(prefsKey) ?? false;
+      } catch (_) {}
+    });
+    return false;
+  }
+
+  Future<void> setEnabled(bool enabled) async {
+    _changedByUser = true;
+    if (state != enabled) {
+      state = enabled;
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(prefsKey, enabled);
+    } catch (_) {}
+  }
+}
+
 class ThemeModeNotifier extends Notifier<ThemeMode>
     with WidgetsBindingObserver {
   static const _prefsKey = 'theme_mode';

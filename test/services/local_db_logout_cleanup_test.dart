@@ -56,6 +56,7 @@ void main() {
         {'cell_center_lat': 1, 'cell_center_lng': 2, 'user_count': 3},
       ]);
       await db.saveOtherUserProfile('cached-profile', {'name': 'Cached name'});
+      await db.savePendingReferralCode('REF-OUTGOING');
 
       await db.clearUserData('outgoing-user');
 
@@ -65,6 +66,7 @@ void main() {
       expect(await db.getNotificationInbox('outgoing-user'), isNull);
       expect(await db.getNearbyMapCells('outgoing-user', 'query-1'), isNull);
       expect(await db.getOtherUserProfile('cached-profile'), isNull);
+      expect(await db.getPendingReferralCode(), isNull);
       expect(await db.getMessages('next-match'), isEmpty);
       expect(await db.watchChats('next-user').first, hasLength(1));
       expect(await db.watchMatches('next-user').first, hasLength(1));
@@ -74,6 +76,21 @@ void main() {
         {'id': 'next-message', 'content_original': 'next user message'},
       ]);
       expect(await db.getMessages('next-match'), hasLength(1));
+    },
+  );
+
+  test(
+    'logout clears emoji usage and queued offline mutations',
+    () async {
+      final emojiBox = await Hive.openBox<int>('emoji_usage');
+      await emojiBox.put('👍', 5);
+      final mutationBox = await Hive.openBox('offline_mutations');
+      await mutationBox.put('mutation-1', {'payload': 'queued-secret'});
+
+      await db.clearUserData('outgoing-user');
+
+      expect(Hive.box<int>('emoji_usage').isEmpty, isTrue);
+      expect(Hive.box('offline_mutations').isEmpty, isTrue);
     },
   );
 

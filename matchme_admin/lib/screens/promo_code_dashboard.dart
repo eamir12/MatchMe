@@ -7,6 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme_admin/services/admin_local_db_service.dart';
 import 'package:matchme_admin/services/admin_offline_cache_manager.dart';
 import 'package:matchme_admin/services/admin_realtime_refresher.dart';
+import 'package:matchme_admin/widgets/safe_text.dart';
 
 enum _PromoCodeListFilter { all, enabled, disabled, expired }
 
@@ -822,10 +823,9 @@ class _AdminPromoCodeDashboardState
           Icon(icon, size: 16, color: Colors.grey.shade600),
           const SizedBox(width: 4),
           Flexible(
-            child: Text(
+            child: ShrinkText(
               label,
               style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
-              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],
@@ -2171,11 +2171,9 @@ class _AdminPromoCodeDashboardState
                 }.entries)
                   ButtonSegment(
                     value: entry.key,
-                    label: Text(
+                    label: ShrinkText(
                       t(entry.value),
                       maxLines: 1,
-                      softWrap: false,
-                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
               ],

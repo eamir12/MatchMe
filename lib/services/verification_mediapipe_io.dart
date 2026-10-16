@@ -16,6 +16,8 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
+import 'package:matchme/widgets/safe_text.dart';
+import 'package:matchme/widgets/voice_guidance_mute_button.dart';
 
 /// webview_flutter covers Android/iOS/macOS. Windows uses WebView2
 /// (see verification_mediapipe_windows.dart) with the same live capture page.
@@ -629,7 +631,7 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
       final l10n = ref.watch(localizationProvider);
       return Scaffold(
         backgroundColor: Colors.black,
-        appBar: AppBar(title: Text(l10n.getString('verification'))),
+        appBar: AppBar(title: ShrinkText(l10n.getString('verification'))),
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
@@ -659,7 +661,7 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
         appBar: AppBar(
           backgroundColor: Colors.black,
           foregroundColor: Colors.white,
-          title: Text(ref.watch(localizationProvider).getString('verification')),
+          title: ShrinkText(ref.watch(localizationProvider).getString('verification')),
         ),
         body: const Center(child: CircularProgressIndicator()),
       );
@@ -688,6 +690,25 @@ class _MediaPipeCapturePageState extends ConsumerState<_MediaPipeCapturePage> {
                     ).backButtonTooltip,
                     icon: const Icon(Icons.arrow_back, color: Colors.white),
                     onPressed: () => Navigator.of(context).maybePop(),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          // Mute/unmute for the spoken instructions while the camera is live.
+          // Trailing edge keeps it clear of the back button in both LTR/RTL.
+          Positioned.directional(
+            textDirection: Directionality.of(context),
+            top: 0,
+            end: 0,
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Material(
+                  color: Colors.black54,
+                  shape: const CircleBorder(),
+                  child: const VoiceGuidanceMuteButton(
+                    iconColor: Colors.white,
                   ),
                 ),
               ),

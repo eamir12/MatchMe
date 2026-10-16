@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/external_ad_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 /// Screen for managing ad preferences
 class AdSettingsScreen extends ConsumerStatefulWidget {
@@ -155,14 +156,14 @@ class _AdSettingsScreenState extends ConsumerState<AdSettingsScreen> {
 
     if (_isLoading) {
       return Scaffold(
-        appBar: AppBar(title: Text(l10n.getString('externalAdsSettingsTitle'))),
+        appBar: AppBar(title: ShrinkText(l10n.getString('externalAdsSettingsTitle'))),
         body: const Center(child: CircularProgressIndicator()),
       );
     }
 
     if (_errorMessage != null) {
       return Scaffold(
-        appBar: AppBar(title: Text(l10n.getString('externalAdsSettingsTitle'))),
+        appBar: AppBar(title: ShrinkText(l10n.getString('externalAdsSettingsTitle'))),
         body: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -183,7 +184,7 @@ class _AdSettingsScreenState extends ConsumerState<AdSettingsScreen> {
     }
 
     return Scaffold(
-      appBar: AppBar(title: Text(l10n.getString('externalAdsSettingsTitle'))),
+      appBar: AppBar(title: ShrinkText(l10n.getString('externalAdsSettingsTitle'))),
       body: SingleChildScrollView(
         child: Padding(
           padding: const EdgeInsets.all(16),

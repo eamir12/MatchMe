@@ -11,10 +11,12 @@ import 'package:matchme/providers/location_share_provider.dart';
 import 'package:matchme/providers/current_location_provider.dart';
 import 'package:matchme/providers/unit_provider.dart';
 import 'package:matchme/screens/location_share/location_share_duration_dialog.dart';
+import 'package:matchme/utils/map_theme_utils.dart';
 import 'package:matchme/utils/unit_utils.dart';
 import 'package:matchme/widgets/signed_image.dart';
 import 'package:matchme/services/location_service.dart';
 import 'package:matchme/services/map_tile_cache_service.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class LocationShareMapScreen extends ConsumerStatefulWidget {
   const LocationShareMapScreen({super.key});
@@ -177,7 +179,7 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
 
     if (session == null) {
       return Scaffold(
-        appBar: AppBar(title: Text(l10n.getString('locationShareMapTitle'))),
+        appBar: AppBar(title: ShrinkText(l10n.getString('locationShareMapTitle'))),
         body: Center(child: Text(l10n.getString('locationShareExpired'))),
       );
     }
@@ -193,7 +195,7 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
     final center = myPos ?? otherPos;
     if (center == null) {
       return Scaffold(
-        appBar: AppBar(title: Text(l10n.getString('locationShareMapTitle'))),
+        appBar: AppBar(title: ShrinkText(l10n.getString('locationShareMapTitle'))),
         body: Center(child: Text(l10n.getString('locationShareWaiting'))),
       );
     }
@@ -282,6 +284,9 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
             options: MapOptions(
               initialCenter: center,
               initialZoom: initialZoom,
+              backgroundColor: Theme.of(
+                context,
+              ).colorScheme.surfaceContainerHighest,
               interactionOptions: _interaction,
               cameraConstraint: const CameraConstraint.containLatitude(85, -85),
             ),
@@ -292,6 +297,9 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
                 // Disk-cached tiles: repeat views paint instantly instead of
                 // re-downloading every tile from the throttled public server.
                 tileProvider: CachedMapTileProvider(),
+                tileBuilder: darkMapTileBuilderFor(
+                  Theme.of(context).brightness,
+                ),
               ),
               RichAttributionWidget(
                 attributions: [

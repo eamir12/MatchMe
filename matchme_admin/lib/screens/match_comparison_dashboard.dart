@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme_admin/services/admin_local_db_service.dart';
+import 'package:matchme_admin/widgets/safe_text.dart';
 
 class _TaxonomyResolver {
   static Map<String, String>? _intentKeyToTranslation;
@@ -1313,14 +1314,12 @@ class _UserPickerCard extends StatelessWidget {
                         textDirection: isRtl
                             ? TextDirection.rtl
                             : TextDirection.ltr,
-                        child: Text(
+                        child: SafeText(
                           rawName,
                           style: theme.textTheme.titleMedium?.copyWith(
                             fontWeight: FontWeight.w800,
                             letterSpacing: -0.2,
                           ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
                           textAlign: isRtl ? TextAlign.right : TextAlign.left,
                         ),
                       );
@@ -1329,14 +1328,12 @@ class _UserPickerCard extends StatelessWidget {
                   const SizedBox(height: 2),
                   Directionality(
                     textDirection: TextDirection.ltr,
-                    child: Text(
+                    child: SafeText(
                       user!['id']?.toString() ?? '',
                       style: theme.textTheme.labelSmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                         fontFamily: 'monospace',
                       ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -1683,10 +1680,8 @@ class _UserSearchDialogState extends State<_UserSearchDialog> {
                             ),
                             subtitle: Directionality(
                               textDirection: TextDirection.ltr,
-                              child: Text(
+                              child: SafeText(
                                 '${u['id']}\n${[u['email'], localizedGender, if (userAge.isNotEmpty) '$ageLabel: $userAge'].where((e) => e != null && e.toString().isNotEmpty).join(' • ')}',
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
                                   fontSize: 11,
                                   color: theme.colorScheme.onSurfaceVariant,
@@ -2517,23 +2512,19 @@ class _HudItem extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 2),
-                Text(
+                SafeText(
                   value,
                   style: const TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w800,
                   ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
                 ),
-                Text(
+                SafeText(
                   subtitle,
                   style: TextStyle(
                     fontSize: 10,
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
                 ),
               ],
             ),
@@ -3249,7 +3240,7 @@ class _VerdictPill extends StatelessWidget {
           ),
           const SizedBox(width: 4),
           Flexible(
-            child: Text(
+            child: ShrinkText(
               label,
               style: TextStyle(
                 fontSize: 10,
@@ -3259,7 +3250,6 @@ class _VerdictPill extends StatelessWidget {
                     : const Color(0xFFDC2626),
               ),
               maxLines: 1,
-              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],

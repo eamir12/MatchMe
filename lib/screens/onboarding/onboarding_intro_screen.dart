@@ -6,6 +6,11 @@
 // on-screen subtitle bar, so audio and captions always match and follow the
 // user's UI language (including RTL).
 //
+// The player is generic over the [OnboardingTour] it is given: the short core
+// tour auto-runs once after profile completion (see MainNavigationScreen),
+// section tours are offered on first visit (OnboardingSectionPrompt), and all
+// tours can be replayed from Settings → App tour (AppTourScreen).
+//
 // Playback model ("watch mode"): when playing, every beat is spoken via
 // VoiceGuidanceService.speakAndWait — the loop advances when the utterance
 // finishes (or after a timed fallback when guidance is disabled/unavailable) —
@@ -13,9 +18,10 @@
 // next, back, chapter dots) bumps a playback generation that immediately
 // invalidates the in-flight loop, so controls always win over autoplay.
 //
-// Skip (or system back) exits at any point and marks the tour as seen; the
-// same flag is what triggers the auto-run after profile completion and can
-// be reset by replaying from Settings.
+// Skip (or system back) exits at any point and marks the tour as seen; those
+// flags are what trigger the one-time auto-run after profile completion and
+// the per-section offers, and they sync to the account so the same user on
+// another device is never auto-shown the tour again.
 
 import 'dart:async';
 
@@ -28,9 +34,13 @@ import 'package:matchme/services/onboarding_intro_service.dart';
 import 'package:matchme/services/voice_guidance_service.dart';
 import 'package:matchme/widgets/voice_guidance_mute_button.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class OnboardingIntroScreen extends ConsumerStatefulWidget {
-  const OnboardingIntroScreen({super.key});
+  const OnboardingIntroScreen({super.key, required this.tour});
+
+  /// The tour to play (core auto-run or a section replay).
+  final OnboardingTour tour;
 
   @override
   ConsumerState<OnboardingIntroScreen> createState() =>
@@ -46,16 +56,15 @@ class _OnboardingIntroScreenState extends ConsumerState<OnboardingIntroScreen> {
   /// old generation exits instead of advancing.
   int _playbackGeneration = 0;
 
+  List<OnboardingChapter> get _chapters => widget.tour.chapters;
+
   @override
   void initState() {
     super.initState();
-    print('[ONBOARDING] initState called');
     // Autoplay the tour: the user should be able to just watch. Controls
     // (pause, next, back, skip) take over instantly.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      print('[ONBOARDING] PostFrame callback executing');
       if (mounted) {
-        print('[ONBOARDING] Starting playback');
         _startPlayback();
       }
     });
@@ -72,18 +81,18 @@ class _OnboardingIntroScreenState extends ConsumerState<OnboardingIntroScreen> {
   // Navigation helpers
   // -------------------------------------------------------------------------
 
-  OnboardingChapter get _chapter => kOnboardingChapters[_chapterIndex];
+  OnboardingChapter get _chapter => _chapters[_chapterIndex];
   OnboardingBeat get _beat => _chapter.beats[_beatIndex];
 
   bool get _isFirstBeat => _chapterIndex == 0 && _beatIndex == 0;
   bool get _isLastBeat =>
-      _chapterIndex == kOnboardingChapters.length - 1 &&
+      _chapterIndex == _chapters.length - 1 &&
       _beatIndex == _chapter.beats.length - 1;
 
   int get _globalBeatIndex {
     var n = 0;
     for (var i = 0; i < _chapterIndex; i++) {
-      n += kOnboardingChapters[i].beats.length;
+      n += _chapters[i].beats.length;
     }
     return n + _beatIndex;
   }
@@ -135,25 +144,18 @@ class _OnboardingIntroScreenState extends ConsumerState<OnboardingIntroScreen> {
   /// a timed fallback), pause briefly, then advance. Exits as soon as the
   /// generation it was started with is superseded.
   Future<void> _playLoop(int generation) async {
-    print('[ONBOARDING] _playLoop started, generation=$generation');
     while (mounted && _playing && generation == _playbackGeneration) {
       final l10n = ref.read(localizationProvider);
       final text = l10n.getString(_beat.bodyKey);
       final estimate = estimateSpokenDuration(text);
-      print('[ONBOARDING] Beat $_chapterIndex:$_beatIndex, text: "$text"');
 
       var spoke = false;
       final service = VoiceGuidanceService.instance;
-      print('[ONBOARDING] Service state: enabled=${service.enabled}, available=${service.isAvailable}');
       if (service.enabled && service.isAvailable) {
-        print('[ONBOARDING] Calling speakAndWait...');
         spoke = await service.speakAndWait(
           text,
           timeout: estimate + const Duration(seconds: 12),
         );
-        print('[ONBOARDING] speakAndWait returned: $spoke');
-      } else {
-        print('[ONBOARDING] speakAndWait skipped (enabled=${service.enabled}, available=${service.isAvailable})');
       }
       if (!mounted || generation != _playbackGeneration || !_playing) return;
 
@@ -170,7 +172,6 @@ class _OnboardingIntroScreenState extends ConsumerState<OnboardingIntroScreen> {
       }
       setState(() {});
     }
-    print('[ONBOARDING] _playLoop ended');
   }
 
   /// Applies a navigation change (chapter dots) and restarts playback.
@@ -178,7 +179,7 @@ class _OnboardingIntroScreenState extends ConsumerState<OnboardingIntroScreen> {
     _invalidatePlayback();
     unawaited(VoiceGuidanceService.instance.stop());
     setState(() {
-      _chapterIndex = chapter.clamp(0, kOnboardingChapters.length - 1);
+      _chapterIndex = chapter.clamp(0, _chapters.length - 1);
       _beatIndex = 0;
     });
     if (_playing) {
@@ -207,7 +208,7 @@ class _OnboardingIntroScreenState extends ConsumerState<OnboardingIntroScreen> {
         _beatIndex--;
       } else {
         _chapterIndex--;
-        _beatIndex = kOnboardingChapters[_chapterIndex].beats.length - 1;
+        _beatIndex = _chapters[_chapterIndex].beats.length - 1;
       }
     });
     if (_playing) {
@@ -236,14 +237,26 @@ class _OnboardingIntroScreenState extends ConsumerState<OnboardingIntroScreen> {
   // Exit
   // -------------------------------------------------------------------------
 
-  Future<void> _exitTour() async {
-    _invalidatePlayback();
-    await VoiceGuidanceService.instance.stop();
+  /// Records that this tour was seen: the core tour consumes the one-time
+  /// auto-run flag, a section tour consumes its section flag. Both sync to the
+  /// account (best-effort) so other devices stay quiet.
+  Future<void> _markTourSeen() async {
     String? userId;
     try {
       userId = Supabase.instance.client.auth.currentUser?.id;
     } catch (_) {}
-    await OnboardingIntroService.instance.markIntroSeen(userId: userId);
+    final service = OnboardingIntroService.instance;
+    if (widget.tour.isCore) {
+      await service.markIntroSeen(userId: userId);
+    } else {
+      await service.markSectionSeen(widget.tour.id, userId: userId);
+    }
+  }
+
+  Future<void> _exitTour() async {
+    _invalidatePlayback();
+    await VoiceGuidanceService.instance.stop();
+    await _markTourSeen();
     if (mounted && Navigator.of(context).canPop()) {
       Navigator.of(context).pop();
     }
@@ -255,7 +268,6 @@ class _OnboardingIntroScreenState extends ConsumerState<OnboardingIntroScreen> {
 
   @override
   Widget build(BuildContext context) {
-    print('[ONBOARDING] build called');
     final l10n = ref.watch(localizationProvider);
     final colors = Theme.of(context).colorScheme;
     final rtl = Directionality.of(context) == TextDirection.rtl;
@@ -267,18 +279,12 @@ class _OnboardingIntroScreenState extends ConsumerState<OnboardingIntroScreen> {
         if (didPop) {
           _invalidatePlayback();
           unawaited(VoiceGuidanceService.instance.stop());
-          String? userId;
-          try {
-            userId = Supabase.instance.client.auth.currentUser?.id;
-          } catch (_) {}
-          unawaited(
-            OnboardingIntroService.instance.markIntroSeen(userId: userId),
-          );
+          unawaited(_markTourSeen());
         }
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(l10n.getString('onboardingTourTitle')),
+          title: ShrinkText(l10n.getString('onboardingTourTitle')),
           actions: [
             Center(
               child: Padding(
@@ -288,7 +294,7 @@ class _OnboardingIntroScreenState extends ConsumerState<OnboardingIntroScreen> {
                     'onboardingStepOf',
                     params: {
                       'current': '${_globalBeatIndex + 1}',
-                      'total': '$kOnboardingTotalBeats',
+                      'total': '${widget.tour.totalBeats}',
                     },
                   ),
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -467,16 +473,19 @@ class _OnboardingIntroScreenState extends ConsumerState<OnboardingIntroScreen> {
     ColorScheme colors,
     LocalizationState l10n,
   ) {
+    // Single-chapter section tours have nothing to page between.
+    if (_chapters.length < 2) return const SizedBox.shrink();
+    final chapters = _chapters;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
-        children: List.generate(kOnboardingChapters.length, (i) {
+        children: List.generate(chapters.length, (i) {
           final active = i == _chapterIndex;
           return Semantics(
             button: true,
             selected: active,
-            label: l10n.getString(kOnboardingChapters[i].titleKey),
+            label: l10n.getString(chapters[i].titleKey),
             child: GestureDetector(
               onTap: () => _goToChapter(i),
               child: Padding(

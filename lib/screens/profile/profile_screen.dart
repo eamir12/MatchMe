@@ -30,6 +30,9 @@ import 'package:matchme/widgets/app_empty_state.dart';
 import 'package:matchme/widgets/app_skeleton.dart';
 import 'package:matchme/models/sponsored_ad.dart';
 import 'package:matchme/widgets/photo_gallery_viewer.dart';
+import 'package:matchme/widgets/profile_completeness_card.dart';
+import 'package:matchme/screens/onboarding/onboarding_content.dart';
+import 'package:matchme/widgets/onboarding_section_prompt.dart';
 
 final supabase = Supabase.instance.client;
 
@@ -838,6 +841,14 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     // is what makes wizard saves reflect on this screen in realtime.
     ref.watch(profileSyncStateProvider(userId));
 
+    // Keep the rating realtime listener alive while this screen is open so the
+    // signed-in user's OWN rating block updates immediately when someone rates
+    // them. The listener force-refreshes the aggregate for this user id and
+    // invalidates `userRatingSummaryProvider(userId)`, which the rating section
+    // below watches. Without this watch, opening the app straight here (with no
+    // live matches list) could leave the notifier uninstantiated.
+    ref.watch(ratingSummaryRealtimeProvider);
+
     // Watch (not read) so every local-DB emission — including wizard saves
     // that happen while this route is underneath the wizard — rebuilds
     // immediately in realtime. See _ProfileView for the value-equal
@@ -950,6 +961,12 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
               child: ListView(
                 padding: const EdgeInsets.symmetric(vertical: 16.0),
                 children: [
+                  // First visit: offer the profile section tour once
+                  // (dismissible; replays stay available in Settings).
+                  OnboardingSectionPrompt(tour: kOnboardingProfileSectionTour),
+                  // Private completeness nudge: score, next steps and one-tap
+                  // routes into the wizard. Never shown to other users.
+                  ProfileCompletenessCard(profile: profile),
                   // Photos: show thumbnails in order. If none, show placeholder.
                   if (profile.photos.isNotEmpty)
                     Padding(
@@ -990,16 +1007,22 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                           placeholder: Container(
                                             width: 140,
                                             height: 140,
-                                            color: Colors.grey.shade100,
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .surfaceContainerHighest,
                                           ),
                                           errorWidget: Container(
                                             width: 140,
                                             height: 140,
-                                            color: Colors.grey.shade200,
-                                            child: const Icon(
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .surfaceContainerHighest,
+                                            child: Icon(
                                               Icons.broken_image,
                                               size: 36,
-                                              color: Colors.grey,
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .onSurfaceVariant,
                                             ),
                                           ),
                                         ),
@@ -1971,7 +1994,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                           .titleMedium
                                           ?.copyWith(
                                             fontWeight: FontWeight.bold,
-                                            color: Colors.black87,
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .onSurface,
                                           ),
                                     ),
                                   ],
@@ -2018,7 +2043,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                           .titleMedium
                                           ?.copyWith(
                                             fontWeight: FontWeight.bold,
-                                            color: Colors.black87,
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .onSurface,
                                           ),
                                     ),
                                   ],

@@ -21,6 +21,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:matchme/theme/app_button_styles.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class SecurityCenterScreen extends ConsumerStatefulWidget {
   const SecurityCenterScreen({super.key});
@@ -1634,7 +1635,7 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
     }
 
     return Scaffold(
-      appBar: AppBar(title: Text(l10n.getString('securityCenterTitle'))),
+      appBar: AppBar(title: ShrinkText(l10n.getString('securityCenterTitle'))),
       body: FutureBuilder<List<Object?>>(
         initialData: _cachedSnapshot?.toFutureBuilderData(),
         future: Future.wait<Object?>([

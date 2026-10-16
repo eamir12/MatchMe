@@ -14,7 +14,12 @@ import 'package:matchme/services/offline_mutation_queue.dart';
 import 'package:matchme/services/supabase_realtime_manager.dart';
 import 'package:matchme/services/storage_helper.dart';
 import 'package:matchme/services/offline_image_cache.dart';
+import 'package:matchme/services/mobile_local_notification_service.dart';
+import 'package:matchme/services/pinned_location_gate.dart';
+import 'package:matchme/services/email_change_service.dart';
+import 'package:matchme/providers/connected_online_accounts_provider.dart';
 import 'package:matchme/utils/offline_utils.dart';
+import 'package:matchme/utils/resume_route_restore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -450,6 +455,39 @@ class OfflineCacheManager {
       await prefs.remove('flutter.location_share_expires_at');
       await prefs.remove('oauth_original_session_json');
       await prefs.remove('oauth_original_user_id');
+      // Last-viewed-chat marker suppresses notifications for that chat, and
+      // notification dedup keys are per-account; never leak them across users.
+      await prefs.remove('viewing_chat_id');
+      await prefs.remove('flutter.viewing_chat_id');
+      await prefs.remove('flutter.last_notified_match_id');
+      await prefs.remove('flutter.worker_last_notified_key');
+      // Personal calendar URL + Google Calendar OAuth cache.
+      await prefs.remove('calendar_sync_apple_public_url');
+      await prefs.remove('google_calendar_access_token');
+      await prefs.remove('google_calendar_user_email');
+      // Location-related preferences (background matching, throttling, retro)
+      // belong to the outgoing account; reset so the next login starts from
+      // defaults instead of silently resuming tracking.
+      await prefs.remove('flutter.background_matching_mode');
+      await prefs.remove('flutter.background_matching_backup');
+      await prefs.remove('flutter.gps_interval');
+      await prefs.remove('flutter.smart_throttling_enabled');
+      await prefs.remove('flutter.retro_enabled');
+      await prefs.remove('flutter.retro_retention_hours');
+      // Visibility shim: next login defaults to visible.
+      await prefs.remove('manual_visibility');
+      await prefs.remove('effective_visibility');
+      await prefs.remove('user_visibility');
+      await prefs.setBool('manual_visibility', true);
+      await prefs.setBool('effective_visibility', false);
+      // Per-user country cache written by the nearby map.
+      final lastKnownCountryKeys = prefs
+          .getKeys()
+          .where((key) => key.startsWith('last_known_country_'))
+          .toList();
+      for (final key in lastKnownCountryKeys) {
+        await prefs.remove(key);
+      }
       // Translation mirrors are keyed by message ID, not account.
       final chatTranslationKeys = prefs
           .getKeys()
@@ -467,6 +505,26 @@ class OfflineCacheManager {
       }
       await StorageHelper.clearSessionCache();
       await CalendarSyncService.clearPersistedCalendarCredentials();
+      // Tray notifications, pending pinned-location sync, a pending
+      // email-change request, connected calendar accounts, and the resume
+      // route all carry outgoing-account context; wipe them so nothing
+      // surfaces for the next user.
+      try {
+        await MobileLocalNotificationService.cancelAll();
+      } catch (_) {}
+      try {
+        await PinnedLocationGate.clearPendingPin();
+        await PinnedLocationGate.clearPinCache();
+      } catch (_) {}
+      try {
+        await EmailChangeService.clearPendingEmailChange();
+      } catch (_) {}
+      try {
+        await ConnectedOnlineAccountsNotifier.clearPersistedAccounts();
+      } catch (_) {}
+      try {
+        await ResumeRouteRestore.clearPendingRoute();
+      } catch (_) {}
       // Wipe user-scoped SecureStorage keys (offline chat-cache DCK, native
       // encrypted copies) so the signed-out user's secrets don't persist.
       final secure = SecureStorageService.instance;

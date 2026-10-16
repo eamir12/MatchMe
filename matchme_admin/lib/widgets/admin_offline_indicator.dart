@@ -4,6 +4,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme_admin/services/admin_offline_cache_manager.dart';
+import 'package:matchme_admin/widgets/safe_text.dart';
 
 /// Stream provider that mirrors Supabase availability — reactive so the
 /// indicator automatically hides when connectivity is restored.
@@ -54,14 +55,13 @@ class AdminOfflineIndicator extends ConsumerWidget {
           Icon(Icons.cloud_off, size: 18, color: foregroundColor),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(
+            child: SafeText(
               tr('offlineIndicatorTitle'),
               style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w500,
                 color: foregroundColor,
               ),
-              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],

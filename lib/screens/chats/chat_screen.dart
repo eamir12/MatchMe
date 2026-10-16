@@ -48,6 +48,7 @@ import 'package:matchme/models/location_share_session.dart';
 import 'package:matchme/screens/location_share/location_share_map_screen.dart';
 import 'package:matchme/screens/location_share/location_share_duration_dialog.dart';
 import 'package:matchme/widgets/location_share_banner.dart';
+import 'package:matchme/widgets/safe_text.dart';
 import 'package:matchme/services/location_service.dart';
 
 SupabaseClient get supabase => Supabase.instance.client;
@@ -2129,10 +2130,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         ),
                       ),
                       const SizedBox(height: 2),
-                      Text(
+                      ShrinkText(
                         displayName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
                         textAlign: displayNameLayout.textAlign,
                         textDirection: displayNameLayout.textDirection,
                         style: Theme.of(context).textTheme.titleMedium,

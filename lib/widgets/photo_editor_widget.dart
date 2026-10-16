@@ -16,6 +16,7 @@ import 'package:http/http.dart' as http;
 import 'package:matchme/widgets/custom_camera_widget.dart';
 import 'package:matchme/widgets/photo_rejection_dialog.dart';
 import 'package:matchme/widgets/please_wait_dialog.dart';
+import 'package:matchme/widgets/safe_text.dart';
 import 'package:matchme/services/primary_selfie_capture.dart';
 
 class PhotoEditor {
@@ -385,7 +386,7 @@ class _ImageEditorDialogState extends ConsumerState<ImageEditorDialog> {
         child: Column(
           children: [
             AppBar(
-              title: Text(l10n.getString('editPhoto')),
+              title: ShrinkText(l10n.getString('editPhoto')),
               actions: [
                 IconButton(
                   icon: const Icon(Icons.rotate_right),

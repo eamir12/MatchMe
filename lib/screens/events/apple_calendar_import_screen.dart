@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class AppleCalendarImportScreen extends ConsumerStatefulWidget {
   const AppleCalendarImportScreen({super.key});
@@ -41,7 +42,7 @@ class _AppleCalendarImportScreenState
     final l10n = ref.watch(localizationProvider);
 
     return Scaffold(
-      appBar: AppBar(title: Text(l10n.getString('eventsImportApple'))),
+      appBar: AppBar(title: ShrinkText(l10n.getString('eventsImportApple'))),
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24.0),

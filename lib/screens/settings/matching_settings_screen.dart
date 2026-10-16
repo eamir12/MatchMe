@@ -21,6 +21,7 @@ import 'package:permission_handler/permission_handler.dart'
     show openAppSettings;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:ui' as ui;
+import 'package:matchme/widgets/safe_text.dart';
 
 class MatchingSettingsScreen extends ConsumerStatefulWidget {
   const MatchingSettingsScreen({super.key});
@@ -252,7 +253,7 @@ class _MatchingSettingsScreenState extends ConsumerState<MatchingSettingsScreen>
     );
 
     return Scaffold(
-      appBar: AppBar(title: Text(l10n.getString('settingsMatching'))),
+      appBar: AppBar(title: ShrinkText(l10n.getString('settingsMatching'))),
       body: profileEditState.when(
         data: (profile) {
           if (profile == null) {

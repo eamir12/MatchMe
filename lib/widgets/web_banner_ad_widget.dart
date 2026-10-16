@@ -84,8 +84,10 @@ class _WebBannerAdWidgetState extends ConsumerState<WebBannerAdWidget> {
       width: widget.responsive ? double.infinity : widget.width.toDouble(),
       height: widget.height.toDouble(),
       decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border.all(color: Colors.grey[300]!),
+        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        border: Border.all(
+          color: Theme.of(context).colorScheme.outlineVariant,
+        ),
         borderRadius: BorderRadius.circular(4),
       ),
       child: Material(
@@ -99,8 +101,12 @@ class _WebBannerAdWidgetState extends ConsumerState<WebBannerAdWidget> {
               Container(
                 width: widget.height.toDouble(),
                 height: widget.height.toDouble(),
-                color: Colors.blue[100],
-                child: Icon(Icons.image, color: Colors.blue[400], size: 24),
+                color: Theme.of(context).colorScheme.primaryContainer,
+                child: Icon(
+                  Icons.image,
+                  color: Theme.of(context).colorScheme.onPrimaryContainer,
+                  size: 24,
+                ),
               ),
               // Ad content
               Expanded(
@@ -116,7 +122,7 @@ class _WebBannerAdWidgetState extends ConsumerState<WebBannerAdWidget> {
                       Text(
                         l10n.getString('webAdTryPremium'),
                         style: TextStyle(
-                          color: Colors.grey[800],
+                          color: Theme.of(context).colorScheme.onSurface,
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
                         ),
@@ -126,7 +132,12 @@ class _WebBannerAdWidgetState extends ConsumerState<WebBannerAdWidget> {
                       const SizedBox(height: 2),
                       Text(
                         l10n.getString('webAdUnlockFeatures'),
-                        style: TextStyle(color: Colors.grey[600], fontSize: 11),
+                        style: TextStyle(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant,
+                          fontSize: 11,
+                        ),
                         maxLines: 2,
                         overflow: TextOverflow.visible,
                       ),
@@ -137,13 +148,13 @@ class _WebBannerAdWidgetState extends ConsumerState<WebBannerAdWidget> {
                           vertical: 2,
                         ),
                         decoration: BoxDecoration(
-                          color: Colors.blue[600],
+                          color: Theme.of(context).colorScheme.primary,
                           borderRadius: BorderRadius.circular(2),
                         ),
                         child: Text(
                           l10n.getString('webAdLearnMore'),
                           style: TextStyle(
-                            color: Colors.white,
+                            color: Theme.of(context).colorScheme.onPrimary,
                             fontSize: 10,
                             fontWeight: FontWeight.w500,
                           ),

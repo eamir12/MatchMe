@@ -330,8 +330,10 @@ async function fetchBadgeCount(
     const messages = Number(r?.["unread_messages_count"] ?? 0);
     const total = (Number.isFinite(matches) ? matches : 0) +
       (Number.isFinite(messages) ? messages : 0);
-    if (total <= 0) return 1;
-    return Math.min(99, Math.max(1, Math.floor(total)));
+    // Allow 0: a push whose recomputed count is empty (e.g. message
+    // retraction after everything was read) must clear the iOS icon badge,
+    // not stamp a phantom "1" that never goes away.
+    return Math.min(99, Math.max(0, Math.floor(total)));
   } catch (_) {
     return 1;
   }
@@ -501,7 +503,7 @@ async function sendFcmV1({
   const resolvedChannel = String(channelId ?? "chat_messages").trim() ||
     "chat_messages";
   const resolvedBadge = typeof badge === "number" && Number.isFinite(badge)
-    ? Math.min(99, Math.max(1, Math.floor(badge)))
+    ? Math.min(99, Math.max(0, Math.floor(badge)))
     : 1;
   // Silent (retraction) pushes carry data only: no tray card, just a wakeup
   // so clients can cancel/rebuild the grouped chat notification. iOS needs

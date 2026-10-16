@@ -20,6 +20,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'dart:async';
+import 'package:matchme/widgets/safe_text.dart';
 
 enum CalendarProvider { google, outlook, apple, device }
 
@@ -1783,7 +1784,7 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(
+        title: ShrinkText(
           isAppleOnlineImportTitle
               ? l10n.getString('calendarSyncAppleOnlineImportTitle')
               : isDeviceImportTitle

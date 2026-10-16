@@ -20,6 +20,7 @@ import 'package:intl/intl.dart' show DateFormat;
 import 'package:matchme_admin/services/system_health_monitor.dart';
 import 'package:matchme_admin/widgets/system_health_cards.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:matchme_admin/widgets/safe_text.dart';
 
 class _SeriesSample {
   const _SeriesSample(this.at, this.payload);
@@ -549,13 +550,11 @@ class _SystemHealthHistoryScreenState extends State<SystemHealthHistoryScreen> {
               if ('${e['edge_last_error'] ?? ''}'.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(left: 16, top: 2, bottom: 4),
-                  child: Text(
+                  child: SafeText(
                     '${e['edge_last_error']}',
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: Colors.orange,
                     ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               _kvRow(
@@ -571,7 +570,7 @@ class _SystemHealthHistoryScreenState extends State<SystemHealthHistoryScreen> {
                   (e['cron_last_failed_tasks'] as List).isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(left: 16, top: 2, bottom: 4),
-                  child: Text(
+                  child: SafeText(
                     t('adminHealthErrorsFailedTasks', params: {
                       'tasks':
                           (e['cron_last_failed_tasks'] as List).join(', '),
@@ -579,8 +578,6 @@ class _SystemHealthHistoryScreenState extends State<SystemHealthHistoryScreen> {
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: Colors.orange,
                     ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               _kvRow(
@@ -594,7 +591,7 @@ class _SystemHealthHistoryScreenState extends State<SystemHealthHistoryScreen> {
               if ('${e['app_last_message'] ?? ''}'.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(left: 16, top: 2),
-                  child: Text(
+                  child: SafeText(
                     t('adminHealthErrorsAppLast', params: {
                       'source': '${e['app_last_source'] ?? '—'}',
                       'message': '${e['app_last_message']}',
@@ -602,8 +599,6 @@ class _SystemHealthHistoryScreenState extends State<SystemHealthHistoryScreen> {
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: Colors.orange,
                     ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
             ],
@@ -978,7 +973,7 @@ class _SystemHealthHistoryScreenState extends State<SystemHealthHistoryScreen> {
       textDirection: widget.textDirection,
       child: Scaffold(
         appBar: AppBar(
-          title: Text(t('adminHealthHistoryTitle')),
+          title: ShrinkText(t('adminHealthHistoryTitle')),
         ),
         body: RefreshIndicator(
           onRefresh: _fetch,

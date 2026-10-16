@@ -7,6 +7,7 @@ import 'package:matchme/services/error_localization_service.dart';
 import 'package:matchme/utils/otp_utils.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/theme/app_button_styles.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class EmailChangeScreen extends ConsumerStatefulWidget {
   const EmailChangeScreen({super.key});
@@ -302,7 +303,7 @@ class _EmailChangeScreenState extends ConsumerState<EmailChangeScreen> {
     final currentUser = Supabase.instance.client.auth.currentUser;
 
     return Scaffold(
-      appBar: AppBar(title: Text(_getTranslation('settingsChangeEmailTitle'))),
+      appBar: AppBar(title: ShrinkText(_getTranslation('settingsChangeEmailTitle'))),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(

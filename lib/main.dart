@@ -15,6 +15,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:app_links/app_links.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:matchme/firebase_options.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/foundation.dart'
@@ -40,7 +41,6 @@ import 'package:matchme/providers/visibility_provider.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/utils/resume_diagnostics.dart';
 import 'package:matchme/utils/string_extensions.dart';
-import 'package:matchme/theme/semantic_colors.dart';
 import 'package:matchme/theme/app_theme_tokens.dart';
 import 'package:matchme/screens/auth/auth_screen.dart';
 import 'package:matchme/screens/auth/profile_check_screen.dart';
@@ -90,6 +90,7 @@ import 'package:quick_actions/quick_actions.dart';
 
 import 'package:matchme/screens/chats/chat_screen.dart';
 import 'package:matchme/providers/home_providers.dart';
+import 'package:matchme/providers/icon_badge_provider.dart';
 import 'package:matchme/providers/chat_provider.dart'
     show
         clearUserScopedChatMemoryCaches,
@@ -113,6 +114,7 @@ import 'package:timezone/timezone.dart' as tz;
 import 'package:matchme/services/mobile_local_notification_service.dart';
 import 'package:matchme/services/app_badge_service.dart';
 import 'package:matchme/services/voice_guidance_service.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 final container = ProviderContainer();
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -1733,6 +1735,27 @@ Future<void> _processEmailChangeDeepLink(Uri uri) async {
   }
 }
 
+/// Closes the in-app browser that hosted a provider sign-in flow, if one is
+/// still on screen.
+///
+/// On iOS, `url_launcher` opens the OAuth URL (https) in an in-app
+/// SFSafariViewController for [LaunchMode.platformDefault]. That view does not
+/// dismiss itself when the provider redirects back into the app through the
+/// `com.example.matchme://login-callback` custom scheme, so after a successful
+/// login it lingers as a blank page the user must close by tapping "Done".
+/// Android opens an external browser/Custom Tab instead, which the system
+/// handles correctly, so nothing is done there. Calls are a no-op when no
+/// browser is open (cold start, user already tapped "Done", etc.).
+Future<void> _dismissLingeringAuthBrowser() async {
+  if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
+  try {
+    await closeInAppWebView();
+    debugPrint('[OAuth] Closed lingering in-app auth browser');
+  } catch (e) {
+    debugPrint('⚠️ [OAuth] Could not close in-app auth browser: $e');
+  }
+}
+
 Future<void> _processOAuthDeepLink(Uri uri) async {
   debugPrint(
     '[BOOTSTRAP] [OAuth] Processing deep link: ${uri.scheme}://${uri.host}',
@@ -1746,6 +1769,10 @@ Future<void> _processOAuthDeepLink(Uri uri) async {
 
   debugPrint('[BOOTSTRAP] [OAuth] Matched login-callback pattern');
   debugPrint('[BOOTSTRAP] [OAuth] Query params: ${uri.queryParameters}');
+
+  // The callback has arrived (success or error) - take the user back out of
+  // the in-app browser on iOS before processing it.
+  await _dismissLingeringAuthBrowser();
 
   final code = uri.queryParameters['code']?.trim();
   final state = uri.queryParameters['state']?.trim();
@@ -2436,14 +2463,6 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
   await Future.delayed(Duration.zero);
   try {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    SystemChrome.setSystemUIOverlayStyle(
-      const SystemUiOverlayStyle(
-        statusBarColor: Colors.white,
-        statusBarIconBrightness: Brightness.dark,
-        systemNavigationBarColor: Colors.white,
-        systemNavigationBarIconBrightness: Brightness.dark,
-      ),
-    );
   } catch (e, st) {
     _reportNonFatal(e, st);
   }
@@ -2470,6 +2489,43 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
 
   await ensurePluginsReady();
   traceBootstrap('plugins_ready');
+
+  // Apply an initial system-bar style that matches the user's saved theme so
+  // the startup frames never flash a light status bar in dark mode. The runtime
+  // theme builder re-applies the same style on every rebuild.
+  try {
+    var isDark =
+        WidgetsBinding.instance.platformDispatcher.platformBrightness ==
+        Brightness.dark;
+    var amoledEnabled = false;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      amoledEnabled = prefs.getBool(AmoledThemeNotifier.prefsKey) ?? false;
+      final savedThemeMode = prefs.getString('theme_mode');
+      if (savedThemeMode == 'dark') {
+        isDark = true;
+      } else if (savedThemeMode == 'light') {
+        isDark = false;
+      }
+    } catch (_) {}
+    final barColor = isDark
+        ? (amoledEnabled
+              ? AppThemeTokens.amoledSurface
+              : AppThemeTokens.darkSurface)
+        : AppThemeTokens.lightSurface;
+    SystemChrome.setSystemUIOverlayStyle(
+      SystemUiOverlayStyle(
+        statusBarColor: barColor,
+        statusBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+        systemNavigationBarColor: barColor,
+        systemNavigationBarIconBrightness: isDark
+            ? Brightness.light
+            : Brightness.dark,
+      ),
+    );
+  } catch (e, st) {
+    _reportNonFatal(e, st);
+  }
 
   await initializeAppConfigCache();
   traceBootstrap('app_config_cache_ready');
@@ -4085,7 +4141,7 @@ class MissingSupabaseKeyApp extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(LocalizationState.defaultTranslation('configRequired')),
+        title: ShrinkText(LocalizationState.defaultTranslation('configRequired')),
       ),
       body: Padding(
         padding: const EdgeInsets.all(20.0),
@@ -4115,7 +4171,7 @@ class SupabaseInitErrorApp extends StatelessWidget {
     final title = LocalizationState.defaultTranslation('supabaseInitFailed');
     final body = LocalizationState.defaultTranslation('supabaseInitFailedBody');
     return Scaffold(
-      appBar: AppBar(title: Text(title)),
+      appBar: AppBar(title: ShrinkText(title)),
       body: Padding(
         padding: const EdgeInsets.all(20.0),
         child: Column(
@@ -4186,6 +4242,7 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
   bool _quickActionsDisabled = false;
   bool _deferredTasksStarted = false;
   bool _translationSyncRunning = false;
+  bool _initialBadgeSyncDone = false;
   DateTime? _lastTranslationSyncAt;
   DateTime? _lastResumeSyncAt;
   void Function()? _realtimeRestoreUnregister;
@@ -4629,12 +4686,39 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
           SystemUiMode.manual,
           overlays: [SystemUiOverlay.top, SystemUiOverlay.bottom],
         );
+        // Keep the retried overlay styles in sync with the active theme mode,
+        // otherwise a delayed retry would repaint light bars over a dark UI.
+        ThemeMode mode;
+        try {
+          mode = container.read(themeModeProvider);
+        } catch (_) {
+          mode = ThemeMode.system;
+        }
+        var amoledEnabled = false;
+        try {
+          amoledEnabled = container.read(amoledThemeProvider);
+        } catch (_) {}
+        final platformDark =
+            WidgetsBinding.instance.platformDispatcher.platformBrightness ==
+            Brightness.dark;
+        final isDark =
+            mode == ThemeMode.dark ||
+            (mode == ThemeMode.system && platformDark);
+        final barColor = isDark
+            ? (amoledEnabled
+                  ? AppThemeTokens.amoledSurface
+                  : AppThemeTokens.darkSurface)
+            : AppThemeTokens.lightSurface;
         SystemChrome.setSystemUIOverlayStyle(
-          const SystemUiOverlayStyle(
-            statusBarColor: Colors.white,
-            statusBarIconBrightness: Brightness.dark,
-            systemNavigationBarColor: Colors.white,
-            systemNavigationBarIconBrightness: Brightness.dark,
+          SystemUiOverlayStyle(
+            statusBarColor: barColor,
+            statusBarIconBrightness: isDark
+                ? Brightness.light
+                : Brightness.dark,
+            systemNavigationBarColor: barColor,
+            systemNavigationBarIconBrightness: isDark
+                ? Brightness.light
+                : Brightness.dark,
           ),
         );
       } catch (_) {}
@@ -4732,6 +4816,16 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
       AdminBroadcastService.setAppInForeground(false);
     } else if (state == AppLifecycleState.resumed) {
       unawaited(ResumeRouteRestore.clearPendingRoute());
+
+      // Re-assert the icon badge from local truth. iOS applies `aps.badge`
+      // from pushes that arrived while backgrounded/killed, and that server
+      // count can drift from what the app actually shows (e.g. matches the
+      // user already viewed). Without this, a stale badge could survive a
+      // plain app open — the exact bug where the red dot never went away.
+      final currentBadge = ref.read(iconBadgeCountProvider);
+      if (currentBadge != null) {
+        unawaited(AppBadgeService.setCount(currentBadge));
+      }
       // Dump the native background service's event log BEFORE telling it the
       // UI is foreground again, so the snapshot reflects the background period.
       () async {
@@ -4897,6 +4991,28 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
     );
     final localization = ref.watch(localizationProvider);
     final authState = ref.watch(authStateProvider);
+
+    // Keep the OS app-icon badge in lockstep with the in-app unread state
+    // (match banners + unread chats + notification inbox). Previously the
+    // badge was only cleared by tapping a push notification, so opening the
+    // app from the home-screen icon left a stale red badge forever.
+    ref.listen<int?>(iconBadgeCountProvider, (previous, next) {
+      if (next == null) return;
+      unawaited(AppBadgeService.setCount(next));
+    });
+    // One-shot: a listener only fires on *changes*, so if chat data is
+    // already cached at first build (value never transitions through null)
+    // the stale OS badge would otherwise survive this cold start.
+    if (!_initialBadgeSyncDone) {
+      _initialBadgeSyncDone = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final initialBadge = ref.read(iconBadgeCountProvider);
+        if (initialBadge != null) {
+          unawaited(AppBadgeService.setCount(initialBadge));
+        }
+      });
+    }
 
     // Register quick actions localization listener once, when quick actions are available.
     if (!_quickActionsListenerRegistered && _quickActions != null) {
@@ -5158,6 +5274,11 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
       },
     };
 
+    // Theme mode controlled by provider. Watched here (before the startup
+    // loading gate below) so the very first MaterialApp already renders with
+    // the user's saved theme instead of flashing light.
+    final themeMode = ref.watch(themeModeProvider);
+
     // Skip localization loading screen when offline - we have all local data
     // needed to show the app immediately. The authState check below handles
     // the real startup gate.
@@ -5172,6 +5293,13 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
         navigatorKey: navigatorKey,
         onGenerateRoute: appOnGenerateRoute,
         routes: appRoutes,
+        theme: AppThemeTokens.lightThemeData(
+          textTheme: ThemeData.light().textTheme,
+        ),
+        darkTheme: AppThemeTokens.darkThemeData(
+          textTheme: ThemeData.dark().textTheme,
+        ),
+        themeMode: themeMode,
         home: const StartupLoaderScaffold(),
       );
     }
@@ -5248,8 +5376,6 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
       themeFallbacks,
     );
 
-    // Theme mode controlled by provider
-    final themeMode = ref.watch(themeModeProvider);
     final currentUserId = authState.asData?.value.session?.user.id;
     final currentUserProfile = currentUserId == null
         ? null
@@ -5258,97 +5384,11 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
       dateOfBirth: currentUserProfile?.dateOfBirth,
       userTimezone: currentUserProfile?.userTimezone,
     );
-    final darkSecondary = const Color(0xFFEC4899);
-    final darkSurface = const Color(0xFF0F172A);
-    final darkOnSurface = const Color(0xFFE6EEF8);
-    final lightSecondary = const Color(0xFFEC4899);
-    final lightTertiary = const Color(0xFFF59E0B);
-    final lightSurface = const Color(0xFFF8FAFC);
-    final lightOnSurface = const Color(0xFF1E293B);
 
-    // Dark theme
-    final colorSchemeDark =
-        AppThemeTokens.applyDarkPrimary(
-          ColorScheme.fromSeed(
-            seedColor: AppThemeTokens.darkSeedColor,
-            brightness: Brightness.dark,
-          ),
-        ).copyWith(
-          secondary: darkSecondary,
-          surface: darkSurface,
-          onSurface: darkOnSurface,
-        );
-
-    final darkTheme = ThemeData(
-      useMaterial3: true,
-      brightness: Brightness.dark,
-      colorScheme: colorSchemeDark,
-      appBarTheme: AppBarTheme(
-        backgroundColor: colorSchemeDark.surface,
-        foregroundColor: colorSchemeDark.onSurface,
-        elevation: 0,
-        shadowColor: Colors.transparent,
-        surfaceTintColor: Colors.transparent,
-        titleTextStyle: TextStyle(
-          fontFamily: 'Noto Sans',
-          fontSize: 20,
-          fontWeight: FontWeight.w600,
-          color: colorSchemeDark.onSurface,
-        ),
-      ),
-      navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: colorSchemeDark.surface,
-        indicatorColor: colorSchemeDark.primary.withValues(alpha: 0.18),
-        surfaceTintColor: Colors.transparent,
-        elevation: 2,
-        labelTextStyle: WidgetStatePropertyAll(
-          const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-        ),
-      ),
-      navigationRailTheme: NavigationRailThemeData(
-        backgroundColor: colorSchemeDark.surface,
-        indicatorColor: colorSchemeDark.primary.withValues(alpha: 0.18),
-        selectedIconTheme: IconThemeData(color: colorSchemeDark.primary),
-        unselectedIconTheme: IconThemeData(
-          color: colorSchemeDark.onSurfaceVariant,
-        ),
-        selectedLabelTextStyle: TextStyle(
-          fontWeight: FontWeight.w600,
-          color: colorSchemeDark.primary,
-        ),
-        unselectedLabelTextStyle: TextStyle(
-          color: colorSchemeDark.onSurfaceVariant,
-        ),
-      ),
-      textTheme: finalTextTheme.apply(
-        bodyColor: Colors.white,
-        displayColor: Colors.white,
-      ),
-      // Semantic success colors for status indicators (dark)
-      extensions: const <ThemeExtension<dynamic>>[
-        // success = green-400, successContainer = green-900 translucent
-        // Chosen to be visible on dark backgrounds
-        SemanticColors(
-          success: Color(0xFF34D399),
-          successContainer: Color(0xFF052E16),
-        ),
-      ],
-    );
-
-    // Light theme color scheme declared here so we can reference 'surface' consistently
-    final colorSchemeLight =
-        AppThemeTokens.applyLightPrimary(
-          ColorScheme.fromSeed(
-            seedColor: AppThemeTokens.lightSeedColor,
-            brightness: Brightness.light,
-          ),
-        ).copyWith(
-          secondary: lightSecondary,
-          tertiary: lightTertiary,
-          surface: lightSurface,
-          onSecondary: Colors.white,
-          onSurface: lightOnSurface,
-        );
+    final amoledEnabled = ref.watch(amoledThemeProvider);
+    final darkTheme = amoledEnabled
+        ? AppThemeTokens.amoledDarkThemeData(textTheme: finalTextTheme)
+        : AppThemeTokens.darkThemeData(textTheme: finalTextTheme);
 
     return MaterialApp(
       debugShowCheckedModeBanner: false,
@@ -5463,168 +5503,7 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
           ),
         );
       },
-      theme: ThemeData(
-        useMaterial3: true,
-        brightness: Brightness.light,
-        // Add a conservative fontFamilyFallback so ASCII digits can fall back to a Latin font
-        // with more conventional digit glyphs when needed. This helps avoid proportional or
-        // spaced digit glyphs showing up unexpectedly in Hebrew UI due to font fallbacks.
-        fontFamilyFallback: [
-          'Noto Sans',
-          'Roboto',
-          'Segoe UI',
-          'Helvetica Neue',
-        ],
-        colorScheme: colorSchemeLight,
-        // Semantic success colors for status indicators (light)
-        extensions: const <ThemeExtension<dynamic>>[
-          // success = green-500, successContainer = light green background
-          SemanticColors(
-            success: Color(0xFF10B981),
-            successContainer: Color(0xFFDCFCE7),
-          ),
-        ],
-
-        appBarTheme: AppBarTheme(
-          backgroundColor: colorSchemeLight.surface,
-          foregroundColor: colorSchemeLight.onSurface,
-          elevation: 0,
-          shadowColor: Colors.transparent,
-          surfaceTintColor: Colors.transparent,
-          titleTextStyle: TextStyle(
-            fontFamily: 'Noto Sans',
-            fontSize: 20,
-            fontWeight: FontWeight.w600,
-            color: colorSchemeLight.onSurface,
-          ),
-        ),
-        elevatedButtonTheme: ElevatedButtonThemeData(
-          style: ElevatedButton.styleFrom(
-            backgroundColor: colorSchemeLight.primary,
-            foregroundColor: colorSchemeLight.onPrimary,
-            elevation: 0,
-            shadowColor: Colors.transparent,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-            textStyle: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-        filledButtonTheme: FilledButtonThemeData(
-          style: FilledButton.styleFrom(
-            backgroundColor: colorSchemeLight.primary,
-            foregroundColor: colorSchemeLight.onPrimary,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-          ),
-        ),
-        outlinedButtonTheme: OutlinedButtonThemeData(
-          style: OutlinedButton.styleFrom(
-            foregroundColor: colorSchemeLight.primary,
-            side: BorderSide(color: colorSchemeLight.primary, width: 1.5),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-          ),
-        ),
-        navigationBarTheme: NavigationBarThemeData(
-          backgroundColor: colorSchemeLight.surface,
-          indicatorColor: colorSchemeLight.primary.withValues(alpha: 0.14),
-          surfaceTintColor: Colors.transparent,
-          elevation: 2,
-          labelTextStyle: WidgetStatePropertyAll(
-            const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-          ),
-        ),
-        navigationRailTheme: NavigationRailThemeData(
-          backgroundColor: colorSchemeLight.surface,
-          indicatorColor: colorSchemeLight.primary.withValues(alpha: 0.14),
-          selectedIconTheme: IconThemeData(color: colorSchemeLight.primary),
-          unselectedIconTheme: IconThemeData(
-            color: colorSchemeLight.onSurfaceVariant,
-          ),
-          selectedLabelTextStyle: TextStyle(
-            fontWeight: FontWeight.w600,
-            color: colorSchemeLight.primary,
-          ),
-          unselectedLabelTextStyle: TextStyle(
-            color: colorSchemeLight.onSurfaceVariant,
-          ),
-        ),
-        cardTheme: CardThemeData(
-          elevation: 4,
-          shadowColor: Colors.black.withValues(alpha: 0.1),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          color: colorSchemeLight.surface,
-        ),
-        chipTheme: ChipThemeData(
-          backgroundColor: colorSchemeLight.surfaceContainerHighest,
-          selectedColor: colorSchemeLight.primary.withValues(alpha: 0.1),
-          checkmarkColor: colorSchemeLight.primary,
-          labelStyle: TextStyle(color: colorSchemeLight.onSurface),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        ),
-        inputDecorationTheme: InputDecorationTheme(
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(
-              color: colorSchemeLight.surfaceContainerHighest,
-            ),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide(color: colorSchemeLight.primary, width: 2),
-          ),
-          labelStyle: TextStyle(
-            color: colorSchemeLight.onSurface.withValues(alpha: 0.7),
-          ),
-          filled: true,
-          fillColor: colorSchemeLight.surface,
-        ),
-        textTheme: finalTextTheme
-            .apply(
-              bodyColor: colorSchemeLight.onSurface,
-              displayColor: colorSchemeLight.onSurface,
-            )
-            .copyWith(
-              headlineLarge: finalTextTheme.headlineLarge?.copyWith(
-                inherit: true,
-                fontWeight: FontWeight.w700,
-                letterSpacing: -0.5,
-              ),
-              headlineMedium: finalTextTheme.headlineMedium?.copyWith(
-                inherit: true,
-                fontWeight: FontWeight.w600,
-                letterSpacing: -0.25,
-              ),
-              titleLarge: finalTextTheme.titleLarge?.copyWith(
-                inherit: true,
-                fontWeight: FontWeight.w600,
-              ),
-              bodyLarge: finalTextTheme.bodyLarge?.copyWith(
-                inherit: true,
-                fontWeight: FontWeight.w400,
-                height: 1.5,
-              ),
-            ),
-        dividerTheme: DividerThemeData(
-          color: colorSchemeLight.surfaceContainerHighest,
-          thickness: 1,
-        ),
-      ),
+      theme: AppThemeTokens.lightThemeData(textTheme: finalTextTheme),
       home: Directionality(
         textDirection: localization.textDirection,
         child: authState.when(

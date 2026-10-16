@@ -261,6 +261,22 @@ class ConnectedOnlineAccountsNotifier
     await _writeAccountsJson(accountsJson);
   }
 
+  /// Wipe the persisted blob (SecureStorage + legacy prefs) so a signed-out
+  /// account's OAuth tokens, emails, and imported events never survive logout.
+  static Future<void> clearPersistedAccounts() async {
+    try {
+      await SecureStorageService.instance.delete(
+        _connectedOnlineAccountsStorageKey,
+      );
+    } catch (_) {}
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.containsKey(_connectedOnlineAccountsStorageKey)) {
+        await prefs.remove(_connectedOnlineAccountsStorageKey);
+      }
+    } catch (_) {}
+  }
+
   Future<void> addOrUpdateAccount(ConnectedOnlineAccount account) async {
     final next = [...state];
     final index = next.indexWhere(

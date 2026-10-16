@@ -14,6 +14,7 @@ import 'package:intl/intl.dart' show DateFormat;
 import 'package:matchme_admin/services/system_health_monitor.dart';
 import 'package:matchme_admin/utils/open_attachment.dart';
 import 'package:matchme_admin/widgets/system_health_pill.dart';
+import 'package:matchme_admin/widgets/safe_text.dart';
 
 typedef AdminHealthTextLookup =
     String Function(String key, {Map<String, String>? params});
@@ -516,6 +517,12 @@ class SystemHealthCards {
           _kv(
             t,
             theme,
+            t('adminHealthQueueSentHour'),
+            '${asInt(q['sent_last_hour'])}',
+          ),
+          _kv(
+            t,
+            theme,
             t('adminHealthQueueFailedHour'),
             '${asInt(q['failed_last_hour'])}',
           ),
@@ -536,6 +543,46 @@ class SystemHealthCards {
                 fontWeight: FontWeight.w600,
               ),
             ),
+          ],
+          if (s.queueFailures.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              t('adminHealthQueueRecentFailures', params: {
+                'count': '${s.queueFailures.length}',
+              }),
+              style: theme.textTheme.labelMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 2),
+            for (final row in s.queueFailures)
+              Padding(
+                padding: const EdgeInsets.only(left: 16, top: 2, bottom: 2),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SafeText(
+                          (row.title == null || row.title!.isEmpty)
+                              ? t('adminHealthQueueFailureUntitled')
+                              : row.title!,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                    SafeText(
+                          [
+                            agoLabel(row.createdAt),
+                            t('adminHealthQueueFailureAttempts', params: {
+                              'attempts': '${row.attempts}',
+                            }),
+                            if (row.reason != null && row.reason!.isNotEmpty)
+                              row.reason!,
+                          ].join(' · '),
+                          style: theme.textTheme.labelSmall,
+                        ),
+                  ],
+                ),
+              ),
           ],
         ],
       ],
@@ -616,7 +663,7 @@ class SystemHealthCards {
               e.appLastMessage!.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(left: 16, top: 2),
-              child: Text(
+              child: SafeText(
                 t('adminHealthErrorsAppLast', params: {
                   'source': e.appLastSource ?? '—',
                   'message': e.appLastMessage!,
@@ -624,8 +671,6 @@ class SystemHealthCards {
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: Colors.orange,
                 ),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
               ),
             ),
         ],
@@ -705,7 +750,7 @@ class SystemHealthCards {
               (l.authLastErrorMessage?.isNotEmpty ?? false))
             Padding(
               padding: const EdgeInsets.only(left: 16, top: 2),
-              child: Text(
+              child: SafeText(
                 t('adminHealthAuthLastError', params: {
                   'action': l.authLastErrorAction ?? '—',
                   'message': l.authLastErrorMessage!,
@@ -715,8 +760,6 @@ class SystemHealthCards {
                       ? Colors.red
                       : Colors.orange,
                 ),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
               ),
             ),
           if (authWarnings.isNotEmpty) ...[

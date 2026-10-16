@@ -4,6 +4,7 @@ import 'package:matchme/widgets/promo_code_input.dart';
 import 'package:matchme/services/promo_code_service.dart';
 import 'package:matchme/providers/app_config_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 /// User-facing screen for subscription purchase with promo code support
 /// Integrate this into your subscription/payment flow
@@ -54,7 +55,7 @@ class _SubscriptionPaymentScreenState
         'true';
 
     return Scaffold(
-      appBar: AppBar(title: Text(l10n.getString('paywallTitle')), elevation: 0),
+      appBar: AppBar(title: ShrinkText(l10n.getString('paywallTitle')), elevation: 0),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(

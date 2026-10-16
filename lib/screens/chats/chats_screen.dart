@@ -18,6 +18,7 @@ import 'package:matchme/utils/chat_inbox_utils.dart';
 import 'package:matchme/widgets/list_filter_bar.dart';
 import 'package:matchme/providers/chat_search_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 final supabase = Supabase.instance.client;
 
@@ -533,7 +534,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                               .titleMedium
                               ?.copyWith(fontWeight: FontWeight.w700),
                         ),
-                        Text(
+                        SafeText(
                           l10n.getString('chatsArchivedHint'),
                           style: Theme.of(context)
                               .textTheme
@@ -543,8 +544,6 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                                     .colorScheme
                                     .onSurfaceVariant,
                               ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
                         ),
                       ],
                     ),
@@ -878,7 +877,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
     // when shown inside MainNavigationScreen).
     if (widget.showAppBar) {
       return Scaffold(
-        appBar: AppBar(title: Text(l10n.getString('chatsScreenTitle'))),
+        appBar: AppBar(title: ShrinkText(l10n.getString('chatsScreenTitle'))),
         body: content,
       );
     }

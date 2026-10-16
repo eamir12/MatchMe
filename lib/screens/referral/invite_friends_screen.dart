@@ -7,6 +7,7 @@ import 'package:matchme/services/referral_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class InviteFriendsScreen extends ConsumerStatefulWidget {
   const InviteFriendsScreen({super.key});
@@ -99,7 +100,7 @@ class _InviteFriendsScreenState extends ConsumerState<InviteFriendsScreen> {
     final userProfileAsync = ref.watch(userProfileProvider(userId));
 
     return Scaffold(
-      appBar: AppBar(title: Text(l10n.getString('inviteFriendsTitle'))),
+      appBar: AppBar(title: ShrinkText(l10n.getString('inviteFriendsTitle'))),
       body: userProfileAsync.when(
         data: (profile) {
           final code = _cachedReferralCode ?? profile?.referralCode;

@@ -15,7 +15,9 @@ import 'package:matchme/screens/settings/matching_settings_screen.dart';
 import 'package:matchme/screens/settings/account_management_screen.dart';
 import 'package:matchme/screens/settings/invisibility_rules_screen.dart';
 import 'package:matchme/screens/settings/match_preferences_screen.dart';
-import 'package:matchme/screens/onboarding/onboarding_intro_screen.dart';
+import 'package:matchme/screens/settings/app_tour_screen.dart';
+import 'package:matchme/screens/onboarding/onboarding_content.dart';
+import 'package:matchme/widgets/onboarding_section_prompt.dart';
 import 'package:matchme/screens/paywall/paywall_screen.dart';
 import 'package:matchme/screens/referral/invite_friends_screen.dart';
 import 'package:matchme/screens/legal/legal_document_screen.dart';
@@ -29,6 +31,7 @@ import 'package:matchme/widgets/app_empty_state.dart';
 import 'package:matchme/widgets/app_skeleton.dart';
 import 'package:matchme/utils/directional_icons.dart';
 import 'package:matchme/utils/string_extensions.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 /// The categories the main settings menu is grouped into. Each category owns
 /// a single accent color (see `_SettingsScreenState._sectionScope`) so the
@@ -154,9 +157,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
         return colors.tertiary;
       case _SettingsSection.account:
         // Green — identity and trust, matching the verified status color.
-        return Theme.of(
-          context,
-        ).extension<SemanticColors>()?.success ?? Colors.green;
+        return Theme.of(context).extension<SemanticColors>()?.success ??
+            Colors.green;
     }
   }
 
@@ -446,9 +448,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                     textInputAction: TextInputAction.search,
                     textDirection: queryIsEmpty
                         ? Directionality.of(context)
-                        : (queryIsRtl
-                              ? TextDirection.rtl
-                              : TextDirection.ltr),
+                        : (queryIsRtl ? TextDirection.rtl : TextDirection.ltr),
                     textAlign: queryIsEmpty
                         ? TextAlign.start
                         : (queryIsRtl ? TextAlign.right : TextAlign.left),
@@ -545,7 +545,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(l10n.getString('settingsTitle')),
+        title: ShrinkText(l10n.getString('settingsTitle')),
         actions: [
           IconButton(
             icon: const Icon(Icons.search),
@@ -608,20 +608,23 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                     controller: _scrollController,
                     padding: const EdgeInsets.all(16.0),
                     children: [
+                      // First visit to Settings: offer the Settings section
+                      // tour once (dismissible, synced per account).
+                      OnboardingSectionPrompt(
+                        tour: kOnboardingSettingsSectionTour,
+                      ),
                       _buildSectionHeader(
                         context,
                         l10n.getString('settingsSectionGeneral'),
                         generalAccent,
                       ),
-                      // App tour — replay the guided onboarding introduction.
+                      // App tour — replay the basics or any specific section.
                       _buildMenuCard(
                         onTap: () {
                           Navigator.push(
                             context,
                             MaterialPageRoute(
-                              fullscreenDialog: true,
-                              builder: (context) =>
-                                  const OnboardingIntroScreen(),
+                              builder: (context) => const AppTourScreen(),
                             ),
                           );
                         },
@@ -680,7 +683,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                         },
                         icon: Icons.people_alt_outlined,
                         title: l10n.getString('settingsMatchPreferences'),
-                        subtitle: l10n.getString('settingsMatchPreferencesDesc'),
+                        subtitle: l10n.getString(
+                          'settingsMatchPreferencesDesc',
+                        ),
                         accent: matchingAccent,
                       ),
                       // Invisibility Rules Section - Navigate to dedicated screen
@@ -697,7 +702,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                         },
                         icon: Icons.visibility_off,
                         title: l10n.getString('settingsInvisibilityRules'),
-                        subtitle: l10n.getString('settingsInvisibilityRulesDesc'),
+                        subtitle: l10n.getString(
+                          'settingsInvisibilityRulesDesc',
+                        ),
                         accent: matchingAccent,
                       ),
                       _buildSectionHeader(
@@ -712,15 +719,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                         ),
                         icon: Icons.notifications_outlined,
                         title: l10n.getString('settingsNotifications'),
-                        subtitle: l10n.getString('settingsNotificationsSettingsDesc'),
+                        subtitle: l10n.getString(
+                          'settingsNotificationsSettingsDesc',
+                        ),
                         accent: notificationsAccent,
                       ),
                       // Notification inbox: persistent, re-readable record of
                       // every notification the user has been sent.
                       _buildMenuCard(
-                        onTap: () => Navigator.of(context).pushNamed(
-                          ResumeRouteRestore.notificationInboxRoute,
-                        ),
+                        onTap: () => Navigator.of(
+                          context,
+                        ).pushNamed(ResumeRouteRestore.notificationInboxRoute),
                         icon: Icons.mark_email_unread_outlined,
                         title: l10n.getString('inboxTitle'),
                         subtitle: l10n.getString('inboxEntryDesc'),
@@ -735,10 +744,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                         builder: (context) {
                           final config = ref.watch(appConfigProvider);
                           final showSubscription =
-                              (config['subscription.enabled']?.toLowerCase() ?? 'true') ==
+                              (config['subscription.enabled']?.toLowerCase() ??
+                                  'true') ==
                               'true';
                           final showInviteFriends =
-                              (config['referral.enabled']?.toLowerCase() ?? 'true') ==
+                              (config['referral.enabled']?.toLowerCase() ??
+                                  'true') ==
                               'true';
 
                           return Column(
@@ -749,13 +760,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                                     Navigator.push(
                                       context,
                                       MaterialPageRoute(
-                                        builder: (context) => const PaywallScreen(),
+                                        builder: (context) =>
+                                            const PaywallScreen(),
                                       ),
                                     );
                                   },
                                   icon: Icons.workspace_premium_outlined,
                                   title: l10n.getString('paywallTitle'),
-                                  subtitle: l10n.getString('paywallFeaturesTitle'),
+                                  subtitle: l10n.getString(
+                                    'paywallFeaturesTitle',
+                                  ),
                                   accent: premiumAccent,
                                 ),
                               if (showSubscription)
@@ -764,13 +778,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                                     Navigator.push(
                                       context,
                                       MaterialPageRoute(
-                                        builder: (context) => const BillingScreen(),
+                                        builder: (context) =>
+                                            const BillingScreen(),
                                       ),
                                     );
                                   },
                                   icon: Icons.receipt_long_outlined,
                                   title: l10n.getString('billingTitle'),
-                                  subtitle: l10n.getString('billingSettingsDescription'),
+                                  subtitle: l10n.getString(
+                                    'billingSettingsDescription',
+                                  ),
                                   accent: premiumAccent,
                                 ),
                               if (showInviteFriends)
@@ -779,13 +796,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                                     Navigator.push(
                                       context,
                                       MaterialPageRoute(
-                                        builder: (context) => const InviteFriendsScreen(),
+                                        builder: (context) =>
+                                            const InviteFriendsScreen(),
                                       ),
                                     );
                                   },
                                   icon: Icons.card_giftcard,
                                   title: l10n.getString('inviteFriendsTitle'),
-                                  subtitle: l10n.getString('inviteFriendsDescription'),
+                                  subtitle: l10n.getString(
+                                    'inviteFriendsDescription',
+                                  ),
                                   accent: premiumAccent,
                                 ),
                             ],
@@ -965,7 +985,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                         ).pushNamed(ResumeRouteRestore.securityCenterRoute),
                         icon: Icons.security,
                         title: l10n.getString('securitySignInHubTitle'),
-                        subtitle: l10n.getString('securitySignInHubDescription'),
+                        subtitle: l10n.getString(
+                          'securitySignInHubDescription',
+                        ),
                         accent: accountAccent,
                       ),
                       // Account Management Section - Navigate to dedicated screen
@@ -981,7 +1003,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                         },
                         icon: Icons.person,
                         title: l10n.getString('settingsAccountManagement'),
-                        subtitle: l10n.getString('settingsAccountManagementDesc'),
+                        subtitle: l10n.getString(
+                          'settingsAccountManagementDesc',
+                        ),
                         accent: accountAccent,
                       ),
                     ],

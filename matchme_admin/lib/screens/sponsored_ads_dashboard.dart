@@ -9,6 +9,7 @@ import 'package:matchme_admin/services/admin_local_db_service.dart';
 import 'package:matchme_admin/services/admin_offline_cache_manager.dart';
 import 'package:matchme_admin/services/public_reference_data_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:matchme_admin/widgets/safe_text.dart';
 
 typedef AdminTextLookup =
     String Function(String key, {Map<String, String>? params});
@@ -3248,13 +3249,11 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
                 ),
               ),
               const SizedBox(height: 4),
-              Text(
+              SafeText(
                 campaign.destinationUrl,
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
               ),
               const SizedBox(height: 12),
             ] else ...[
@@ -3815,11 +3814,9 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
                 }.entries)
                   ButtonSegment(
                     value: entry.key,
-                    label: Text(
+                    label: ShrinkText(
                       t(entry.value),
                       maxLines: 1,
-                      softWrap: false,
-                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
               ],

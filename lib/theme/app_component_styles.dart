@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:matchme/theme/semantic_colors.dart';
 
 /// Centralized component styling for cards, containers, and other UI elements
 class AppComponentStyles {
@@ -163,9 +164,9 @@ class AppComponentStyles {
 
   /// Success text style
   static TextStyle successTextStyle(BuildContext context) {
-    return const TextStyle(
+    return TextStyle(
       fontSize: 12,
-      color: Color(0xFF10B981),
+      color: SemanticColors.of(context).success,
       fontWeight: FontWeight.w500,
     );
   }
@@ -193,6 +194,12 @@ class AppComponentStyles {
     Widget? suffixIcon,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    // Field outlines are the only visual boundary of the field, so the dark
+    // mode border needs enough contrast to stay visible (WCAG 1.4.11).
+    final borderSide = BorderSide(
+      color: colorScheme.outline.withValues(alpha: isDark ? 0.75 : 0.3),
+    );
     return InputDecoration(
       labelText: labelText,
       hintText: hintText,
@@ -200,15 +207,11 @@ class AppComponentStyles {
       suffixIcon: suffixIcon,
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(_mediumBorderRadius),
-        borderSide: BorderSide(
-          color: colorScheme.outline.withValues(alpha: 0.3),
-        ),
+        borderSide: borderSide,
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(_mediumBorderRadius),
-        borderSide: BorderSide(
-          color: colorScheme.outline.withValues(alpha: 0.3),
-        ),
+        borderSide: borderSide,
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(_mediumBorderRadius),
@@ -414,11 +417,12 @@ class AppComponentStyles {
 
   /// Success container styling
   static BoxDecoration successContainerDecoration(BuildContext context) {
+    final semantic = SemanticColors.of(context);
     return BoxDecoration(
-      color: const Color(0xFF10B981).withValues(alpha: 0.08),
+      color: semantic.successContainer,
       borderRadius: BorderRadius.circular(_mediumBorderRadius),
       border: Border.all(
-        color: const Color(0xFF10B981).withValues(alpha: 0.2),
+        color: semantic.success.withValues(alpha: 0.35),
         width: 1.0,
       ),
     );

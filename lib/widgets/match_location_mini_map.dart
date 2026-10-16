@@ -10,9 +10,11 @@ import 'package:matchme/models/match_model.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/unit_provider.dart';
 import 'package:matchme/services/map_tile_cache_service.dart';
+import 'package:matchme/utils/map_theme_utils.dart';
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class MatchLocationMiniMap extends ConsumerWidget {
   final MatchLocation location;
@@ -126,7 +128,7 @@ class MatchLocationMiniMap extends ConsumerWidget {
                   Icon(
                     Icons.location_on,
                     size: 14,
-                    color: Colors.blue.shade700,
+                    color: Theme.of(context).colorScheme.primary,
                   ),
                   const SizedBox(width: 4),
                   Flexible(
@@ -135,7 +137,7 @@ class MatchLocationMiniMap extends ConsumerWidget {
                       style: TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
-                        color: Colors.grey.shade700,
+                        color: Theme.of(context).colorScheme.onSurface,
                       ),
                       maxLines: 2,
                       overflow: TextOverflow.visible,
@@ -147,7 +149,9 @@ class MatchLocationMiniMap extends ConsumerWidget {
                       '• ${_formatDateTime(context, ref, location.createdAt!, l10n)}',
                       style: TextStyle(
                         fontSize: 10,
-                        color: Colors.grey.shade500,
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.onSurfaceVariant,
                       ),
                       maxLines: 2,
                       softWrap: true,
@@ -167,7 +171,9 @@ class MatchLocationMiniMap extends ConsumerWidget {
                     options: MapOptions(
                       initialCenter: center,
                       initialZoom: zoom,
-                      backgroundColor: const Color(0xFFF4F0E8),
+                      backgroundColor: Theme.of(
+                        context,
+                      ).colorScheme.surfaceContainerHighest,
                       interactionOptions: const InteractionOptions(
                         flags: InteractiveFlag.none,
                       ),
@@ -186,6 +192,9 @@ class MatchLocationMiniMap extends ConsumerWidget {
                         urlTemplate:
                             'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                         userAgentPackageName: 'matchme.app',
+                        tileBuilder: darkMapTileBuilderFor(
+                          Theme.of(context).brightness,
+                        ),
                         tileProvider: CachedMapTileProvider(),
                       ),
                       RichAttributionWidget(
@@ -490,7 +499,7 @@ class _MatchLocationFullMapScreenState
     });
 
     return Scaffold(
-      appBar: AppBar(title: Text(title)),
+      appBar: AppBar(title: ShrinkText(title)),
       body: Stack(
         children: [
           FlutterMap(
@@ -500,7 +509,9 @@ class _MatchLocationFullMapScreenState
               initialZoom: zoom,
               minZoom: 1,
               maxZoom: 18,
-              backgroundColor: const Color(0xFFF4F0E8),
+              backgroundColor: Theme.of(
+                context,
+              ).colorScheme.surfaceContainerHighest,
               cameraConstraint: CameraConstraint.contain(bounds: _worldBounds),
               interactionOptions: _interaction,
               onPositionChanged: (camera, hasGesture) {
@@ -515,6 +526,9 @@ class _MatchLocationFullMapScreenState
                 userAgentPackageName: 'matchme.app',
                 tileBounds: _worldBounds,
                 tileProvider: CachedMapTileProvider(),
+                tileBuilder: darkMapTileBuilderFor(
+                  Theme.of(context).brightness,
+                ),
               ),
               RichAttributionWidget(
                 attributions: [
@@ -809,23 +823,43 @@ class _OfflineMapBackgroundPattern extends StatelessWidget {
   Widget build(BuildContext context) {
     return Positioned.fill(
       child: CustomPaint(
-        painter: _OfflineMapBackgroundPainter(),
+        painter: _OfflineMapBackgroundPainter(
+          isDark: Theme.of(context).brightness == Brightness.dark,
+        ),
       ),
     );
   }
 }
 
 class _OfflineMapBackgroundPainter extends CustomPainter {
+  const _OfflineMapBackgroundPainter({required this.isDark});
+
+  final bool isDark;
+
   @override
   void paint(Canvas canvas, Size size) {
     if (size.width <= 0 || size.height <= 0) return;
-    // Warm cartographic land base (never gloomy gray)
-    final bgPaint = Paint()..color = const Color(0xFFF4F0E8);
+    // Warm cartographic land base in light mode; deep slate in dark mode so
+    // the pattern matches the filtered tiles instead of glaring.
+    final baseColor = isDark
+        ? const Color(0xFF0B1322)
+        : const Color(0xFFF4F0E8);
+    final parkColor = isDark
+        ? const Color(0xFF12251C)
+        : const Color(0xFFE9EEDD);
+    final minorRoadColor = isDark
+        ? const Color(0xFF243149)
+        : const Color(0xFFFFFFFF);
+    final majorRoadBorderColor = isDark
+        ? const Color(0xFF1A2436)
+        : const Color(0xFFE5E0D4);
+
+    final bgPaint = Paint()..color = baseColor;
     canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), bgPaint);
 
     // Soft landscape patches
     final parkPaint = Paint()
-      ..color = const Color(0xFFE9EEDD)
+      ..color = parkColor
       ..style = PaintingStyle.fill;
     final park1 = Path()
       ..moveTo(size.width * 0.05, size.height * 0.15)
@@ -869,15 +903,15 @@ class _OfflineMapBackgroundPainter extends CustomPainter {
 
     // Subtle road grid lines
     final minorRoadPaint = Paint()
-      ..color = const Color(0xFFFFFFFF)
+      ..color = minorRoadColor
       ..strokeWidth = 2.0
       ..style = PaintingStyle.stroke;
     final majorRoadBorder = Paint()
-      ..color = const Color(0xFFE5E0D4)
+      ..color = majorRoadBorderColor
       ..strokeWidth = 5.0
       ..style = PaintingStyle.stroke;
     final majorRoadPaint = Paint()
-      ..color = const Color(0xFFFFFFFF)
+      ..color = minorRoadColor
       ..strokeWidth = 3.5
       ..style = PaintingStyle.stroke;
 
@@ -922,5 +956,6 @@ class _OfflineMapBackgroundPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  bool shouldRepaint(covariant _OfflineMapBackgroundPainter oldDelegate) =>
+      oldDelegate.isDark != isDark;
 }

@@ -27,6 +27,9 @@ import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/map_utils.dart';
 import 'package:matchme/utils/event_venue_utils.dart';
 import 'package:matchme/services/web_calendar_service.dart';
+import 'package:matchme/screens/onboarding/onboarding_content.dart';
+import 'package:matchme/widgets/onboarding_section_prompt.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class EventsTab extends ConsumerStatefulWidget {
   final GlobalKey<NavigatorState> navigatorKey;
@@ -466,7 +469,9 @@ class EventsScreen extends ConsumerWidget {
               final l10n = routeRef.watch(localizationProvider);
               return Scaffold(
                 appBar: AppBar(
-                  title: Text(l10n.getString('eventsImportOnlineProviders')),
+                  title: ShrinkText(
+                    l10n.getString('eventsImportOnlineProviders'),
+                  ),
                 ),
                 body: SafeArea(
                   child: Align(
@@ -595,7 +600,7 @@ class EventsScreen extends ConsumerWidget {
     return Scaffold(
       appBar: showAppBar
           ? AppBar(
-              title: Text(l10n.getString('eventsScreenTitle')),
+              title: ShrinkText(l10n.getString('eventsScreenTitle')),
               actions: [
                 IconButton(
                   icon: const Icon(Icons.add_box_outlined),
@@ -624,6 +629,11 @@ class EventsScreen extends ConsumerWidget {
         child: CustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
+            SliverToBoxAdapter(
+              child: OnboardingSectionPrompt(
+                tour: kOnboardingEventsSectionTour,
+              ),
+            ),
             if (profileAsync.hasValue && profileAsync.value != null)
               SliverToBoxAdapter(
                 child: Container(
@@ -1146,10 +1156,7 @@ class EventsScreen extends ConsumerWidget {
                           attendeeCount: event.attendeeCount,
                           l10n: l10n,
                         ),
-                        EventMatchedAttendees(
-                          event: event,
-                          l10n: l10n,
-                        ),
+                        EventMatchedAttendees(event: event, l10n: l10n),
                         const SizedBox(height: 12),
                         Wrap(
                           spacing: 8,

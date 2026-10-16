@@ -3345,12 +3345,20 @@ class LocalDbService {
     } catch (_) {}
     try {
       if (Hive.isBoxOpen('emoji_usage')) {
-        await Hive.box('emoji_usage').clear();
+        try {
+          await Hive.box<int>('emoji_usage').clear();
+        } catch (_) {
+          await Hive.box('emoji_usage').clear();
+        }
       }
     } catch (_) {}
     try {
       if (Hive.isBoxOpen('offline_mutations')) {
-        await Hive.box('offline_mutations').clear();
+        try {
+          await Hive.box<Map<dynamic, dynamic>>('offline_mutations').clear();
+        } catch (_) {
+          await Hive.box('offline_mutations').clear();
+        }
       } else {
         final q = await HiveEncryptionService.instance.openEncryptedBox(
           'offline_mutations',
@@ -3404,6 +3412,9 @@ class LocalDbService {
         await settingsBox.delete(key);
       }
     }
+    // Device-pending state with no owner column: never carry it over to the
+    // next account on this device.
+    await settingsBox.delete('pending_referral_code');
 
     await chatsBox.delete('recent_chats_$trimmedId');
     await matchesBox.delete('recent_matches_$trimmedId');
@@ -3422,6 +3433,36 @@ class LocalDbService {
     // Messages are keyed only by matchId; leftovers cannot be reliably
     // attributed to the outgoing account, so never retain them across logout.
     await messagesBox.clear();
+
+    // Per-device activity that is not keyed by user but still belongs to the
+    // outgoing session: emoji usage history and queued offline mutations must
+    // not survive logout (clearDatabase wipes the same boxes on deletion).
+    try {
+      if (Hive.isBoxOpen('emoji_usage')) {
+        try {
+          await Hive.box<int>('emoji_usage').clear();
+        } catch (_) {
+          await Hive.box('emoji_usage').clear();
+        }
+      } else {
+        final emojiBox = await HiveEncryptionService.instance
+            .openEncryptedBox<int>('emoji_usage');
+        await emojiBox.clear();
+      }
+    } catch (_) {}
+    try {
+      if (Hive.isBoxOpen('offline_mutations')) {
+        try {
+          await Hive.box<Map<dynamic, dynamic>>('offline_mutations').clear();
+        } catch (_) {
+          await Hive.box('offline_mutations').clear();
+        }
+      } else {
+        final mutationBox = await HiveEncryptionService.instance
+            .openEncryptedBox('offline_mutations');
+        await mutationBox.clear();
+      }
+    } catch (_) {}
   }
 
   Future<void> saveNotificationInbox(

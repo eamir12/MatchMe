@@ -8,7 +8,11 @@ import 'package:matchme/providers/voice_guidance_provider.dart';
 import 'package:matchme/services/voice_guidance_service.dart';
 
 class VoiceGuidanceMuteButton extends ConsumerWidget {
-  const VoiceGuidanceMuteButton({super.key});
+  const VoiceGuidanceMuteButton({super.key, this.iconColor});
+
+  /// Optional override so the control stays visible over dark camera
+  /// overlays (the capture screens pass white).
+  final Color? iconColor;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -20,6 +24,7 @@ class VoiceGuidanceMuteButton extends ConsumerWidget {
         voiceEnabled
             ? Icons.record_voice_over_outlined
             : Icons.volume_off_outlined,
+        color: iconColor,
       ),
       tooltip: l10n.getString(
         voiceEnabled

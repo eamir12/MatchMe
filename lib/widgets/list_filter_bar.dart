@@ -77,14 +77,19 @@ enum MatchTypeFilter {
 
   /// Accent used for this option's card. Deliberately distinct from the intent
   /// brand colours so the two sections never read as one scale.
-  Color get accent {
+  ///
+  /// Tuned per brightness: the accent is also used as a text/icon colour on
+  /// the card's own tinted wash, so dark mode uses light tones and light mode
+  /// uses dark tones to keep that text legible (WCAG AA).
+  Color accentFor(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     switch (this) {
       case MatchTypeFilter.all:
-        return const Color(0xFF64748B); // slate
+        return isDark ? const Color(0xFFCBD5E1) : const Color(0xFF475569);
       case MatchTypeFilter.proximity:
-        return const Color(0xFF0EA5E9); // sky
+        return isDark ? const Color(0xFF7DD3FC) : const Color(0xFF075985);
       case MatchTypeFilter.event:
-        return const Color(0xFF8B5CF6); // violet
+        return isDark ? const Color(0xFFC4B5FD) : const Color(0xFF6D28D9);
     }
   }
 
@@ -758,7 +763,7 @@ class _FilterSheetState extends State<_FilterSheet> {
                                 _draft.matchType.labelKey(l10n),
                               ),
                               icon: _draft.matchType.icon,
-                              color: _draft.matchType.accent,
+                              color: _draft.matchType.accentFor(context),
                               onRemoved: () => setState(
                                 () => _draft = _draft.copyWith(
                                   matchType: MatchTypeFilter.all,
@@ -782,7 +787,13 @@ class _FilterSheetState extends State<_FilterSheet> {
                             _RemovablePill(
                               label: _draft.extraToggleLabel!,
                               icon: Icons.bolt_rounded,
-                              color: const Color(0xFFEF476F),
+                              // Lifted in dark mode: the pill paints its label
+                              // in this colour on a 14% wash of itself.
+                              color:
+                                  Theme.of(context).brightness ==
+                                      Brightness.dark
+                                  ? const Color(0xFFFDA4AF)
+                                  : const Color(0xFFBE123C),
                               onRemoved: () => setState(
                                 () => _draft = _draft.copyWith(
                                   extraToggleActive: false,
@@ -799,7 +810,13 @@ class _FilterSheetState extends State<_FilterSheet> {
                               _draft.sort.labelKey(l10n),
                             ),
                             icon: _draft.sort.icon,
-                            color: const Color(0xFF0F766E),
+                            // Lifted in dark mode; the pill paints its label
+                            // in this colour on a 14% wash of itself.
+                            color:
+                                Theme.of(context).brightness ==
+                                    Brightness.dark
+                                ? const Color(0xFF2DD4BF)
+                                : const Color(0xFF0F766E),
                             onRemoved: () => setState(
                               () => _draft = _draft.copyWith(
                                 sort: ListSortOption.recent,
@@ -1045,7 +1062,13 @@ class _MatchTypeCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final accent = option.accent;
+    final accent = option.accentFor(context);
+    // Dark-mode accents are light tones, so a white icon on the accent fill
+    // would disappear; pick the foreground from the accent's own brightness.
+    final onAccent =
+        ThemeData.estimateBrightnessForColor(accent) == Brightness.dark
+        ? Colors.white
+        : const Color(0xFF0F172A);
 
     return Semantics(
       button: true,
@@ -1081,7 +1104,7 @@ class _MatchTypeCard extends StatelessWidget {
                 child: Icon(
                   option.icon,
                   size: 18,
-                  color: selected ? Colors.white : accent,
+                  color: selected ? onAccent : accent,
                 ),
               ),
               const SizedBox(height: 8),
@@ -1134,6 +1157,11 @@ class _IntentChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // The intent palette is mid-tone, so white labels on the selected fill
+    // fall short of 4.5:1; pick the label colour from the fill's brightness.
+    final onColor = ThemeData.estimateBrightnessForColor(color) == Brightness.dark
+        ? Colors.white
+        : const Color(0xFF0F172A);
     return Semantics(
       button: true,
       selected: selected,
@@ -1158,14 +1186,14 @@ class _IntentChip extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(icon, size: 16, color: selected ? Colors.white : color),
+                Icon(icon, size: 16, color: selected ? onColor : color),
                 const SizedBox(width: 7),
                 Text(
                   label,
                   style: TextStyle(
                     fontSize: 14,
                     fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                    color: selected ? Colors.white : color,
+                    color: selected ? onColor : color,
                   ),
                 ),
                 if (selected) ...[
@@ -1173,7 +1201,7 @@ class _IntentChip extends StatelessWidget {
                   Icon(
                     Icons.check_rounded,
                     size: 15,
-                    color: Colors.white.withValues(alpha: 0.9),
+                    color: onColor.withValues(alpha: 0.9),
                   ),
                 ],
               ],

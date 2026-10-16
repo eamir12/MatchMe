@@ -67,6 +67,12 @@ Future<Uint8List?> openPrimarySelfieCapture({
       'verificationCaptureChecklistFaceVisible': l10n.getString(
         'verificationCaptureChecklistFaceVisible',
       ),
+      'verificationCaptureChecklistLighting': l10n.getString(
+        'verificationCaptureChecklistLighting',
+      ),
+      'verificationCaptureStatusTooDark': l10n.getString(
+        'verificationCaptureStatusTooDark',
+      ),
       'verificationCaptureCameraOrModelError': l10n.getString(
         'verificationCaptureCameraOrModelError',
       ),

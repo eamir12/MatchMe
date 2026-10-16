@@ -196,6 +196,7 @@ flutter:
     - assets/images/providers/
     - assets/twemoji/
     - assets/verification_capture/
+    - assets/verification_gestures/
     # Legal documents, one directory per language. Each language directory must
     # be listed individually: a directory asset entry does not pick up files in
     # its subdirectories, so `docs/legal/` on its own would bundle nothing and
@@ -243,12 +244,15 @@ flutter_launcher_icons:
   android: true
   ios: true
   adaptive_icon_background: "#FFFFFF"
-  adaptive_icon_foreground: "assets/images/logo.png"
-  adaptive_icon_foreground_inset: 24
+  adaptive_icon_foreground: "tools/icons/app_icon_foreground.png"
+  adaptive_icon_foreground_inset: 8
   web:
     generate: true
   windows:
     generate: true
   macos:
     generate: true
-  image_path: "assets/images/logo.png"
+  # Bare colorful rosette (no "MatchMe" wordmark inside the icon - the OS
+  # renders the name under the icon). Regenerate sources with:
+  #   dart run tools/generate_app_icon.dart && dart run flutter_launcher_icons
+  image_path: "tools/icons/app_icon.png"

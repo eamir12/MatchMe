@@ -18,10 +18,13 @@ import 'package:matchme/services/match_extension_service.dart';
 import 'package:matchme/services/global_sync_manager.dart';
 import 'package:matchme/theme/semantic_colors.dart';
 import 'package:matchme/utils/match_score_utils.dart';
+import 'package:matchme/utils/profile_completeness.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/time_format_utils.dart';
+import 'package:matchme/widgets/safe_text.dart';
 import 'package:matchme/widgets/signed_image.dart';
 import 'package:matchme/widgets/match_profile_navigation_cue.dart';
+import 'package:matchme/widgets/profile_completeness_summary.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:ui' as ui;
 
@@ -602,6 +605,9 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
       isNewUser = DateTime.now().difference(profile!.createdAt!).inDays < 7;
     }
     final isVerified = profile?.isVerified ?? false;
+    // Public completeness badge: only a positive 100% signal, never a raw
+    // percentage for other users.
+    final isComplete = profile != null && ProfileCompleteness.isFull(profile);
 
     final metaParts = <String>[
       if (age != null) '$age',
@@ -619,14 +625,12 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Expanded(
-              child: Text(
+              child: SafeText(
                 name,
                 style: const TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.bold,
                 ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
                 textAlign: nameLayout.textAlign,
                 textDirection: nameLayout.textDirection,
               ),
@@ -637,14 +641,14 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
             ],
           ],
         ),
-        if (metaParts.isNotEmpty || isVerified) ...[
+        if (metaParts.isNotEmpty || isVerified || isComplete) ...[
           const SizedBox(height: 1),
           Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               if (metaParts.isNotEmpty)
                 Flexible(
-                  child: Text(
+                  child: SafeText(
                     metaParts.join('  ·  '),
                     style: TextStyle(
                       fontSize: 13,
@@ -653,14 +657,16 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
                         alpha: 0.55,
                       ),
                     ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
                     textAlign: TextAlign.start,
                   ),
                 ),
               if (isVerified) ...[
                 if (metaParts.isNotEmpty) const SizedBox(width: 6),
                 _buildVerifiedPill(context, l10n, profile!),
+              ],
+              if (isComplete) ...[
+                if (metaParts.isNotEmpty || isVerified) const SizedBox(width: 6),
+                ProfileCompletePill(l10n: l10n, compact: true),
               ],
             ],
           ),
@@ -691,10 +697,8 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
           Icon(Icons.verified, size: 14, color: color),
           const SizedBox(width: 3),
           Flexible(
-            child: Text(
+            child: ShrinkText(
               _verifiedBadgeText(l10n, profile.gender),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
@@ -727,10 +731,8 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
           Icon(Icons.fiber_new_rounded, size: 12, color: color),
           const SizedBox(width: 2),
           Flexible(
-            child: Text(
+            child: ShrinkText(
               _newUserBadgeText(l10n, profile.gender),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 10,
                 fontWeight: FontWeight.w700,
@@ -989,7 +991,7 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
       addSegment(
         Icons.favorite_rounded,
         l10n.getString('sharedInterestsCount', params: {'count': '$count'}),
-        color: sharedInterestColor(count),
+        color: sharedInterestColor(count, Theme.of(context).brightness),
       );
     }
 
@@ -1000,8 +1002,8 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
       child: Text.rich(
         TextSpan(children: spans),
         style: TextStyle(fontSize: 12, color: metaColor),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
+        softWrap: true,
+        overflow: TextOverflow.visible,
         textDirection: textDir,
         textAlign: TextAlign.start,
       ),
@@ -1341,10 +1343,8 @@ class _InfoChip extends StatelessWidget {
           Icon(icon, size: 12, color: effectiveColor),
           const SizedBox(width: 4),
           Flexible(
-            child: Text(
+            child: ShrinkText(
               label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w600,

@@ -14,6 +14,7 @@ import 'package:matchme/widgets/voice_guidance_mute_button.dart';
 import 'package:matchme/services/verification_mediapipe.dart';
 import 'package:matchme/widgets/signed_image.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class VerificationGesture {
   final String code;
@@ -229,36 +230,37 @@ class _MismatchBoxesPainter extends CustomPainter {
       oldDelegate.boxes != boxes;
 }
 
-const Map<String, String> _verificationGestureEmojiByCode = <String, String>{
-  'CLOSED_FIST_RIGHT_HAND': '✊',
-  'OPEN_PALM_RIGHT_HAND': '✋',
-  'PEACE_SIGN_RIGHT_HAND': '✌️',
-  'POINTING_UP_RIGHT_HAND': '☝️',
-  'THUMBS_DOWN_RIGHT_HAND': '👎',
-  'THUMBS_UP_RIGHT_HAND': '👍',
-  'CLOSED_FIST_LEFT_HAND': '✊',
-  'OPEN_PALM_LEFT_HAND': '✋',
-  'PEACE_SIGN_LEFT_HAND': '✌️',
-  'POINTING_UP_LEFT_HAND': '☝️',
-  'THUMBS_DOWN_LEFT_HAND': '👎',
-  'THUMBS_UP_LEFT_HAND': '👍',
+/// Bundled gesture artwork (Microsoft Fluent Emoji 3D, MIT), keyed by the
+/// gesture base code. See assets/verification_gestures/README.md.
+const Map<String, String> _verificationGestureAssetByBase = <String, String>{
+  'CLOSED_FIST': 'assets/verification_gestures/closed_fist.png',
+  'OPEN_PALM': 'assets/verification_gestures/open_palm.png',
+  'PEACE_SIGN': 'assets/verification_gestures/peace_sign.png',
+  'POINTING_UP': 'assets/verification_gestures/pointing_up.png',
+  'THUMBS_DOWN': 'assets/verification_gestures/thumbs_down.png',
+  'THUMBS_UP': 'assets/verification_gestures/thumbs_up.png',
 };
 
-/// Whether the platform's default hand emoji must be mirrored to depict the
-/// hand that [code] asks for.
+/// Whether the bundled Fluent Emoji artwork for [code] must be mirrored to
+/// depict the hand that [code] asks for.
 ///
-/// Emoji sets disagree about handedness: Apple (iOS/macOS) and Microsoft
-/// (Segoe, Windows) draw hands as RIGHT hands, while Google's Noto
-/// (Android, Linux, ChromeOS) draws them as LEFT hands. Mirroring the side
-/// that is not the platform default makes the icon match the requested hand
-/// on every platform the app runs on.
-bool _gestureEmojiNeedsMirror(String code) {
-  final notoDefaultHandIsLeft =
-      defaultTargetPlatform == TargetPlatform.android ||
-      defaultTargetPlatform == TargetPlatform.linux;
-  return notoDefaultHandIsLeft
-      ? code.endsWith('_RIGHT_HAND')
-      : code.endsWith('_LEFT_HAND');
+/// The app pins one frozen artwork set (Microsoft Fluent Emoji 3D, MIT,
+/// bundled under assets/verification_gestures) on every platform, because
+/// system emoji fonts disagree about handedness and change it per OS version.
+/// Five of the six drawings read as a LEFT hand: fist, palm, peace and
+/// pointing were validated per gesture against the real left hand in the
+/// mirrored camera preview; thumbs-up was user-verified (its mirrored copy
+/// matched the right hand next to the mirrored selfie photo). Thumbs-down is
+/// the exception: it only resembles a 180-degree rotation of the up art in
+/// silhouette, but actually reads right-handed when shown raw (user-reported
+/// on THUMBS_DOWN_LEFT_HAND), so it is mirrored for LEFT-hand requests
+/// instead. The capture pages apply the same rule (with an explanatory
+/// comment); keep the sites in sync when changing artwork.
+bool _gestureGlyphNeedsMirror(String code) {
+  if (code.startsWith('THUMBS_DOWN')) {
+    return code.endsWith('_LEFT_HAND');
+  }
+  return !code.endsWith('_LEFT_HAND');
 }
 
 VerificationGesture _getSessionVerificationGesture() {
@@ -470,11 +472,23 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
         'verificationCaptureChecklistGestureRecognized': l10n.getString(
           'verificationCaptureChecklistGestureRecognized',
         ),
+        'verificationCaptureChecklistLighting': l10n.getString(
+          'verificationCaptureChecklistLighting',
+        ),
+        'verificationCaptureStatusTooDark': l10n.getString(
+          'verificationCaptureStatusTooDark',
+        ),
         'verificationCaptureHandLeft': l10n.getString(
           'verificationCaptureHandLeft',
         ),
         'verificationCaptureHandRight': l10n.getString(
           'verificationCaptureHandRight',
+        ),
+        'verificationCaptureHandLeftBadge': l10n.getString(
+          'verificationCaptureHandLeftBadge',
+        ),
+        'verificationCaptureHandRightBadge': l10n.getString(
+          'verificationCaptureHandRightBadge',
         ),
         'verificationCaptureCameraOrModelError': l10n.getString(
           'verificationCaptureCameraOrModelError',
@@ -1468,11 +1482,23 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
   }
 
   Widget _buildGestureReferencePreview(VerificationGesture gesture) {
-    final emoji = _verificationGestureEmojiByCode[gesture.code] ?? '🖐️';
-    // Emoji sets disagree about handedness, so mirroring is decided per
-    // platform: see [_gestureEmojiNeedsMirror].
-    final mirrored = _gestureEmojiNeedsMirror(gesture.code);
-    Widget glyph = Text(emoji, style: const TextStyle(fontSize: 88, height: 1.0));
+    final base = gesture.code.replaceFirst(
+      RegExp(r'_(LEFT|RIGHT)_HAND$'),
+      '',
+    );
+    final asset = _verificationGestureAssetByBase[base];
+    // Pin the bundled Fluent Emoji artwork so the icon's handedness never
+    // depends on the platform's emoji font: see [_gestureGlyphNeedsMirror].
+    final mirrored = _gestureGlyphNeedsMirror(gesture.code);
+    Widget glyph = asset == null
+        ? const SizedBox(width: 96, height: 96)
+        : Image.asset(
+            asset,
+            width: 96,
+            height: 96,
+            fit: BoxFit.contain,
+            excludeFromSemantics: true,
+          );
     if (mirrored) {
       glyph = Transform(
         alignment: Alignment.center,
@@ -1481,10 +1507,13 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
       );
     }
     final colorScheme = Theme.of(context).colorScheme;
+    final isLeftHand = gesture.code.endsWith('_LEFT_HAND');
     final handLabel = ref
         .read(localizationProvider)
         .getString(
-          mirrored ? 'verificationCaptureHandLeft' : 'verificationCaptureHandRight',
+          isLeftHand
+              ? 'verificationCaptureHandLeftBadge'
+              : 'verificationCaptureHandRightBadge',
         );
     return Container(
       width: double.infinity,
@@ -1589,7 +1618,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(l10n.getString('verification')),
+        title: ShrinkText(l10n.getString('verification')),
         actions: const [VoiceGuidanceMuteButton()],
       ),
       body: FutureBuilder<Map<String, dynamic>?>(

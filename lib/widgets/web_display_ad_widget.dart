@@ -4,6 +4,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:matchme/providers/external_ad_provider.dart';
 import 'package:matchme/services/external_ad_service.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/theme/semantic_colors.dart';
 
 /// Widget for displaying web display ads (300x250, 728x90, etc.)
 ///
@@ -52,13 +53,16 @@ class _WebDisplayAdWidgetState extends ConsumerState<WebDisplayAdWidget> {
     widget.onAdLoaded?.call();
 
     final l10n = ref.watch(localizationProvider);
+    final semantic = SemanticColors.of(context);
 
     return Container(
       width: widget.responsive ? double.infinity : widget.width.toDouble(),
       height: widget.height.toDouble(),
       decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border.all(color: Colors.grey[300]!),
+        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        border: Border.all(
+          color: Theme.of(context).colorScheme.outlineVariant,
+        ),
         borderRadius: BorderRadius.circular(4),
       ),
       child: Material(
@@ -72,16 +76,16 @@ class _WebDisplayAdWidgetState extends ConsumerState<WebDisplayAdWidget> {
               Expanded(
                 child: Container(
                   width: double.infinity,
-                  color: Colors.green[100],
+                  color: semantic.successContainer,
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.image, color: Colors.green[400], size: 48),
+                      Icon(Icons.image, color: semantic.success, size: 48),
                       const SizedBox(height: 8),
                       Text(
                         l10n.getString('webAdSpecialOffer'),
                         style: TextStyle(
-                          color: Colors.green[700],
+                          color: semantic.onSuccessContainer,
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
                         ),
@@ -90,7 +94,7 @@ class _WebDisplayAdWidgetState extends ConsumerState<WebDisplayAdWidget> {
                       Text(
                         l10n.getString('webAdPremiumOffer'),
                         style: TextStyle(
-                          color: Colors.green[600],
+                          color: semantic.success,
                           fontSize: 14,
                         ),
                       ),
@@ -103,7 +107,7 @@ class _WebDisplayAdWidgetState extends ConsumerState<WebDisplayAdWidget> {
                 width: double.infinity,
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: Colors.green[600],
+                  color: semantic.success,
                   borderRadius: const BorderRadius.only(
                     bottomLeft: Radius.circular(4),
                     bottomRight: Radius.circular(4),
@@ -113,7 +117,7 @@ class _WebDisplayAdWidgetState extends ConsumerState<WebDisplayAdWidget> {
                   child: Text(
                     l10n.getString('webAdGetOffer'),
                     style: TextStyle(
-                      color: Colors.white,
+                      color: semantic.onSuccess,
                       fontSize: 14,
                       fontWeight: FontWeight.w600,
                     ),
@@ -181,19 +185,25 @@ class PlaceholderWebDisplayAd extends ConsumerWidget {
       width: responsive ? double.infinity : width.toDouble(),
       height: height.toDouble(),
       decoration: BoxDecoration(
-        color: Colors.grey[200],
-        border: Border.all(color: Colors.grey[300]!),
+        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        border: Border.all(
+          color: Theme.of(context).colorScheme.outlineVariant,
+        ),
       ),
       child: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.image, color: Colors.grey[400], size: 48),
+            Icon(
+              Icons.image,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              size: 48,
+            ),
             const SizedBox(height: 12),
             Text(
               l10n.getString('webDisplayAdPlaceholder'),
               style: TextStyle(
-                color: Colors.grey[600],
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
                 fontSize: 16,
                 fontWeight: FontWeight.w500,
               ),
@@ -201,7 +211,10 @@ class PlaceholderWebDisplayAd extends ConsumerWidget {
             const SizedBox(height: 4),
             Text(
               '$width x $height',
-              style: TextStyle(color: Colors.grey[500], fontSize: 12),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontSize: 12,
+              ),
             ),
           ],
         ),

@@ -21,7 +21,6 @@ import 'package:matchme_admin/screens/event_import_feedback_dashboard.dart';
 import 'package:matchme_admin/screens/integrated_ad_dashboard.dart';
 import 'package:matchme_admin/screens/match_comparison_dashboard.dart';
 import 'package:matchme_admin/screens/user_match_management_dashboard.dart';
-import 'package:matchme_admin/screens/notification_delivery_dashboard.dart';
 import 'package:matchme_admin/screens/system_health_dashboard.dart';
 import 'package:matchme_admin/services/admin_local_db_service.dart';
 import 'package:matchme_admin/services/admin_offline_cache_manager.dart';
@@ -34,6 +33,7 @@ import 'package:matchme_admin/widgets/system_health_pill.dart';
 import 'package:matchme_admin/utils/open_attachment.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:matchme_admin/widgets/safe_text.dart';
 
 bool _isIgnorableAuthError(Object error, StackTrace stack) {
   final message = error.toString().toLowerCase();
@@ -1301,7 +1301,7 @@ class _MessageScaffold extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(title)),
+      appBar: AppBar(title: ShrinkText(title)),
       body: SafeArea(
         child: Center(
           child: ConstrainedBox(
@@ -1718,7 +1718,7 @@ class _LoginScreenState extends ConsumerState<_LoginScreen>
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(l10n.getString('adminLoginTitle')),
+        title: ShrinkText(l10n.getString('adminLoginTitle')),
         actions: [
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -2220,28 +2220,7 @@ enum _AdminSection {
   promoCodes,
   matchInspector,
   userMatchManagement,
-  delivery,
   systemHealth,
-}
-
-class _DeliveryScreen extends ConsumerWidget {
-  const _DeliveryScreen();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final l10n = ref.watch(localizationProvider);
-    return AdminNotificationDeliveryDashboard(
-      t: (key, {params}) {
-        var value = l10n.getString(key);
-        params?.forEach((paramKey, paramValue) {
-          value = value.replaceAll('{$paramKey}', paramValue);
-        });
-        return value;
-      },
-      localeCode: l10n.locale.languageCode,
-      textDirection: l10n.textDirection,
-    );
-  }
 }
 
 class _SystemHealthScreen extends ConsumerWidget {
@@ -2533,11 +2512,6 @@ class _AdminShellState extends ConsumerState<_AdminShell>
         selectedIcon: const Icon(Icons.person_remove),
         label: Text(l10n.getString('adminNavUserMatchManagement')),
       ),
-      _AdminSection.delivery: const NavigationRailDestination(
-        icon: Icon(Icons.notifications_active_outlined),
-        selectedIcon: Icon(Icons.notifications_active),
-        label: Text('Delivery'),
-      ),
       _AdminSection.systemHealth: NavigationRailDestination(
         icon: const Icon(Icons.monitor_heart_outlined),
         selectedIcon: const Icon(Icons.monitor_heart),
@@ -2618,11 +2592,6 @@ class _AdminShellState extends ConsumerState<_AdminShell>
         icon: const Icon(Icons.person_remove_outlined),
         selectedIcon: const Icon(Icons.person_remove),
         label: Text(l10n.getString('adminNavUserMatchManagement')),
-      ),
-      const NavigationDrawerDestination(
-        icon: Icon(Icons.notifications_active_outlined),
-        selectedIcon: Icon(Icons.notifications_active),
-        label: Text('Delivery'),
       ),
       NavigationDrawerDestination(
         icon: const Icon(Icons.monitor_heart_outlined),
@@ -2744,7 +2713,6 @@ class _AdminShellState extends ConsumerState<_AdminShell>
       _AdminSection.userMatchManagement => l10n.getString(
         'adminNavUserMatchManagement',
       ),
-      _AdminSection.delivery => 'Delivery',
       _AdminSection.systemHealth => l10n.getString('adminNavSystemHealth'),
     };
   }
@@ -2777,7 +2745,6 @@ class _AdminShellState extends ConsumerState<_AdminShell>
               const _PromoCodesScreen(),
               const _MatchInspectorScreen(),
               const _UserMatchManagementScreen(),
-              const _DeliveryScreen(),
               const _SystemHealthScreen(),
             ],
           );
@@ -2787,7 +2754,7 @@ class _AdminShellState extends ConsumerState<_AdminShell>
           if (useDrawerLayout) {
             return Scaffold(
               appBar: AppBar(
-                title: Text(titleText),
+                title: ShrinkText(titleText),
                 actions: _appBarActions(l10n),
               ),
               drawer: NavigationDrawer(
@@ -2837,7 +2804,7 @@ class _AdminShellState extends ConsumerState<_AdminShell>
 
           return Scaffold(
             appBar: AppBar(
-              title: Text(titleText),
+              title: ShrinkText(titleText),
               actions: _appBarActions(l10n),
             ),
             body: SafeArea(
@@ -3029,10 +2996,9 @@ class _AdminDashboardWindowHeaderDelegate
                   const SizedBox(width: 6),
                 ],
                 Flexible(
-                  child: Text(
+                  child: ShrinkText(
                     label,
                     maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       color: colorScheme.onSurface,
                       fontSize: Theme.of(
@@ -3076,6 +3042,11 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
   String _window = '24h';
   String? _dataWindow; // Tracks which time window _data belongs to
   bool _isFetching = false;
+  // A reload requested while a fetch was in flight (e.g. the user toggled
+  // the time window mid-request). Replayed right after the in-flight fetch
+  // finishes so the newest window always wins.
+  bool _reloadQueued = false;
+  bool _reloadForce = false;
   Timer? _scheduledReload;
   Timer? _periodicRefresh;
   DateTime _lastReloadAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -3462,7 +3433,7 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
     }
   }
 
-  /// 15-second backup timer for realtime counts. Ensures counts stay
+  /// 5-second backup timer for realtime counts. Ensures counts stay
   /// fresh even if Supabase Realtime ticks are delayed or lost.
   /// Runs in background (no foreground guard) so LIVE cards don't freeze.
   void _startRealtimeBackupTimer() {
@@ -3559,10 +3530,10 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
         applied = bumpEngagementKey('matches_created');
         applied = bumpSeriesKey('matches') || applied;
         break;
-      case 'users':
-        applied = bumpEngagementKey('new_users');
-        applied = bumpSeriesKey('signups') || applied;
-        break;
+      // No optimistic bump for 'users' inserts: the RPC counts only
+      // profile-complete users and the tick payload carries no profile
+      // data, so an insert could be an incomplete signup. The debounced
+      // full reload updates new_users within ~1s.
       case 'profile_edit_requests':
         applied = bumpOperationsKey('profile_edits_pending');
         break;
@@ -3582,20 +3553,29 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
   }
 
   Future<void> _load({bool force = false, bool showLoading = true}) async {
-    if (_isFetching) return;
+    if (_isFetching) {
+      _reloadQueued = true;
+      _reloadForce = _reloadForce || force;
+      return;
+    }
+    // Capture the window this load is for: the user can switch the time
+    // window while the RPC is in flight, and results must be cached and
+    // applied under the window they were fetched for — never under the
+    // window that happens to be selected when they arrive.
+    final window = _window;
     Map<String, dynamic> decodeMap(Object? raw) {
       if (raw is! Map) return <String, dynamic>{};
       return Map<String, dynamic>.from(raw);
     }
 
-    final cacheKey = 'admin_cache:dashboard:v1:$_window';
+    final cacheKey = 'admin_cache:dashboard:v1:$window';
     var hadCached = false;
-    final hasExisting = (_dataWindow == _window && _data?.isNotEmpty == true);
+    final hasExisting = (_dataWindow == window && _data?.isNotEmpty == true);
 
     // Preload from Hive immediately so the UI renders cached data without
     // waiting for Supabase timeouts or connectivity detection to stabilize.
     if (!hasExisting) {
-      await _loadFromHiveCache();
+      await _loadFromHiveCache(window: window);
     }
 
     // Always display cached data immediately for fast UI rendering, but
@@ -3609,13 +3589,15 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
       );
       if (!mounted) return;
       if (cached != null && cached.data.isNotEmpty) {
-        setState(() {
-          _data = cached.data;
-          _dataWindow = _window;
-          _isLoading = false;
-          _errorKey = null;
-        });
-        hadCached = true;
+        if (_window == window) {
+          setState(() {
+            _data = cached.data;
+            _dataWindow = window;
+            _isLoading = false;
+            _errorKey = null;
+          });
+          hadCached = true;
+        }
       }
     }
 
@@ -3625,7 +3607,7 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
     // and load from persistent cache instead.
     final isOffline = adminOfflineCacheManager.shouldUseCachedData();
     if (isOffline && !force) {
-      final loaded = await _loadFromHiveCache();
+      final loaded = await _loadFromHiveCache(window: window);
       if (!mounted) return;
       if (!loaded && !hadCached && !hasExisting) {
         setState(() {
@@ -3650,7 +3632,7 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
     try {
       _isFetching = true;
       final res = await Supabase.instance.client
-          .rpc('admin_get_dashboard_stats', params: {'p_window': _window})
+          .rpc('admin_get_dashboard_stats', params: {'p_window': window})
           .timeout(const Duration(seconds: 20));
 
       final map = decodeMap(res);
@@ -3661,29 +3643,34 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
       // Save to _AdminCache (memory + shared prefs)
       await _AdminCache.write<Map<String, dynamic>>(cacheKey, (v) => v, map);
 
-      // Save to Hive for persistent offline fallback
-      await _saveDashboardToHive(map);
+      // Save to Hive for persistent offline fallback under the window the
+      // data was fetched for, not the currently selected one.
+      await _saveDashboardToHive(map, window: window);
 
       if (!mounted) return;
 
-      if (_data != map) {
-        setState(() {
-          _data = map;
-          _dataWindow = _window;
-          _isLoading = false;
-          _errorKey = null;
-        });
-      } else if (_isLoading) {
-        setState(() {
-          _isLoading = false;
-          _errorKey = null;
-        });
+      // Only apply if the window hasn't changed since the fetch started;
+      // the queued reload below renders the newly selected window instead.
+      if (_window == window) {
+        if (_data != map) {
+          setState(() {
+            _data = map;
+            _dataWindow = window;
+            _isLoading = false;
+            _errorKey = null;
+          });
+        } else if (_isLoading) {
+          setState(() {
+            _isLoading = false;
+            _errorKey = null;
+          });
+        }
       }
     } catch (_) {
       if (!mounted) return;
 
       // Try loading from Hive persistent cache before showing error
-      final hiveLoaded = await _loadFromHiveCache();
+      final hiveLoaded = await _loadFromHiveCache(window: window);
       if (!mounted) return;
 
       if (!hiveLoaded && !hadCached && !hasExisting) {
@@ -3698,34 +3685,55 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
       }
     } finally {
       _isFetching = false;
+      // Replay any reload that arrived while this fetch was in flight so a
+      // window toggle (or explicit refresh) is never silently dropped and
+      // stale-window results can't be attributed to the wrong window.
+      if (_reloadQueued) {
+        final queuedForce = _reloadForce;
+        _reloadQueued = false;
+        _reloadForce = false;
+        if (mounted) {
+          unawaited(_load(force: queuedForce));
+        }
+      }
     }
   }
 
-  /// Load dashboard data from Hive persistent cache.
-  /// Returns true if data was loaded.
-  Future<bool> _loadFromHiveCache() async {
+  /// Load dashboard data from Hive persistent cache for [window]
+  /// (defaults to the currently selected window).
+  /// Returns true if data was found.
+  Future<bool> _loadFromHiveCache({String? window}) async {
+    final w = window ?? _window;
     try {
       final localDb = await AdminLocalDbService.instance;
-      final hiveData = await localDb.loadDashboard(window: _window);
+      final hiveData = await localDb.loadDashboard(window: w);
       if (hiveData != null && hiveData.isNotEmpty) {
         if (!mounted) return true;
-        setState(() {
-          _data = hiveData;
-          _dataWindow = _window;
-          _isLoading = false;
-          _errorKey = null;
-        });
+        // Don't overwrite the UI when the user has switched windows since
+        // this load started; the queued reload handles the new window.
+        if (_window == w) {
+          setState(() {
+            _data = hiveData;
+            _dataWindow = w;
+            _isLoading = false;
+            _errorKey = null;
+          });
+        }
         return true;
       }
     } catch (_) {}
     return false;
   }
 
-  /// Persist dashboard data to Hive for offline use.
-  Future<void> _saveDashboardToHive(Map<String, dynamic> data) async {
+  /// Persist dashboard data to Hive for offline use under [window]
+  /// (defaults to the currently selected window).
+  Future<void> _saveDashboardToHive(
+    Map<String, dynamic> data, {
+    String? window,
+  }) async {
     try {
       final localDb = await AdminLocalDbService.instance;
-      await localDb.saveDashboard(data, window: _window);
+      await localDb.saveDashboard(data, window: window ?? _window);
     } catch (_) {}
   }
 
@@ -4041,10 +4049,8 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
                           ? Row(
                               children: [
                                 Expanded(
-                                  child: Text(
+                                  child: SafeText(
                                     l10n.getString(labelKey),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
                                     textAlign: TextAlign.start,
                                     style: labelStyle,
                                   ),
@@ -4065,10 +4071,8 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
                                   flex: 2,
                                   child: Align(
                                     alignment: AlignmentDirectional.centerStart,
-                                    child: Text(
+                                    child: SafeText(
                                       l10n.getString(labelKey),
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
                                       textAlign: TextAlign.start,
                                       style: labelStyle,
                                     ),
@@ -4949,11 +4953,8 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
                                               DataCell(
                                                 SizedBox(
                                                   width: 260,
-                                                  child: Text(
+                                                  child: SafeText(
                                                     metric,
-                                                    maxLines: 1,
-                                                    overflow:
-                                                        TextOverflow.ellipsis,
                                                   ),
                                                 ),
                                               ),
@@ -5039,17 +5040,13 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
                                       return ListTile(
                                         dense: true,
                                         contentPadding: EdgeInsets.zero,
-                                        title: Text(
+                                        title: SafeText(
                                           title,
-                                          maxLines: 2,
-                                          overflow: TextOverflow.ellipsis,
                                         ),
                                         subtitle: subtitleParts.isEmpty
                                             ? null
-                                            : Text(
+                                            : SafeText(
                                                 subtitleParts.join('\n'),
-                                                maxLines: 3,
-                                                overflow: TextOverflow.ellipsis,
                                               ),
                                       );
                                     })
@@ -5226,17 +5223,13 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
                                       return ListTile(
                                         dense: true,
                                         contentPadding: EdgeInsets.zero,
-                                        title: Text(
+                                        title: SafeText(
                                           title,
-                                          maxLines: 2,
-                                          overflow: TextOverflow.ellipsis,
                                         ),
                                         subtitle: subtitleParts.isEmpty
                                             ? null
-                                            : Text(
+                                            : SafeText(
                                                 subtitleParts.join('\n'),
-                                                maxLines: 3,
-                                                overflow: TextOverflow.ellipsis,
                                               ),
                                       );
                                     })
@@ -5449,6 +5442,12 @@ class _AdminDashboardDrilldownScreenState
     }
 
     try {
+      // Silent refreshes keep every loaded page on screen: refetch the same
+      // number of rows instead of resetting the list to page 1. Capped at
+      // the server's 500-row maximum.
+      final refreshLimit = _rows.length > _pageSize
+          ? min(_rows.length, 500)
+          : _pageSize;
       final nextOffset = more ? _offset : 0;
       final raw = await Supabase.instance.client
           .rpc(
@@ -5457,7 +5456,7 @@ class _AdminDashboardDrilldownScreenState
               'p_window': widget.window,
               'p_metric': widget.metric,
               'p_param': widget.param,
-              'p_limit': _pageSize,
+              'p_limit': more ? _pageSize : refreshLimit,
               'p_offset': nextOffset,
             },
           )
@@ -5948,10 +5947,8 @@ class _AdminDashboardDrilldownScreenState
           .toList(growable: false);
 
       if (parts.isEmpty) return Text(zero);
-      return Text(
+      return SafeText(
         parts.join(' • '),
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
       );
     }
     if (key == 'user_name' ||
@@ -5959,10 +5956,8 @@ class _AdminDashboardDrilldownScreenState
         key == 'user2_name' ||
         key == 'reviewer_name') {
       final s = raw.toString();
-      return Text(
+      return SafeText(
         maskUserDisplayName(s),
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
         textDirection: isRtlText(maskUserDisplayName(s))
             ? TextDirection.rtl
             : TextDirection.ltr,
@@ -6000,7 +5995,7 @@ class _AdminDashboardDrilldownScreenState
       }
     }
     if (raw is num) return Text(raw.toString());
-    return Text(s, maxLines: 2, overflow: TextOverflow.ellipsis);
+    return SafeText(s);
   }
 
   void _pauseDrilldownPolling() {
@@ -6170,7 +6165,7 @@ class _AdminDashboardDrilldownScreenState
         title: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(title, overflow: TextOverflow.ellipsis),
+            ShrinkText(title),
             if (_totalCount != null) ...[
               const SizedBox(width: 8),
               Container(
@@ -6881,7 +6876,7 @@ class _AdminUserMapScreenState extends ConsumerState<_AdminUserMapScreen>
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('$title - ${l10n.getString('adminDrilldownMap')}'),
+        title: ShrinkText('$title - ${l10n.getString('adminDrilldownMap')}'),
         actions: [
           if (_users.isNotEmpty)
             Padding(
@@ -7143,13 +7138,12 @@ class _AdminUserMapScreenState extends ConsumerState<_AdminUserMapScreen>
                       ),
                     ],
                   ),
-                  child: Text(
+                  child: ShrinkText(
                     displayName,
                     style: const TextStyle(
                       fontSize: 10,
                       fontWeight: FontWeight.w600,
                     ),
-                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],
@@ -7194,13 +7188,12 @@ class _AdminUserMapScreenState extends ConsumerState<_AdminUserMapScreen>
                         ),
                       ],
                     ),
-                    child: Text(
+                    child: ShrinkText(
                       displayName,
                       style: const TextStyle(
                         fontSize: 9,
                         fontWeight: FontWeight.w600,
                       ),
-                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                 ],
@@ -7218,6 +7211,16 @@ class _AdminUserMapScreenState extends ConsumerState<_AdminUserMapScreen>
     final name = user['user_name'] as String? ?? 'Unknown';
     final userId = user['user_id'] as String? ?? '';
     final lastActivity = user['last_activity'] as String?;
+    // Show a localized date/time instead of the raw ISO timestamp; fall
+    // back to the raw value if it can't be parsed.
+    final lastActivityDt = lastActivity == null
+        ? null
+        : DateTime.tryParse(lastActivity);
+    final lastActivityLabel = lastActivity == null
+        ? null
+        : lastActivityDt != null
+        ? _formatAdminDateTime(ref.read(localizationProvider), lastActivityDt)
+        : lastActivity;
     final photoUrl = _resolvePhotoUrl(user['photo_url'] as String?);
     final initials = _initials(name);
 
@@ -7293,20 +7296,19 @@ class _AdminUserMapScreenState extends ConsumerState<_AdminUserMapScreen>
                   ),
                 ],
               ),
-              if (lastActivity != null) ...[
+              if (lastActivityLabel != null) ...[
                 const SizedBox(height: 12),
                 Row(
                   children: [
                     Icon(Icons.access_time, size: 16, color: Colors.grey[600]),
                     const SizedBox(width: 6),
                     Flexible(
-                      child: Text(
+                      child: SafeText(
                         ref
                             .read(localizationProvider)
                             .getString('adminMapLastActive')
-                            .replaceAll('{time}', lastActivity),
+                            .replaceAll('{time}', lastActivityLabel),
                         style: Theme.of(context).textTheme.bodySmall,
-                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ],
@@ -7594,7 +7596,7 @@ class _AdminSparkBars extends StatelessWidget {
                             SizedBox(
                               height: labelHeight,
                               child: Center(
-                                child: Text(
+                                child: ShrinkText(
                                   (starts != null &&
                                           starts.length == values.length &&
                                           i < starts.length)
@@ -7602,7 +7604,6 @@ class _AdminSparkBars extends StatelessWidget {
                                       : '',
                                   textAlign: TextAlign.center,
                                   maxLines: labelLines,
-                                  overflow: TextOverflow.ellipsis,
                                   style: Theme.of(context).textTheme.bodySmall,
                                 ),
                               ),
@@ -8701,9 +8702,8 @@ class _IntentsInterestsScreenState
                   Icons.label_important_outline,
                   color: Theme.of(context).colorScheme.primary,
                 ),
-                title: Text(
+                title: SafeText(
                   l10n.getString(p.translationKey),
-                  overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.w700,
                   ),
@@ -8759,9 +8759,8 @@ class _IntentsInterestsScreenState
                 padding: const EdgeInsetsDirectional.only(start: 16),
                 child: Card(
                   child: ListTile(
-                    title: Text(
+                    title: SafeText(
                       l10n.getString(c.translationKey),
-                      overflow: TextOverflow.ellipsis,
                     ),
                     subtitle: Text(c.key),
                     trailing: PopupMenuButton<String>(
@@ -11741,7 +11740,7 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                             }
                           },
                           icon: const Icon(Icons.language),
-                          label: Text(display, overflow: TextOverflow.ellipsis),
+                          label: ShrinkText(display),
                         );
                       },
                     ),
@@ -14187,10 +14186,8 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                                 ],
                               ),
                               const SizedBox(height: 8),
-                              Text(
+                              SafeText(
                                 row.message,
-                                maxLines: 3,
-                                overflow: TextOverflow.ellipsis,
                               ),
                               const SizedBox(height: 12),
                               Wrap(
@@ -17441,12 +17438,10 @@ class _SubscriptionsScreenState extends ConsumerState<_SubscriptionsScreen> {
                                   borderRadius: BorderRadius.circular(12),
                                 ),
                                 child: ListTile(
-                                  title: Text(
+                                  title: SafeText(
                                     p.priceDisplay.trim().isEmpty
                                         ? p.id
                                         : p.priceDisplay,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
                                   ),
                                   subtitle: Padding(
                                     padding: const EdgeInsets.only(top: 6),
@@ -19168,9 +19163,8 @@ class _UserVerificationScreenState
                                 horizontal: 10,
                                 vertical: 6,
                               ),
-                              child: Text(
+                              child: SafeText(
                                 '${l10n.getString('adminVerificationReviewedBy')}: $reviewedByValue',
-                                overflow: TextOverflow.ellipsis,
                                 style: Theme.of(ctx).textTheme.labelMedium,
                               ),
                             ),
@@ -21529,14 +21523,13 @@ class _ProfileEditRequestsScreenState
                                   crossAxisAlignment: CrossAxisAlignment.center,
                                   children: [
                                     Flexible(
-                                      child: Text(
+                                      child: SafeText(
                                         row.userName.trim().isEmpty
                                             ? row.userId
                                             : maskUserDisplayName(row.userName),
                                         style: Theme.of(
                                           context,
                                         ).textTheme.titleMedium,
-                                        overflow: TextOverflow.ellipsis,
                                         textDirection:
                                             isRtlText(
                                               row.userName.trim().isEmpty
@@ -21615,10 +21608,8 @@ class _ProfileEditRequestsScreenState
                                 ),
                                 if (reason.isNotEmpty) ...[
                                   const SizedBox(height: 10),
-                                  Text(
+                                  SafeText(
                                     shortReason(reason),
-                                    maxLines: 3,
-                                    overflow: TextOverflow.ellipsis,
                                     textAlign: isRtlText(reason)
                                         ? TextAlign.right
                                         : TextAlign.left,
@@ -22305,12 +22296,16 @@ const Map<String, String> _defaultTranslations = {
   'adminHealthQueue': 'Notification queue',
   'adminHealthQueuePending': 'Pending',
   'adminHealthQueueProcessing': 'Processing',
+  'adminHealthQueueSentHour': 'Sent (1h)',
   'adminHealthQueueFailedHour': 'Failed (1h)',
   'adminHealthQueueOldestPending': 'Oldest pending',
   'adminHealthQueueCheckedAgo': 'Checked {age} ago',
   'adminHealthQueueAlertDetail':
-      'Queue alert: backlog growing or sender stuck. Check the Delivery '
-      'section.',
+      'Queue alert: backlog growing or sender stuck. Check the failures '
+      'below and edge-function logs.',
+  'adminHealthQueueRecentFailures': 'Recent failures ({count})',
+  'adminHealthQueueFailureAttempts': 'attempts {attempts}',
+  'adminHealthQueueFailureUntitled': '(no title)',
   'adminHealthErrorsTitle': 'Project errors',
   'adminHealthErrorsNone': 'None',
   'adminHealthErrorsValue': '{count} · {age} ago',

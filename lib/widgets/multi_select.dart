@@ -14,6 +14,7 @@
 // selection exits the mode.
 
 import 'package:flutter/material.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 /// Holds the set of selected ids for one screen.
 ///
@@ -176,10 +177,8 @@ class SelectionBottomBar extends StatelessWidget {
                       ),
                       onPressed: action.onPressed,
                       icon: Icon(action.icon, size: 20),
-                      label: Text(
+                      label: ShrinkText(
                         action.label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ),

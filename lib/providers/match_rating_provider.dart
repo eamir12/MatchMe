@@ -274,12 +274,27 @@ class RatingSummaryRealtimeNotifier extends Notifier<int> {
   void _handleRateeUpdated(String rateeId, {required String source}) {
     if (!ref.mounted) return;
     debugPrint('⭐ Rating realtime: $source for ratee=$rateeId — refreshing');
-    _seenUpdates++;
-    lastUpdatedRateeId = rateeId;
-    state = _seenUpdates;
-    try {
-      ref.invalidate(userRatingSummaryProvider(rateeId));
-    } catch (_) {}
+    // Force a network refresh BEFORE notifying listeners. The summary provider
+    // is cache-first and (correctly) serves the cached value without hitting
+    // Supabase while it is "fresh in memory" (< _summaryMemoryFreshFor). A
+    // realtime event, however, means the cache is stale right now, so simply
+    // invalidating the provider would keep showing the old stars until the
+    // freshness window lapsed (or the 30s poll ran). Refresh first so the new
+    // value is already in memory/disk when every watcher rebuilds — the user's
+    // own profile render and the match-box / match-profile screens all read the
+    // same cache, so they all update together.
+    final service = ref.read(matchRatingServiceProvider);
+    unawaited(() async {
+      await service.forceRefreshSummary(rateeId);
+      if (!ref.mounted) return;
+      if (Supabase.instance.client.auth.currentSession == null) return;
+      _seenUpdates++;
+      lastUpdatedRateeId = rateeId;
+      state = _seenUpdates;
+      try {
+        ref.invalidate(userRatingSummaryProvider(rateeId));
+      } catch (_) {}
+    }());
   }
 
   void _refreshAll() {

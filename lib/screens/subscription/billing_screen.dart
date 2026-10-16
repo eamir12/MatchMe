@@ -8,6 +8,7 @@ import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/screens/paywall/paywall_screen.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class BillingScreen extends ConsumerStatefulWidget {
   const BillingScreen({super.key});
@@ -39,7 +40,7 @@ class _BillingScreenState extends ConsumerState<BillingScreen>
 
     if (userId == null || userId.isEmpty) {
       return Scaffold(
-        appBar: AppBar(title: Text(l10n.getString('billingTitle'))),
+        appBar: AppBar(title: ShrinkText(l10n.getString('billingTitle'))),
         body: Center(child: Text(l10n.getString('generalError'))),
       );
     }
@@ -51,14 +52,14 @@ class _BillingScreenState extends ConsumerState<BillingScreen>
 
     if (profileAsync.isLoading && profile == null) {
       return Scaffold(
-        appBar: AppBar(title: Text(l10n.getString('billingTitle'))),
+        appBar: AppBar(title: ShrinkText(l10n.getString('billingTitle'))),
         body: const Center(child: CircularProgressIndicator()),
       );
     }
 
     if (profileAsync.hasError || profile == null) {
       return Scaffold(
-        appBar: AppBar(title: Text(l10n.getString('billingTitle'))),
+        appBar: AppBar(title: ShrinkText(l10n.getString('billingTitle'))),
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
@@ -91,7 +92,7 @@ class _BillingScreenState extends ConsumerState<BillingScreen>
     final completedEntries = history.where(_isCompletedEntry).toList();
 
     return Scaffold(
-      appBar: AppBar(title: Text(l10n.getString('billingTitle'))),
+      appBar: AppBar(title: ShrinkText(l10n.getString('billingTitle'))),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.all(16),

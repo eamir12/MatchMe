@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:matchme/theme/semantic_colors.dart';
 
 /// Centralized button styling for the application
 /// Ensures consistency across all settings screens and the entire app
@@ -65,9 +66,12 @@ class AppButtonStyles {
 
   // Success action button (confirm, enable, etc.)
   static ButtonStyle successButton(BuildContext context) {
+    // Mode-aware success pair: light mode uses emerald-700 with white text
+    // (5.4:1); dark mode uses emerald-400 with deep green text (7.9:1).
+    final semantic = SemanticColors.of(context);
     return ElevatedButton.styleFrom(
-      backgroundColor: const Color(0xFF10B981), // Modern green
-      foregroundColor: Colors.white,
+      backgroundColor: semantic.success,
+      foregroundColor: semantic.onSuccess,
       padding: const EdgeInsets.symmetric(
         vertical: _buttonPaddingVertical,
         horizontal: _buttonPaddingHorizontal,

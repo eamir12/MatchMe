@@ -10,6 +10,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/providers/new_options_provider.dart';
 import 'package:matchme/providers/unit_provider.dart';
 import 'package:matchme/utils/match_preferences_validation.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class MatchPreferencesScreen extends ConsumerStatefulWidget {
   final bool embedded;
@@ -370,7 +371,7 @@ class _MatchPreferencesScreenState
                         },
                       )
                     : null,
-                title: Text(l10n.getString('settingsMatchPreferences')),
+                title: ShrinkText(l10n.getString('settingsMatchPreferences')),
                 actions: [
                   if (_hasChanges) ...[
                     TextButton(

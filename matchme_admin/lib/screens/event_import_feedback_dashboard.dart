@@ -14,6 +14,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:matchme_admin/widgets/safe_text.dart';
 
 class AdminEventImportFeedbackDashboard extends ConsumerStatefulWidget {
   const AdminEventImportFeedbackDashboard({
@@ -258,11 +259,9 @@ class _AdminEventImportFeedbackDashboardState
               for (final status in _statusFilters)
                 ButtonSegment(
                   value: status,
-                  label: Text(
+                  label: ShrinkText(
                     t('adminEventFeedbackFilter${_filterLabel(status)}'),
                     maxLines: 1,
-                    softWrap: false,
-                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
             ],

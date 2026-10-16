@@ -4,6 +4,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:matchme/providers/external_ad_provider.dart';
 import 'package:matchme/services/external_ad_service.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/theme/app_theme_tokens.dart';
 
 /// Widget for displaying web in-feed ads
 ///
@@ -55,14 +56,23 @@ class _WebInFeedAdWidgetState extends ConsumerState<WebInFeedAdWidget> {
     widget.onAdLoaded?.call();
 
     final l10n = ref.watch(localizationProvider);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final sponsoredBackground = isDark
+        ? AppThemeTokens.darkTertiary
+        : const Color(0xFF92400E);
+    final sponsoredForeground = isDark
+        ? AppThemeTokens.darkOnTertiary
+        : Colors.white;
 
     return Container(
       width: widget.responsive ? double.infinity : widget.width.toDouble(),
       height: widget.height.toDouble(),
       margin: const EdgeInsets.symmetric(vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border.all(color: Colors.grey[300]!),
+        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        border: Border.all(
+          color: Theme.of(context).colorScheme.outlineVariant,
+        ),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Material(
@@ -77,13 +87,17 @@ class _WebInFeedAdWidgetState extends ConsumerState<WebInFeedAdWidget> {
                 width: widget.height.toDouble(),
                 height: widget.height.toDouble(),
                 decoration: BoxDecoration(
-                  color: Colors.orange[100],
+                  color: Theme.of(context).colorScheme.tertiaryContainer,
                   borderRadius: const BorderRadius.only(
                     topLeft: Radius.circular(8),
                     bottomLeft: Radius.circular(8),
                   ),
                 ),
-                child: Icon(Icons.star, color: Colors.orange[400], size: 32),
+                child: Icon(
+                  Icons.star,
+                  color: Theme.of(context).colorScheme.onTertiaryContainer,
+                  size: 32,
+                ),
               ),
               // Content
               Expanded(
@@ -99,13 +113,13 @@ class _WebInFeedAdWidgetState extends ConsumerState<WebInFeedAdWidget> {
                           vertical: 2,
                         ),
                         decoration: BoxDecoration(
-                          color: Colors.orange[600],
+                          color: sponsoredBackground,
                           borderRadius: BorderRadius.circular(2),
                         ),
                         child: Text(
                           l10n.getString('webAdSponsored'),
                           style: TextStyle(
-                            color: Colors.white,
+                            color: sponsoredForeground,
                             fontSize: 9,
                             fontWeight: FontWeight.w500,
                           ),
@@ -115,7 +129,7 @@ class _WebInFeedAdWidgetState extends ConsumerState<WebInFeedAdWidget> {
                       Text(
                         l10n.getString('webAdUpgradeExperience'),
                         style: TextStyle(
-                          color: Colors.grey[800],
+                          color: Theme.of(context).colorScheme.onSurface,
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
                         ),
@@ -125,7 +139,12 @@ class _WebInFeedAdWidgetState extends ConsumerState<WebInFeedAdWidget> {
                       const SizedBox(height: 2),
                       Text(
                         l10n.getString('webAdGetUnlimitedMatches'),
-                        style: TextStyle(color: Colors.grey[600], fontSize: 11),
+                        style: TextStyle(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant,
+                          fontSize: 11,
+                        ),
                         maxLines: 2,
                         overflow: TextOverflow.visible,
                       ),
@@ -195,20 +214,26 @@ class PlaceholderWebInFeedAd extends ConsumerWidget {
       height: height.toDouble(),
       margin: const EdgeInsets.symmetric(vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.grey[200],
-        border: Border.all(color: Colors.grey[300]!),
+        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        border: Border.all(
+          color: Theme.of(context).colorScheme.outlineVariant,
+        ),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.feed, color: Colors.grey[400], size: 32),
+            Icon(
+              Icons.feed,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              size: 32,
+            ),
             const SizedBox(height: 8),
             Text(
               l10n.getString('webInFeedAdPlaceholder'),
               style: TextStyle(
-                color: Colors.grey[600],
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
                 fontSize: 14,
                 fontWeight: FontWeight.w500,
               ),

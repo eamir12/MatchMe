@@ -7,6 +7,7 @@ import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/services/error_localization_service.dart';
 import 'package:matchme/services/password_reset_service.dart';
 import 'package:matchme/utils/otp_utils.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class PasswordResetOtpScreen extends ConsumerStatefulWidget {
   const PasswordResetOtpScreen({super.key, required this.email});
@@ -283,7 +284,7 @@ class _PasswordResetOtpScreenState
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(l10n.getString('authResetPasswordTitle')),
+        title: ShrinkText(l10n.getString('authResetPasswordTitle')),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () {

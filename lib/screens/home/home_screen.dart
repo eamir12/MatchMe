@@ -36,6 +36,7 @@ import 'package:matchme/widgets/ad_slot.dart';
 import 'package:matchme/widgets/match_box.dart';
 import 'package:matchme/widgets/chat_list_item.dart';
 import 'package:matchme/widgets/multi_select.dart';
+import 'package:matchme/widgets/profile_completeness_card.dart';
 import 'package:matchme/providers/new_options_provider.dart';
 import 'package:matchme/utils/shared_intent_utils.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -921,7 +922,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       padding: const EdgeInsets.all(16.0),
       child: Text(
         message,
-        style: const TextStyle(color: Colors.grey),
+        style: TextStyle(
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
         textAlign: TextAlign.center,
       ),
     ),
@@ -1088,6 +1091,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               loading: () => const SizedBox.shrink(),
               error: (e, s) => const SizedBox.shrink(),
             ),
+          ),
+          // Private completeness nudge, dismissible per user/score. Hidden
+          // once the profile reaches 100%.
+          profileState.when(
+            data: (profile) => profile == null
+                ? const SizedBox.shrink()
+                : ProfileCompletenessBanner(profile: profile),
+            loading: () => const SizedBox.shrink(),
+            error: (e, s) => const SizedBox.shrink(),
           ),
           // The home-base banner describes the position broadcast to
           // others. While invisible nothing is broadcast, so it is

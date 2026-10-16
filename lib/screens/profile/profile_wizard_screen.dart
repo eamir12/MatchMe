@@ -22,6 +22,7 @@ import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/unit_provider.dart';
 import 'package:matchme/utils/string_extensions.dart';
+import 'package:matchme/utils/profile_completeness.dart';
 import 'package:matchme/utils/profile_wizard_page_map.dart';
 import 'package:matchme/utils/zodiac.dart';
 import 'package:matchme/screens/profile/request_change_dialog.dart';
@@ -31,6 +32,11 @@ import 'package:matchme/services/photo_service.dart';
 import 'package:matchme/services/error_localization_service.dart';
 import 'package:matchme/services/global_sync_manager.dart';
 import 'package:matchme/services/session_service.dart';
+import 'package:matchme/services/offline_cache_manager.dart';
+import 'package:matchme/services/chat_key_service.dart';
+import 'package:matchme/providers/chat_key_provider.dart';
+import 'package:matchme/providers/connected_online_accounts_provider.dart';
+import 'package:matchme/providers/calendar_sync_provider.dart';
 import 'package:matchme/services/storage_helper.dart';
 import 'package:matchme/services/translation_service.dart';
 import 'package:matchme/services/voice_guidance_service.dart';
@@ -46,6 +52,8 @@ import 'package:matchme/widgets/photo_rejection_dialog.dart';
 import 'package:matchme/widgets/signed_image.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:auto_size_text/auto_size_text.dart';
+import 'package:matchme/widgets/safe_text.dart';
+import 'package:matchme/widgets/profile_completeness_summary.dart';
 
 String _normalizeKey(String s) {
   final trimmed = s.trim().toLowerCase();
@@ -225,8 +233,9 @@ class _ProfileWizardValidationIssue {
 
 class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
   /// True when the user has already completed their profile once and is now
-  /// editing it (via "Edit" on the profile screen). In this mode the wizard
-  /// must start at the beginning and allow saving from any step.
+  /// editing it (via "Edit" on the profile screen). In this mode saving is
+  /// allowed from any step; page restore behaves exactly like the initial
+  /// wizard (resume on the last page the user was on).
   static bool isEditAfterCompleteMode({
     required bool isEditing,
     required bool isProfileComplete,
@@ -285,6 +294,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
   UserProfile? _lastGoodProfile;
   bool _userDeletedCheckPerformed = false;
   Timer? _draftDebounce;
+  AppLifecycleListener? _appLifecycleListener;
   Timer? _primaryPhotoValidationDebounce;
   String? _pendingPrimaryPhotoPath;
   String? _primaryValidationPhotoPath;
@@ -604,11 +614,43 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     } catch (_) {}
     clearInitialSyncKickedAt();
 
+    // Mirror the main logout wipe: the wizard doubles as the profile editor,
+    // so full account data (messages, matches, profile, media caches) may
+    // exist on this device.
+    try {
+      await OfflineCacheManager.instance.clearAllOfflineCache(
+        userId: widget.user.id,
+      );
+    } catch (_) {}
+    unawaited(SessionService.deleteFcmToken());
+    try {
+      await SessionService.clearLocalFcmToken();
+    } catch (_) {}
+    try {
+      if (mounted) ref.invalidate(chatKeyProvider);
+      ChatKeyService.instance.clearMemoryCaches();
+    } catch (_) {}
+    try {
+      if (mounted) ref.invalidate(connectedOnlineAccountsProvider);
+      if (mounted) ref.invalidate(calendarSyncServiceProvider);
+    } catch (_) {}
+
     await _clearLoginState();
 
+    SessionService.markExplicitUserSignOut();
+    // Sign out locally and immediately. `signOut` clears the in-memory session
+    // and fires the `signedOut` event (routing to the login screen) BEFORE the
+    // SDK's server-side revocation round trip, so we must NOT await that round
+    // trip — an unreachable/slow Supabase would otherwise stall the logout.
     try {
-      SessionService.markExplicitUserSignOut();
-      await Supabase.instance.client.auth.signOut(scope: SignOutScope.local);
+      unawaited(
+        Supabase.instance.client.auth
+            .signOut(scope: SignOutScope.local)
+            .timeout(const Duration(seconds: 3))
+            .catchError((Object e) {
+              debugPrint('[AUTH] Wizard signOut revocation failed: $e');
+            }),
+      );
     } catch (e) {
       if (!mounted) return;
       final l10n = ref.read(localizationProvider);
@@ -1277,6 +1319,22 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
       }
     }, fireImmediately: true);
 
+    // Flush the wizard draft immediately when the app is backgrounded or
+    // being shut down. Force-killing the app (or swiping it away) never runs
+    // dispose(), so the debounced save and the dispose-time save are both
+    // skipped and the last 350 ms of edits — or, on some OEMs, the whole
+    // session — were lost with the process.
+    _appLifecycleListener = AppLifecycleListener(
+      onStateChange: (state) {
+        if (state == AppLifecycleState.inactive ||
+            state == AppLifecycleState.hidden ||
+            state == AppLifecycleState.paused ||
+            state == AppLifecycleState.detached) {
+          _flushDraftForShutdown();
+        }
+      },
+    );
+
     // Verify user still exists in database during profile creation
     Future.delayed(const Duration(seconds: 1), () {
       if (!_userDeletedCheckPerformed && mounted) {
@@ -1395,22 +1453,19 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
       _educationController.text = profile.education ?? '';
     }
 
-    // Restore draft page index if set. Exception: after the profile has
-    // been completed once, opening the wizard via "Edit" always starts at
-    // the beginning so the user can review/update from the first screen.
-    final editAfterComplete = _ProfileWizardScreenState.isEditAfterCompleteMode(
-      isEditing: widget.isEditing,
-      isProfileComplete: profile.isProfileComplete,
-    );
-    var restoredIndex = editAfterComplete
-        ? 0
-        : ref
-              .read(profileEditProvider(widget.user.id).notifier)
-              .wizardCurrentPageIndex;
+    // Restore the wizard to the last page the user was on. Applies to both
+    // the initial setup wizard and the edit-after-complete flow: leaving the
+    // wizard (Back, swipe-away, process kill) and re-opening it resumes on
+    // the screen where the user stopped instead of resetting to the first
+    // step.
+    var restoredIndex = ref
+        .read(profileEditProvider(widget.user.id).notifier)
+        .wizardCurrentPageIndex;
     // Completeness routing: when the wizard was opened because the profile
-    // has a critical gap (startup/resume check), jump straight to that
-    // gap's page instead of the draft's last page.
-    if (!editAfterComplete && widget.initialSection != null) {
+    // has a critical gap (startup/resume check or checklist tap), jump
+    // straight to that gap's page instead of the draft's last page. This
+    // takes precedence even in edit-after-complete mode.
+    if (widget.initialSection != null) {
       final gapIndex = _profileWizardPageMap(
         profile,
       ).indexFor(widget.initialSection!);
@@ -1423,14 +1478,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         } catch (_) {}
       }
     }
-    if (editAfterComplete) {
-      _currentPageIndex = 0;
-      try {
-        ref
-            .read(profileEditProvider(widget.user.id).notifier)
-            .setWizardPageIndex(0);
-      } catch (_) {}
-    } else if (restoredIndex > 0) {
+    if (restoredIndex > 0) {
       _currentPageIndex = restoredIndex;
       _ensurePageRestored(restoredIndex);
     }
@@ -1440,7 +1488,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     // be a restored draft page).
     if (!_didSpeakInitialStep) {
       _didSpeakInitialStep = true;
-      if (!editAfterComplete && restoredIndex > 0) {
+      if (restoredIndex > 0) {
         _speakStepGuidance(restoredIndex);
       } else if (!widget.isEditing) {
         unawaited(
@@ -1472,6 +1520,20 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             }),
       );
     });
+  }
+
+  /// Immediate draft persist for app-lifecycle shutdown paths (background,
+  /// swipe-away, force-kill). Runs even though dispose() is never called.
+  void _flushDraftForShutdown() {
+    if (!mounted || !_draftEnabled) return;
+    _draftDebounce?.cancel();
+    try {
+      final notifier = ref.read(profileEditProvider(widget.user.id).notifier);
+      final p = ref.read(profileEditProvider(widget.user.id)).value;
+      if (p == null) return;
+      _lastDraftJson = jsonEncode(p.toMap());
+      unawaited(notifier.saveWizardDraft());
+    } catch (_) {}
   }
 
   void _schedulePrimaryPhotoValidation(String photoPath) {
@@ -1603,6 +1665,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
   @override
   void dispose() {
     _draftDebounce?.cancel();
+    _appLifecycleListener?.dispose();
     _primaryPhotoValidationDebounce?.cancel();
     // Leaving the wizard silences any guidance mid-sentence.
     unawaited(VoiceGuidanceService.instance.stop());
@@ -2883,6 +2946,14 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     });
   }
 
+  void _onWizardPageChanged(int pageIndex) {
+    final section = _profileWizardPageMap(
+      _lastGoodProfile,
+    ).sectionForPage(pageIndex);
+    if (section != ProfileWizardSection.photos) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+  }
+
   void _handleBackPage(List<Widget> pages) {
     final currentPage = _currentPageIndex;
     if (currentPage >= pages.length || currentPage <= 0) {
@@ -4124,9 +4195,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
       message: tooltipText,
       textStyle: Theme.of(
         context,
-      ).textTheme.bodySmall?.copyWith(color: Colors.white),
+      ).textTheme.bodySmall?.copyWith(color: scheme.onInverseSurface),
       decoration: BoxDecoration(
-        color: scheme.onSurface.withValues(alpha: 0.9),
+        color: scheme.inverseSurface,
         borderRadius: BorderRadius.circular(10),
       ),
       child: pill,
@@ -4329,7 +4400,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                   l10n.getString('profileWizardSearchNoResults'),
                   style: Theme.of(
                     context,
-                  ).textTheme.bodyMedium?.copyWith(color: Colors.black54),
+                  ).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
             ];
@@ -4607,7 +4680,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                 l10n.getString('profileInterestsHelper'),
                 style: Theme.of(
                   ctx,
-                ).textTheme.bodyMedium?.copyWith(color: Colors.black54),
+                ).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                ),
               ),
               _WizardFieldLegend(l10n: l10n),
               const SizedBox(height: 8),
@@ -4672,7 +4747,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                         l10n.getString('profileWizardSearchNoResults'),
                         style: Theme.of(
                           ctx,
-                        ).textTheme.bodyMedium?.copyWith(color: Colors.black54),
+                        ).textTheme.bodyMedium?.copyWith(
+                          color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                        ),
                       ),
                     ),
                   ];
@@ -4973,7 +5050,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             helperText,
             style: Theme.of(
               context,
-            ).textTheme.bodyMedium?.copyWith(color: Colors.black54),
+            ).textTheme.bodyMedium?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
           _WizardFieldLegend(l10n: l10n),
           const SizedBox(height: 20),
@@ -5506,7 +5585,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             l10n.getString('profileWizardDetailsSubtitle'),
             style: Theme.of(
               context,
-            ).textTheme.bodyMedium?.copyWith(color: Colors.black54),
+            ).textTheme.bodyMedium?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
           _WizardFieldLegend(l10n: l10n),
           const SizedBox(height: 20),
@@ -5864,6 +5945,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 24.0),
       child: ListView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
         children: [
           Row(
             children: [
@@ -5891,7 +5973,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             l10n.getString('profileWizardDetailsSubtitle'),
             style: Theme.of(
               context,
-            ).textTheme.bodyMedium?.copyWith(color: Colors.black54),
+            ).textTheme.bodyMedium?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
           Text(
             l10n.getString('profileWizardPhotosRequiredNote'),
@@ -6149,7 +6233,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             l10n.getString('profileSocialLinksSubtitle'),
             style: Theme.of(
               context,
-            ).textTheme.bodyMedium?.copyWith(color: Colors.black54),
+            ).textTheme.bodyMedium?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
           _WizardFieldLegend(l10n: l10n, allOptional: true),
           const SizedBox(height: 20),
@@ -6225,7 +6311,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             l10n.getString('profileEditIntentsSubtitle'),
             style: Theme.of(
               ctx,
-            ).textTheme.bodyMedium?.copyWith(color: Colors.black54),
+            ).textTheme.bodyMedium?.copyWith(
+              color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+            ),
           ),
           _WizardFieldLegend(l10n: l10n),
           const SizedBox(height: 20),
@@ -6647,7 +6735,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                 ),
                 style: Theme.of(
                   ctx,
-                ).textTheme.bodyMedium?.copyWith(color: Colors.black54),
+                ).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                ),
               ),
               const SizedBox(height: 8),
               Builder(
@@ -6684,7 +6774,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                   localResolve('profileEditNoSubIntents'),
                   style: Theme.of(
                     ctx,
-                  ).textTheme.bodyMedium?.copyWith(color: Colors.black54),
+                  ).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ...subIntents.map((sub) {
                 final selected =
@@ -6798,7 +6890,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                   l10n.getString('profileInterestsHelper'),
                   style: Theme.of(
                     ctx,
-                  ).textTheme.bodyMedium?.copyWith(color: Colors.black54),
+                  ).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                  ),
                 ),
                 _WizardFieldLegend(l10n: l10n),
                 const SizedBox(height: 8),
@@ -6844,7 +6938,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                       localResolve('profileEditNoInterests'),
                       style: Theme.of(
                         ctx,
-                      ).textTheme.bodyMedium?.copyWith(color: Colors.black54),
+                      ).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ),
 
@@ -6874,7 +6970,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                         child: Text(
                           l10n.getString('profileWizardSearchNoResults'),
                           style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
-                            color: Colors.black54,
+                            color: Theme.of(ctx).colorScheme.onSurfaceVariant,
                           ),
                         ),
                       ),
@@ -7994,10 +8090,19 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                   fit: BoxFit.cover,
                   width: cardWidth,
                   height: cardWidth * 1.15,
-                  placeholder: Container(color: Colors.grey.shade100),
+                  placeholder: Container(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.surfaceContainerHighest,
+                  ),
                   errorWidget: Container(
-                    color: Colors.grey.shade200,
-                    child: const Icon(Icons.broken_image),
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.surfaceContainerHighest,
+                    child: Icon(
+                      Icons.broken_image,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                   ),
                 ),
                 PositionedDirectional(
@@ -9763,6 +9868,28 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
               ],
             ),
             const SizedBox(height: 16),
+            // Completeness of the draft as it stands right now: score ring,
+            // remaining points and one-tap jumps to the gap's wizard page.
+            Card(
+              elevation: 0,
+              shape: cardShape,
+              margin: cardMargin,
+              clipBehavior: Clip.antiAlias,
+              child: Padding(
+                padding: const EdgeInsets.all(14.0),
+                child: ProfileCompletenessSummary(
+                  profile: profile,
+                  onSectionTap: (section) {
+                    final targetIndex = _profileWizardPageMap(
+                      profile,
+                    ).indexFor(section);
+                    if (targetIndex >= 0) {
+                      unawaited(_goToWizardPage(targetIndex));
+                    }
+                  },
+                ),
+              ),
+            ),
             if (entries.isEmpty)
               Center(child: Text(l10n.getString('profileNotSet'))),
             ...entries,
@@ -9777,8 +9904,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
   Widget _buildProgressIndicator(
     int totalSteps,
     int currentIndex,
-    LocalizationState l10n,
-  ) {
+    LocalizationState l10n, {
+    UserProfile? profile,
+  }) {
     final progress = (totalSteps <= 1)
         ? 0.0
         : (currentIndex / (totalSteps - 1)).clamp(0.0, 1.0);
@@ -9786,6 +9914,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
       'onboardingStepOf',
       params: {'current': '${currentIndex + 1}', 'total': '$totalSteps'},
     );
+    final completenessScore = profile == null
+        ? null
+        : ProfileCompleteness.score(profile);
     return Semantics(
       container: true,
       label: stepLabel,
@@ -9794,6 +9925,12 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 20.0),
         child: Row(
           children: [
+            // Live completeness chip: owner-only, updates as the draft
+            // changes on any wizard page (scoring mirrors the SQL trigger).
+            if (completenessScore != null) ...[
+              _buildCompletenessChip(context, l10n, completenessScore),
+              const SizedBox(width: 10),
+            ],
             Expanded(
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(8.0),
@@ -9809,6 +9946,49 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             const SizedBox(width: 12),
             Text(stepLabel, style: Theme.of(context).textTheme.labelMedium),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCompletenessChip(
+    BuildContext context,
+    LocalizationState l10n,
+    int score,
+  ) {
+    final color = score >= 90
+        ? Colors.green.shade600
+        : Theme.of(context).colorScheme.primary;
+    final label = l10n.getString(
+      'profileCompletionPercent',
+      params: {'percent': '$score'},
+    );
+    return Semantics(
+      label: label,
+      container: true,
+      child: Tooltip(
+        message: l10n.getString('profileCompletionTitle'),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.workspace_premium_rounded, size: 13, color: color),
+              const SizedBox(width: 3),
+              Text(
+                '$score%',
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w700,
+                  color: color,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -9947,7 +10127,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                     },
                   )
                 : null,
-            title: Text(l10n.getString('profileEditTitle')),
+            title: ShrinkText(l10n.getString('profileEditTitle')),
             automaticallyImplyLeading: false,
             elevation: 0,
             backgroundColor:
@@ -10188,12 +10368,18 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     return Column(
       children: [
         const SizedBox(height: 10),
-        _buildProgressIndicator(pages.length, _currentPageIndex, l10n),
+        _buildProgressIndicator(
+          pages.length,
+          _currentPageIndex,
+          l10n,
+          profile: profile,
+        ),
         const SizedBox(height: 10),
         Expanded(
           child: PageView(
             controller: _pageController,
             physics: const NeverScrollableScrollPhysics(),
+            onPageChanged: _onWizardPageChanged,
             children: pages,
           ),
         ),
@@ -10535,7 +10721,9 @@ class _LifestyleWizardPageState extends ConsumerState<LifestyleWizardPage> {
             l10n.getString('profileWizardLifestyleSubtitle'),
             style: Theme.of(
               context,
-            ).textTheme.bodyMedium?.copyWith(color: Colors.black54),
+            ).textTheme.bodyMedium?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
           _WizardFieldLegend(l10n: l10n, allOptional: true),
           const SizedBox(height: 20),
@@ -10837,7 +11025,9 @@ class _FamilyWizardPageState extends ConsumerState<FamilyWizardPage> {
             l10n.getString('profileWizardFamilySubtitle'),
             style: Theme.of(
               context,
-            ).textTheme.bodyMedium?.copyWith(color: Colors.black54),
+            ).textTheme.bodyMedium?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
           _WizardFieldLegend(l10n: l10n, allOptional: true),
           const SizedBox(height: 20),
@@ -10993,7 +11183,9 @@ class _ReligionWizardPageState extends ConsumerState<ReligionWizardPage> {
             l10n.getString('profileWizardReligionSubtitle'),
             style: Theme.of(
               context,
-            ).textTheme.bodyMedium?.copyWith(color: Colors.black54),
+            ).textTheme.bodyMedium?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
           _WizardFieldLegend(l10n: l10n, allOptional: true),
           const SizedBox(height: 20),
@@ -11292,7 +11484,9 @@ class _UnifiedMatchPreferencesWizardPageState
                 l10n.getString('profileWizardGenderAgePreferencesSubtitle'),
                 style: Theme.of(
                   context,
-                ).textTheme.bodyMedium?.copyWith(color: Colors.black54),
+                ).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
               _WizardFieldLegend(l10n: l10n),
               const SizedBox(height: 20),

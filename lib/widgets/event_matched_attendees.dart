@@ -6,6 +6,7 @@ import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/screens/events/attendees_screen.dart'
     show eventMatchesProvider;
+import 'package:matchme/widgets/safe_text.dart';
 import 'package:matchme/widgets/signed_image.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -113,7 +114,7 @@ class EventMatchedAttendees extends ConsumerWidget {
               avatarStack,
               const SizedBox(width: 8),
               Expanded(
-                child: Text(
+                child: SafeText(
                   l10n.getString(
                     'eventMatchedAttendeesCount',
                     params: {'count': otherUserIds.length.toString()},
@@ -121,8 +122,6 @@ class EventMatchedAttendees extends ConsumerWidget {
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ],

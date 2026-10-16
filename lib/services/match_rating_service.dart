@@ -286,6 +286,27 @@ class MatchRatingService {
     }
   }
 
+  /// Force a fresh Supabase fetch for [userId], bypassing the
+  /// stale-while-revalidate throttle that [_summaryMemoryFreshFor] applies.
+  ///
+  /// Callers (the realtime rating listener) use this when they are told a
+  /// specific user's aggregate changed: the memory/disk cache is known-stale
+  /// even if it was written moments ago, so returning it would delay the
+  /// update by up to the freshness window. Updates memory + local storage so
+  /// the very next provider build reads the new value; never throws.
+  Future<UserRatingSummary?> forceRefreshSummary(String userId) async {
+    final id = userId.trim();
+    if (id.isEmpty) return null;
+    if (shouldSkipSupabaseCalls()) return null;
+    if (_supabase.auth.currentUser == null) return null;
+    try {
+      return await fetchFreshSummary(id);
+    } catch (e) {
+      debugPrint('⭐ Rating cache: force refresh failed for $id: $e');
+      return null;
+    }
+  }
+
   /// Prefetch a batch of matched-user summaries in the background.
   /// Fire-and-forget: warms memory + local storage so lists render instantly.
   static void prefetchSummaries(

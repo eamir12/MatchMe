@@ -20,6 +20,7 @@ import 'package:matchme/screens/matches/match_profile_screen.dart';
 import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:matchme/services/local_db_service.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 final supabase = Supabase.instance.client;
 
@@ -273,7 +274,7 @@ class AttendeesScreen extends ConsumerWidget {
     final matchesAsync = ref.watch(eventMatchesProvider(event));
 
     return Scaffold(
-      appBar: showAppBar ? AppBar(title: Text(eventTitle)) : null,
+      appBar: showAppBar ? AppBar(title: ShrinkText(eventTitle)) : null,
       body: Column(
         children: [
           if (!showAppBar) ...[

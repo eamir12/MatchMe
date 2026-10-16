@@ -17,6 +17,7 @@ import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/widgets/event_import_block_sheet.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class OnlineProvidersScreen extends ConsumerStatefulWidget {
   const OnlineProvidersScreen({super.key});
@@ -1805,7 +1806,7 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(l10n.getString('eventsImportOnlineProviders')),
+        title: ShrinkText(l10n.getString('eventsImportOnlineProviders')),
         actions: [
           IconButton(
             onPressed: hasAccounts ? () => _refreshAllAccounts() : null,

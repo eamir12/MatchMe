@@ -17,6 +17,7 @@ import 'package:uuid/uuid.dart';
 import 'package:intl/intl.dart';
 import 'package:matchme/theme/app_button_styles.dart';
 import 'package:matchme/utils/directional_icons.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class InvisibilityRulesScreen extends ConsumerStatefulWidget {
   final String? highlightRuleId;
@@ -2354,7 +2355,7 @@ class _InvisibilityRulesScreenState
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(l10n.getString('settingsInvisibilityRules')),
+        title: ShrinkText(l10n.getString('settingsInvisibilityRules')),
         backgroundColor:
             Theme.of(context).appBarTheme.backgroundColor ??
             Theme.of(context).colorScheme.surface,

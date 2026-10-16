@@ -20,6 +20,8 @@ import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/services/voice_guidance_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:webview_windows/webview_windows.dart';
+import 'package:matchme/widgets/safe_text.dart';
+import 'package:matchme/widgets/voice_guidance_mute_button.dart';
 
 /// JS injected before document parsing. Defines the same host bindings the
 /// capture page expects on mobile (window.PhotoCapture / window.ValidationLog)
@@ -526,7 +528,7 @@ class _WindowsMediaPipeCapturePageState
     if (_webview2Missing) {
       return Scaffold(
         backgroundColor: Colors.black,
-        appBar: AppBar(title: Text(l10n.getString('verification'))),
+        appBar: AppBar(title: ShrinkText(l10n.getString('verification'))),
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
@@ -553,7 +555,7 @@ class _WindowsMediaPipeCapturePageState
     if (_loadError != null) {
       return Scaffold(
         backgroundColor: Colors.black,
-        appBar: AppBar(title: Text(l10n.getString('verification'))),
+        appBar: AppBar(title: ShrinkText(l10n.getString('verification'))),
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
@@ -583,7 +585,7 @@ class _WindowsMediaPipeCapturePageState
         appBar: AppBar(
           backgroundColor: Colors.black,
           foregroundColor: Colors.white,
-          title: Text(l10n.getString('verification')),
+          title: ShrinkText(l10n.getString('verification')),
         ),
         body: const Center(child: CircularProgressIndicator()),
       );
@@ -617,6 +619,25 @@ class _WindowsMediaPipeCapturePageState
                     ).backButtonTooltip,
                     icon: const Icon(Icons.arrow_back, color: Colors.white),
                     onPressed: () => Navigator.of(context).maybePop(),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          // Mute/unmute for the spoken instructions while the camera is live.
+          // Trailing edge keeps it clear of the back button in both LTR/RTL.
+          Positioned.directional(
+            textDirection: Directionality.of(context),
+            top: 0,
+            end: 0,
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Material(
+                  color: Colors.black54,
+                  shape: const CircleBorder(),
+                  child: const VoiceGuidanceMuteButton(
+                    iconColor: Colors.white,
                   ),
                 ),
               ),

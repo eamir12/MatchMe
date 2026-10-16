@@ -12,6 +12,7 @@ import 'package:matchme/models/subscription_tier.dart';
 import 'package:matchme/models/subscription_plan.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/utils/string_extensions.dart';
+import 'package:matchme/theme/semantic_colors.dart';
 import 'package:matchme/widgets/currency_picker_bottom_sheet.dart';
 import 'package:matchme/widgets/promo_code_input.dart';
 import 'package:matchme/services/promo_code_service.dart';
@@ -35,6 +36,13 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
   PromoCodeValidationResult? _appliedPromo;
   int _promoValidationRequestId = 0;
   bool get _supportsNativePurchases => false;
+
+  /// Ink for the amber-to-orange banner.
+  ///
+  /// White text only reaches ~1.4:1 on amber-300, so the banner uses a dark
+  /// amber ink that stays above 6:1 on every stop of the gradient in both
+  /// themes.
+  static const Color _paywallBannerInk = Color(0xFF451A03);
 
   String get _externalCheckoutBaseUrl =>
       (dotenv.env['SUBSCRIPTION_CHECKOUT_URL'] ??
@@ -243,6 +251,8 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
   }
 
   Widget _buildOfflineFallback(BuildContext context, dynamic l10n) {
+    final scheme = Theme.of(context).colorScheme;
+    final isDark = scheme.brightness == Brightness.dark;
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.all(24.0),
@@ -252,23 +262,23 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
             Icon(
               Icons.wifi_off_rounded,
               size: 64,
-              color: Colors.orange.shade400,
+              color: isDark ? Colors.orange.shade300 : Colors.orange.shade800,
             ),
             const SizedBox(height: 16),
             Text(
               l10n.getString('paywallOfflineTitle'),
               textAlign: TextAlign.center,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.bold,
-                color: Colors.black87,
+                color: scheme.onSurface,
               ),
             ),
             const SizedBox(height: 8),
             Text(
               l10n.getString('paywallOfflineBody'),
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 14, color: Colors.black54),
+              style: TextStyle(fontSize: 14, color: scheme.onSurfaceVariant),
             ),
             const SizedBox(height: 24),
             ElevatedButton(
@@ -344,10 +354,14 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                 (remaining != null && remaining > Duration.zero)
                 ? '${l10n.getString('paywallPurchaseSuccess')}\n${l10n.getString('subscriptionTimeLeft')}: ${formatDurationWords(l10n, remaining)}'
                 : l10n.getString('paywallPurchaseSuccess');
+            final semantic = SemanticColors.of(context);
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text(successMessage),
-                backgroundColor: Colors.green,
+                content: Text(
+                  successMessage,
+                  style: TextStyle(color: semantic.onSuccess),
+                ),
+                backgroundColor: semantic.success,
               ),
             );
             Navigator.of(context).pop();
@@ -461,10 +475,14 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
               (remaining != null && remaining > Duration.zero)
               ? '${l10n.getString('paywallPurchaseSuccess')}\n${l10n.getString('subscriptionTimeLeft')}: ${formatDurationWords(l10n, remaining)}'
               : l10n.getString('paywallPurchaseSuccess');
+          final semantic = SemanticColors.of(context);
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(successMessage),
-              backgroundColor: Colors.green,
+              content: Text(
+                successMessage,
+                style: TextStyle(color: semantic.onSuccess),
+              ),
+              backgroundColor: semantic.success,
             ),
           );
           Navigator.of(context).pop();
@@ -472,8 +490,13 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
       } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(l10n.getString('paywallPurchaseFailed')),
-            backgroundColor: Colors.red,
+            content: Text(
+              l10n.getString('paywallPurchaseFailed'),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onError,
+              ),
+            ),
+            backgroundColor: Theme.of(context).colorScheme.error,
           ),
         );
       }
@@ -481,8 +504,13 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(l10n.getString('paywallPurchaseFailed')),
-            backgroundColor: Colors.red,
+            content: Text(
+              l10n.getString('paywallPurchaseFailed'),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onError,
+              ),
+            ),
+            backgroundColor: Theme.of(context).colorScheme.error,
           ),
         );
       }
@@ -556,12 +584,16 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
       return formatCurrencyAmountWithCode(converted, normalizedTarget);
     }
 
+    final scheme = Theme.of(context).colorScheme;
+    final semantic = SemanticColors.of(context);
+    final mutedTextStyle = TextStyle(color: scheme.onSurfaceVariant);
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.green.shade50,
+        color: semantic.successContainer,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.green.shade200),
+        border: Border.all(color: semantic.success.withValues(alpha: 0.4)),
       ),
       child: Column(
         children: [
@@ -570,9 +602,9 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
             children: [
               Text(
                 l10n.getString('promoCodeRegularPrice'),
-                style: TextStyle(color: Colors.grey[700]),
+                style: mutedTextStyle,
               ),
-              Text(fmt(basePrice), style: TextStyle(color: Colors.grey[700])),
+              Text(fmt(basePrice), style: mutedTextStyle),
             ],
           ),
           const SizedBox(height: 8),
@@ -584,15 +616,15 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                   children: [
                     Text(
                       '${localizePromoDiscountDescription(l10n, codeType: _appliedPromo!.codeType ?? '', discountPercent: _appliedPromo!.discountPercent, discountAmountCents: _appliedPromo!.discountAmountCents, freeDays: _appliedPromo!.freeDays, upgradeTier: _appliedPromo!.upgradeTier, amount: _appliedPromo!.amount)} (${_appliedPromo!.code})',
-                      style: const TextStyle(
-                        color: Colors.green,
+                      style: TextStyle(
+                        color: semantic.success,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
                     Text(
                       '-${fmt(savings)}',
-                      style: const TextStyle(
-                        color: Colors.green,
+                      style: TextStyle(
+                        color: semantic.success,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -604,7 +636,11 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
           Container(
             padding: const EdgeInsets.only(top: 8),
             decoration: BoxDecoration(
-              border: Border(top: BorderSide(color: Colors.green.shade200)),
+              border: Border(
+                top: BorderSide(
+                  color: semantic.success.withValues(alpha: 0.4),
+                ),
+              ),
             ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -614,7 +650,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                   style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
-                    color: Colors.green.shade900,
+                    color: semantic.onSuccessContainer,
                   ),
                 ),
                 Text(
@@ -622,7 +658,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                   style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
-                    color: Colors.green.shade900,
+                    color: semantic.onSuccessContainer,
                   ),
                 ),
               ],
@@ -645,14 +681,23 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
         final isPro = customerInfo.entitlements.all['pro']?.isActive ?? false;
 
         if (mounted) {
+          final semantic = SemanticColors.of(context);
+          final scheme = Theme.of(context).colorScheme;
+          final snackBackground = isPro
+              ? semantic.success
+              : scheme.tertiaryContainer;
+          final snackForeground = isPro
+              ? semantic.onSuccess
+              : scheme.onTertiaryContainer;
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
                 isPro
                     ? l10n.getString('paywallRestoreSuccess')
                     : l10n.getString('paywallRestoreNoActive'),
+                style: TextStyle(color: snackForeground),
               ),
-              backgroundColor: isPro ? Colors.green : Colors.orange,
+              backgroundColor: snackBackground,
             ),
           );
           if (isPro) {
@@ -719,7 +764,6 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
         !_supportsNativePurchases && _externalCheckoutBaseUrl.isEmpty;
 
     return Scaffold(
-      backgroundColor: Colors.white,
       body: tiersAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, s) => _buildOfflineFallback(context, l10n),
@@ -792,7 +836,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                                     child: IconButton(
                                       icon: const Icon(
                                         Icons.arrow_back,
-                                        color: Colors.white,
+                                        color: _paywallBannerInk,
                                       ),
                                       onPressed: () =>
                                           Navigator.of(context).pop(),
@@ -802,7 +846,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                                     child: Icon(
                                       Icons.star_rounded,
                                       size: 40,
-                                      color: Colors.white,
+                                      color: _paywallBannerInk,
                                     ),
                                   ),
                                 ],
@@ -814,14 +858,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                                 style: const TextStyle(
                                   fontSize: 20,
                                   fontWeight: FontWeight.bold,
-                                  color: Colors.white,
-                                  shadows: [
-                                    Shadow(
-                                      color: Colors.black26,
-                                      offset: Offset(0, 2),
-                                      blurRadius: 4,
-                                    ),
-                                  ],
+                                  color: _paywallBannerInk,
                                 ),
                               ),
                             ],
@@ -892,24 +929,32 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                                 border: OutlineInputBorder(
                                   borderRadius: BorderRadius.circular(12),
                                   borderSide: BorderSide(
-                                    color: Colors.grey.shade300,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.outlineVariant,
                                   ),
                                 ),
                                 enabledBorder: OutlineInputBorder(
                                   borderRadius: BorderRadius.circular(12),
                                   borderSide: BorderSide(
-                                    color: Colors.grey.shade300,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.outlineVariant,
                                   ),
                                 ),
                                 focusedBorder: OutlineInputBorder(
                                   borderRadius: BorderRadius.circular(12),
                                   borderSide: BorderSide(
-                                    color: Theme.of(context).primaryColor,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .primary,
                                     width: 2,
                                   ),
                                 ),
                                 filled: true,
-                                fillColor: Colors.grey.shade50,
+                                fillColor: Theme.of(
+                                  context,
+                                ).colorScheme.surfaceContainerLow,
                               ),
                               child: Row(
                                 children: [
@@ -931,7 +976,9 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                                   const SizedBox(width: 8),
                                   Icon(
                                     Icons.arrow_drop_down,
-                                    color: Colors.grey.shade600,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onSurfaceVariant,
                                   ),
                                 ],
                               ),
@@ -990,16 +1037,22 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                                   ? _purchasePackage
                                   : null,
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: Theme.of(context).primaryColor,
-                                foregroundColor: Colors.white,
+                                backgroundColor: Theme.of(
+                                  context,
+                                ).colorScheme.primary,
+                                foregroundColor: Theme.of(
+                                  context,
+                                ).colorScheme.onPrimary,
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(28),
                                 ),
                                 elevation: 4,
                               ),
                               child: _isPurchasing
-                                  ? const CircularProgressIndicator(
-                                      color: Colors.white,
+                                  ? CircularProgressIndicator(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.onPrimary,
                                     )
                                   : Text(
                                       l10n.getString('paywallSubscribe'),
@@ -1016,7 +1069,9 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                               child: Text(
                                 l10n.getString('paywallWebError'),
                                 style: TextStyle(
-                                  color: Colors.grey.shade600,
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
                                   fontSize: 12,
                                 ),
                                 textAlign: TextAlign.center,
@@ -1065,9 +1120,11 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                               ),
                               Text(
                                 l10n.getString('commonBulletSeparator'),
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontSize: 12,
-                                  color: Colors.grey,
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
                                 ),
                               ),
                               _buildLegalLink(
@@ -1102,7 +1159,8 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
     LocalizationState l10n,
   ) {
     final isSelected = _selectedTier?.id == tier.id;
-    final primaryColor = Theme.of(context).primaryColor;
+    final scheme = Theme.of(context).colorScheme;
+    final primaryColor = scheme.primary;
 
     return GestureDetector(
       onTap: () {
@@ -1123,10 +1181,10 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
         margin: const EdgeInsets.only(right: 8),
         padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
         decoration: BoxDecoration(
-          color: isSelected ? primaryColor : Colors.grey.shade100,
+          color: isSelected ? primaryColor : scheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: isSelected ? primaryColor : Colors.grey.shade300,
+            color: isSelected ? primaryColor : scheme.outlineVariant,
           ),
           boxShadow: isSelected
               ? [
@@ -1144,7 +1202,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
               l10n.getString('tier${tier.id.capitalize()}'),
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: isSelected ? Colors.white : Colors.black87,
+                color: isSelected ? scheme.onPrimary : scheme.onSurface,
                 fontWeight: FontWeight.bold,
                 fontSize: 14,
               ),
@@ -1155,8 +1213,8 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                 padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                 decoration: BoxDecoration(
                   color: isSelected
-                      ? Colors.white.withValues(alpha: 0.2)
-                      : Colors.orange.shade100,
+                      ? scheme.onPrimary.withValues(alpha: 0.2)
+                      : scheme.tertiaryContainer,
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child: Text(
@@ -1164,7 +1222,9 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                   style: TextStyle(
                     fontSize: 8,
                     fontWeight: FontWeight.w900,
-                    color: isSelected ? Colors.white : Colors.orange.shade900,
+                    color: isSelected
+                        ? scheme.onPrimary
+                        : scheme.onTertiaryContainer,
                   ),
                 ),
               ),
@@ -1185,6 +1245,8 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
         .watch(subscriptionQueueHistoryProvider)
         .when(
           data: (queueHistory) {
+            final scheme = Theme.of(context).colorScheme;
+            final semantic = SemanticColors.of(context);
             // Exclude entries that are already serving as the current
             // subscription (active, or pending-but-already-started, or
             // already expired) so they aren't duplicated below the "current"
@@ -1219,9 +1281,9 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
               child: Container(
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: scheme.surfaceContainerLow,
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.grey.shade200),
+                  border: Border.all(color: scheme.outlineVariant),
                   boxShadow: [
                     BoxShadow(
                       color: Colors.black.withValues(alpha: 0.04),
@@ -1241,7 +1303,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                           Icon(
                             Icons.layers_outlined,
                             size: 20,
-                            color: Colors.grey.shade600,
+                            color: scheme.onSurfaceVariant,
                           ),
                           const SizedBox(width: 8),
                           Text(
@@ -1249,26 +1311,26 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                             style: TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: 15,
-                              color: Colors.grey.shade800,
+                              color: scheme.onSurface,
                             ),
                           ),
                         ],
                       ),
                     ),
-                    Divider(height: 1, color: Colors.grey.shade200),
+                    Divider(height: 1, color: scheme.outlineVariant),
 
                     // Active entry
                     if (hasActive)
                       _buildTimelineEntry(
                         l10n: l10n,
                         icon: Icons.check_circle,
-                        iconColor: Colors.green,
+                        iconColor: semantic.success,
                         label: l10n.getString('subscriptionCurrent'),
-                        labelColor: Colors.green,
+                        labelColor: semantic.success,
                         tierName: tierText,
                         duration: remaining,
-                        bgColor: Colors.green.shade50,
-                        borderColor: Colors.green.shade200,
+                        bgColor: semantic.successContainer,
+                        borderColor: semantic.success.withValues(alpha: 0.6),
                       ),
 
                     // Queued entries
@@ -1276,22 +1338,22 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                       _buildTimelineEntry(
                         l10n: l10n,
                         icon: Icons.schedule,
-                        iconColor: Colors.blue,
+                        iconColor: scheme.primary,
                         label: i == 0
                             ? l10n.getString('subscriptionUpNext')
                             : l10n.getString('subscriptionLater'),
-                        labelColor: Colors.blue,
+                        labelColor: scheme.primary,
                         tierName: _localizedTierName(l10n, mergedTiers[i]),
                         duration: mergedDurations[i],
-                        bgColor: Colors.blue.shade50,
-                        borderColor: Colors.blue.shade200,
+                        bgColor: scheme.primaryContainer,
+                        borderColor: scheme.primary.withValues(alpha: 0.6),
                       ),
 
                     // Total footer
                     Container(
                       padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
                       decoration: BoxDecoration(
-                        color: Colors.grey.shade50,
+                        color: scheme.surfaceContainerHigh,
                         borderRadius: const BorderRadius.only(
                           bottomLeft: Radius.circular(15),
                           bottomRight: Radius.circular(15),
@@ -1302,7 +1364,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                           Icon(
                             Icons.timeline,
                             size: 16,
-                            color: Colors.grey.shade600,
+                            color: scheme.onSurfaceVariant,
                           ),
                           const SizedBox(width: 6),
                           Text(
@@ -1314,7 +1376,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                             ),
                             style: TextStyle(
                               fontWeight: FontWeight.w600,
-                              color: Colors.grey.shade700,
+                              color: scheme.onSurfaceVariant,
                               fontSize: 13,
                             ),
                           ),
@@ -1399,6 +1461,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
   }
 
   Widget _buildFeaturesList(LocalizationState l10n, SubscriptionTier tier) {
+    final semantic = SemanticColors.of(context);
     // Parse featuresKey (assuming it's a JSON array string in DB)
     // Or we can just show generic features for now based on tier ID
     // The DB value is like '["Feature 1", "Feature 2"]'
@@ -1441,7 +1504,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                 children: [
                   Icon(
                     Icons.check_circle,
-                    color: Colors.green.shade600,
+                    color: semantic.success,
                     size: 16,
                   ),
                   const SizedBox(width: 8),
@@ -1465,7 +1528,9 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
     CurrencyRateSnapshot exchangeRates,
   ) {
     final isSelected = _selectedPlan?.id == plan.id;
-    final primaryColor = Theme.of(context).primaryColor;
+    final scheme = Theme.of(context).colorScheme;
+    final semantic = SemanticColors.of(context);
+    final primaryColor = scheme.primary;
 
     // Localize duration
     String durationText = '';
@@ -1505,9 +1570,9 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
         decoration: BoxDecoration(
           color: isSelected
               ? primaryColor.withValues(alpha: 0.05)
-              : Colors.white,
+              : scheme.surfaceContainerLow,
           border: Border.all(
-            color: isSelected ? primaryColor : Colors.grey.shade300,
+            color: isSelected ? primaryColor : scheme.outlineVariant,
             width: isSelected ? 2 : 1,
           ),
           borderRadius: BorderRadius.circular(12),
@@ -1516,7 +1581,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
           children: [
             Icon(
               isSelected ? Icons.radio_button_checked : Icons.radio_button_off,
-              color: isSelected ? primaryColor : Colors.grey,
+              color: isSelected ? primaryColor : scheme.onSurfaceVariant,
             ),
             const SizedBox(width: 16),
             Expanded(
@@ -1528,7 +1593,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
-                      color: isSelected ? primaryColor : Colors.black87,
+                      color: isSelected ? primaryColor : scheme.onSurface,
                     ),
                   ),
                   if (savings != null)
@@ -1539,13 +1604,13 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                         vertical: 2,
                       ),
                       decoration: BoxDecoration(
-                        color: Colors.green,
+                        color: semantic.success,
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: Text(
                         savings,
-                        style: const TextStyle(
-                          color: Colors.white,
+                        style: TextStyle(
+                          color: semantic.onSuccess,
                           fontSize: 10,
                           fontWeight: FontWeight.bold,
                         ),
@@ -1563,7 +1628,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,
-                color: isSelected ? primaryColor : Colors.black87,
+                color: isSelected ? primaryColor : scheme.onSurface,
               ),
             ),
           ],

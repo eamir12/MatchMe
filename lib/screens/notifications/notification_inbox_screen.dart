@@ -18,6 +18,7 @@ import 'package:matchme/services/notification_inbox_service.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/widgets/app_empty_state.dart';
 import 'package:matchme/widgets/multi_select.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class NotificationInboxScreen extends ConsumerStatefulWidget {
   const NotificationInboxScreen({super.key});
@@ -354,10 +355,8 @@ class _InboxRow extends ConsumerWidget {
                   Row(
                     children: [
                       Expanded(
-                        child: Text(
+                        child: SafeText(
                           item.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontSize: 15,
                             fontWeight:
@@ -383,10 +382,8 @@ class _InboxRow extends ConsumerWidget {
                     ],
                   ),
                   const SizedBox(height: 3),
-                  Text(
+                  SafeText(
                     item.body,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontSize: 13,
                       height: 1.3,

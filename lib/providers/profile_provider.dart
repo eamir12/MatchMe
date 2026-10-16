@@ -446,6 +446,10 @@ class UserProfile {
   final String subscriptionTier;
   final DateTime? subscriptionExpiresAt;
   final bool isProfileComplete;
+  // Cached richness score (0-100) computed server-side by the
+  // user_profiles.profile_completeness trigger. Null when the local cache
+  // predates the column; use ProfileCompleteness.effectiveScore() for display.
+  final int? profileCompleteness;
   final int matchRadiusDefault;
   final int gpsIntervalDefault;
   final bool smartGpsThrottlingEnabled;
@@ -524,6 +528,7 @@ class UserProfile {
     required this.subscriptionTier,
     this.subscriptionExpiresAt,
     required this.isProfileComplete,
+    this.profileCompleteness,
     required this.matchRadiusDefault,
     required this.gpsIntervalDefault,
     required this.smartGpsThrottlingEnabled,
@@ -728,6 +733,17 @@ class UserProfile {
         if (raw is bool) return raw;
         return raw.toString().toLowerCase() == 'true';
       })(),
+      profileCompleteness: (() {
+        final raw = data['profileCompleteness'] ?? data['profile_completeness'];
+        if (raw == null) return null;
+        final parsed = raw is int
+            ? raw
+            : int.tryParse(raw.toString());
+        if (parsed == null) return null;
+        if (parsed < 0) return 0;
+        if (parsed > 100) return 100;
+        return parsed;
+      })(),
       matchRadiusDefault: (data['match_radius_default'] ?? 50) is int
           ? (data['match_radius_default'] ?? 50) as int
           : int.tryParse((data['match_radius_default'] ?? '50').toString()) ??
@@ -861,6 +877,7 @@ class UserProfile {
       'subscription_tier': subscriptionTier,
       'subscription_expires_at': subscriptionExpiresAt?.toIso8601String(),
       'isProfileComplete': isProfileComplete,
+      'profileCompleteness': profileCompleteness,
       'match_radius_default': matchRadiusDefault,
       'gps_interval_default': gpsIntervalDefault,
       'smart_gps_throttling_enabled': smartGpsThrottlingEnabled,
@@ -1037,6 +1054,7 @@ class UserProfile {
     String? subscriptionTier,
     DateTime? subscriptionExpiresAt,
     bool? isProfileComplete,
+    int? profileCompleteness,
     int? matchRadiusDefault,
     int? gpsIntervalDefault,
     bool? smartGpsThrottlingEnabled,
@@ -1114,6 +1132,7 @@ class UserProfile {
       subscriptionExpiresAt:
           subscriptionExpiresAt ?? this.subscriptionExpiresAt,
       isProfileComplete: isProfileComplete ?? this.isProfileComplete,
+      profileCompleteness: profileCompleteness ?? this.profileCompleteness,
       matchRadiusDefault: matchRadiusDefault ?? this.matchRadiusDefault,
       gpsIntervalDefault: gpsIntervalDefault ?? this.gpsIntervalDefault,
       smartGpsThrottlingEnabled:
@@ -1887,6 +1906,15 @@ class ProfileSyncService {
                           .toString()
                           .toLowerCase() ==
                       'true',
+            profileCompleteness: (() {
+              final raw = profileRowData['profile_completeness'];
+              if (raw == null) return null;
+              final parsed = raw is int ? raw : int.tryParse(raw.toString());
+              if (parsed == null) return null;
+              if (parsed < 0) return 0;
+              if (parsed > 100) return 100;
+              return parsed;
+            })(),
             matchRadiusDefault: (userData['match_radius_default'] ?? 50) is int
                 ? (userData['match_radius_default'] ?? 50) as int
                 : int.tryParse(
@@ -3700,7 +3728,7 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     try {
       // Always reload fresh data to ensure we have the latest from server
       state = const AsyncLoading();
-      final initialProfile = await ref.read(userProfileProvider(userId).future);
+      final initialProfile = await _userProfileFirstValue();
       if (initialProfile != null) {
         var p = initialProfile.copyWith();
         if (applyWizardDraft) {
@@ -3718,7 +3746,7 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
         var reloaded = cachedMap == null
             ? null
             : UserProfile.fromMap(cachedMap);
-        reloaded ??= await ref.read(userProfileProvider(userId).future);
+        reloaded ??= await _userProfileFirstValue();
         if (reloaded == null) {
           throw syncResult.error ??
               StateError('profileSync:${syncResult.status.name}');
@@ -3740,6 +3768,23 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     } finally {
       _profileLoadCount--;
     }
+  }
+
+  /// Resolves the current local [UserProfile] without depending on
+  /// [StreamProvider.future] alone. When the local profile stream already
+  /// emitted a value, `.future` is tied to the *next* emission — which may
+  /// never arrive if the Hive box does not change again. Screens that touched
+  /// [userProfileProvider] before the wizard mounted (e.g. profile check,
+  /// settings) activate the stream early, so relying on `.future` alone left
+  /// the wizard stuck on its loading spinner instead of resuming the saved
+  /// draft. Prefer the value already available; only await the stream when
+  /// nothing has been emitted yet.
+  Future<UserProfile?> _userProfileFirstValue() {
+    final current = ref.read(userProfileProvider(userId));
+    if (current.hasValue && !current.hasError) {
+      return Future.value(current.value);
+    }
+    return ref.read(userProfileProvider(userId).future);
   }
 
   Future<void> saveWizardDraft() async {

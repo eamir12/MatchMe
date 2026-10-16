@@ -93,6 +93,16 @@ class _TestUnitSystem extends UnitSystem {
   Future<bool> build() async => false;
 }
 
+/// ProfileScreen keeps the rating realtime listener alive so the signed-in
+/// user's own rating updates immediately. The real notifier schedules a
+/// periodic poll timer, which the widget tester rejects as a leaked timer, so
+/// tests use this timer-free stub.
+class _NoopRatingSummaryRealtimeNotifier
+    extends RatingSummaryRealtimeNotifier {
+  @override
+  int build() => 0;
+}
+
 class _StubAppConfigNotifier extends AppConfigNotifier {
   @override
   Map<String, String> build() => const {
@@ -137,6 +147,9 @@ Widget _buildApp({
       ),
       ratingQuestionsProvider.overrideWith(
         (ref) async => const <RatingQuestion>[],
+      ),
+      ratingSummaryRealtimeProvider.overrideWith(
+        _NoopRatingSummaryRealtimeNotifier.new,
       ),
       appConfigProvider.overrideWith(_StubAppConfigNotifier.new),
       externalAdsRealtimeProvider.overrideWith((ref) {}),

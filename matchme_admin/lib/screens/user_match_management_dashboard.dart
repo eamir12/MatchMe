@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme_admin/services/admin_offline_cache_manager.dart';
+import 'package:matchme_admin/widgets/safe_text.dart';
 
 /// Admin dashboard for permanently deleting users and matches.
 ///
@@ -835,10 +836,8 @@ class _AdminUserMatchManagementDashboardState
                   horizontal: 16,
                   vertical: 8,
                 ),
-                title: Text(
+                title: SafeText(
                   name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
                 subtitle: Column(
@@ -1051,10 +1050,8 @@ class _AdminUserMatchManagementDashboardState
                   horizontal: 16,
                   vertical: 8,
                 ),
-                title: Text(
+                title: SafeText(
                   title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
                 subtitle: Column(

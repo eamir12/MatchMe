@@ -177,6 +177,34 @@ class ProjectLogsStatus {
   bool get alert => authAlert || diskAlert;
 }
 
+/// One failed `notification_queue` row (FCM push that could not be sent),
+/// shown in the Notification queue card's "Recent failures" list so on-call
+/// can see why sends fail (e.g. stale UNREGISTERED tokens).
+class QueueFailureRow {
+  const QueueFailureRow({
+    required this.title,
+    required this.reason,
+    required this.createdAt,
+    required this.attempts,
+  });
+
+  factory QueueFailureRow.fromMap(Map<String, dynamic> map) {
+    return QueueFailureRow(
+      title: map['title']?.toString(),
+      reason: map['failure_reason']?.toString(),
+      createdAt: DateTime.tryParse('${map['created_at']}'),
+      attempts: map['attempts'] is num
+          ? (map['attempts'] as num).toInt()
+          : int.tryParse('${map['attempts']}') ?? 0,
+    );
+  }
+
+  final String? title;
+  final String? reason;
+  final DateTime? createdAt;
+  final int attempts;
+}
+
 class SystemHealthSnapshot {
   const SystemHealthSnapshot({
     required this.overall,
@@ -193,6 +221,7 @@ class SystemHealthSnapshot {
     this.lastTickAt,
     this.queueHealth,
     this.queueCheckedAt,
+    this.queueFailures = const [],
     this.projectErrors,
     this.projectLogs,
     this.spIndicator,
@@ -223,6 +252,10 @@ class SystemHealthSnapshot {
 
   final Map<String, dynamic>? queueHealth;
   final DateTime? queueCheckedAt;
+
+  /// Most recent failed `notification_queue` rows (newest first, capped at
+  /// 20) from the same 30s queue probe; empty in history-replay snapshots.
+  final List<QueueFailureRow> queueFailures;
 
   /// Recent project-level failures (edge functions, cron, app errors).
   /// Null until the first successful `admin_get_health_errors()` probe.
@@ -476,6 +509,7 @@ class SystemHealthMonitor with WidgetsBindingObserver {
 
   Map<String, dynamic>? _queueHealth;
   DateTime? _queueCheckedAt;
+  List<QueueFailureRow> _queueFailures = const [];
 
   ProjectErrorsStatus? _projectErrors;
   ProjectLogsStatus? _projectLogs;
@@ -808,6 +842,7 @@ class SystemHealthMonitor with WidgetsBindingObserver {
 
   Future<void> _probeQueue() async {
     if (_listeners == 0) return;
+    var changed = false;
     try {
       final res = await Supabase.instance.client
           .rpc('get_notification_queue_health')
@@ -815,11 +850,31 @@ class SystemHealthMonitor with WidgetsBindingObserver {
       if (res is Map) {
         _queueHealth = Map<String, dynamic>.from(res);
         _queueCheckedAt = DateTime.now();
-        _emit();
+        changed = true;
       }
     } catch (_) {
       // Queue health is informational; keep the last known value.
     }
+    // Same cadence: the 20 newest failed rows so the queue card can show
+    // why sends fail (stale tokens, etc.). Independent try — a failure
+    // here must not discard a successful health probe (and vice versa).
+    try {
+      final rows = await Supabase.instance.client
+          .from('notification_queue')
+          .select('title, failure_reason, created_at, attempts')
+          .eq('status', 'failed')
+          .order('created_at', ascending: false)
+          .limit(20)
+          .timeout(const Duration(seconds: 8));
+      if (_listeners == 0) return;
+      _queueFailures = List<QueueFailureRow>.unmodifiable([
+        for (final r in rows) QueueFailureRow.fromMap(r),
+      ]);
+      changed = true;
+    } catch (_) {
+      // Informational; keep the last known value.
+    }
+    if (changed) _emit();
   }
 
   /// Polls `admin_get_health_errors()`: recent edge-function failures,
@@ -1136,6 +1191,7 @@ class SystemHealthMonitor with WidgetsBindingObserver {
       lastTickAt: _lastTickAt,
       queueHealth: _queueHealth,
       queueCheckedAt: _queueCheckedAt,
+      queueFailures: _queueFailures,
       projectErrors: _projectErrors,
       projectLogs: _projectLogs,
       spIndicator: _spIndicator,

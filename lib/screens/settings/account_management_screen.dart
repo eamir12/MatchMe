@@ -12,6 +12,7 @@ import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/error_localization_service.dart';
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class AccountManagementScreen extends ConsumerStatefulWidget {
   const AccountManagementScreen({super.key});
@@ -650,22 +651,38 @@ class _AccountManagementScreenState
                     try {
                       SessionService.markExplicitUserSignOut();
                       await CalendarSyncService.clearPersistedCalendarCredentials();
-                      await Supabase.instance.client.auth.signOut().catchError(
-                        (error) {},
-                      );
+                      // Revoke the account's sessions while the token is still
+                      // valid, then sign out locally. The SDK's own server-side
+                      // revocation is fired but not awaited so a dropped
+                      // connection can never stall the post-deletion cleanup.
+                      final user = Supabase.instance.client.auth.currentUser;
+                      if (user != null) {
+                        try {
+                          await Supabase.instance.client
+                              .rpc(
+                                'revoke_all_user_sessions',
+                                params: {'p_user_id': user.id},
+                              )
+                              .timeout(const Duration(seconds: 4));
+                        } catch (e) {
+                          print('revoke_all_user_sessions failed: $e');
+                        }
+                      }
+                      try {
+                        unawaited(
+                          SessionService.deleteFcmToken(),
+                        );
+                      } catch (_) {}
+                      try {
+                        unawaited(
+                          Supabase.instance.client.auth
+                              .signOut(scope: SignOutScope.local)
+                              .timeout(const Duration(seconds: 3))
+                              .catchError((Object error) {}),
+                        );
+                      } catch (_) {}
                       final localDb = await LocalDbService.instance;
                       await localDb.clearDatabase();
-                      try {
-                        final user = Supabase.instance.client.auth.currentUser;
-                        if (user != null) {
-                          await Supabase.instance.client.rpc(
-                            'revoke_all_user_sessions',
-                            params: {'p_user_id': user.id},
-                          );
-                        }
-                      } catch (e) {
-                        print('revoke_all_user_sessions failed: $e');
-                      }
                     } catch (clearError) {}
 
                     if (mounted) {
@@ -721,7 +738,7 @@ class _AccountManagementScreenState
     );
 
     return Scaffold(
-      appBar: AppBar(title: Text(l10n.getString('settingsAccountManagement'))),
+      appBar: AppBar(title: ShrinkText(l10n.getString('settingsAccountManagement'))),
       body: ListView(
         padding: const EdgeInsets.all(16.0),
         children: [

@@ -29,6 +29,7 @@ import 'package:matchme/services/match_rating_service.dart';
 import 'package:matchme/widgets/pinned_partner_chip.dart';
 import 'package:matchme/widgets/photo_gallery_viewer.dart';
 import 'package:matchme/widgets/profile_photo_thumbnail.dart';
+import 'package:matchme/widgets/profile_completeness_summary.dart';
 import 'package:matchme/providers/location_share_provider.dart';
 import 'package:matchme/providers/unit_provider.dart';
 import 'package:matchme/models/location_share_session.dart';
@@ -36,6 +37,7 @@ import 'package:matchme/screens/location_share/location_share_map_screen.dart';
 import 'package:matchme/screens/location_share/location_share_duration_dialog.dart';
 import 'package:matchme/widgets/location_share_banner.dart';
 import 'package:matchme/utils/match_score_utils.dart';
+import 'package:matchme/utils/profile_completeness.dart';
 import 'package:matchme/utils/shared_intent_utils.dart';
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:matchme/services/location_service.dart';
@@ -2015,16 +2017,22 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                               placeholder: Container(
                                 width: 140,
                                 height: 140,
-                                color: Colors.grey.shade100,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .surfaceContainerHighest,
                               ),
                               errorWidget: Container(
                                 width: 140,
                                 height: 140,
-                                color: Colors.grey.shade200,
-                                child: const Icon(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .surfaceContainerHighest,
+                                child: Icon(
                                   Icons.broken_image,
                                   size: 36,
-                                  color: Colors.grey,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant,
                                 ),
                               ),
                             ),
@@ -2063,6 +2071,16 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                 height: 140,
                 child: Center(child: Text(l10n.getString('profileNoPhotos'))),
               ),
+            // Public completeness badge: positive 100% signal only. The raw
+            // percentage is never shown for other users.
+            if (otherProfile != null &&
+                ProfileCompleteness.isFull(otherProfile)) ...[
+              const SizedBox(height: 12),
+              Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: ProfileCompletePill(l10n: l10n),
+              ),
+            ],
             const SizedBox(height: 16),
             // NOTE: the matched user's name lives in the AppBar title (single
             // location, offline-first via _effectiveOtherUserName) — no body
@@ -3198,7 +3216,10 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
           Divider(height: 20, thickness: 1, color: Colors.grey.shade200),
         );
       }
-      final scoreColor = sharedInterestColor(sharedInterestCount);
+      final scoreColor = sharedInterestColor(
+        sharedInterestCount,
+        Theme.of(context).brightness,
+      );
       rows.add(
         Row(
           crossAxisAlignment: CrossAxisAlignment.center,
@@ -3638,7 +3659,7 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
               l10n.getString('interestsCategorySocial'),
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                 fontWeight: FontWeight.bold,
-                color: Colors.black87,
+                color: Theme.of(context).colorScheme.onSurface,
               ),
             ),
           ),
@@ -3664,7 +3685,7 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
               l10n.getString('interestsCategoryBusiness'),
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                 fontWeight: FontWeight.bold,
-                color: Colors.black87,
+                color: Theme.of(context).colorScheme.onSurface,
               ),
             ),
           ),

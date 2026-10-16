@@ -8,6 +8,7 @@ import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/encrypted_notification_preview_service.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class NotificationsSettingsScreen extends ConsumerWidget {
   const NotificationsSettingsScreen({super.key});
@@ -22,7 +23,7 @@ class NotificationsSettingsScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(l10n.getString('settingsNotifications')),
+        title: ShrinkText(l10n.getString('settingsNotifications')),
         backgroundColor: theme.appBarTheme.backgroundColor ?? colors.surface,
         foregroundColor: theme.appBarTheme.foregroundColor ?? colors.onSurface,
         elevation: 0,

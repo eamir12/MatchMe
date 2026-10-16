@@ -4,6 +4,7 @@ import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/match_rating_provider.dart';
 import 'package:matchme/services/match_rating_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class MatchRatingScreen extends ConsumerStatefulWidget {
   final String matchId;
@@ -160,7 +161,7 @@ class _MatchRatingScreenState extends ConsumerState<MatchRatingScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(title),
+          title: ShrinkText(title),
           leading: IconButton(
             icon: const Icon(Icons.arrow_back),
             onPressed: () {

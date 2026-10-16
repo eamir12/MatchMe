@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 class CustomCameraWidget extends ConsumerStatefulWidget {
   final bool useFrontCamera;
@@ -198,7 +199,7 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
     final l10n = ref.watch(localizationProvider);
     if (_hasCameraError) {
       return Scaffold(
-        appBar: AppBar(title: Text(l10n.getString('cameraTitle'))),
+        appBar: AppBar(title: ShrinkText(l10n.getString('cameraTitle'))),
         body: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -218,14 +219,14 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
     }
     if (!_isCameraInitialized) {
       return Scaffold(
-        appBar: AppBar(title: Text(l10n.getString('cameraTitle'))),
+        appBar: AppBar(title: ShrinkText(l10n.getString('cameraTitle'))),
         body: const Center(child: CircularProgressIndicator()),
       );
     }
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(
+        title: ShrinkText(
           _controller?.description.lensDirection == CameraLensDirection.front
               ? l10n.getString('cameraSelfieTitle')
               : l10n.getString('cameraRearTitle'),

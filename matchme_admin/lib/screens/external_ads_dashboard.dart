@@ -9,6 +9,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/admin_local_db_service.dart';
 import '../services/admin_offline_cache_manager.dart';
+import 'package:matchme_admin/widgets/safe_text.dart';
 
 // Type definitions
 typedef AdminTextLookup =
@@ -839,11 +840,9 @@ class _AdminExternalAdsDashboardState extends State<AdminExternalAdsDashboard>
                 }.entries)
                   ButtonSegment(
                     value: entry.key,
-                    label: Text(
+                    label: ShrinkText(
                       t(entry.value),
                       maxLines: 1,
-                      softWrap: false,
-                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
               ],

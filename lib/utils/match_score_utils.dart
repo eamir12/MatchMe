@@ -66,10 +66,23 @@ void _addIntersection(
 /// interest is a positive signal, so there is no "bad" color: 0 is neutral
 /// gray, mid-range values step through greens, and the maximum (10+) gets the
 /// achievement gold.
-Color sharedInterestColor(int count) {
-  if (count <= 0) return const Color(0xFF9E9E9E);
-  if (count <= 3) return const Color(0xFF2FA37B);
-  if (count <= 6) return const Color(0xFF1F9D55);
-  if (count <= 9) return const Color(0xFF146E42);
-  return const Color(0xFFE5A61C);
+///
+/// The ramp is also used as a text colour on the card surface, so each stop
+/// is tuned per brightness to stay at AA contrast: dark tones on light
+/// surfaces, light tones on dark surfaces (darker/lighter = higher score).
+Color sharedInterestColor(int count, Brightness brightness) {
+  final bool isDark = brightness == Brightness.dark;
+  if (count <= 0) {
+    return isDark ? const Color(0xFF9CA3AF) : const Color(0xFF6B7280);
+  }
+  if (count <= 3) {
+    return isDark ? const Color(0xFF34D399) : const Color(0xFF047857);
+  }
+  if (count <= 6) {
+    return isDark ? const Color(0xFF4ADE80) : const Color(0xFF15803D);
+  }
+  if (count <= 9) {
+    return isDark ? const Color(0xFF86EFAC) : const Color(0xFF166534);
+  }
+  return isDark ? const Color(0xFFFBBF24) : const Color(0xFFA16207);
 }

@@ -14,6 +14,7 @@ import 'package:matchme/widgets/please_wait_dialog.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
 final supabase = Supabase.instance.client;
 const uuid = Uuid();
@@ -749,7 +750,7 @@ class _AddEventScreenState extends ConsumerState<AddEventScreen> {
       child: Scaffold(
         appBar: widget.showAppBar
             ? AppBar(
-                title: Text(
+                title: ShrinkText(
                   isEditing
                       ? l10n.getString('editEventTitle')
                       : l10n.getString('addEventTitle'),

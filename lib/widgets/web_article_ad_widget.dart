@@ -60,8 +60,10 @@ class _WebArticleAdWidgetState extends ConsumerState<WebArticleAdWidget> {
       width: widget.responsive ? double.infinity : widget.width.toDouble(),
       height: widget.height.toDouble(),
       decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border.all(color: Colors.grey[300]!),
+        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        border: Border.all(
+          color: Theme.of(context).colorScheme.outlineVariant,
+        ),
         borderRadius: BorderRadius.circular(4),
       ),
       child: Material(
@@ -75,16 +77,20 @@ class _WebArticleAdWidgetState extends ConsumerState<WebArticleAdWidget> {
               Container(
                 width: double.infinity,
                 height: widget.height * 0.45,
-                color: Colors.purple[100],
+                color: Theme.of(context).colorScheme.primaryContainer,
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Icon(Icons.diamond, color: Colors.purple[400], size: 40),
+                    Icon(
+                      Icons.diamond,
+                      color: Theme.of(context).colorScheme.onPrimaryContainer,
+                      size: 40,
+                    ),
                     const SizedBox(height: 8),
                     Text(
                       l10n.getString('webAdDiamond'),
                       style: TextStyle(
-                        color: Colors.purple[700],
+                        color: Theme.of(context).colorScheme.onPrimaryContainer,
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
                       ),
@@ -106,7 +112,7 @@ class _WebArticleAdWidgetState extends ConsumerState<WebArticleAdWidget> {
                           Text(
                             l10n.getString('webAdGoPremium'),
                             style: TextStyle(
-                              color: Colors.grey[800],
+                              color: Theme.of(context).colorScheme.onSurface,
                               fontSize: 16,
                               fontWeight: FontWeight.bold,
                             ),
@@ -115,7 +121,9 @@ class _WebArticleAdWidgetState extends ConsumerState<WebArticleAdWidget> {
                           Text(
                             l10n.getString('webAdUnlockExclusive'),
                             style: TextStyle(
-                              color: Colors.grey[600],
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
                               fontSize: 12,
                             ),
                             maxLines: 3,
@@ -127,14 +135,14 @@ class _WebArticleAdWidgetState extends ConsumerState<WebArticleAdWidget> {
                         width: double.infinity,
                         padding: const EdgeInsets.symmetric(vertical: 10),
                         decoration: BoxDecoration(
-                          color: Colors.purple[600],
+                          color: Theme.of(context).colorScheme.primary,
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: Center(
                           child: Text(
                             l10n.getString('webAdUpgradeNow'),
                             style: TextStyle(
-                              color: Colors.white,
+                              color: Theme.of(context).colorScheme.onPrimary,
                               fontSize: 13,
                               fontWeight: FontWeight.w600,
                             ),
@@ -206,20 +214,25 @@ class PlaceholderWebArticleAd extends ConsumerWidget {
       width: responsive ? double.infinity : width.toDouble(),
       height: height.toDouble(),
       decoration: BoxDecoration(
-        color: Colors.grey[200],
-        border: Border.all(color: Colors.grey[300]!),
-        borderRadius: BorderRadius.circular(4),
+        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        border: Border.all(
+          color: Theme.of(context).colorScheme.outlineVariant,
+        ),
       ),
       child: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.article, color: Colors.grey[400], size: 56),
+            Icon(
+              Icons.article,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              size: 56,
+            ),
             const SizedBox(height: 16),
             Text(
               l10n.getString('webArticleAdPlaceholder'),
               style: TextStyle(
-                color: Colors.grey[600],
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
                 fontSize: 16,
                 fontWeight: FontWeight.w600,
               ),
@@ -227,7 +240,10 @@ class PlaceholderWebArticleAd extends ConsumerWidget {
             const SizedBox(height: 8),
             Text(
               '$width x $height',
-              style: TextStyle(color: Colors.grey[500], fontSize: 12),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontSize: 12,
+              ),
             ),
           ],
         ),
