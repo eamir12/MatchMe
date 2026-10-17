@@ -847,6 +847,61 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   } catch (_) {}
 }
 
+/// The latest Firebase Installation ID (FID) emitted by FCM.
+///
+/// firebase_messaging 17 replaced the rotating FCM registration token
+/// (deprecated `getToken()`/`onTokenRefresh`) with the stable FID: the new
+/// `register()` returns void and the value is delivered on `onRegistered`.
+/// FCM accepts the FID in the `token` field of a v1 `messages:send`, so the
+/// `fcmToken` parameter and the server column keep their names.
+String? _lastFcmRegistrationId;
+
+/// Registers this install with FCM and returns the current FID, or null.
+///
+/// `onRegistered` is a broadcast stream, so the long-lived listener installed
+/// by `_initializeFcmForCurrentUser` keeps receiving events alongside this
+/// temporary one. Falls back to the last FID seen by the long-lived listener:
+/// the FID is stable per install, so a cache hit is valid even when
+/// `register()` does not re-emit.
+Future<String?> _ensureFcmRegistered() async {
+  final messaging = FirebaseMessaging.instance;
+
+  String? vapidKey;
+  if (kIsWeb) {
+    final envVapid = const String.fromEnvironment(
+      'FCM_WEB_VAPID_KEY',
+      defaultValue: '',
+    ).trim();
+    String dotVapid = '';
+    try {
+      dotVapid = (dotenv.env['FCM_WEB_VAPID_KEY'] ?? '').trim();
+    } catch (_) {}
+    final resolved = envVapid.isNotEmpty ? envVapid : dotVapid;
+    vapidKey = resolved.isNotEmpty ? resolved : null;
+  }
+
+  final completer = Completer<String?>();
+  StreamSubscription<String>? sub;
+  try {
+    sub = messaging.onRegistered.listen((fid) {
+      final trimmed = fid.trim();
+      if (trimmed.isEmpty) return;
+      _lastFcmRegistrationId = trimmed;
+      if (!completer.isCompleted) completer.complete(trimmed);
+    });
+    await messaging.register(vapidKey: vapidKey);
+    final emitted = await completer.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () => null,
+    );
+    return emitted ?? _lastFcmRegistrationId;
+  } catch (_) {
+    return _lastFcmRegistrationId;
+  } finally {
+    unawaited(sub?.cancel());
+  }
+}
+
 Future<void> _initializeFcmForCurrentUser() async {
   if (!_isFcmSupportedPlatform()) return;
 
@@ -1190,14 +1245,15 @@ Future<void> _initializeFcmForCurrentUser() async {
     } catch (_) {}
 
     try {
-      // FCM registration-token API. firebase_messaging 17 deprecates it in
-      // favour of register()/onRegistered, which yield the Firebase
-      // Installation ID (FID), not the registration token the backend stores.
-      // Retained until the backend can target FIDs.
-      // ignore: deprecated_member_use
-      FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
-        final trimmed = newToken.trim();
+      // FID registration API (firebase_messaging 17+): the stable Firebase
+      // Installation ID replaces the rotating FCM registration token and is
+      // what the server stores as the push target. FCM accepts the FID in the
+      // `token` field of a v1 messages:send, so the `fcmToken` parameter and
+      // the server column keep their names.
+      FirebaseMessaging.instance.onRegistered.listen((fid) async {
+        final trimmed = fid.trim();
         if (trimmed.isEmpty) return;
+        _lastFcmRegistrationId = trimmed;
         final current = supabase.auth.currentUser?.id;
         if (current == null || current.isEmpty) return;
         final platformText = kIsWeb
@@ -1205,8 +1261,8 @@ Future<void> _initializeFcmForCurrentUser() async {
             : defaultTargetPlatform == TargetPlatform.android
             ? 'android'
             : 'ios';
-        // Immediate (bypass dedup/cooldown) so a rotation while the app was
-        // killed/off is pushed to user_session without waiting 5s.
+        // Immediate (bypass dedup/cooldown) so a registration/re-registration
+        // reaches user_session without waiting 5s.
         SessionRegistrationCoordinator.instance.scheduleImmediate(
           userId: current,
           platform: platformText,
@@ -1215,34 +1271,17 @@ Future<void> _initializeFcmForCurrentUser() async {
         );
       });
     } catch (_) {}
-    // Periodic FCM resync: FCM tokens can rotate while the app is killed.
-    // Re-fetch every 6h while UI is alive so the server never keeps a stale
-    // token for long (covers reboot/off gaps on next launch + while running).
+    // Periodic FCM resync: the FID is stable per install, but re-asserting it
+    // every 6h while UI is alive keeps user_session correct after a reinstall
+    // or a server-side clear (covers reboot/off gaps on next launch + while
+    // running).
     try {
       _fcmResyncTimer?.cancel();
       _fcmResyncTimer = Timer.periodic(const Duration(hours: 6), (_) async {
         try {
           final current = supabase.auth.currentUser?.id;
           if (current == null || current.isEmpty) return;
-          String? fresh;
-          if (kIsWeb) {
-            final envVapid = const String.fromEnvironment(
-              'FCM_WEB_VAPID_KEY',
-              defaultValue: '',
-            ).trim();
-            String dotVapid = '';
-            try {
-              dotVapid = (dotenv.env['FCM_WEB_VAPID_KEY'] ?? '').trim();
-            } catch (_) {}
-            final vapidKey = envVapid.isNotEmpty ? envVapid : dotVapid;
-            // ignore: deprecated_member_use
-            fresh = await FirebaseMessaging.instance.getToken(
-              vapidKey: vapidKey.isNotEmpty ? vapidKey : null,
-            );
-          } else {
-            // ignore: deprecated_member_use
-            fresh = await FirebaseMessaging.instance.getToken();
-          }
+          final fresh = await _ensureFcmRegistered();
           final trimmed = (fresh ?? '').trim();
           if (trimmed.isEmpty) return;
           final platformText = kIsWeb
@@ -1264,24 +1303,7 @@ Future<void> _initializeFcmForCurrentUser() async {
   final userId = supabase.auth.currentUser?.id;
   if (userId == null || userId.isEmpty) return;
 
-  String? token;
-  try {
-    if (kIsWeb) {
-      final envVapid = const String.fromEnvironment(
-        'FCM_WEB_VAPID_KEY',
-        defaultValue: '',
-      ).trim();
-      final dotVapid = (dotenv.env['FCM_WEB_VAPID_KEY'] ?? '').trim();
-      final vapidKey = envVapid.isNotEmpty ? envVapid : dotVapid;
-      // ignore: deprecated_member_use
-      token = await FirebaseMessaging.instance.getToken(
-        vapidKey: vapidKey.isNotEmpty ? vapidKey : null,
-      );
-    } else {
-      // ignore: deprecated_member_use
-      token = await FirebaseMessaging.instance.getToken();
-    }
-  } catch (_) {}
+  final token = await _ensureFcmRegistered();
 
   if (token != null) {
     final trimmed = token.trim();

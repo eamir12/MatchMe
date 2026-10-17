@@ -19,17 +19,17 @@ class SessionRegistrationCoordinator {
   bool _registeredWithFcm = false;
 
   // Cold-start dedup: bootstrap + the auth-state `signedIn` listener + the
-  // FCM getToken() call can all reach schedule() within a few hundred ms of
-  // each other for the SAME user+platform. We coalesce those by keying on
-  // (userId, platform) and short-circuiting repeated calls inside the window.
-  // The FCM token is still merged into the pending state, so the eventual
-  // single registerSession RPC carries it.
+  // FCM FID registration (register()/onRegistered) can all reach schedule()
+  // within a few hundred ms of each other for the SAME user+platform. We
+  // coalesce those by keying on (userId, platform) and short-circuiting
+  // repeated calls inside the window. The FID is still merged into the
+  // pending state, so the eventual single registerSession RPC carries it.
   String? _lastScheduledKey;
   DateTime? _lastScheduledAt;
   static const Duration _dedupWindow = Duration(seconds: 5);
 
   // Cold-start (bootstrap/FCM) registrations are debounced 5s to land past the
-  // first-frame jank and to give the FCM getToken() call time to complete.
+  // first-frame jank and to give the FCM register() call time to complete.
   // A fresh sign-in ('auth-signed-in') has no first-frame pressure — the user
   // is already interacting — so a short debounce makes the online count (and
   // session row) appear within ~1s instead of ~5s.
@@ -93,8 +93,8 @@ class SessionRegistrationCoordinator {
     // DeviceInfoPlugin + Connectivity init, visible in the cold-start log as
     // a "Skipped 74 frames" / Davey 1241 ms right after the first frame).
     // 5 s moves the registration past the post-first-frame jank AND gives
-    // the web FCM getToken() call (3-5 s end-to-end) time to land before the
-    // first run, so the single RPC carries the token.
+    // the web FCM register()/onRegistered handshake (3-5 s end-to-end) time
+    // to land before the first run, so the single RPC carries the FID.
     // Fresh sign-ins ('auth-signed-in') have no first-frame pressure — the
     // user is already interacting — so a 1 s debounce makes the session row
     // (and thus the online count) appear ~4 s sooner.

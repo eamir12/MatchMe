@@ -176,6 +176,14 @@
             android:name="com.google.firebase.messaging.default_notification_color"
             android:resource="@color/notification_accent" />
 
+        <!-- FCM FID registration (firebase_messaging 17+): without this opt-in
+             the Firebase SDK rejects FirebaseMessaging.register(). Pushes then
+             target the stable Firebase Installation ID instead of a rotating
+             registration token. -->
+        <meta-data
+            android:name="firebase_messaging_installation_id_enabled"
+            android:value="true" />
+
         <!-- Flutter Local Notifications Configuration -->
         <meta-data
             android:name="com.dexterous.flutterlocalnotifications.default_icon"

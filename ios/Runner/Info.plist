@@ -89,6 +89,12 @@
 	<key>GADApplicationIdentifier</key>
 	<string>ca-app-pub-1071857314988867~7605526456</string>
 
+	<!-- firebase_messaging 17+: register()/onRegistered on iOS require this
+	     opt-in; pushes then target the stable Firebase Installation ID
+	     instead of a rotating FCM registration token. -->
+	<key>FirebaseMessagingInstallationIdEnabled</key>
+	<true/>
+
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>com.matchme.backgroundsync</string>

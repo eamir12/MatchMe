@@ -1140,11 +1140,11 @@ class SessionService {
 
   static Future<void> deleteFcmToken() async {
     try {
-      // deleteToken() is deprecated in firebase_messaging 17 (use unregister())
-      // but still returns/removes the FCM registration-token the backend knows.
-      // Kept until the backend moves off registration tokens.
-      // ignore: deprecated_member_use
-      await FirebaseMessaging.instance.deleteToken();
+      // firebase_messaging 17: unregister() replaces deleteToken(). It removes
+      // the Firebase Installation ID (FID) the backend targets so a logged-out
+      // install stops receiving pushes. FCM then reports the FID as
+      // unregistered, which the senders treat like an expired token.
+      await FirebaseMessaging.instance.unregister();
     } catch (_) {}
   }
 
