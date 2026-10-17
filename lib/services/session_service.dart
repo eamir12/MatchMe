@@ -1140,6 +1140,10 @@ class SessionService {
 
   static Future<void> deleteFcmToken() async {
     try {
+      // deleteToken() is deprecated in firebase_messaging 17 (use unregister())
+      // but still returns/removes the FCM registration-token the backend knows.
+      // Kept until the backend moves off registration tokens.
+      // ignore: deprecated_member_use
       await FirebaseMessaging.instance.deleteToken();
     } catch (_) {}
   }

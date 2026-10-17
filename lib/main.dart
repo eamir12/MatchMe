@@ -1190,6 +1190,11 @@ Future<void> _initializeFcmForCurrentUser() async {
     } catch (_) {}
 
     try {
+      // FCM registration-token API. firebase_messaging 17 deprecates it in
+      // favour of register()/onRegistered, which yield the Firebase
+      // Installation ID (FID), not the registration token the backend stores.
+      // Retained until the backend can target FIDs.
+      // ignore: deprecated_member_use
       FirebaseMessaging.instance.onTokenRefresh.listen((newToken) async {
         final trimmed = newToken.trim();
         if (trimmed.isEmpty) return;
@@ -1230,10 +1235,12 @@ Future<void> _initializeFcmForCurrentUser() async {
               dotVapid = (dotenv.env['FCM_WEB_VAPID_KEY'] ?? '').trim();
             } catch (_) {}
             final vapidKey = envVapid.isNotEmpty ? envVapid : dotVapid;
+            // ignore: deprecated_member_use
             fresh = await FirebaseMessaging.instance.getToken(
               vapidKey: vapidKey.isNotEmpty ? vapidKey : null,
             );
           } else {
+            // ignore: deprecated_member_use
             fresh = await FirebaseMessaging.instance.getToken();
           }
           final trimmed = (fresh ?? '').trim();
@@ -1266,10 +1273,12 @@ Future<void> _initializeFcmForCurrentUser() async {
       ).trim();
       final dotVapid = (dotenv.env['FCM_WEB_VAPID_KEY'] ?? '').trim();
       final vapidKey = envVapid.isNotEmpty ? envVapid : dotVapid;
+      // ignore: deprecated_member_use
       token = await FirebaseMessaging.instance.getToken(
         vapidKey: vapidKey.isNotEmpty ? vapidKey : null,
       );
     } else {
+      // ignore: deprecated_member_use
       token = await FirebaseMessaging.instance.getToken();
     }
   } catch (_) {}
