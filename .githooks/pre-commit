@@ -15,8 +15,11 @@ fi
 echo "Running: dart fix --apply"
 dart fix --apply
 
-# Re-stage any changes made by dart fix
-git add -A
+# Re-stage only the paths that were already staged (dart fix may have
+# rewritten some of them). Deliberately NOT `git add -A`: that would sweep
+# every unrelated working-tree edit and untracked file into the commit.
+git diff --cached --name-only --diff-filter=ACMR \
+  | xargs -d '\n' --no-run-if-empty git add --
 
 echo "Running: flutter analyze"
 if ! flutter analyze; then
