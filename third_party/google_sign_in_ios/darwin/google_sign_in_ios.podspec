@@ -23,7 +23,9 @@ Enables Google Sign-In in Flutter apps.
   # direct dependency to ensure a version which defines modules.
   s.dependency 'GTMSessionFetcher', '>= 3.4.0'
   # MatchMe fork: GoogleSignIn 10 allows GTMSessionFetcher 4.x/5.x, required by
-  # Firebase 13; 9.x pins <4.0. Floors rise to iOS 15 / macOS 12.
+  # Firebase 13; 9.x pins <4.0. Floors rise to iOS 15 / macOS 12. (The SPM
+  # manifest additionally pins upstream commit 4ce331c for AppCheckCore 12.x,
+  # which CocoaPods does not support yet, so this path is Firebase 12-era only.)
   s.dependency 'GoogleSignIn', '~> 10.0'
   s.static_framework = true
   s.ios.dependency 'Flutter'

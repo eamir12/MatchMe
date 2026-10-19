@@ -16,13 +16,14 @@ let package = Package(
     .library(name: "google-sign-in-ios", targets: ["google_sign_in_ios"])
   ],
   dependencies: [
-    // NOTE: GoogleSignIn-iOS 10 is required for Firebase 13 SPM compatibility:
-    // it widens the GTMSessionFetcher range to 4.x/5.x, while GoogleSignIn 9.x
-    // pins <4.0 and cannot resolve alongside firebase-ios-sdk 13. App targets
-    // iOS 16, so the iOS 15/macOS 12 floors GoogleSignIn 10 introduces are fine.
+    // NOTE: Firebase 13 needs GTMSessionFetcher 4.x/5.x and AppCheckCore 12.x.
+    // GoogleSignIn 10.0.0 already widens GTMSessionFetcher (9.x pins <4.0) but
+    // still caps AppCheckCore at 11.x; upstream main fixes that in commit
+    // 4ce331c ("[App Check] Add SPM AppCheckCore 12.x support"), which is not
+    // tagged yet. Pinned by revision for reproducible builds.
     .package(
       url: "https://github.com/google/GoogleSignIn-iOS.git",
-      from: "10.0.0")
+      revision: "4ce331c226c24cfee688b31e9c3731cc5c5e2862")
   ],
   targets: [
     .target(
