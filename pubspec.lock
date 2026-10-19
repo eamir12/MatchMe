@@ -1716,7 +1716,7 @@ packages:
       path: "third_party/purchases_ui_flutter"
       relative: true
     source: path
-    version: "10.15.2"
+    version: "10.16.0"
   quick_actions:
     dependency: "direct main"
     description:
