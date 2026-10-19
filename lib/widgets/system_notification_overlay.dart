@@ -165,7 +165,10 @@ class _SystemNotificationOverlayState
               ),
               child: Row(
                 children: [
-                  Icon(icon, color: Colors.white),
+                  Icon(
+                    icon,
+                    color: Theme.of(context).colorScheme.onPrimary,
+                  ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
@@ -174,8 +177,8 @@ class _SystemNotificationOverlayState
                       children: [
                         Text(
                           displayText,
-                          style: const TextStyle(
-                            color: Colors.white,
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.onPrimary,
                             fontSize: 13,
                           ),
                         ),
@@ -186,7 +189,9 @@ class _SystemNotificationOverlayState
                               padding: EdgeInsets.zero,
                               minimumSize: const Size(0, 0),
                               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                              foregroundColor: Colors.white,
+                              foregroundColor: Theme.of(
+                                context,
+                              ).colorScheme.onPrimary,
                             ),
                             onPressed: () async {
                               if (isPinnedManage) {
@@ -217,9 +222,9 @@ class _SystemNotificationOverlayState
                     ),
                   ),
                   IconButton(
-                    icon: const Icon(
+                    icon: Icon(
                       Icons.close,
-                      color: Colors.white,
+                      color: Theme.of(context).colorScheme.onPrimary,
                       size: 20,
                     ),
                     onPressed: () => ref

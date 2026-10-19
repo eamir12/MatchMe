@@ -48,5 +48,35 @@ void main() {
       );
       expect(style.fontFamily, 'Noto Sans Hebrew');
     });
+
+    // Regression: bare ASCII digits exist in every emoji font's cmap only as
+    // keycap-component slots that render EMPTY (bundled Twemoji Mozilla maps
+    // u30-u39 to glyphless blanks). A system primary that fails to resolve
+    // (e.g. the Android chat composer's Roboto) must therefore hand text
+    // glyphs to a real text font before any emoji font can claim them.
+    test(
+        'puts the bundled text font before every color emoji font for a '
+        'system primary', () {
+      final style = withEmojiFallback(const TextStyle(fontFamily: 'Roboto'));
+      expect(style.fontFamily, 'Roboto');
+      final fallback = style.fontFamilyFallback!;
+      expect(fallback.first, kAppDefaultTextFontFamily);
+      final textIndex = fallback.indexOf(kAppDefaultTextFontFamily);
+      final emojiIndex = fallback.indexWhere(
+        (f) => f == 'Noto Color Emoji' || f == 'Twemoji Mozilla',
+      );
+      expect(emojiIndex, greaterThan(textIndex));
+    });
+
+    test('does not duplicate the bundled text font when it is the primary', () {
+      final style = withEmojiFallback(
+        const TextStyle(fontFamily: kAppDefaultTextFontFamily),
+      );
+      expect(style.fontFamily, kAppDefaultTextFontFamily);
+      expect(
+        style.fontFamilyFallback!.contains(kAppDefaultTextFontFamily),
+        isFalse,
+      );
+    });
   });
 }

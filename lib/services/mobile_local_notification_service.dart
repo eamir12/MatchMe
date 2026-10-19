@@ -103,6 +103,26 @@ class MobileLocalNotificationService {
     await ensureInitialized();
   }
 
+  /// iOS only: true when a delivered notification whose threadIdentifier (or
+  /// identifier) equals [threadKey] is still in Notification Center. The
+  /// server sets `thread-id`/`apns-collapse-id` to the event tag
+  /// (push-message, cron-jobs), so this detects "the server card for this
+  /// event is already sitting there" — the iOS analog of the tray checks the
+  /// Android background service performs natively. Plugin-created local
+  /// cards never carry a thread identifier, so they can't false-positive.
+  static Future<bool> hasDeliveredServerNotification(String threadKey) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return false;
+    final key = threadKey.trim();
+    if (key.isEmpty) return false;
+    try {
+      await ensureInitialized();
+      final active = await _notificationsPlugin.getActiveNotifications();
+      return active.any((n) => n.groupKey == key);
+    } catch (_) {
+      return false;
+    }
+  }
+
   static Future<void> ensureInitialized() async {
     if (_initialized) return;
     if (kIsWeb) return;
@@ -117,9 +137,25 @@ class MobileLocalNotificationService {
           requestSoundPermission: true,
         );
 
+    // Windows (flutter_local_notifications_windows): the plugin registers
+    // this AUMID + COM activator GUID in the registry on init, so toasts
+    // work from an unpackaged (non-MSIX) desktop build too. In the MSIX
+    // build the AUMID must equal the package's Application User Model ID —
+    // <Package/Identity/Name>!<AppId> from Partner Center (EAmir.MatchMeApp
+    // !App) — or local toasts fail to attribute to the package. cancel() and
+    // getActiveNotifications() stay no-ops without MSIX, which is fine —
+    // the tray checks those APIs gate on are already iOS/Android-only.
+    const WindowsInitializationSettings windowsSettings =
+        WindowsInitializationSettings(
+          appName: 'matchme',
+          appUserModelId: 'EAmir.MatchMeApp!App',
+          guid: 'b2f7c1a4-8e3d-4c6b-9f2a-7d5e8b1c3a90',
+        );
+
     const InitializationSettings settings = InitializationSettings(
       android: androidSettings,
       iOS: iosSettings,
+      windows: windowsSettings,
     );
 
     await _notificationsPlugin.initialize(
@@ -219,6 +255,27 @@ class MobileLocalNotificationService {
         _shownNewMatchIds.remove(_shownNewMatchIds.first);
       }
       _shownNewMatchIds.add(id);
+      // Cross-path dedupe (mirrors the Android native contract): the match
+      // may already have been alerted by another path — the prefs mirror, a
+      // server banner delivered while the app was killed (iOS). Either way
+      // this card must stay silent.
+      SharedPreferences? dedupePrefs;
+      try {
+        dedupePrefs = await SharedPreferences.getInstance();
+      } catch (_) {}
+      if (dedupePrefs?.getString('flutter.last_notified_match_id') == id) {
+        return;
+      }
+      if (await hasDeliveredServerNotification('new_match_$id')) {
+        try {
+          await dedupePrefs?.setString('flutter.last_notified_match_id', id);
+          await dedupePrefs?.setString(
+            'flutter.worker_last_notified_key',
+            'match:$id',
+          );
+        } catch (_) {}
+        return;
+      }
     }
     final soundEnabled = _isSoundEnabledForType(NotificationType.newMatch);
     final vibrationEnabled = _isVibrationEnabledForType(
@@ -247,6 +304,7 @@ class MobileLocalNotificationService {
         presentSound: soundEnabled,
         sound: soundEnabled ? 'default' : null,
       ),
+      windows: _windowsDetails(soundEnabled: soundEnabled),
     );
     final enforced = enforceTitleBody(title, body);
     await _notificationsPlugin.show(
@@ -332,6 +390,7 @@ class MobileLocalNotificationService {
         presentSound: soundEnabled,
         sound: soundEnabled ? 'default' : null,
       ),
+      windows: _windowsDetails(soundEnabled: soundEnabled),
     );
     final enforced = enforceTitleBody(title, body);
     await _notificationsPlugin.show(
@@ -384,6 +443,9 @@ class MobileLocalNotificationService {
     required String senderName,
     required String messageContent,
     required String matchId,
+    String? messageId,
+    bool alreadyAggregated = false,
+    bool? shouldAlertOverride,
   }) async {
     if (kIsWeb) return;
     await ensureInitialized();
@@ -394,21 +456,56 @@ class MobileLocalNotificationService {
       return;
     }
 
+    // Cross-path dedupe (mirrors the Android native contract): the message
+    // may already have surfaced on this device — the server push's banner is
+    // still delivered (iOS) after a killed-app delivery, or this exact
+    // message already produced a local card before a restart. Either way the
+    // local card must stay silent.
+    final trimmedMessageId = messageId?.trim() ?? '';
+    SharedPreferences? dedupePrefs;
+    if (trimmedMessageId.isNotEmpty) {
+      try {
+        dedupePrefs = await SharedPreferences.getInstance();
+      } catch (_) {}
+      if (dedupePrefs?.getString('flutter.last_notified_message_id') ==
+          trimmedMessageId) {
+        return;
+      }
+      if (await hasDeliveredServerNotification('match_$chatId')) {
+        try {
+          await dedupePrefs?.setString(
+            'flutter.last_notified_message_id',
+            trimmedMessageId,
+          );
+          await dedupePrefs?.setString(
+            'flutter.worker_last_notified_key',
+            'msg:$trimmedMessageId',
+          );
+        } catch (_) {}
+        return;
+      }
+    }
+
     // Foreground (including iOS resumed / Android maximized) still shows a
     // tray notification unless the user is actively viewing this chat.
     // The old code dropped ALL iOS foreground chat notifications.
     final isViewingChat = _currentViewingChatId == chatId;
 
     final history = _messageHistory.putIfAbsent(chatId, () => []);
-    history.add(messageContent);
-    if (history.length > 5) history.removeAt(0);
+    if (!alreadyAggregated) {
+      if (messageContent.trim().isNotEmpty &&
+          (history.isEmpty || history.last != messageContent)) {
+        history.add(messageContent);
+      }
+      if (history.length > 5) history.removeAt(0);
+    }
 
     if (isViewingChat) {
       debugPrint('Skipping local notification - currently viewing chat');
       return;
     }
 
-    final shouldAlert = _lastNotifiedChatIds[chatId] == null;
+    final shouldAlert = shouldAlertOverride ?? (_lastNotifiedChatIds[chatId] == null);
     final soundEnabled = _isSoundEnabledForType(NotificationType.chatMessages);
     final vibrationEnabled = _isVibrationEnabledForType(
       NotificationType.chatMessages,
@@ -426,19 +523,20 @@ class MobileLocalNotificationService {
         enableVibration: shouldAlert && vibrationEnabled,
       ),
       iOS: DarwinNotificationDetails(
-        presentAlert: true,
+        presentAlert: shouldAlert,
         presentBadge: true,
         presentSound: shouldAlert && soundEnabled,
         sound: (shouldAlert && soundEnabled) ? 'default' : null,
       ),
+      windows: _windowsDetails(soundEnabled: shouldAlert && soundEnabled),
     );
 
     // Transport/display guard: truncate history to byte budget so 5 long
     // user messages can't overflow the tray (FCM 4096B, display ~800B).
-    var joined = history.join('\n');
+    var joined = alreadyAggregated ? messageContent : history.join('\n');
     final capped = truncateUtf8Bytes(joined, NotifLimits.chatHistoryMaxBytes);
     joined = capped.text;
-    final safeSender = firstTokenName(senderName);
+    final safeSender = maskFullName(senderName);
     final enforced = enforceTitleBody(
       _chatNotificationTitle(senderName: safeSender, messageContent: joined),
       joined,
@@ -457,6 +555,20 @@ class MobileLocalNotificationService {
 
     if (shouldAlert) {
       _lastNotifiedChatIds[chatId] = 1;
+    }
+    // Share the Android-native one-buzz-per-message keys so a restart (or
+    // the native poll, where present) never re-buzzes this exact message.
+    if (dedupePrefs != null && trimmedMessageId.isNotEmpty) {
+      try {
+        await dedupePrefs.setString(
+          'flutter.last_notified_message_id',
+          trimmedMessageId,
+        );
+        await dedupePrefs.setString(
+          'flutter.worker_last_notified_key',
+          'msg:$trimmedMessageId',
+        );
+      } catch (_) {}
     }
     debugPrint('Local notification shown (alert=$shouldAlert)');
   }
@@ -602,11 +714,27 @@ class MobileLocalNotificationService {
     return notifs.isMethodEnabled(type, NotificationMethod.vibrate);
   }
 
+  /// Windows has no channels/vibration — sound on/off is the only per-type
+  /// preference that maps. Silent when the user turned sound off so toasts
+  /// respect the same settings as the other platforms.
+  static WindowsNotificationDetails _windowsDetails({
+    required bool soundEnabled,
+  }) {
+    return WindowsNotificationDetails(
+      audio: soundEnabled
+          ? WindowsNotificationAudio.preset(
+              sound: WindowsNotificationSound.im,
+            )
+          : WindowsNotificationAudio.silent(),
+    );
+  }
+
   static Future<void> showMatchExpiryNotification({
     required String matchId,
     required String title,
     required String body,
     String? notificationKey,
+    String? serverTag,
   }) async {
     if (kIsWeb) return;
     await ensureInitialized();
@@ -616,6 +744,12 @@ class MobileLocalNotificationService {
       print(
         'Match expiry notifications disabled - skipping notification for match: $matchId',
       );
+      return;
+    }
+
+    // The server push for this exact warning may already be delivered (e.g.
+    // drawn while the app was killed) — that card IS the notification.
+    if (serverTag != null && await hasDeliveredServerNotification(serverTag)) {
       return;
     }
 
@@ -641,6 +775,7 @@ class MobileLocalNotificationService {
         presentSound: soundEnabled,
         sound: soundEnabled ? 'default' : null,
       ),
+      windows: _windowsDetails(soundEnabled: soundEnabled),
     );
 
     final enforced = enforceTitleBody(title, body);
@@ -707,6 +842,7 @@ class MobileLocalNotificationService {
         presentSound: soundEnabled,
         sound: soundEnabled ? 'default' : null,
       ),
+      windows: _windowsDetails(soundEnabled: soundEnabled),
     );
 
     final enforced = enforceTitleBody(title, body);
@@ -762,6 +898,7 @@ class MobileLocalNotificationService {
         presentSound: soundEnabled,
         sound: soundEnabled ? 'default' : null,
       ),
+      windows: _windowsDetails(soundEnabled: soundEnabled),
     );
 
     final enforced = enforceTitleBody(title, body);

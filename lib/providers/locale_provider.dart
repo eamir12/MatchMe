@@ -2788,20 +2788,26 @@ class LocalizationState {
     'securityCenterPasskeyCtaAddAnother': 'Add another passkey',
     'securityCenterPasskeyCtaCreate': 'Create passkey',
     'securityCenterPasskeyCtaRemoveAll': 'Remove all passkeys',
+    'securityCenterPasskeyPrimaryAccountReady':
+        'Your account has a passkey for faster, passwordless sign-in.',
     'securityCenterPasskeyPrimaryOff':
         'Add a passkey for faster, more secure sign-in.',
     'securityCenterPasskeyPrimaryReady':
         'Passkeys are ready for faster, passwordless sign-in.',
     'securityCenterPasskeyPrimarySignedIn':
         'You signed in with a passkey on this device.',
+    'securityCenterPasskeySecondaryAppNotAvailable':
+        'Passkey sign-in isn\'t available in this app on this platform yet.',
     'securityCenterPasskeySecondaryProtected':
         'A passkey is already protecting this account.',
     'securityCenterPasskeySecondaryReady':
-        'This device and server are ready for a new passkey.',
+        'Create a passkey on this device to sign in without a password.',
     'securityCenterPasskeySecondarySetupRequired':
         'Server configuration is still required before passkeys can be added.',
     'securityCenterPasskeySecondaryUnsupported':
         'This device does not support passkeys.',
+    'securityCenterPasskeySessionAccountReady':
+        'Your account has a passkey for use on supported devices.',
     'securityCenterPasskeySessionOther':
         'You signed in with {method}. Add a passkey for future sign-ins.',
     'securityCenterPasskeySessionPasskey':
@@ -2811,6 +2817,7 @@ class LocalizationState {
     'securityCenterSettingsEntryBody':
         'Manage your authenticator, passkeys, and recovery options',
     'securityCenterStatusActive': 'Active',
+    'securityCenterStatusAdded': 'Added',
     'securityCenterStatusAttention': 'Attention',
     'securityCenterStatusAvailable': 'Available',
     'securityCenterStatusReady': 'Ready',
@@ -3126,7 +3133,7 @@ class LocalizationState {
     'settingsMfaSetupInstruction':
         'Scan the QR code with your authenticator app, or enter the code manually',
     'settingsMfaSetupTitle': 'Set up authenticator app',
-    'settingsMfaTitle': 'Authenticator app',
+    'settingsMfaTitle': 'Two-factor authentication',
     'settingsMfaUpdate': 'Update 2FA',
     'settingsMfaUseAuthenticatorCode': 'Use authenticator code instead',
     'settingsMfaUseEmailCode': 'Use email code instead',
@@ -4969,7 +4976,9 @@ class Localization extends _$Localization {
   void _syncNativeBackgroundNotificationStrings(Map<String, String> strings) {
     // Persist the "MatchMe Active" foreground notification title/text in the
     // user's current display language so the Android service can show it
-    // localized even after process death / reboot. Best-effort, never throw.
+    // localized even after process death / reboot. Also syncs the masked
+    // chat-notification body (message previews off) so the Kotlin poller
+    // doesn't fall back to English. Best-effort, never throw.
     try {
       final title =
           strings['bgNotificationTitle'] ??
@@ -4979,10 +4988,16 @@ class Localization extends _$Localization {
           strings['bgNotificationText'] ??
           LocalizationState._defaultTranslations['bgNotificationText'] ??
           'You are visible and background matching is enabled.';
+      final genericBody =
+          strings['pushNewMessageBodyFallback'] ??
+          LocalizationState
+              ._defaultTranslations['pushNewMessageBodyFallback'] ??
+          'New message';
       unawaited(
         BackgroundService.setNativeBackgroundNotificationStrings(
           title: title,
           text: text,
+          genericBody: genericBody,
         ),
       );
     } catch (_) {}

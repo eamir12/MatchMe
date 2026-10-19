@@ -3,7 +3,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter/services.dart';
 import 'package:matchme/providers/auth_provider.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/widgets/language_picker_list.dart';
@@ -30,8 +29,8 @@ import 'package:matchme/services/user_activity_service.dart';
 import 'package:matchme/services/web_calendar_service.dart';
 import 'package:matchme/services/oauth_loopback_server.dart';
 import 'package:matchme/utils/desktop_window_focus.dart';
+import 'package:matchme/widgets/passkey_setup_dialog.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 final supabase = Supabase.instance.client;
 
@@ -321,7 +320,10 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
     required String label,
   }) {
     final theme = Theme.of(context);
-    final color = met ? Colors.green.shade700 : Colors.grey.shade600;
+    final isDarkTheme = theme.brightness == Brightness.dark;
+    final color = met
+        ? (isDarkTheme ? Colors.green.shade300 : Colors.green.shade700)
+        : theme.colorScheme.onSurfaceVariant;
     return Row(
       children: [
         Icon(
@@ -553,63 +555,17 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
 
   Future<void> _handlePasskeySetup() async {
     final presentation = _passkeyCardPresentation;
-    if (!mounted) return;
+    final setupAction = presentation.setupAction;
+    if (!mounted || setupAction == null) return;
     final l10n = ref.read(localizationProvider);
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(l10n.getString(presentation.setupInstructionsTitleKey!)),
-        content: SingleChildScrollView(
-          child: Text(l10n.getString(presentation.setupInstructionsBodyKey!)),
-        ),
-        actions: [
-          if (presentation.setupButtonLabelKey != null)
-            TextButton(
-              onPressed: () => _openPasskeySetupSettings(presentation),
-              child: Text(l10n.getString(presentation.setupButtonLabelKey!)),
-            ),
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: Text(l10n.getString('done')),
-          ),
-        ],
-      ),
+    await showPasskeySetupInstructionsDialog(
+      context,
+      l10n: l10n,
+      titleKey: presentation.setupInstructionsTitleKey!,
+      bodyKey: presentation.setupInstructionsBodyKey!,
+      setupAction: setupAction,
+      settingsButtonLabelKey: presentation.setupButtonLabelKey,
     );
-  }
-
-  Future<void> _openPasskeySetupSettings(
-    PasskeyCardPresentation presentation,
-  ) async {
-    switch (presentation.setupAction) {
-      case PasskeySetupAction.openAndroidSecuritySettings:
-        try {
-          final opened = await const MethodChannel(
-            'matchme/passkey_setup',
-          ).invokeMethod<bool>('openSecuritySettings');
-          if (opened != true) {
-            debugPrint('[Passkey] Android security settings did not open.');
-          }
-        } on PlatformException catch (error) {
-          debugPrint('[Passkey] Could not open Android security settings: $error');
-        } on MissingPluginException catch (error) {
-          debugPrint('[Passkey] Android settings bridge is unavailable: $error');
-        }
-      case PasskeySetupAction.openWindowsSignInOptions:
-        try {
-          final opened = await launchUrl(
-            Uri.parse('ms-settings:signinoptions'),
-            mode: LaunchMode.externalApplication,
-          );
-          if (!opened) {
-            debugPrint('[Passkey] Windows sign-in settings did not open.');
-          }
-        } catch (error) {
-          debugPrint('[Passkey] Could not open Windows sign-in settings: $error');
-        }
-      case PasskeySetupAction.showInstructions:
-      case null:
-        return;
-    }
   }
 
   // NEW: Sign in with passkey (for now, placeholder that could call Supabase passkey auth)
@@ -983,6 +939,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
     required bool authInteractionBlocked,
     bool isUnavailable = false,
   }) {
+    final colorScheme = Theme.of(context).colorScheme;
     final icon = SizedBox(
       width: _oauthProviderIconSize,
       height: _oauthProviderIconSize,
@@ -1006,10 +963,12 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
       style: OutlinedButton.styleFrom(
         minimumSize: const Size.fromHeight(_oauthButtonHeight),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        foregroundColor: isUnavailable ? Colors.grey.shade500 : null,
-        backgroundColor: isUnavailable ? Colors.grey.shade100 : null,
+        foregroundColor: isUnavailable ? colorScheme.onSurfaceVariant : null,
+        backgroundColor: isUnavailable
+            ? colorScheme.surfaceContainerHighest
+            : null,
         side: isUnavailable
-            ? BorderSide(color: Colors.grey.shade300)
+            ? BorderSide(color: colorScheme.outlineVariant)
             : null,
       ),
       child: Row(
@@ -1458,6 +1417,25 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
             serverClientId: serverClientId,
           );
 
+      // iOS (and macOS) render Google's consent page on every interactive
+      // sign-in — GoogleSignIn-iOS always sends include_granted_scopes=true,
+      // so the "already has some access" page comes back even when nothing
+      // new is requested. When the keychain still holds a Google session,
+      // restore it silently and skip Google's UI entirely.
+      if (!kIsWeb &&
+          (defaultTargetPlatform == TargetPlatform.iOS ||
+              defaultTargetPlatform == TargetPlatform.macOS)) {
+        final silentResponse = await _trySilentGoogleSignIn(googleNonce);
+        if (silentResponse != null) {
+          print(
+            '🔵 [GoogleSignIn] silent sign-in succeeded. User: ${silentResponse.user?.id}, Session: ${silentResponse.session != null}',
+          );
+          // Leave the spinner visible so onAuthStateChange owns navigation.
+          _authSucceeded = true;
+          return;
+        }
+      }
+
       // Open native Google sign-in (popup on web, system UI on mobile).
       // The native UI auto-closes after account selection — no Chrome tab.
       print('🔵 [GoogleSignIn] Calling authenticate()...');
@@ -1556,6 +1534,64 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
           _isLoading = false;
         });
       }
+    }
+  }
+
+  /// Attempts a fully silent Google sign-in using the keychain session.
+  ///
+  /// Returns null when there is no restorable session, the restored ID token
+  /// can't be validated by Supabase, or Supabase rejects it. The caller then
+  /// falls back to the interactive flow.
+  ///
+  /// This exists to avoid Google's consent page on iOS: GoogleSignIn-iOS
+  /// re-renders it on every interactive sign-in (it always sends
+  /// `include_granted_scopes=true`), even when no new access is requested.
+  Future<AuthResponse?> _trySilentGoogleSignIn(String rawNonce) async {
+    try {
+      final googleUser =
+          await GoogleSignIn.instance.attemptLightweightAuthentication();
+      if (googleUser == null) {
+        print('🔵 [GoogleSignIn] no restorable Google session');
+        return null;
+      }
+
+      final idToken = googleUser.authentication.idToken;
+      if (idToken == null) {
+        print('🔵 [GoogleSignIn] restored session has no ID token');
+        return null;
+      }
+
+      final nonceState = WebCalendarService.googleIdTokenNonceState(
+        idToken,
+        rawNonce,
+      );
+      if (nonceState == GoogleIdTokenNonce.mismatch) {
+        print(
+          '🔵 [GoogleSignIn] restored ID token carries a stale nonce; falling back to interactive',
+        );
+        return null;
+      }
+
+      // Access token is optional for Supabase (it only uses it to validate
+      // at_hash), but request it so the exchange stays equivalent to the
+      // interactive flow. Returns null instead of prompting when the
+      // authorization was not previously granted.
+      final authorization = await googleUser.authorizationClient
+          .authorizationForScopes(const ['openid']);
+      final accessToken = authorization?.accessToken;
+
+      print('🔵 [GoogleSignIn] Calling signInWithIdToken (silent)...');
+      return await supabase.auth.signInWithIdToken(
+        provider: OAuthProvider.google,
+        idToken: idToken,
+        accessToken: accessToken,
+        // A token with no nonce claim must be sent with no nonce parameter
+        // either — Supabase requires the two to agree.
+        nonce: nonceState == GoogleIdTokenNonce.match ? rawNonce : null,
+      );
+    } catch (e) {
+      print('🟡 [GoogleSignIn] silent sign-in unavailable: $e');
+      return null;
     }
   }
 

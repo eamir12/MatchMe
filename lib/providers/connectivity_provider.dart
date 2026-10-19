@@ -94,13 +94,21 @@ class ConnectivityMonitorConfig {
   const ConnectivityMonitorConfig({
     this.probeTimeout = kSupabaseProbeTimeout,
     this.backgroundProbeTimeout = const Duration(seconds: 15),
-    this.healthyProbeInterval = const Duration(seconds: 10),
+    // Healthy = confirmed online; the next probe is a keepalive, not a
+    // detection edge. 60s keeps outage detection latency unchanged (the
+    // failure/suspect/offline cadences below still run at 2-5s) while
+    // cutting the steady-state `health_check` footprint 6x on a Free-plan
+    // project where every probe is a logged round trip.
+    this.healthyProbeInterval = const Duration(seconds: 60),
     this.suspectProbeInterval = const Duration(seconds: 2),
     this.offlineReprobeInterval = const Duration(seconds: 5),
     this.transientFailureProbeInterval = const Duration(seconds: 3),
     this.offlineGracePeriod = const Duration(seconds: 20),
     this.resumeGracePeriod = const Duration(seconds: 12),
-    this.backgroundProbeInterval = const Duration(seconds: 20),
+    // Backgrounded (screen off): WorkManager's native heartbeat covers
+    // presence, so the Flutter probe only needs to notice a network change
+    // before the next resume — 60s is plenty.
+    this.backgroundProbeInterval = const Duration(seconds: 60),
     this.backgroundOfflineGracePeriod = const Duration(seconds: 60),
     this.offlineProbeFailures = 4,
     this.onlineProbeSuccesses = 2,
@@ -213,7 +221,7 @@ Stream<ConnectivityHealth> _buildConnectivityHealthStream(
     if (disposed || controller.isClosed) return;
     // Dedup on semantic connectivity only (status + Supabase reachability).
     // The streak counters increment on EVERY successful probe, so including
-    // them here emitted a new event on each probe (every 10s when healthy,
+    // them here emitted a new event on each probe (every 60s when healthy,
     // plus immediately on every app resume / window focus). Each emission
     // fanned out to connectivityProvider, ad providers and dashboard stats,
     // rebuilding the home screen for no visible change — a constant source

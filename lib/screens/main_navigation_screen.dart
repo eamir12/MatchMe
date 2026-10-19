@@ -330,13 +330,14 @@ Widget _mainNavVisibilityDetailWidget(
   bool isSmallScreen,
 ) {
   if (!isLoaded && isOnline) {
+    final scheme = Theme.of(context).colorScheme;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 2.0),
       decoration: BoxDecoration(
-        color: Colors.grey.withAlpha((0.1 * 255).round()),
+        color: scheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(16.0),
         border: Border.all(
-          color: Colors.grey.withAlpha((0.2 * 255).round()),
+          color: scheme.outlineVariant,
           width: 1,
         ),
       ),
@@ -344,7 +345,7 @@ Widget _mainNavVisibilityDetailWidget(
       child: Text(
         l10n.getString('generalLoadingDots'),
         style: TextStyle(
-          color: Colors.grey,
+          color: scheme.onSurfaceVariant,
           fontSize: 11,
           fontWeight: FontWeight.w500,
         ),
@@ -455,7 +456,12 @@ Widget _mainNavVisibilityDetailWidget(
                 value: isVisible,
                 onChanged: onVisibilityChanged,
                 activeThumbColor: color,
-                inactiveTrackColor: Colors.grey.shade300,
+                // M3 dark semantics: an almost-white track glared on the dark
+                // status chip; the container-highest role keeps it in tune.
+                inactiveTrackColor: Theme.of(
+                  context,
+                ).colorScheme.surfaceContainerHighest,
+                inactiveThumbColor: Theme.of(context).colorScheme.outline,
                 materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
             ),
@@ -513,7 +519,10 @@ Widget _mainNavVisibilityDetailWidget(
                 value: isVisible,
                 onChanged: onVisibilityChanged,
                 activeThumbColor: onlineColor,
-                inactiveTrackColor: Colors.grey.shade300,
+                inactiveTrackColor: Theme.of(
+                  context,
+                ).colorScheme.surfaceContainerHighest,
+                inactiveThumbColor: Theme.of(context).colorScheme.outline,
                 materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
             ),
@@ -539,6 +548,12 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
   Timer? _activityTimer;
   final GlobalKey<NavigatorState> _eventsNavigatorKey =
       GlobalKey<NavigatorState>();
+  final List<ScrollController> _tabScrollControllers =
+      List<ScrollController>.generate(
+        5,
+        (_) => ScrollController(),
+        growable: false,
+      );
   bool _didAttemptPendingRouteRestore = false;
   bool _isLoggingOut = false;
   bool _didLaunchOnboardingIntro = false;
@@ -792,6 +807,9 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _activityTimer?.cancel();
+    for (final controller in _tabScrollControllers) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
@@ -805,7 +823,16 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
     }
   }
 
+  void _scrollTabToTop(int index) {
+    if (index < 0 || index >= _tabScrollControllers.length) return;
+    final controller = _tabScrollControllers[index];
+    if (controller.hasClients) controller.jumpTo(0);
+  }
+
   void _selectTab(int index) {
+    if (index == ref.read(navigationIndexProvider)) {
+      _scrollTabToTop(index);
+    }
     ref.read(navigationIndexProvider.notifier).setIndex(index);
     unawaited(ResumeRouteRestore.saveLastMainTabIndex(index));
   }
@@ -959,6 +986,14 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
     } catch (e) {
       print('clearLocalFcmToken on logout failed: $e');
     }
+    // Windows: drop the cached WNS channel URI so the next account on this
+    // machine re-registers its own (WNS has no client unregister; the server
+    // prunes via session upsert steal / revoked rows).
+    try {
+      await SessionService.clearLocalWnsChannel();
+    } catch (e) {
+      print('clearLocalWnsChannel on logout failed: $e');
+    }
 
     // Invalidate the outgoing user's home-screen providers (and the shared
     // dashboard/unread/tab state) BEFORE the session is torn down, while this
@@ -1054,6 +1089,9 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
   @override
   Widget build(BuildContext context) {
     final currentIndex = ref.watch(navigationIndexProvider);
+    ref.listen<int>(navigationIndexProvider, (previous, next) {
+      if (previous != next) _scrollTabToTop(next);
+    });
     final userId = supabase.auth.currentUser?.id;
 
     final screenSize = MediaQuery.of(context).size;
@@ -1072,11 +1110,26 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
     final useRail = isWideScreen || isLandscape;
 
     final List<Widget> screens = [
-      const HomeScreen(),
-      const MatchesScreen(),
-      const ChatsScreen(),
-      EventsTab(navigatorKey: _eventsNavigatorKey),
-      const ProfileScreen(),
+      PrimaryScrollController(
+        controller: _tabScrollControllers[0],
+        child: const HomeScreen(),
+      ),
+      PrimaryScrollController(
+        controller: _tabScrollControllers[1],
+        child: const MatchesScreen(),
+      ),
+      PrimaryScrollController(
+        controller: _tabScrollControllers[2],
+        child: const ChatsScreen(),
+      ),
+      EventsTab(
+        navigatorKey: _eventsNavigatorKey,
+        scrollController: _tabScrollControllers[3],
+      ),
+      PrimaryScrollController(
+        controller: _tabScrollControllers[4],
+        child: const ProfileScreen(),
+      ),
     ];
 
     final List<String> appBarTitleKeys = [

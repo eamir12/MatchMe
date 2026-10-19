@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:geolocator/geolocator.dart';
+import 'package:matchme/services/windows_location_channel.dart';
 
 /// Centralized deduplication for [Geolocator.getCurrentPosition] calls.
 ///
@@ -37,7 +38,7 @@ class LocationDeduplicator {
         now.difference(_lastRequestAt!) < _dedupWindow) {
       // Return last known position as the best available cached result.
       try {
-        final last = await Geolocator.getLastKnownPosition();
+        final last = await WindowsLocationChannel.getLastKnownPosition();
         if (last != null) return last;
       } catch (_) {}
     }

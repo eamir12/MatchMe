@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderAbstractViewport, RenderBox;
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -17,13 +18,17 @@ import 'package:matchme/screens/chats/message_options.dart';
 import 'package:matchme/screens/chats/reaction_picker.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/theme/app_theme_tokens.dart';
+import 'package:matchme/theme/semantic_colors.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/translation_version_provider.dart';
 import 'package:matchme/services/background_service.dart';
+import 'package:matchme/services/chat_view_state_service.dart';
 import 'package:matchme/services/web_notification_service.dart';
 import 'package:matchme/providers/typing_provider.dart';
 import 'package:matchme/services/global_sync_manager.dart';
 import 'package:matchme/services/local_db_service.dart';
+import 'package:matchme/services/offline_mutation_queue.dart';
 import 'package:matchme/screens/chats/report_dialog.dart';
 import 'package:matchme/screens/matches/match_profile_screen.dart';
 import 'package:matchme/widgets/signed_image.dart';
@@ -53,6 +58,40 @@ import 'package:matchme/services/location_service.dart';
 
 SupabaseClient get supabase => Supabase.instance.client;
 
+// ── Chat translation flicker diagnostics ─────────────────────────────
+// Temporary traces proving that entering a chat and enabling/disabling
+// translation never hides, collapses, or shifts rendered messages.
+// Capture with: adb logcat | findstr ChatFlicker
+//
+// NOTE: these intentionally call `debugPrintSynchronously` instead of
+// `debugPrint`: main.dart replaces the `debugPrint` variable with a
+// substring whitelist that would silently drop most of these lines, and
+// the default implementation also throttles/delays log bursts.
+// Flip [_chatFlickerDiagnosticsEnabled] to false (or remove this block
+// and its call sites) once the behavior is verified.
+const bool _chatFlickerDiagnosticsEnabled = true;
+final Stopwatch _chatFlickerClock = Stopwatch()..start();
+final Map<String, String> _lastBubbleDisplayState = {};
+
+String _flickerId(String? id) {
+  if (id == null || id.isEmpty) return 'none';
+  return id.length <= 8 ? id : id.substring(0, 8);
+}
+
+void _flickerLog(String message) {
+  if (!_chatFlickerDiagnosticsEnabled) return;
+  debugPrintSynchronously(
+    '[ChatFlicker] +${_chatFlickerClock.elapsedMilliseconds}ms $message',
+  );
+}
+
+void _logBubbleDisplay(String messageId, String state) {
+  if (!_chatFlickerDiagnosticsEnabled) return;
+  if (_lastBubbleDisplayState[messageId] == state) return;
+  _lastBubbleDisplayState[messageId] = state;
+  _flickerLog('[bubble] msg=${_flickerId(messageId)} $state');
+}
+
 bool _isRtl(String text) {
   if (text.isEmpty) return false;
   final rtlRegex = RegExp(r'[\u0590-\u05FF\u0600-\u06FF]');
@@ -67,20 +106,6 @@ bool _isRtl(String text) {
   }
   return false;
 }
-
-/// Resolves to `true` 10 seconds after first watch.
-///
-/// [_MessageBubble] watches this while an incoming message in a
-/// translation-enabled chat is still waiting for its translation: if the
-/// translation hasn't landed by then, the bubble stops hiding the message
-/// and falls back to the original text — mirroring the 10s notification
-/// deferral window in home_providers.dart so a failed translation can
-/// never hide a message forever.
-final bubbleTranslationWaitTimeoutProvider =
-    FutureProvider.autoDispose.family<bool, String>((ref, messageId) async {
-      await Future<void>.delayed(const Duration(seconds: 10));
-      return true;
-    });
 
 /// Whether [message] matches an in-chat search for [needle].
 ///
@@ -118,10 +143,7 @@ bool chatSearchMessageMatches(ChatMessageModel message, String needle) {
 String chatSearchMatchedField(ChatMessageModel message, String needle) {
   if (needle.isEmpty) return 'original';
   final q = needle.toLowerCase();
-  final originals = <String?>[
-    message.contentOriginal,
-    message.replyToContent,
-  ];
+  final originals = <String?>[message.contentOriginal, message.replyToContent];
   for (final c in originals) {
     if (c != null && c.isNotEmpty && c.toLowerCase().contains(q)) {
       return 'original';
@@ -179,18 +201,30 @@ class ChatScreen extends ConsumerStatefulWidget {
   ConsumerState<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends ConsumerState<ChatScreen> {
+class _ChatScreenState extends ConsumerState<ChatScreen>
+    with WidgetsBindingObserver, RouteAware {
+  Route<dynamic>? _chatRoute;
+  // Read receipts are only sent while the user can genuinely see this chat:
+  // the app window must hold focus (`resumed`) AND this chat must be the
+  // topmost route. On desktop a background window reports `inactive` or
+  // `hidden` even while still on screen, so messages arriving while the user
+  // works in another application keep their grey ticks until they return to
+  // the app (resumed fires marking again) or pop back onto this route.
+  AppLifecycleState _appLifecycleState = AppLifecycleState.resumed;
+  bool _isChatRouteTopmost = true;
   Timer? _typingIdleTimer;
   TypingParams? _typingParams;
   // Keep a direct reference to the typing service so we don't call `ref` during dispose
   // (calling `ref` while the widget is unmounted is unsafe).
   TypingService? _typingService;
   RealtimeChannel? _chatSignalChannel;
+  Timer? _statusReconcileTimer;
 
   final _messageController = TextEditingController();
   final _scrollController = ScrollController();
   final FocusNode _focusNode = FocusNode();
   bool _isSending = false;
+  bool _translationPreferenceResolved = false;
   bool _showEmojiPicker = false;
   // Tracks the inferred text direction of the composer based on typed text
   ui.TextDirection _composerTextDirection = ui.TextDirection.ltr;
@@ -233,6 +267,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   // that jumps back to the newest message (offset 0: the list is reversed).
   bool _showJumpToLatest = false;
 
+  // ── Translation-toggle scroll anchor ──────────────────────────────
+  // Enabling/disabling chat translation re-lays out every incoming bubble
+  // (translated layouts are taller, and each message's translation arrives
+  // asynchronously). The list is bottom-anchored (`reverse: true`), so any
+  // height change above the newest message slides the content the user was
+  // reading. Around a toggle we remember which message sits at the top edge
+  // of the viewport and where, then nudge the scroll offset back whenever
+  // the content metrics change so that message stays visually pinned.
+  String? _scrollAnchorMessageId;
+  double? _scrollAnchorViewportDy;
+  // Flicker-diagnostics state (debug-only output; see _flickerLog).
+  String? _lastScrollMetricsLogSignature;
+  String? _lastMessageListStateSignature;
+  bool _anchorMissingLogged = false;
+  bool _anchorSettledLogged = false;
+
   void _onChatScrollChanged() {
     if (!mounted || !_scrollController.hasClients) return;
     final shouldShow = _scrollController.offset > 350;
@@ -243,6 +293,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   void _jumpToLatest() {
     if (!mounted || !_scrollController.hasClients) return;
+    _flickerLog(
+      '[scroll] jump-to-latest '
+      'offset=${_scrollController.offset.toStringAsFixed(1)}',
+    );
+    _clearTranslationScrollAnchor(reason: 'jump-to-latest');
     _scrollController.animateTo(
       0.0,
       duration: const Duration(milliseconds: 300),
@@ -250,9 +305,171 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
+  void _clearTranslationScrollAnchor({String reason = 'unspecified'}) {
+    if (_scrollAnchorMessageId != null) {
+      _flickerLog(
+        '[anchor] clear reason=$reason '
+        'msg=${_flickerId(_scrollAnchorMessageId)}',
+      );
+    }
+    _scrollAnchorMessageId = null;
+    _scrollAnchorViewportDy = null;
+    _anchorMissingLogged = false;
+    _anchorSettledLogged = false;
+  }
+
+  /// Captures the message at the viewport's top edge (and its pixel offset
+  /// there) right before a translation toggle changes every bubble's height.
+  /// No-op when the user is at the bottom: the reversed list already keeps
+  /// the newest message pinned there and anchoring would fight that.
+  void _armTranslationScrollAnchor() {
+    _clearTranslationScrollAnchor(reason: 'rearm');
+    if (!mounted || !_scrollController.hasClients) {
+      _flickerLog('[anchor] skip reason=no-scroll-clients');
+      return;
+    }
+    if (_scrollController.offset < 100) {
+      _flickerLog(
+        '[anchor] skip reason=near-bottom '
+        'offset=${_scrollController.offset.toStringAsFixed(1)}',
+      );
+      return;
+    }
+
+    String? straddlingId;
+    double? straddlingDy;
+    String? firstVisibleId;
+    double? firstVisibleDy;
+    for (final entry in _searchMessageKeys.entries) {
+      final context = entry.value.currentContext;
+      if (context == null) continue;
+      final box = context.findRenderObject();
+      if (box is! RenderBox || !box.attached || !box.hasSize) continue;
+      // `viewport` is deliberately typed as RenderObject? so `is RenderBox`
+      // promotes it; RenderAbstractViewport is an unrelated interface type
+      // and would stay unpromoted.
+      final RenderObject? viewport = RenderAbstractViewport.maybeOf(box);
+      if (viewport is! RenderBox) continue;
+      final dy = box.localToGlobal(Offset.zero, ancestor: viewport).dy;
+      // Ignore messages fully outside the viewport.
+      if (dy + box.size.height <= 0 || dy >= viewport.size.height) continue;
+      if (dy <= 0) {
+        // Message straddles (or starts above) the top edge: the closer its
+        // top is to the edge, the better it anchors the reading position.
+        if (straddlingDy == null || dy > straddlingDy) {
+          straddlingDy = dy;
+          straddlingId = entry.key;
+        }
+      } else if (firstVisibleDy == null || dy < firstVisibleDy) {
+        // Fallback for the very top of the history, where no message starts
+        // above the edge: use the first fully visible message instead.
+        firstVisibleDy = dy;
+        firstVisibleId = entry.key;
+      }
+    }
+
+    if (straddlingId != null && straddlingDy != null) {
+      _scrollAnchorMessageId = straddlingId;
+      _scrollAnchorViewportDy = straddlingDy;
+      _anchorMissingLogged = false;
+      _anchorSettledLogged = false;
+      _flickerLog(
+        '[anchor] armed msg=${_flickerId(straddlingId)} '
+        'dy=${straddlingDy.toStringAsFixed(1)} '
+        'offset=${_scrollController.offset.toStringAsFixed(1)}',
+      );
+    } else if (firstVisibleId != null && firstVisibleDy != null) {
+      _scrollAnchorMessageId = firstVisibleId;
+      _scrollAnchorViewportDy = firstVisibleDy;
+      _anchorMissingLogged = false;
+      _anchorSettledLogged = false;
+      _flickerLog(
+        '[anchor] armed msg=${_flickerId(firstVisibleId)} '
+        'dy=${firstVisibleDy.toStringAsFixed(1)} '
+        'offset=${_scrollController.offset.toStringAsFixed(1)}',
+      );
+    } else {
+      _flickerLog('[anchor] none reason=no-visible-message');
+    }
+  }
+
+  /// Restores the anchored message to its pre-toggle position after content
+  /// above it grew or shrank. Runs from [ScrollMetricsNotification] — i.e.
+  /// after a frame in which the list's layout actually changed — and stays a
+  /// no-op once the anchor is released (user scrolled) or the message is
+  /// gone. The reversed list maps a pixel offset 1:1 to on-screen movement,
+  /// so a single correction re-pins the anchor exactly.
+  void _applyTranslationScrollAnchorCorrection() {
+    final anchorId = _scrollAnchorMessageId;
+    final anchorDy = _scrollAnchorViewportDy;
+    if (anchorId == null || anchorDy == null) return;
+    if (!mounted || !_scrollController.hasClients) return;
+
+    final context = _searchMessageKeys[anchorId]?.currentContext;
+    if (context == null) {
+      if (!_anchorMissingLogged) {
+        _anchorMissingLogged = true;
+        _flickerLog(
+          '[anchor] missing msg=${_flickerId(anchorId)} (not mounted yet)',
+        );
+      }
+      return;
+    }
+    final box = context.findRenderObject();
+    if (box is! RenderBox || !box.attached || !box.hasSize) {
+      if (!_anchorMissingLogged) {
+        _anchorMissingLogged = true;
+        _flickerLog(
+          '[anchor] missing msg=${_flickerId(anchorId)} (no render box)',
+        );
+      }
+      return;
+    }
+    // See _armTranslationScrollAnchor: RenderObject? enables promotion.
+    final RenderObject? viewport = RenderAbstractViewport.maybeOf(box);
+    if (viewport is! RenderBox) return;
+
+    final dy = box.localToGlobal(Offset.zero, ancestor: viewport).dy;
+    final delta = dy - anchorDy;
+    if (delta.abs() < 0.5) {
+      if (!_anchorSettledLogged) {
+        _anchorSettledLogged = true;
+        _flickerLog(
+          '[anchor] settled msg=${_flickerId(anchorId)} '
+          'dy=${dy.toStringAsFixed(1)} '
+          'residual=${delta.toStringAsFixed(1)}',
+        );
+      }
+      return;
+    }
+
+    final position = _scrollController.position;
+    final target = (position.pixels - delta)
+        .clamp(position.minScrollExtent, position.maxScrollExtent)
+        .toDouble();
+    if ((target - position.pixels).abs() < 0.5) return;
+    _anchorSettledLogged = false;
+    _flickerLog(
+      '[anchor] correct msg=${_flickerId(anchorId)} '
+      'dy=${dy.toStringAsFixed(1)} '
+      'anchorDy=${anchorDy.toStringAsFixed(1)} '
+      'delta=${delta.toStringAsFixed(1)} '
+      'pixels=${position.pixels.toStringAsFixed(1)} '
+      'target=${target.toStringAsFixed(1)}',
+    );
+    position.jumpTo(target);
+  }
+
   @override
   void initState() {
     super.initState();
+    _lastBubbleDisplayState.clear();
+    _flickerLog(
+      '[chat] enter match=${_flickerId(widget.matchId)} '
+      'cachedTranslation=${ref.read(translationProvider)[widget.matchId]}',
+    );
+    WidgetsBinding.instance.addObserver(this);
+    ChatViewStateService.setAppForeground(true);
 
     // Chats-list search handoff: open with in-chat search already active on
     // the query so the conversation auto-scrolls to the found text. The
@@ -271,6 +488,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
 
     _scrollController.addListener(_onChatScrollChanged);
+    unawaited(_resolveChatTranslationPreference());
 
     // Notify background services that we're viewing this chat.
     // These calls are fire-and-forget so the keyboard can appear instantly
@@ -283,13 +501,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // forget; nothing in the UI depends on them completing first.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        _scrollToBottom(animate: false);
+        _scrollToBottom(animate: false, reason: 'chat-init');
       }
       // Don't await — _markAsRead performs heavy network/DB work and must
       // not block the UI thread (it was previously responsible for the
       // multi-second delay before the virtual keyboard showed up).
       _markAsRead();
     });
+
+    _statusReconcileTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _reconcileMessageStatuses(),
+    );
 
     _focusNode.addListener(() {
       if (_focusNode.hasFocus && _showEmojiPicker) {
@@ -350,7 +573,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       // WhatsApp-like: clearing the composer hides the peer indicator
       // immediately instead of waiting out the idle timeout.
       if (_messageController.text.trim().isEmpty) {
-        _typingIdleTimer?.cancel();
+    _typingIdleTimer?.cancel();
+    _statusReconcileTimer?.cancel();
         svc.stopTyping();
         return;
       }
@@ -382,6 +606,155 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         unawaited(_refreshTranslationsForCurrentLocale());
       }
     });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route != null && route != _chatRoute) {
+      if (_chatRoute != null) {
+        ChatViewStateService.routeObserver.unsubscribe(this);
+      }
+      _chatRoute = route;
+      ChatViewStateService.routeObserver.subscribe(this, route);
+    }
+  }
+
+  @override
+  void didPush() {
+    _isChatRouteTopmost = true;
+    ChatViewStateService.setChatRouteVisible(true);
+  }
+
+  @override
+  void didPushNext() {
+    _isChatRouteTopmost = false;
+    ChatViewStateService.setChatRouteVisible(false);
+  }
+
+  @override
+  void didPopNext() {
+    _isChatRouteTopmost = true;
+    // The chat is on top again after being covered by a pushed screen: mark
+    // anything that arrived while it was hidden-from-view. The app is
+    // resumed here (the user interacted to navigate back), so this runs.
+    _markAsRead();
+    ChatViewStateService.setChatRouteVisible(true);
+  }
+
+  @override
+  void didPop() {
+    _isChatRouteTopmost = false;
+    ChatViewStateService.setChatRouteVisible(false);
+  }
+
+  /// Opens the incoming-bubble gate and traces the transition. Every call
+  /// site below sets `_translationPreferenceResolved`; routing them through
+  /// here keeps the flicker diagnostics in one place.
+  void _openTranslationPreferenceGate(String reason, {bool? enabled}) {
+    if (!mounted) return;
+    _flickerLog(
+      '[gate] open reason=$reason enabled=${enabled?.toString() ?? 'unknown'}',
+    );
+    setState(() => _translationPreferenceResolved = true);
+  }
+
+  Future<void> _resolveChatTranslationPreference() async {
+    final userId = supabase.auth.currentUser?.id;
+    if (userId == null || userId.isEmpty) {
+      _openTranslationPreferenceGate('no-user');
+      return;
+    }
+
+    var enabled = ref.read(translationProvider)[widget.matchId] != null;
+    String? target = ref.read(translationProvider)[widget.matchId];
+    _flickerLog(
+      '[prefs] resolve start match=${_flickerId(widget.matchId)} '
+      'in-memory-enabled=$enabled target=$target',
+    );
+
+    // LOCAL-FIRST RESOLUTION: the incoming-bubble gate below hides every
+    // received message until this flag is true. Resolving the preference via
+    // the Supabase read below kept all cached incoming messages off screen
+    // for the full round-trip (seconds on a slow network — far longer than
+    // the sent messages, which bypass the gate). The locally persisted
+    // per-user preference is already an accurate mirror, so open the gate
+    // from it immediately; the Supabase read stays as a background
+    // refinement that applies any remote change afterwards.
+    try {
+      final localEnabled = await ref
+          .read(localDbProvider)
+          .isTranslationEnabled(widget.matchId, userId: userId);
+      if (!mounted) return;
+      _flickerLog(
+        '[prefs] local-check match=${_flickerId(widget.matchId)} '
+        'local-enabled=$localEnabled',
+      );
+      final wasEnabled = enabled;
+      enabled = enabled || localEnabled;
+      if (enabled && !wasEnabled) {
+        // The per-user Hive cache says translation is on but the in-memory
+        // prefs state has no entry for this chat yet: adopt the current UI
+        // language as target so the gate opening coincides with a
+        // consistent translation state. The remote read below refines the
+        // exact stored target language afterwards.
+        final localTarget = normalizeLanguageCode(
+          ref.read(localizationProvider).currentLocale.languageCode,
+        );
+        await ref
+            .read(translationProvider.notifier)
+            .applyRemoteTranslationUpdate(widget.matchId, localTarget);
+        target = localTarget;
+      }
+    } catch (_) {}
+    _openTranslationPreferenceGate('local-check', enabled: enabled);
+
+    try {
+      final row = await supabase
+          .from('chats')
+          .select('translation_enabled, translation_language')
+          .eq('user_id', userId)
+          .eq('match_id', widget.matchId)
+          .maybeSingle();
+      if (row != null) {
+        enabled = row['translation_enabled'] == true;
+        target = row['translation_language']?.toString();
+      }
+    } catch (_) {
+      try {
+        enabled =
+            enabled ||
+            await ref
+                .read(localDbProvider)
+                .isTranslationEnabled(widget.matchId, userId: userId);
+      } catch (_) {}
+    }
+
+    if (!mounted) return;
+    _flickerLog(
+      '[prefs] remote-check match=${_flickerId(widget.matchId)} '
+      'remote-enabled=$enabled target=$target',
+    );
+    if (enabled) {
+      final effectiveTarget = (target == null || target.trim().isEmpty)
+          ? normalizeLanguageCode(
+              ref.read(localizationProvider).currentLocale.languageCode,
+            )
+          : normalizeLanguageCode(target);
+      try {
+        await ref
+            .read(translationProvider.notifier)
+            .applyRemoteTranslationUpdate(widget.matchId, effectiveTarget);
+      } catch (_) {}
+    } else {
+      try {
+        await ref
+            .read(translationProvider.notifier)
+            .applyRemoteTranslationUpdate(widget.matchId, null);
+      } catch (_) {}
+    }
+    _openTranslationPreferenceGate('remote-check', enabled: enabled);
   }
 
   bool _messageHasStaleCachedTranslationForLocale(
@@ -448,17 +821,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       ref.read(localizationProvider).currentLocale.languageCode,
     );
     if (!force && _lastTranslationRefreshLocaleCode == uiLanguage) {
+      _flickerLog('[refresh] skip reason=same-locale ui=$uiLanguage');
       return;
     }
 
     final translationEnabled =
         ref.read(translationProvider)[widget.matchId] != null;
     if (!translationEnabled) {
+      _flickerLog('[refresh] skip reason=translation-disabled');
       return;
     }
 
     final currentUserId = supabase.auth.currentUser?.id;
     if (currentUserId == null || currentUserId.isEmpty) {
+      _flickerLog('[refresh] skip reason=no-user');
       return;
     }
 
@@ -477,11 +853,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         .map((message) => message['id']?.toString())
         .whereType<String>()
         .toList();
+    _flickerLog(
+      '[refresh] force=$force ui=$uiLanguage '
+      'stale-count=${staleIncomingMessageIds.length}',
+    );
 
     if (staleIncomingMessageIds.isNotEmpty) {
       await localDb.clearCachedTranslationsForMessages(
         widget.matchId,
         staleIncomingMessageIds,
+      );
+      _flickerLog(
+        '[refresh] cleared=${staleIncomingMessageIds.length} '
+        '(invalidating messages + bumping translation version)',
       );
       if (!mounted) return;
       ref.invalidate(chatMessagesProvider(widget.matchId));
@@ -686,6 +1070,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   /// screen never waits on notification IPC before yielding a frame.
   Future<void> _fireBackgroundServiceNotifications() async {
     try {
+      unawaited(ChatViewStateService.setViewingChat(widget.matchId));
       unawaited(BackgroundService.setViewingChat(widget.matchId));
       // The mobile/web notification setters are synchronous (void) on most
       // platforms, so we just invoke them directly.
@@ -712,6 +1097,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     } catch (_) {}
   }
 
+  /// True when the user can actually see this chat right now: the app window
+  /// holds focus (`resumed`) and this chat is the topmost route. Gates read
+  /// receipts so a chat left open in the background does not mark arriving
+  /// messages as read; resumed handlers re-fire `_markAsRead` on return.
+  bool _canSeeChatNow() =>
+      widget.matchId.isNotEmpty &&
+      _isChatRouteTopmost &&
+      _appLifecycleState == AppLifecycleState.resumed;
+
   /// Marks all unread messages from the other user as read and clears the
   /// local unread counter.
   ///
@@ -723,6 +1117,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void _markAsRead() {
     debugPrint('ChatScreen: _markAsRead called for matchId: ${widget.matchId}');
     if (widget.matchId.isEmpty) return;
+    // Only treat messages as read when they are genuinely being viewed.
+    // A chat open on an unfocused/minimized window (e.g. the user is in
+    // another application) must not consume read receipts — the ticks stay
+    // grey and the resumed lifecycle callback marks them on return.
+    if (!_canSeeChatNow()) {
+      debugPrint(
+        'ChatScreen: Skipping _markAsRead — chat not visible/focused '
+        '(state: $_appLifecycleState, topmost: $_isChatRouteTopmost)',
+      );
+      return;
+    }
     final now = DateTime.now();
     if (_lastMarkAsReadAt != null &&
         now.difference(_lastMarkAsReadAt!) < const Duration(seconds: 2)) {
@@ -737,7 +1142,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   Future<void> _runMarkAsRead() async {
-    if (shouldSkipSupabaseCalls()) return;
+    if (shouldSkipSupabaseCalls()) {
+      await _queueMarkAsReadForLater();
+      return;
+    }
     try {
       // Reset and dismiss notifications first to prevent race conditions.
       // _clearChatNotificationsOnEnter is itself non-blocking, so this is
@@ -760,6 +1168,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final currentUserId = supabase.auth.currentUser?.id;
       if (currentUserId == null) return;
 
+      // A chat opened by the user has consumed its message alerts too. This
+      // keeps the inbox's unread-message aggregate in step with read_at.
+      try {
+        await supabase
+            .from('user_notifications')
+            .update({'read_at': DateTime.now().toUtc().toIso8601String()})
+            .eq('user_id', currentUserId)
+            .eq('type', 'chat_message')
+            .isFilter('read_at', null)
+            .contains('data', {'matchId': widget.matchId});
+      } catch (_) {}
+
       // The local chat list reads from the cached `chats` box; the badge
       // disappears the moment we clear the unread count for this match.
       // None of the work below gates any UI frame, so we run it in a
@@ -774,11 +1194,71 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           await ref.read(globalSyncManagerProvider).syncChatsNow(currentUserId);
         } catch (_) {}
       });
+    } catch (e) {
+      debugPrint('ChatScreen: mark_messages_as_read failed, queuing: $e');
+      await _queueMarkAsReadForLater();
+    }
+  }
+
+  Future<void> _queueMarkAsReadForLater() async {
+    try {
+      final pending = await OfflineMutationQueue.instance.getPendingMutations();
+      final alreadyQueued = pending.any(
+        (m) =>
+            m.type == 'rpc' &&
+            m.table == 'mark_messages_as_read' &&
+            m.payload['p_match_id'] == widget.matchId,
+      );
+      if (alreadyQueued) return;
+      await OfflineMutationQueue.instance.queueMutation(
+        type: 'rpc',
+        table: 'mark_messages_as_read',
+        payload: {'p_match_id': widget.matchId},
+      );
+      debugPrint(
+        'ChatScreen: queued mark_messages_as_read for match ${widget.matchId}',
+      );
+    } catch (e) {
+      debugPrint('ChatScreen: failed to queue mark_messages_as_read: $e');
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Track focus so _markAsRead can gate on it. This must happen before any
+    // marking below so the gate sees the fresh state.
+    _appLifecycleState = state;
+    ChatViewStateService.setAppForeground(
+      state == AppLifecycleState.resumed || state == AppLifecycleState.inactive,
+    );
+    if (state == AppLifecycleState.resumed) {
+      _reconcileMessageStatuses();
+      // Coming back to the app (e.g. returning from another application on
+      // desktop) makes this chat visible again: mark anything that arrived
+      // or was left unread in the background now. _markAsRead itself gates
+      // on the topmost-route check, so this is safe even if the user
+      // re-entered the app on a screen pushed above the chat.
+      _markAsRead();
+    }
+  }
+
+  void _reconcileMessageStatuses() {
+    if (shouldSkipSupabaseCalls()) return;
+    try {
+      unawaited(
+        ref
+            .read(chatSyncProvider(widget.matchId))
+            .syncMessageStatuses(widget.matchId),
+      );
     } catch (_) {}
   }
 
   @override
   void dispose() {
+    _flickerLog('[chat] exit match=${_flickerId(widget.matchId)}');
+    WidgetsBinding.instance.removeObserver(this);
+    ChatViewStateService.routeObserver.unsubscribe(this);
+    unawaited(ChatViewStateService.clearViewingChat());
     // Notify background services that we're no longer viewing this chat
     BackgroundService.clearViewingChat();
     MobileLocalNotificationService.clearViewingChat();
@@ -919,7 +1399,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       // Re-focus the text field so the user can keep typing without an
       // extra tap.  requestFocus is cheap and runs on the next frame.
       _focusNode.requestFocus();
-      _scrollToBottom(animate: true);
+      _scrollToBottom(animate: true, reason: 'send');
     }
 
     if (isEdit) {
@@ -1011,7 +1491,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
-  void _scrollToBottom({bool animate = true}) {
+  void _scrollToBottom({bool animate = true, String reason = 'unspecified'}) {
+    _flickerLog(
+      '[scroll] to-bottom reason=$reason animate=$animate '
+      'offset=${_scrollController.hasClients ? _scrollController.offset.toStringAsFixed(1) : 'none'}',
+    );
+    // Programmatic scroll wins over the translation-toggle anchor: without
+    // this the correction could fight the scroll while a new message
+    // arrives in the middle of a translation toggle.
+    _clearTranslationScrollAnchor(reason: 'scroll-to-bottom-$reason');
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scrollController.hasClients) return;
       if (animate) {
@@ -1117,7 +1605,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
     // Fresh query (or previous match gone): land on the newest match.
     final hadCurrent = currentId != null && newIndex >= 0;
-    newIndex = newIndex >= 0 ? newIndex : (matches.isEmpty ? -1 : matches.length - 1);
+    newIndex = newIndex >= 0
+        ? newIndex
+        : (matches.isEmpty ? -1 : matches.length - 1);
     final needsScroll = newIndex >= 0 && !hadCurrent;
     if (!_listEquals(_searchMatchIds, matches) ||
         _searchCurrentIndex != newIndex) {
@@ -1197,8 +1687,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         }
         // Target not built yet: jump to its neighbourhood to materialize it,
         // then retry the precise scroll on the next frames.
-        final messages =
-            ref.read(chatMessagesProvider(widget.matchId)).asData?.value;
+        final messages = ref
+            .read(chatMessagesProvider(widget.matchId))
+            .asData
+            ?.value;
         final position = _scrollController.position;
         final max = position.maxScrollExtent;
         if (max <= 0) return;
@@ -1286,8 +1778,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   // pre-seeded and the keyboard already dismissed: do not
                   // steal focus (and pop the keyboard) in that case. Manual
                   // in-chat search still autofocuses as before.
-                  autofocus:
-                      (widget.initialSearchQuery ?? '').trim().isEmpty,
+                  autofocus: (widget.initialSearchQuery ?? '').trim().isEmpty,
                   textInputAction: TextInputAction.search,
                   textDirection: !hasQuery
                       ? Directionality.of(context)
@@ -1317,9 +1808,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           ),
                     isDense: true,
                     filled: true,
-                    fillColor: Theme.of(
-                      context,
-                    ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                    fillColor: Theme.of(context)
+                        .colorScheme
+                        .surfaceContainerHighest
+                        .withValues(alpha: 0.5),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
                       borderSide: BorderSide.none,
@@ -1403,8 +1895,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         final l10n = ref.read(localizationProvider);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(l10n.getString('blockNeedsOnline')),
-            backgroundColor: Colors.red,
+            content: Text(
+              l10n.getString('blockNeedsOnline'),
+              style: TextStyle(color: Theme.of(context).colorScheme.onError),
+            ),
+            backgroundColor: Theme.of(context).colorScheme.error,
           ),
         );
         return;
@@ -1420,12 +1915,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ref.invalidate(recentMatchesProvider(currentUserId));
         ref.invalidate(recentChatsProvider(currentUserId));
         if (mounted) {
+          final semantic = SemanticColors.of(context);
           scaffoldMessenger.showSnackBar(
             SnackBar(
               content: Text(
                 '${widget.otherUserName} ${l10n.getString('blockSuccess')}',
+                style: TextStyle(color: semantic.onSuccess),
               ),
-              backgroundColor: Colors.green,
+              backgroundColor: semantic.success,
             ),
           );
           navigator.popUntil((route) => route.isFirst);
@@ -1437,8 +1934,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             SnackBar(
               content: Text(
                 '${l10n.getString('blockFailed')}: ${l10n.getString(errorKey)}',
+                style: TextStyle(color: Theme.of(context).colorScheme.onError),
               ),
-              backgroundColor: Colors.red,
+              backgroundColor: Theme.of(context).colorScheme.error,
             ),
           );
         }
@@ -1457,8 +1955,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         final l10n = ref.read(localizationProvider);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(l10n.getString('reportNeedsOnline')),
-            backgroundColor: Colors.red,
+            content: Text(
+              l10n.getString('reportNeedsOnline'),
+              style: TextStyle(color: Theme.of(context).colorScheme.onError),
+            ),
+            backgroundColor: Theme.of(context).colorScheme.error,
           ),
         );
         return;
@@ -1488,8 +1989,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             SnackBar(
               content: Text(
                 '${l10n.getString('reportFailed')}: ${l10n.getString(errorKey)}',
+                style: TextStyle(color: Theme.of(context).colorScheme.onError),
               ),
-              backgroundColor: Colors.red,
+              backgroundColor: Theme.of(context).colorScheme.error,
             ),
           );
         }
@@ -1709,7 +2211,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   height: 4,
                   margin: const EdgeInsets.only(bottom: 20),
                   decoration: BoxDecoration(
-                    color: Colors.grey.shade300,
+                    color: Theme.of(context).colorScheme.outlineVariant,
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
@@ -1718,12 +2220,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     Container(
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
-                        color: Colors.blue.shade100,
+                        color: AppThemeTokens.accentSurface(
+                          Colors.blue.shade700,
+                          Theme.of(context).brightness,
+                        ),
                         shape: BoxShape.circle,
                       ),
                       child: Icon(
                         Icons.share_location,
-                        color: Colors.blue.shade700,
+                        color: AppThemeTokens.accentInk(
+                          Colors.blue.shade700,
+                          Theme.of(context).brightness,
+                        ),
                         size: 22,
                       ),
                     ),
@@ -1744,7 +2252,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                 .getString('locationShareBannerSharingWith')
                                 .replaceAll('{name}', widget.otherUserName),
                             style: TextStyle(
-                              color: Colors.grey.shade600,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurfaceVariant,
                               fontSize: 13,
                             ),
                           ),
@@ -1759,14 +2269,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  tileColor: Colors.blue.shade50,
+                  tileColor: AppThemeTokens.accentSurface(
+                    Colors.blue.shade700,
+                    Theme.of(context).brightness,
+                  ),
                   leading: Icon(
                     Icons.timer_outlined,
-                    color: Colors.blue.shade700,
+                    color: AppThemeTokens.accentInk(
+                      Colors.blue.shade700,
+                      Theme.of(context).brightness,
+                    ),
                   ),
                   title: Text(
                     l10n.getString('locationShareChangeDuration'),
-                    style: TextStyle(color: Colors.blue.shade800),
+                    style: TextStyle(
+                      color: AppThemeTokens.accentInk(
+                        Colors.blue.shade800,
+                        Theme.of(context).brightness,
+                      ),
+                    ),
                   ),
                   onTap: () async {
                     Navigator.of(sheetContext).pop();
@@ -1779,14 +2300,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  tileColor: Colors.red.shade50,
-                  leading: const Icon(
+                  tileColor: Theme.of(
+                    context,
+                  ).colorScheme.error.withValues(alpha: 0.12),
+                  leading: Icon(
                     Icons.stop_circle_outlined,
-                    color: Colors.red,
+                    color: Theme.of(context).colorScheme.error,
                   ),
                   title: Text(
                     l10n.getString('locationShareStop'),
-                    style: const TextStyle(color: Colors.red),
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
                   ),
                   onTap: () async {
                     Navigator.of(sheetContext).pop();
@@ -1924,11 +2449,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // platform (Apple/Noto/Segoe), Twemoji bundled only as fallback.
     final qualified = ensureEmojiPresentation(text);
     final base = withEmojiFallback(
-      style.copyWith(
-        inherit: false,
-        letterSpacing: 0,
-        wordSpacing: 0,
-      ),
+      style.copyWith(inherit: false, letterSpacing: 0, wordSpacing: 0),
     );
     return RichText(
       text: TextSpan(children: emojiAwareSpans(qualified, base)),
@@ -1946,6 +2467,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final currentUserId = supabase.auth.currentUser!.id;
     final targetLanguage = ref.watch(translationProvider)[widget.matchId];
 
+    if (_chatFlickerDiagnosticsEnabled) {
+      final listState = messagesAsyncValue.isLoading
+          ? (messagesAsyncValue.hasValue ? 'refreshing' : 'loading')
+          : (messagesAsyncValue.hasError ? 'error' : 'data');
+      final count = messagesAsyncValue.value?.length ?? 0;
+      final signature =
+          '$listState|$count|${messagesAsyncValue.isRefreshing}'
+          '|${messagesAsyncValue.isReloading}';
+      if (signature != _lastMessageListStateSignature) {
+        _lastMessageListStateSignature = signature;
+        _flickerLog(
+          '[list] state=$listState count=$count '
+          'refreshing=${messagesAsyncValue.isRefreshing} '
+          'reloading=${messagesAsyncValue.isReloading}',
+        );
+      }
+    }
+
     ref.listen<String>(
       localizationProvider.select(
         (state) => normalizeLanguageCode(state.currentLocale.languageCode),
@@ -1960,6 +2499,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     ref.listen<Map<String, String>>(translationProvider, (previous, next) {
       final previousTarget = previous?[widget.matchId];
       final nextTarget = next[widget.matchId];
+      if (previousTarget != nextTarget) {
+        _flickerLog(
+          '[prefs] changed match=${_flickerId(widget.matchId)} '
+          'previous=$previousTarget next=$nextTarget',
+        );
+      }
       if (previousTarget != nextTarget && nextTarget != null) {
         unawaited(_refreshTranslationsForCurrentLocale(force: true));
       }
@@ -2000,15 +2545,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         final bool isFirstLoad = previous == null || previous is AsyncLoading;
 
         if (isAtBottom || isFirstLoad) {
-          _scrollToBottom(animate: !isFirstLoad);
+          _scrollToBottom(
+            animate: !isFirstLoad,
+            reason: isFirstLoad ? 'first-load' : 'new-message',
+          );
         }
       }
 
       // Keep in-chat search results live: newly arriving messages — and newly
       // cached translations flushing through the provider — join the matches.
-      if (_isSearching &&
-          _searchQuery.trim().isNotEmpty &&
-          next is AsyncData) {
+      if (_isSearching && _searchQuery.trim().isNotEmpty && next is AsyncData) {
         _updateChatSearchMatches(nextList);
       }
     });
@@ -2066,148 +2612,197 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           if (!didPop && _isSearching) _closeChatSearch();
         },
         child: Scaffold(
-        appBar: AppBar(
-          toolbarHeight: 76,
-          // Five action buttons squeeze the title column; without spacing
-          // help the two-line title paints over the avatar (both Texts used
-          // overflow: visible). Ellipsis keeps every line inside its box.
-          titleSpacing: 4,
-          title: GestureDetector(
-            onTap: _navigateToProfile,
-            child: Row(
-              children: [
-                CircleAvatar(
-                  radius: 20,
-                  backgroundColor: Theme.of(
-                    context,
-                  ).colorScheme.primary.withValues(alpha: 0.08),
-                  child: otherUserImage != null
-                      ? ClipOval(
-                          child: SignedImage(
-                            source: otherUserImage,
-                            width: 40,
-                            height: 40,
-                            fit: BoxFit.cover,
-                            placeholder: const Center(
-                              child: CircularProgressIndicator(strokeWidth: 2),
+          appBar: AppBar(
+            toolbarHeight: 76,
+            // Five action buttons squeeze the title column; without spacing
+            // help the two-line title paints over the avatar (both Texts used
+            // overflow: visible). Ellipsis keeps every line inside its box.
+            titleSpacing: 4,
+            title: GestureDetector(
+              onTap: _navigateToProfile,
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 20,
+                    backgroundColor: Theme.of(
+                      context,
+                    ).colorScheme.primary.withValues(alpha: 0.08),
+                    child: otherUserImage != null
+                        ? ClipOval(
+                            child: SignedImage(
+                              source: otherUserImage,
+                              width: 40,
+                              height: 40,
+                              fit: BoxFit.cover,
+                              placeholder: const Center(
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                              errorWidget: Icon(
+                                Icons.person,
+                                size: 20,
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
                             ),
-                            errorWidget: Icon(
-                              Icons.person,
-                              size: 20,
-                              color: Theme.of(context).colorScheme.primary,
-                            ),
+                          )
+                        : Icon(
+                            Icons.person,
+                            size: 20,
+                            color: Theme.of(context).colorScheme.primary,
                           ),
-                        )
-                      : Icon(
-                          Icons.person,
-                          size: 20,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Four action buttons squeeze the title column; scale
-                      // the caption down to fit rather than ellipsizing it
-                      // mid-phrase ("You are chatting w…").
-                      FittedBox(
-                        fit: BoxFit.scaleDown,
-                        alignment: AlignmentDirectional.centerStart,
-                        child: Text(
-                          chattingCaption,
-                          maxLines: 1,
-                          softWrap: false,
-                          style: Theme.of(
-                            context,
-                          ).textTheme.bodySmall?.copyWith(
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onSurface.withValues(alpha: 0.7),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      ShrinkText(
-                        displayName,
-                        textAlign: displayNameLayout.textAlign,
-                        textDirection: displayNameLayout.textDirection,
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                    ],
                   ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Four action buttons squeeze the title column; scale
+                        // the caption down to fit rather than ellipsizing it
+                        // mid-phrase ("You are chatting w…").
+                        FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: AlignmentDirectional.centerStart,
+                          child: Text(
+                            chattingCaption,
+                            maxLines: 1,
+                            softWrap: false,
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(
+                                  color: Theme.of(context).colorScheme.onSurface
+                                      .withValues(alpha: 0.7),
+                                ),
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        ShrinkText(
+                          displayName,
+                          textAlign: displayNameLayout.textAlign,
+                          textDirection: displayNameLayout.textDirection,
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              IconButton(
+                icon: Icon(
+                  Icons.search,
+                  color: _isSearching
+                      ? Theme.of(context).colorScheme.primary
+                      : null,
                 ),
-              ],
-            ),
-          ),
-          actions: [
-            IconButton(
-              icon: Icon(
-                Icons.search,
-                color: _isSearching
-                    ? Theme.of(context).colorScheme.primary
-                    : null,
+                tooltip: l10n.getString('chatSearchTooltip'),
+                onPressed: _toggleChatSearch,
               ),
-              tooltip: l10n.getString('chatSearchTooltip'),
-              onPressed: _toggleChatSearch,
-            ),
-            // No separate profile button: tapping the title (avatar + name)
-            // already opens the profile, and a fifth action button leaves no
-            // room for the title. The popup menu keeps a View-profile entry.
-            IconButton(
-              icon: Icon(
-                _isSharingInThisChat()
-                    ? Icons.location_on
-                    : Icons.share_location,
-                color: _isSharingInThisChat() ? Colors.green : null,
+              // No separate profile button: tapping the title (avatar + name)
+              // already opens the profile, and a fifth action button leaves no
+              // room for the title. The popup menu keeps a View-profile entry.
+              IconButton(
+                icon: Icon(
+                  _isSharingInThisChat()
+                      ? Icons.location_on
+                      : Icons.share_location,
+                  color: _isSharingInThisChat() ? Colors.green : null,
+                ),
+                tooltip: l10n.getString(
+                  _isSharingInThisChat()
+                      ? 'locationShareView'
+                      : 'locationShareStart',
+                ),
+                onPressed: _handleLocationShare,
               ),
-              tooltip: l10n.getString(
-                _isSharingInThisChat()
-                    ? 'locationShareView'
-                    : 'locationShareStart',
-              ),
-              onPressed: _handleLocationShare,
-            ),
-            IconButton(
-              onPressed: () async {
-                final scaffoldMessenger = ScaffoldMessenger.of(context);
-                try {
-                  final myLanguage = ref
-                      .read(localizationProvider)
-                      .currentLocale
-                      .languageCode;
-                  final currentTarget = ref.read(
-                    translationProvider,
-                  )[widget.matchId];
-                  final isOffline = shouldSkipSupabaseCalls();
+              IconButton(
+                onPressed: () async {
+                  final scaffoldMessenger = ScaffoldMessenger.of(context);
+                  try {
+                    final myLanguage = ref
+                        .read(localizationProvider)
+                        .currentLocale
+                        .languageCode;
+                    final currentTarget = ref.read(
+                      translationProvider,
+                    )[widget.matchId];
+                    final isOffline = shouldSkipSupabaseCalls();
+                    _flickerLog(
+                      '[toggle] press match=${_flickerId(widget.matchId)} '
+                      'action=${currentTarget == null ? 'enable' : 'disable'} '
+                      'target=$currentTarget ui=$myLanguage offline=$isOffline',
+                    );
+                    // Toggling re-lays out every incoming bubble. Snapshot the
+                    // reading position first so the correction below can keep
+                    // that message exactly where it was on screen.
+                    _armTranslationScrollAnchor();
 
-                  if (currentTarget == null) {
-                    // User wants to ENABLE translations
+                    if (currentTarget == null) {
+                      // User wants to ENABLE translations
 
-                    // If offline, check if translations are available locally
-                    if (isOffline) {
-                      try {
-                        final localDb = ref.read(localDbProvider);
-                        final messages = await localDb.getMessages(
-                          widget.matchId,
-                        );
+                      // If offline, check if translations are available locally
+                      if (isOffline) {
+                        try {
+                          final localDb = ref.read(localDbProvider);
+                          final messages = await localDb.getMessages(
+                            widget.matchId,
+                          );
 
-                        // Normalize the target language code
-                        final normalizedLang = normalizeLanguageCode(
-                          myLanguage,
-                        );
+                          // Normalize the target language code
+                          final normalizedLang = normalizeLanguageCode(
+                            myLanguage,
+                          );
 
-                        // Check if translations for this language exist in local cache
-                        final hasTranslations =
-                            await TranslationCacheManager.hasTranslationsForLanguageInMatch(
-                              normalizedLang,
-                              messages,
+                          // Check if translations for this language exist in local cache
+                          final hasTranslations =
+                              await TranslationCacheManager.hasTranslationsForLanguageInMatch(
+                                normalizedLang,
+                                messages,
+                              );
+
+                          if (!hasTranslations) {
+                            // No translations available offline - show error dialog
+                            final l10n = ref.read(localizationProvider);
+                            if (!context.mounted) return;
+
+                            await showDialog<void>(
+                              context: context,
+                              builder: (BuildContext context) => AlertDialog(
+                                icon: const Icon(
+                                  Icons.cloud_off_rounded,
+                                  size: 32,
+                                ),
+                                title: Text(
+                                  l10n.getString(
+                                    'offlineLanguageUnavailableTitle',
+                                  ),
+                                ),
+                                content: Text(
+                                  l10n.getString(
+                                    'offlineLanguageUnavailableMessage',
+                                  ),
+                                ),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () =>
+                                        Navigator.of(context).pop(),
+                                    child: Text(
+                                      l10n.getString('offlineOkButton'),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             );
-
-                        if (!hasTranslations) {
-                          // No translations available offline - show error dialog
+                            _flickerLog(
+                              '[toggle] aborted '
+                              'reason=offline-no-translations',
+                            );
+                            return;
+                          }
+                        } catch (e) {
+                          debugPrint('Error checking offline translations: $e');
+                          // On error, show generic offline message
                           final l10n = ref.read(localizationProvider);
                           if (!context.mounted) return;
 
@@ -2238,337 +2833,397 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               ],
                             ),
                           );
+                          _flickerLog(
+                            '[toggle] aborted '
+                            'reason=offline-check-error',
+                          );
                           return;
                         }
-                      } catch (e) {
-                        debugPrint('Error checking offline translations: $e');
-                        // On error, show generic offline message
-                        final l10n = ref.read(localizationProvider);
-                        if (!context.mounted) return;
-
-                        await showDialog<void>(
-                          context: context,
-                          builder: (BuildContext context) => AlertDialog(
-                            icon: const Icon(Icons.cloud_off_rounded, size: 32),
-                            title: Text(
-                              l10n.getString('offlineLanguageUnavailableTitle'),
-                            ),
-                            content: Text(
-                              l10n.getString(
-                                'offlineLanguageUnavailableMessage',
-                              ),
-                            ),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Navigator.of(context).pop(),
-                                child: Text(l10n.getString('offlineOkButton')),
-                              ),
-                            ],
-                          ),
-                        );
-                        return;
                       }
+
+                      // Either online or offline with translations available
+                      await ref
+                          .read(translationProvider.notifier)
+                          .setTranslation(widget.matchId, myLanguage);
+                    } else {
+                      // User wants to DISABLE translations - always allowed
+                      await ref
+                          .read(translationProvider.notifier)
+                          .setTranslation(widget.matchId, null);
                     }
-
-                    // Either online or offline with translations available
-                    await ref
-                        .read(translationProvider.notifier)
-                        .setTranslation(widget.matchId, myLanguage);
-                  } else {
-                    // User wants to DISABLE translations - always allowed
-                    await ref
-                        .read(translationProvider.notifier)
-                        .setTranslation(widget.matchId, null);
+                    _flickerLog(
+                      '[toggle] committed match=${_flickerId(widget.matchId)} '
+                      'action=${currentTarget == null ? 'enable' : 'disable'}',
+                    );
+                  } catch (e) {
+                    _flickerLog(
+                      '[toggle] failed match=${_flickerId(widget.matchId)} '
+                      'error=$e',
+                    );
+                    scaffoldMessenger.showSnackBar(
+                      SnackBar(content: Text(l10n.getString('errorGeneric'))),
+                    );
                   }
-                } catch (_) {
-                  scaffoldMessenger.showSnackBar(
-                    SnackBar(content: Text(l10n.getString('errorGeneric'))),
+                },
+                icon: Icon(
+                  targetLanguage == null
+                      ? Icons.translate
+                      : Icons.g_translate_rounded,
+                  // Null inherits the AppBar foreground (onSurface); the active
+                  // state uses the brand primary. Hardcoded black/blue-200 made
+                  // the icon invisible on the opposite theme's app bar.
+                  color: targetLanguage == null
+                      ? null
+                      : Theme.of(context).colorScheme.primary,
+                ),
+                tooltip: l10n.getString('chatTranslateToggle'),
+              ),
+              PopupMenuButton<String>(
+                tooltip: l10n.getString('chatSafetyActions'),
+                icon: const Icon(Icons.more_vert),
+                onSelected: (value) {
+                  if (value == 'profile') _navigateToProfile();
+                  if (value == 'block') _showBlockDialog();
+                  if (value == 'report') _showReportDialog();
+                },
+                itemBuilder: (context) => [
+                  // A ListTile inside a PopupMenuItem fights the popup's
+                  // intrinsic-height sizing and can overflow. A Row gives the
+                  // same visual with no layout conflict.
+                  PopupMenuItem(
+                    value: 'profile',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.person_outline, size: 22),
+                        const SizedBox(width: 12),
+                        Text(l10n.getString('profileTitle')),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'report',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.report_gmailerrorred, size: 22),
+                        const SizedBox(width: 12),
+                        Text(l10n.getString('reportTitle')),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'block',
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.block,
+                          color: Theme.of(context).colorScheme.error,
+                          size: 22,
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          l10n.getString('blockButton'),
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          body: Column(
+            children: [
+              const OfflineIndicator(),
+              if (_isSearching)
+                _buildChatSearchBar(
+                  l10n,
+                  messagesAsyncValue.asData?.value ??
+                      const <ChatMessageModel>[],
+                ),
+              LocationShareBanner(
+                otherUserId: widget.otherUserId,
+                otherUserName: widget.otherUserName,
+                onViewMap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const LocationShareMapScreen(),
+                    ),
                   );
-                }
-              },
-              icon: Icon(
-                targetLanguage == null
-                    ? Icons.translate
-                    : Icons.g_translate_rounded,
-                color: targetLanguage == null
-                    ? Colors.black
-                    : Colors.blue.shade200,
+                },
+                onStopSharing: () async {
+                  await ref.read(locationShareProvider.notifier).stopSharing();
+                },
+                onChangeDuration: _handleChangeDuration,
+                onShareBack: () {
+                  // Receiver taps "Share back" — navigate to map where they can start sharing
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const LocationShareMapScreen(),
+                    ),
+                  );
+                },
               ),
-              tooltip: l10n.getString('chatTranslateToggle'),
-            ),
-            PopupMenuButton<String>(
-              tooltip: l10n.getString('chatSafetyActions'),
-              icon: const Icon(Icons.more_vert),
-              onSelected: (value) {
-                if (value == 'profile') _navigateToProfile();
-                if (value == 'block') _showBlockDialog();
-                if (value == 'report') _showReportDialog();
-              },
-              itemBuilder: (context) => [
-                // A ListTile inside a PopupMenuItem fights the popup's
-                // intrinsic-height sizing and can overflow. A Row gives the
-                // same visual with no layout conflict.
-                PopupMenuItem(
-                  value: 'profile',
-                  child: Row(
-                    children: [
-                      const Icon(Icons.person_outline, size: 22),
-                      const SizedBox(width: 12),
-                      Text(l10n.getString('profileTitle')),
-                    ],
-                  ),
-                ),
-                PopupMenuItem(
-                  value: 'report',
-                  child: Row(
-                    children: [
-                      const Icon(Icons.report_gmailerrorred, size: 22),
-                      const SizedBox(width: 12),
-                      Text(l10n.getString('reportTitle')),
-                    ],
-                  ),
-                ),
-                PopupMenuItem(
-                  value: 'block',
-                  child: Row(
-                    children: [
-                      const Icon(Icons.block, color: Colors.red, size: 22),
-                      const SizedBox(width: 12),
-                      Text(
-                        l10n.getString('blockButton'),
-                        style: const TextStyle(color: Colors.red),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-        body: Column(
-          children: [
-            const OfflineIndicator(),
-            if (_isSearching)
-              _buildChatSearchBar(
-                l10n,
-                messagesAsyncValue.asData?.value ??
-                    const <ChatMessageModel>[],
-              ),
-            LocationShareBanner(
-              otherUserId: widget.otherUserId,
-              otherUserName: widget.otherUserName,
-              onViewMap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const LocationShareMapScreen(),
-                  ),
-                );
-              },
-              onStopSharing: () async {
-                await ref.read(locationShareProvider.notifier).stopSharing();
-              },
-              onChangeDuration: _handleChangeDuration,
-              onShareBack: () {
-                // Receiver taps "Share back" — navigate to map where they can start sharing
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const LocationShareMapScreen(),
-                  ),
-                );
-              },
-            ),
-            Expanded(
-              child: Stack(
-                children: [
-                  ChatBackground(
-                    child: GestureDetector(
-                      onTap: () {
-                        _focusNode.unfocus();
-                        if (_showEmojiPicker) {
-                          setState(() => _showEmojiPicker = false);
-                        }
-                      },
-                  child: messagesAsyncValue.when(
-                    data: (messages) {
-                      if (messages.isEmpty) {
-                        return Center(
-                          child: Text(l10n.getString('chatSayHello')),
-                        );
-                      }
-                      // Build flat item list with date separators inserted
-                      final items = <dynamic>[];
-                      DateTime? lastDate;
-                      for (final message in messages) {
-                        final d = message.createdAt;
-                        final messageDate = DateTime(d.year, d.month, d.day);
-                        if (lastDate == null || messageDate != lastDate) {
-                          items.add(messageDate);
-                        }
-                        items.add(message);
-                        lastDate = messageDate;
-                      }
-                      // Reverse for ListView with reverse: true (index 0 = bottom)
-                      final reversedItems = items.reversed.toList();
-
-                      // In-chat search: highlight matches live from the rendered
-                      // models so the highlight never lags the list by a frame.
-                      final searchNeedle = _isSearching
-                          ? _searchQuery.trim()
-                          : '';
-                      final searchNeedleLower = searchNeedle.toLowerCase();
-                      final currentSearchId =
-                          (_isSearching &&
-                              _searchCurrentIndex >= 0 &&
-                              _searchCurrentIndex < _searchMatchIds.length)
-                          ? _searchMatchIds[_searchCurrentIndex]
-                          : null;
-
-                      return ListView.builder(
-                        controller: _scrollController,
-                        padding: const EdgeInsets.all(8.0),
-                        reverse: true,
-                        itemCount: reversedItems.length,
-                        itemBuilder: (context, index) {
-                          final item = reversedItems[index];
-                          if (item is DateTime) {
-                            return _buildDateSeparator(context, l10n, item);
+              Expanded(
+                child: Stack(
+                  children: [
+                    ChatBackground(
+                      child: GestureDetector(
+                        onTap: () {
+                          _focusNode.unfocus();
+                          if (_showEmojiPicker) {
+                            setState(() => _showEmojiPicker = false);
                           }
-                          final message = item as ChatMessageModel;
-                          final isMe = message.senderId == currentUserId;
-                          final isSearchMatch =
-                              searchNeedle.isNotEmpty &&
-                              chatSearchMessageMatches(
-                                message,
-                                searchNeedleLower,
-                              );
-                          // A stable GlobalKey per message gives
-                          // _scrollToSearchMatch something to ensureVisible.
-                          // It lives on a lightweight wrapper so the bubble
-                          // keeps its ValueKey for list diffing.
-                          final anchorKey = _searchMessageKeys.putIfAbsent(
-                            message.id,
-                            () => GlobalKey(),
-                          );
-                          return Container(
-                            key: anchorKey,
-                            child: _MessageBubble(
-                              key: ValueKey(message.id),
-                              message: message,
-                              isMe: isMe,
-                              matchId: widget.matchId,
-                              otherUserId: widget.otherUserId,
-                              otherUserName: widget.otherUserName,
-                              otherUserLastReadAt: otherUserLastReadAt,
-                              messageContentBuilder: _buildMessageContent,
-                              onRequestEdit: (id, text) =>
-                                  _startEditingMessage(id, text),
-                              onRequestReply: (id, text, senderId) =>
-                                  _startReplyingMessage(id, text, senderId),
-                              searchQuery: searchNeedle,
-                              isSearchMatch: isSearchMatch,
-                              isCurrentSearchMatch:
-                                  currentSearchId == message.id,
-                            ),
-                          );
                         },
-                      );
-                    },
-                    loading: () => Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const CircularProgressIndicator(),
-                          const SizedBox(height: 8),
-                          Text(l10n.getString('chatLoadingMessages')),
-                          const SizedBox(height: 8),
-                          TextButton(
-                            onPressed: () {
-                              try {
-                                ref
-                                    .read(chatSyncProvider(widget.matchId))
-                                    .syncMessages(widget.matchId);
-                              } catch (_) {}
-                            },
-                            child: Text(l10n.getString('generalRetry')),
+                        child: messagesAsyncValue.when(
+                          data: (messages) {
+                            if (messages.isEmpty) {
+                              return Center(
+                                child: Text(l10n.getString('chatSayHello')),
+                              );
+                            }
+                            // Build flat item list with date separators inserted
+                            final items = <dynamic>[];
+                            DateTime? lastDate;
+                            for (final message in messages) {
+                              final d = message.createdAt;
+                              final messageDate = DateTime(
+                                d.year,
+                                d.month,
+                                d.day,
+                              );
+                              if (lastDate == null || messageDate != lastDate) {
+                                items.add(messageDate);
+                              }
+                              items.add(message);
+                              lastDate = messageDate;
+                            }
+                            // Reverse for ListView with reverse: true (index 0 = bottom)
+                            final reversedItems = items.reversed.toList();
+
+                            // In-chat search: highlight matches live from the rendered
+                            // models so the highlight never lags the list by a frame.
+                            final searchNeedle = _isSearching
+                                ? _searchQuery.trim()
+                                : '';
+                            final searchNeedleLower = searchNeedle
+                                .toLowerCase();
+                            final currentSearchId =
+                                (_isSearching &&
+                                    _searchCurrentIndex >= 0 &&
+                                    _searchCurrentIndex <
+                                        _searchMatchIds.length)
+                                ? _searchMatchIds[_searchCurrentIndex]
+                                : null;
+
+                            return NotificationListener<ScrollMetricsNotification>(
+                              // Translation toggling (and each translation
+                              // arriving afterwards) changes the list's
+                              // metrics; re-pin the message the user was
+                              // reading so the viewport never slides away.
+                              onNotification: (notification) {
+                                if (_chatFlickerDiagnosticsEnabled) {
+                                  final metrics = notification.metrics;
+                                  final signature =
+                                      '${metrics.minScrollExtent.toStringAsFixed(1)}'
+                                      '|${metrics.maxScrollExtent.toStringAsFixed(1)}'
+                                      '|${metrics.viewportDimension.toStringAsFixed(1)}';
+                                  if (signature !=
+                                      _lastScrollMetricsLogSignature) {
+                                    _lastScrollMetricsLogSignature = signature;
+                                    _flickerLog(
+                                      '[scroll] metrics '
+                                      'match=${_flickerId(widget.matchId)} '
+                                      'min=${metrics.minScrollExtent.toStringAsFixed(1)} '
+                                      'max=${metrics.maxScrollExtent.toStringAsFixed(1)} '
+                                      'viewport=${metrics.viewportDimension.toStringAsFixed(1)} '
+                                      'pixels=${metrics.pixels.toStringAsFixed(1)} '
+                                      'anchor=${_flickerId(_scrollAnchorMessageId)}',
+                                    );
+                                  }
+                                }
+                                _applyTranslationScrollAnchorCorrection();
+                                return false;
+                              },
+                              child: NotificationListener<ScrollStartNotification>(
+                                onNotification: (notification) {
+                                  // Any real drag hands control back to the
+                                  // user; programmatic scrolls (ballistic
+                                  // settling, jumpTo corrections) keep the
+                                  // anchor armed.
+                                  if (notification.dragDetails != null) {
+                                    _clearTranslationScrollAnchor(
+                                      reason: 'user-scroll',
+                                    );
+                                  }
+                                  return false;
+                                },
+                                child: ListView.builder(
+                                  controller: _scrollController,
+                                  padding: const EdgeInsets.all(8.0),
+                                  reverse: true,
+                                  itemCount: reversedItems.length,
+                                  itemBuilder: (context, index) {
+                                    final item = reversedItems[index];
+                                    if (item is DateTime) {
+                                      return _buildDateSeparator(
+                                        context,
+                                        l10n,
+                                        item,
+                                      );
+                                    }
+                                    final message = item as ChatMessageModel;
+                                    final isMe =
+                                        message.senderId == currentUserId;
+                                    final isSearchMatch =
+                                        searchNeedle.isNotEmpty &&
+                                        chatSearchMessageMatches(
+                                          message,
+                                          searchNeedleLower,
+                                        );
+                                    // A stable GlobalKey per message gives
+                                    // _scrollToSearchMatch something to ensureVisible.
+                                    // It lives on a lightweight wrapper so the bubble
+                                    // keeps its ValueKey for list diffing.
+                                    final anchorKey = _searchMessageKeys
+                                        .putIfAbsent(
+                                          message.id,
+                                          () => GlobalKey(),
+                                        );
+                                    return Container(
+                                      key: anchorKey,
+                                      child: _MessageBubble(
+                                        key: ValueKey(message.id),
+                                        message: message,
+                                        isMe: isMe,
+                                        translationPreferenceResolved:
+                                            _translationPreferenceResolved,
+                                        matchId: widget.matchId,
+                                        otherUserId: widget.otherUserId,
+                                        otherUserName: widget.otherUserName,
+                                        otherUserLastReadAt:
+                                            otherUserLastReadAt,
+                                        messageContentBuilder:
+                                            _buildMessageContent,
+                                        onRequestEdit: (id, text) =>
+                                            _startEditingMessage(id, text),
+                                        onRequestReply: (id, text, senderId) =>
+                                            _startReplyingMessage(
+                                              id,
+                                              text,
+                                              senderId,
+                                            ),
+                                        searchQuery: searchNeedle,
+                                        isSearchMatch: isSearchMatch,
+                                        isCurrentSearchMatch:
+                                            currentSearchId == message.id,
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                            );
+                          },
+                          loading: () => Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const CircularProgressIndicator(),
+                                const SizedBox(height: 8),
+                                Text(l10n.getString('chatLoadingMessages')),
+                                const SizedBox(height: 8),
+                                TextButton(
+                                  onPressed: () {
+                                    try {
+                                      ref
+                                          .read(
+                                            chatSyncProvider(widget.matchId),
+                                          )
+                                          .syncMessages(widget.matchId);
+                                    } catch (_) {}
+                                  },
+                                  child: Text(l10n.getString('generalRetry')),
+                                ),
+                              ],
+                            ),
                           ),
-                        ],
-                      ),
-                    ),
-                    error: (err, stack) => _buildMessageLoadError(l10n),
-                      ),
-                    ),
-                  ),
-                  // Jump-to-latest: appears once scrolled up or search lands
-                  // on an older match. Standard in WhatsApp/Telegram.
-                  if (_showJumpToLatest)
-                    PositionedDirectional(
-                      end: 16,
-                      bottom: 16,
-                      child: Semantics(
-                        button: true,
-                        label: l10n.getString('chatJumpToLatest'),
-                        child: FloatingActionButton.small(
-                          heroTag:
-                              'chat_jump_latest_${widget.matchId}',
-                          tooltip: l10n.getString('chatJumpToLatest'),
-                          onPressed: _jumpToLatest,
-                          child: const Icon(
-                            Icons.keyboard_arrow_down_rounded,
-                          ),
+                          error: (err, stack) => _buildMessageLoadError(l10n),
                         ),
                       ),
                     ),
-                ],
-              ),
-            ),
-            _buildMessageInputArea(),
-            if (_showEmojiPicker)
-              SizedBox(
-                height: 300,
-                // Force picker glyphs through bundled Twemoji so WYSIWYG
-                // matches bubbles on every OS.
-                child: DefaultTextStyle(
-                  style: withEmojiFallback(
-                    Theme.of(context).textTheme.bodyMedium ??
-                        const TextStyle(fontSize: 28),
-                  ),
-                  child: EmojiPicker(
-                    onEmojiSelected: (category, emoji) {
-                      _addEmoji(emoji.emoji);
-                    },
-                  onBackspacePressed: () {
-                    final controller = _messageController;
-                    final text = controller.text;
-                    final selection = controller.selection;
-                    if (selection.baseOffset > 0) {
-                      final newText =
-                          text.substring(0, selection.baseOffset - 1) +
-                          text.substring(selection.end);
-                      controller.text = newText;
-                      controller.selection = TextSelection.fromPosition(
-                        TextPosition(offset: selection.baseOffset - 1),
-                      );
-                    }
-                  },
-                  config: Config(
-                    checkPlatformCompatibility: false,
-                    emojiViewConfig: EmojiViewConfig(
-                      columns: 8,
-                      emojiSizeMax: 28,
-                      backgroundColor: Theme.of(context).cardColor,
-                    ),
-                    categoryViewConfig: CategoryViewConfig(
-                      indicatorColor: Theme.of(context).colorScheme.primary,
-                      iconColorSelected: Theme.of(context).colorScheme.primary,
-                    ),
-                  ),
-                  ),
+                    // Jump-to-latest: appears once scrolled up or search lands
+                    // on an older match. Standard in WhatsApp/Telegram.
+                    if (_showJumpToLatest)
+                      PositionedDirectional(
+                        end: 16,
+                        bottom: 16,
+                        child: Semantics(
+                          button: true,
+                          label: l10n.getString('chatJumpToLatest'),
+                          child: FloatingActionButton.small(
+                            heroTag: 'chat_jump_latest_${widget.matchId}',
+                            tooltip: l10n.getString('chatJumpToLatest'),
+                            onPressed: _jumpToLatest,
+                            child: const Icon(
+                              Icons.keyboard_arrow_down_rounded,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
-          ],
-        ),
+              _buildMessageInputArea(),
+              if (_showEmojiPicker)
+                SizedBox(
+                  height: 300,
+                  // Force picker glyphs through bundled Twemoji so WYSIWYG
+                  // matches bubbles on every OS.
+                  child: DefaultTextStyle(
+                    style: withEmojiFallback(
+                      Theme.of(context).textTheme.bodyMedium ??
+                          const TextStyle(fontSize: 28),
+                    ),
+                    child: EmojiPicker(
+                      onEmojiSelected: (category, emoji) {
+                        _addEmoji(emoji.emoji);
+                      },
+                      onBackspacePressed: () {
+                        final controller = _messageController;
+                        final text = controller.text;
+                        final selection = controller.selection;
+                        if (selection.baseOffset > 0) {
+                          final newText =
+                              text.substring(0, selection.baseOffset - 1) +
+                              text.substring(selection.end);
+                          controller.text = newText;
+                          controller.selection = TextSelection.fromPosition(
+                            TextPosition(offset: selection.baseOffset - 1),
+                          );
+                        }
+                      },
+                      config: Config(
+                        checkPlatformCompatibility: false,
+                        emojiViewConfig: EmojiViewConfig(
+                          columns: 8,
+                          emojiSizeMax: 28,
+                          backgroundColor: Theme.of(context).cardColor,
+                        ),
+                        categoryViewConfig: CategoryViewConfig(
+                          indicatorColor: Theme.of(context).colorScheme.primary,
+                          iconColorSelected: Theme.of(
+                            context,
+                          ).colorScheme.primary,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -2785,7 +3440,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     _showEmojiPicker
                         ? Icons.keyboard
                         : Icons.emoji_emotions_outlined,
-                    color: Colors.grey,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
                   tooltip: l10n.getString('chatEmojiPicker'),
                   onPressed: _onEmojiPressed,
@@ -2804,13 +3459,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         (Theme.of(context).textTheme.bodyMedium ??
                                 const TextStyle())
                             .copyWith(
-                          fontSize: 16,
-                          fontFamily:
-                              foundation.defaultTargetPlatform ==
-                                  TargetPlatform.android
-                              ? 'Roboto'
-                              : 'Noto Sans',
-                        ),
+                              fontSize: 16,
+                              fontFamily:
+                                  foundation.defaultTargetPlatform ==
+                                      TargetPlatform.android
+                                  ? 'Roboto'
+                                  : 'Noto Sans',
+                            ),
                       ),
                       // When empty, align hint according to the current UI direction (Hebrew => RTL).
                       // Once the user types, follow the inferred direction of the typed text so
@@ -2942,6 +3597,7 @@ class _MessageBubble extends ConsumerWidget {
     super.key,
     required this.message,
     required this.isMe,
+    required this.translationPreferenceResolved,
     required this.matchId,
     required this.otherUserId,
     this.otherUserName = '',
@@ -2960,6 +3616,7 @@ class _MessageBubble extends ConsumerWidget {
 
   final ChatMessageModel message;
   final bool isMe;
+  final bool translationPreferenceResolved;
   final String matchId;
   final String otherUserId;
   final String otherUserName;
@@ -3098,7 +3755,7 @@ class _MessageBubble extends ConsumerWidget {
         : (otherUserName.trim().isNotEmpty ? otherUserName : youLabel());
     final senderLabelLayout = senderLabel.displayTextLayout(l10n.textDirection);
     final accent = isMe
-        ? (isDark ? Colors.green.shade300 : Colors.green.shade700)
+        ? (isDark ? Colors.green.shade300 : Colors.green.shade800)
         : Theme.of(context).colorScheme.primary;
     final quoteBg =
         (isMe
@@ -3151,10 +3808,7 @@ class _MessageBubble extends ConsumerWidget {
                       fontStyle: isPlaceholder
                           ? FontStyle.italic
                           : FontStyle.normal,
-                      color: Theme.of(context)
-                          .textTheme
-                          .bodySmall
-                          ?.color
+                      color: Theme.of(context).textTheme.bodySmall?.color
                           ?.withValues(alpha: isPlaceholder ? 0.6 : 1.0),
                     ) ??
                     TextStyle(
@@ -3182,11 +3836,9 @@ class _MessageBubble extends ConsumerWidget {
                   Theme.of(context).textTheme.bodySmall?.copyWith(
                         fontSize: 11,
                         fontStyle: FontStyle.italic,
-                        color: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.color
-                            ?.withValues(alpha: 0.65),
+                        color: Theme.of(
+                          context,
+                        ).textTheme.bodySmall?.color?.withValues(alpha: 0.65),
                       ) ??
                       const TextStyle(
                         fontSize: 11,
@@ -3213,11 +3865,7 @@ class _MessageBubble extends ConsumerWidget {
   /// Renders [text] with every case-insensitive occurrence of [searchQuery]
   /// highlighted. Only highlights when this bubble is a search match, so the
   /// highlight and the result count can never disagree.
-  Widget _buildSearchableMessageText(
-    String text,
-    TextStyle style,
-    bool isRtl,
-  ) {
+  Widget _buildSearchableMessageText(String text, TextStyle style, bool isRtl) {
     // Qualify for display so old rows without VS16 still show color.
     // Emoji runs use native-first system fonts (2026 designs); text runs
     // keep Noto. Highlight bg is preserved on emoji runs, weight stays
@@ -3264,6 +3912,13 @@ class _MessageBubble extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Translation settings load asynchronously at startup. Keep incoming
+    // bubbles hidden during that interval so an enabled chat cannot briefly
+    // expose untranslated text before its preference has been resolved.
+    if (!isMe && !translationPreferenceResolved) {
+      _logBubbleDisplay(message.id, 'hidden reason=pref-unresolved');
+      return const SizedBox.shrink();
+    }
     final l10n = ref.watch(localizationProvider);
     final alignment = isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start;
     // Modern bubble palette (WhatsApp/Telegram-style, lighter):
@@ -3287,25 +3942,32 @@ class _MessageBubble extends ConsumerWidget {
     Icon? readReceiptIcon;
     String? readReceiptLabel;
     if (isMe) {
+      // Receipt ticks live on the outgoing bubble: derive them from the
+      // bubble text color like WhatsApp does. Raw Colors.grey measured
+      // ~2.9:1 on the dark-green bubble (and ~2.6:1 on the light one),
+      // failing WCAG 1.4.11 for these status glyphs.
+      final receiptInk = textColor.withValues(alpha: 0.65);
       if (message.isPending) {
         readReceiptIcon = Icon(
           Icons.watch_later_outlined,
           size: 16,
-          color: Colors.grey,
+          color: receiptInk,
         );
         readReceiptLabel = l10n.getString('chatMessageStatusQueued');
       } else if (message.readAt != null) {
         readReceiptIcon = Icon(
           Icons.done_all,
           size: 16,
-          color: Colors.blue.shade400,
+          // WhatsApp's dark-mode read tick; blue-700 holds contrast on the
+          // light-green bubble.
+          color: isDark ? const Color(0xFF53BDEB) : Colors.blue.shade700,
         );
         readReceiptLabel = l10n.getString('chatMessageStatusRead');
       } else if (message.deliveredAt != null) {
-        readReceiptIcon = Icon(Icons.done_all, size: 16, color: Colors.grey);
+        readReceiptIcon = Icon(Icons.done_all, size: 16, color: receiptInk);
         readReceiptLabel = l10n.getString('chatMessageStatusDelivered');
       } else {
-        readReceiptIcon = Icon(Icons.done, size: 16, color: Colors.grey);
+        readReceiptIcon = Icon(Icons.done, size: 16, color: receiptInk);
         readReceiptLabel = l10n.getString('chatMessageStatusSent');
       }
     }
@@ -3351,75 +4013,86 @@ class _MessageBubble extends ConsumerWidget {
 
     AsyncValue<String>? translationAsync;
     String? translatedData;
-    // Auto-translation gating: with translation on for this chat, an
-    // incoming message is not displayed at all until its translation is
-    // ready — then original and translation render together below.
-    // Same-language messages (server-stamped source == UI language) need
-    // no translation and show immediately. If the translation fetch
-    // errors — or never resolves within 10s — the original is shown so a
-    // failed translation can't hide a message forever (mirrors the 10s
-    // notification deferral window in home_providers.dart).
-    bool suppressTranslationDisplay = false;
+    var translationSource = 'none';
     if (shouldEvaluateTranslation) {
-      final target = normalizeLanguageCode(targetLanguage);
-      final sourceLang = normalizeLanguageCode(
-        message.detectedSourceLanguage ?? '',
+      translationAsync = ref.watch(
+        translationFamilyProvider(
+          jsonEncode({
+            'text': message.contentOriginal,
+            'matchId': matchId,
+            'messageId': message.id,
+            'otherUserId': otherUserId,
+          }),
+        ),
       );
-      final needsTranslation = sourceLang.isEmpty || sourceLang != target;
-      if (needsTranslation) {
-        translationAsync = ref.watch(
-          translationFamilyProvider(
-            jsonEncode({
-              'text': message.contentOriginal,
-              'matchId': matchId,
-              'messageId': message.id,
-              'otherUserId': otherUserId,
-            }),
-          ),
-        );
-        translatedData = translationAsync?.asData?.value;
-        final hasUsableTranslation =
-            translatedData != null &&
-            translatedData.trim().isNotEmpty &&
-            !looksLikeEncryptedBlob(translatedData);
-        if (!hasUsableTranslation) {
-          final failed =
-              translationAsync?.hasError == true &&
-              translationAsync?.hasValue != true;
-          if (failed) {
-            suppressTranslationDisplay = true;
-          } else {
-            final timedOut =
-                ref
-                        .watch(bubbleTranslationWaitTimeoutProvider(message.id))
-                        .value ==
-                    true;
-            if (!timedOut) {
-              // Translation not available yet: the message must not be
-              // displayed at all — no original text, no placeholder.
-              return const SizedBox.shrink();
-            }
-            suppressTranslationDisplay = true;
-          }
-        }
+      // `value` (unlike `asData`) keeps returning the last resolved result
+      // while the provider is reloading (translation toggled, language or
+      // version change). Holding on to it prevents every bubble from
+      // collapsing to zero height for a frame — or for as long as the
+      // re-evaluation takes — which is what made the chat jump and look
+      // like messages were hidden/unhidden when the toggle was pressed.
+      translatedData = translationAsync?.value;
+      translationSource = translatedData != null ? 'provider' : 'none';
+      // A fresh family instance's first emission is always `AsyncLoading`,
+      // even when the translation is already in the in-memory cache, so
+      // `value` is null on that first frame. Serve the cached translation
+      // synchronously instead of flashing the original text (toggle back
+      // on, scroll-anchor remount).
+      translatedData ??= peekCachedTranslation(
+        messageId: message.id,
+        targetLanguage: targetLanguage,
+        text: message.contentOriginal,
+      );
+      if (translatedData != null && translationSource == 'none') {
+        translationSource = 'peek';
+      }
+      final hasUsableTranslation =
+          translatedData != null &&
+          translatedData.trim().isNotEmpty &&
+          !looksLikeEncryptedBlob(translatedData);
+      if (!hasUsableTranslation) {
+        // Nothing displayable yet: fall through and render the original
+        // text rather than returning `SizedBox.shrink()`. A zero-height
+        // bubble altered the list's total extent, so the reversed list
+        // slid the content the user was reading; the original is also a
+        // truthful placeholder until the translation arrives (the toggle
+        // was just pressed, so the user already saw this text).
+        translatedData = null;
+        translationSource = 'none';
       }
     }
 
-    // The bubble renders once the gating above lets it through: either a
-    // usable translation exists (original + translation shown together),
-    // the message is in the UI language already, or the translation
-    // failed/timed out (original only). Qualify stored text for display
+    // The bubble renders once translation resolves. Qualify stored text for display
     // so pre-fix rows (bare ⛱) show color.
     final primaryText = ensureEmojiPresentation(safeDisplayOriginal);
 
     final bool isOriginalRtl = _isRtl(primaryText);
     // Show translated text if we have translation data and it's different from original
     final bool showTranslated =
-        !suppressTranslationDisplay &&
+        translationEnabled &&
+        !isMe &&
         translatedData != null &&
         translatedData.trim().isNotEmpty &&
         !looksLikeEncryptedBlob(translatedData) &&
         translatedData.trim() != message.contentOriginal.trim();
+
+    // Flicker diagnostics: one line per displayed-state change (deduped by
+    // _logBubbleDisplay). `translation=pending` with `fallback=true` proves
+    // the bubble renders the original instead of collapsing while the
+    // translation is still resolving.
+    final translationStatus = translationAsync == null
+        ? 'off'
+        : translatedData != null
+        ? (translationAsync.isLoading ? 'reloading' : 'ready')
+        : 'pending';
+    final shownText = showTranslated ? translatedData : primaryText;
+    _logBubbleDisplay(
+      message.id,
+      'mode=${showTranslated ? 'translated' : 'original'} '
+      'translation=$translationStatus source=$translationSource '
+      'fallback=${!isMe && translationEnabled && translatedData == null} '
+      'len=${shownText.length} hash=${shownText.hashCode}',
+    );
 
     // Jumbo: emoji-only (1-3, display-time so history updates too) renders
     // tiered larger + normal weight so color COLR glyphs stay opaque (bold
@@ -3427,13 +4100,11 @@ class _MessageBubble extends ConsumerWidget {
     final isJumbo = !showTranslated && isJumboEmoji(primaryText);
     final double jumboSize = isJumbo ? jumboFontSize(primaryText) : 16.0;
     final baseMessageStyle =
-        Theme.of(
-          context,
-        ).textTheme.bodyLarge?.copyWith(
-              color: textColor,
-              fontSize: jumboSize,
-              fontWeight: isJumbo ? FontWeight.normal : null,
-            ) ??
+        Theme.of(context).textTheme.bodyLarge?.copyWith(
+          color: textColor,
+          fontSize: jumboSize,
+          fontWeight: isJumbo ? FontWeight.normal : null,
+        ) ??
         TextStyle(
           color: textColor,
           fontSize: jumboSize,
@@ -3588,33 +4259,25 @@ class _MessageBubble extends ConsumerWidget {
                           // italic muted). Display-only, so history updates.
                           Builder(
                             builder: (context) {
-                              final originalSecondary =
-                                  withEmojiFallback(
-                                    // Derive from the theme so the style keeps
-                                    // the app font family. The bubble renders
-                                    // through RichText with inherit:false, so
-                                    // a bare TextStyle can never pick one up,
-                                    // and iOS would then treat the emoji
-                                    // fallback as the preferred font and widen
-                                    // every word gap.
-                                    Theme.of(context)
-                                        .textTheme
-                                        .bodyLarge
-                                        ?.copyWith(
-                                          color: textColor.withValues(
-                                            alpha: 0.65,
-                                          ),
-                                          fontStyle: FontStyle.italic,
-                                          fontSize: showTranslated ? 13 : null,
-                                        ) ??
-                                        TextStyle(
-                                          color: textColor.withValues(
-                                            alpha: 0.65,
-                                          ),
-                                          fontStyle: FontStyle.italic,
-                                          fontSize: showTranslated ? 13 : null,
-                                        ),
-                                  );
+                              final originalSecondary = withEmojiFallback(
+                                // Derive from the theme so the style keeps
+                                // the app font family. The bubble renders
+                                // through RichText with inherit:false, so
+                                // a bare TextStyle can never pick one up,
+                                // and iOS would then treat the emoji
+                                // fallback as the preferred font and widen
+                                // every word gap.
+                                Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                      color: textColor.withValues(alpha: 0.65),
+                                      fontStyle: FontStyle.italic,
+                                      fontSize: showTranslated ? 13 : null,
+                                    ) ??
+                                    TextStyle(
+                                      color: textColor.withValues(alpha: 0.65),
+                                      fontStyle: FontStyle.italic,
+                                      fontSize: showTranslated ? 13 : null,
+                                    ),
+                              );
                               return Align(
                                 alignment: isOriginalRtl
                                     ? Alignment.centerRight
@@ -3644,10 +4307,9 @@ class _MessageBubble extends ConsumerWidget {
                                 // for why a bare TextStyle breaks spacing on
                                 // iOS).
                                 final translatedStyle = withEmojiFallback(
-                                  Theme.of(context)
-                                      .textTheme
-                                      .bodyLarge
-                                      ?.copyWith(
+                                  Theme.of(
+                                        context,
+                                      ).textTheme.bodyLarge?.copyWith(
                                         color: textColor,
                                         fontStyle: FontStyle.normal,
                                         fontSize: 16,
@@ -3734,9 +4396,7 @@ class _MessageBubble extends ConsumerWidget {
                                                   .bodySmall
                                                   ?.color
                                                   ?.withValues(alpha: 0.6)
-                                            : textColor.withValues(
-                                                alpha: 0.85,
-                                              ),
+                                            : textColor.withValues(alpha: 0.85),
                                         fontSize: isBubbleless ? 11 : 12,
                                       ),
                                 ),
@@ -3908,7 +4568,10 @@ class ReactionRow extends ConsumerWidget {
                     const SizedBox(width: 4),
                     Text(
                       '$count',
-                      style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ],
                 ],
@@ -3937,6 +4600,7 @@ class MessageBubbleTestWrapper extends ConsumerWidget {
     return _MessageBubble(
       message: message,
       isMe: isMe,
+      translationPreferenceResolved: true,
       matchId: message.matchId,
       otherUserId: 'other',
       otherUserLastReadAt: null,
@@ -4214,9 +4878,9 @@ class _TypingRow extends ConsumerWidget {
         Expanded(
           child: Text(
             text,
-            style: Theme.of(
-              context,
-            ).textTheme.bodySmall?.copyWith(color: Colors.grey),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
         ),
       ],

@@ -19,7 +19,12 @@ class _PlacementBannerEntry {
 
 class _MobileBannerCoordinator {
   static final Map<String, _PlacementBannerEntry> _entries = {};
-  static bool loadInFlight = false;
+
+  /// Placement that currently owns the single in-flight banner load, or null
+  /// when no load is running. Tracked per placement so [disposePlacement] can
+  /// release the slot again — a bare bool would stay true forever after a
+  /// placement was disposed mid-load and block every later load.
+  static String? loadInFlightFor;
 
   static _PlacementBannerEntry entryFor(String placement) =>
       _entries.putIfAbsent(placement, () => _PlacementBannerEntry());
@@ -56,6 +61,7 @@ class _MobileBannerCoordinator {
   static void disposePlacement(String placement) {
     final e = _entries.remove(placement);
     e?.loading = false;
+    if (loadInFlightFor == placement) loadInFlightFor = null;
     try {
       e?.ad?.dispose();
     } catch (_) {}
@@ -65,7 +71,7 @@ class _MobileBannerCoordinator {
     for (final placement in _entries.keys.toList()) {
       disposePlacement(placement);
     }
-    loadInFlight = false;
+    loadInFlightFor = null;
   }
 }
 
@@ -115,6 +121,9 @@ class _BannerAdWidgetState extends ConsumerState<BannerAdWidget>
 
   static const int _maxRetries = 3;
   int _loadAttemptId = 0;
+  static const int _maxBusySpins = 20;
+  int _busySpins = 0;
+  static const int _loadTimeoutSeconds = 30;
 
   _PlacementBannerEntry get _entry =>
       _MobileBannerCoordinator.entryFor(widget.placement);
@@ -133,14 +142,16 @@ class _BannerAdWidgetState extends ConsumerState<BannerAdWidget>
     _isAdLoaded = false;
     _didTrackImpression = false;
     _loadScheduled = false;
+    _busySpins = 0;
     BannerAdWidget.resetStaticState();
     _restoreFromCacheOrScheduleLoad();
   }
 
   void _restoreFromCacheOrScheduleLoad() {
-    // Always schedule a fresh load — the cached native ad may have been
-    // invalidated, so we must not reuse it directly in an AdWidget.
-    // The coordinator still deduplicates simultaneous loads.
+    // The coordinator keeps the placement's last live [BannerAd]; [AdSlot]
+    // re-mounts this widget on tab revisits and unit-id changes. The scheduled
+    // load first ADOPTS a still-valid cached ad (validated below) and only
+    // falls back to a fresh native load when the cache is dead or missing.
     _scheduleLoad();
   }
 
@@ -164,6 +175,7 @@ class _BannerAdWidgetState extends ConsumerState<BannerAdWidget>
       }
       _bannerAd = null;
       _isAdLoaded = false;
+      _busySpins = 0;
       _scheduleLoad();
     }
   }
@@ -229,15 +241,73 @@ class _BannerAdWidgetState extends ConsumerState<BannerAdWidget>
       return;
     }
 
-    if (_entry.loading || _MobileBannerCoordinator.loadInFlight) {
+    // Another load owns the slot — wait shortly and retry (capped). The cap
+    // exists because a wedged load elsewhere used to spin this loop forever;
+    // the _beginLoad timeout below now guarantees the slot is released.
+    if (_entry.loading || _MobileBannerCoordinator.loadInFlightFor != null) {
+      _busySpins++;
+      if (_busySpins > _maxBusySpins) {
+        _busySpins = 0;
+        return;
+      }
       Future.delayed(const Duration(milliseconds: 300), () {
         if (mounted && !_isDisposed && !_isAdLoaded) _loadBannerAd();
       });
       return;
     }
 
+    // A previous load for this placement may still be alive: the Dart-side id
+    // only disappears when the ad is disposed. [getPlatformAdSize] proves the
+    // native side still holds the ad (null ⇔ load() never landed or the ad was
+    // disposed), so adopting it can never insert a dead ad into an [AdWidget]
+    // — the plugin throws 'AdWidget requires Ad.load...' for those.
+    final cached = _MobileBannerCoordinator.cachedAd(
+      widget.placement,
+      adUnitId,
+      widget.width,
+      widget.height,
+    );
+    if (cached != null) {
+      cached.getPlatformAdSize().then(
+        (size) {
+          final stillCached = _MobileBannerCoordinator.cachedAd(
+            widget.placement,
+            adUnitId,
+            widget.width,
+            widget.height,
+          );
+          if (!mounted || _isDisposed || _isAdLoaded) return;
+          if (size != null && stillCached == cached) {
+            _MobileBannerCoordinator.storeLoaded(
+              widget.placement,
+              cached,
+              adUnitId,
+              widget.width,
+              widget.height,
+            );
+            setState(() {
+              _bannerAd = cached;
+              _isAdLoaded = true;
+            });
+          } else {
+            _loadBannerAd();
+          }
+        },
+        onError: (Object _) {
+          if (!mounted || _isDisposed || _isAdLoaded) return;
+          _loadBannerAd();
+        },
+      );
+      return;
+    }
+
+    _beginLoad(adUnitId, placementKey);
+  }
+
+  void _beginLoad(String adUnitId, String placementKey) {
+    _busySpins = 0;
     _entry.loading = true;
-    _MobileBannerCoordinator.loadInFlight = true;
+    _MobileBannerCoordinator.loadInFlightFor = widget.placement;
     final int currentAttempt = ++_loadAttemptId;
 
     final bannerAd = BannerAd(
@@ -248,7 +318,9 @@ class _BannerAdWidgetState extends ConsumerState<BannerAdWidget>
       listener: BannerAdListener(
         onAdLoaded: (ad) {
           _entry.loading = false;
-          _MobileBannerCoordinator.loadInFlight = false;
+          if (_MobileBannerCoordinator.loadInFlightFor == widget.placement) {
+            _MobileBannerCoordinator.loadInFlightFor = null;
+          }
           if (currentAttempt != _loadAttemptId) {
             try {
               ad.dispose();
@@ -279,7 +351,9 @@ class _BannerAdWidgetState extends ConsumerState<BannerAdWidget>
         },
         onAdFailedToLoad: (ad, error) {
           _entry.loading = false;
-          _MobileBannerCoordinator.loadInFlight = false;
+          if (_MobileBannerCoordinator.loadInFlightFor == widget.placement) {
+            _MobileBannerCoordinator.loadInFlightFor = null;
+          }
           try {
             ad.dispose();
           } catch (_) {}
@@ -315,7 +389,9 @@ class _BannerAdWidgetState extends ConsumerState<BannerAdWidget>
 
     if (_isDisposed || !mounted) {
       _entry.loading = false;
-      _MobileBannerCoordinator.loadInFlight = false;
+      if (_MobileBannerCoordinator.loadInFlightFor == widget.placement) {
+        _MobileBannerCoordinator.loadInFlightFor = null;
+      }
       try {
         bannerAd.dispose();
       } catch (_) {}
@@ -324,17 +400,36 @@ class _BannerAdWidgetState extends ConsumerState<BannerAdWidget>
 
     try {
       unawaited(
-        bannerAd.load().catchError((Object _) {
-          _entry.loading = false;
-          _MobileBannerCoordinator.loadInFlight = false;
-          try {
-            bannerAd.dispose();
-          } catch (_) {}
-        }),
+        bannerAd
+            .load()
+            .timeout(const Duration(seconds: _loadTimeoutSeconds))
+            .then<void>(
+              (_) {},
+              onError: (Object _) {
+                // The native handler can throw before ever replying — e.g. the
+                // platform channel already tracked this adId after a Dart hot
+                // restart ('Ad for following adId already exists: 0'). In that
+                // case the load() future never completes and nothing below the
+                // timeout runs a second time, so release the load slot, void the
+                // attempt (late listener events then dispose their ad instead of
+                // adopting it) and drop the half-registered ad.
+                if (_MobileBannerCoordinator.loadInFlightFor ==
+                    widget.placement) {
+                  _MobileBannerCoordinator.loadInFlightFor = null;
+                }
+                if (_entry.loading) _entry.loading = false;
+                ++_loadAttemptId;
+                try {
+                  bannerAd.dispose();
+                } catch (_) {}
+              },
+            ),
       );
     } catch (e) {
       _entry.loading = false;
-      _MobileBannerCoordinator.loadInFlight = false;
+      if (_MobileBannerCoordinator.loadInFlightFor == widget.placement) {
+        _MobileBannerCoordinator.loadInFlightFor = null;
+      }
       try {
         bannerAd.dispose();
       } catch (_) {}

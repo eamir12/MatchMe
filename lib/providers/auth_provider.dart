@@ -326,11 +326,23 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
     // fires `signedOut`; the online branch below is not active on this path, so
     // we observe the raw event and forward a null-session state. Non-explicit
     // signedOut events stay suppressed to honour the offline session policy.
+    // This branch is selected once, at build time: the app may have started
+    // while the backend was unreachable, but connectivity can return later in
+    // the same session and the user can then sign in. Forward every
+    // non-sign-out event that carries a session too — main.dart swaps the
+    // tree only when this stream emits, so dropping `signedIn` leaves the
+    // user stuck on the auth screen's full-screen loading state forever.
     sub = auth.onAuthStateChange.listen((authState) {
       if (disposed || controller.isClosed) return;
-      if (authState.event != AuthChangeEvent.signedOut) return;
-      if (!SessionService.consumeExplicitUserSignOutFlag()) return;
-      controller.add(AuthState(AuthChangeEvent.signedOut, null));
+      if (authState.event == AuthChangeEvent.signedOut) {
+        if (!SessionService.consumeExplicitUserSignOutFlag()) return;
+        controller.add(AuthState(AuthChangeEvent.signedOut, null));
+        return;
+      }
+      if (authState.session != null) {
+        unawaited(SessionService.persistCurrentSupabaseSessionSnapshot());
+        controller.add(authState);
+      }
     });
     ref.onDispose(() {
       sub?.cancel();

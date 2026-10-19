@@ -407,6 +407,8 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
   PaymentService get _paymentService => ref.read(paymentServiceProvider);
   DateTime? _lastManualUpdate;
   Timer? _normalizeTimer;
+  int _normalizeFailureStreak = 0;
+  DateTime? _normalizeFailureBackoffUntil;
 
   Duration _expiresInForPlanDuration(String? planDuration) {
     switch ((planDuration ?? '').trim().toLowerCase()) {
@@ -428,21 +430,35 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
     }
   }
 
-  Future<void> _normalizeSubscription() async {
+  Future<void> _normalizeSubscription({bool force = false}) async {
+    // Back off after repeated failures: during a server-side outage this
+    // method is called every minute, and each call issues up to three failing
+    // RPCs per device. Skipping while backed off avoids amplifying the outage.
+    // User-initiated refreshes pass force: true to bypass it.
+    final backoffUntil = _normalizeFailureBackoffUntil;
+    if (!force &&
+        backoffUntil != null &&
+        DateTime.now().isBefore(backoffUntil)) {
+      return;
+    }
+
     final userId = Supabase.instance.client.auth.currentUser?.id;
     if (userId == null) return;
 
+    var succeeded = false;
     try {
       await Supabase.instance.client.rpc(
         'check_and_normalize_user_subscription',
         params: {'p_user_id': userId},
       );
+      succeeded = true;
     } catch (_) {
       try {
         await Supabase.instance.client.rpc(
           'normalize_user_subscription',
           params: {'p_user_id': userId},
         );
+        succeeded = true;
       } catch (_) {
         // Both RPCs failed — instead of writing directly to users table,
         // call force_normalize_subscription which delegates to the server's
@@ -452,17 +468,31 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
             'force_normalize_subscription',
             params: {'p_user_id': userId},
           );
+          succeeded = true;
           if (result is Map && result['normalized'] == true) {
             await ref
                 .read(profileSyncProvider)
                 .syncProfile(userId, source: 'payment-normalize-force');
           }
         } catch (_) {
-          // Server normalization is also failing — the cron job will handle this.
-          // Logging is suppressed as the cron runs every 5 minutes.
+          // Server normalization is also failing — the cron job will handle
+          // this. Backoff below stops the per-minute retry storm meanwhile.
         }
       }
     }
+
+    if (succeeded) {
+      _normalizeFailureStreak = 0;
+      _normalizeFailureBackoffUntil = null;
+      return;
+    }
+
+    // Exponential backoff, capped at 30 minutes.
+    _normalizeFailureStreak += 1;
+    final shift = (_normalizeFailureStreak - 1).clamp(0, 5).toInt();
+    _normalizeFailureBackoffUntil = DateTime.now().add(
+      Duration(minutes: 1 << shift),
+    );
   }
 
   @override
@@ -996,7 +1026,7 @@ class SubscriptionNotifier extends Notifier<SubscriptionState> {
   Future<void> refreshQueueHistory() async {
     final userId = Supabase.instance.client.auth.currentUser?.id;
     if (userId == null || userId.isEmpty) return;
-    await _normalizeSubscription();
+    await _normalizeSubscription(force: true);
     await _refreshSubscriptionQueueCache(userId);
   }
 }

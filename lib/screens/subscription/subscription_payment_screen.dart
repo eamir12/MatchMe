@@ -156,7 +156,7 @@ class _SubscriptionPaymentScreenState
                     Text(
                       _getDurationText(),
                       style: theme.textTheme.bodySmall?.copyWith(
-                        color: Colors.grey,
+                        color: theme.colorScheme.onSurfaceVariant,
                       ),
                     ),
                   ],
@@ -186,7 +186,7 @@ class _SubscriptionPaymentScreenState
             Text(
               l10n.getString('paywallFeaturesTitle'),
               style: theme.textTheme.bodySmall?.copyWith(
-                color: Colors.grey[600],
+                color: theme.colorScheme.onSurfaceVariant,
               ),
             ),
           ],

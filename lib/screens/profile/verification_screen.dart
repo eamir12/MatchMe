@@ -8,6 +8,7 @@ import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/services/verification_service.dart';
 import 'package:matchme/services/voice_guidance_service.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/theme/semantic_colors.dart';
 import 'package:matchme/services/translation_service.dart';
 import 'package:matchme/widgets/please_wait_dialog.dart';
 import 'package:matchme/widgets/voice_guidance_mute_button.dart';
@@ -206,7 +207,7 @@ class _MismatchBoxesPainter extends CustomPainter {
         (rect.left + 13).clamp(13.0, size.width - 13.0),
         (rect.top + 13).clamp(13.0, size.height - 13.0),
       );
-      canvas.drawCircle(badgeCenter, 11, Paint()..color = Colors.red);
+      canvas.drawCircle(badgeCenter, 11, Paint()..color = const Color(0xFFD32F2F));
       final label = TextPainter(
         text: TextSpan(
           text: '$index',
@@ -600,15 +601,22 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
         final message = (status == 'rejected')
             ? l10n.getString('verificationNotApproved')
             : l10n.getString('verificationSubmittedSuccess');
-        final bg = (status == 'rejected') ? Colors.red : Colors.green;
+        final semantic = SemanticColors.of(context);
+        final colorScheme = Theme.of(context).colorScheme;
+        final isRejectMessage = status == 'rejected';
+        final bg = isRejectMessage ? colorScheme.error : semantic.success;
+        final fg = isRejectMessage ? colorScheme.onError : semantic.onSuccess;
 
         // The snackbar text is shown, so it is spoken — queued behind any
         // announcement already in progress so it can never be dropped.
         _enqueueSpoken('submitResult', () => Future.value(message));
 
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(message), backgroundColor: bg));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message, style: TextStyle(color: fg)),
+            backgroundColor: bg,
+          ),
+        );
       }
     } catch (e) {
       if (previousProfile != null) {
@@ -719,8 +727,15 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
       if (mounted) {
         final successText = l10n.getString('manualReviewRequestedSuccess');
         _enqueueSpoken('manualReviewResult', () => Future.value(successText));
+        final semantic = SemanticColors.of(context);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(successText), backgroundColor: Colors.green),
+          SnackBar(
+            content: Text(
+              successText,
+              style: TextStyle(color: semantic.onSuccess),
+            ),
+            backgroundColor: semantic.success,
+          ),
         );
       }
     } catch (e) {
@@ -730,8 +745,15 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
         // Errors are urgent: they interrupt instead of queueing, and the
         // full shown text (including the error detail) is spoken.
         unawaited(VoiceGuidanceService.instance.speakAndWait(errorShown));
+        final colorScheme = Theme.of(context).colorScheme;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(errorShown), backgroundColor: Colors.red),
+          SnackBar(
+            content: Text(
+              errorShown,
+              style: TextStyle(color: colorScheme.onError),
+            ),
+            backgroundColor: colorScheme.error,
+          ),
         );
       }
     } finally {
@@ -790,27 +812,34 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
       print('  - similarityScore: $similarityScore');
     }
 
+    final isDarkTheme = Theme.of(context).brightness == Brightness.dark;
     switch (status) {
       case 'analyzing':
-        statusColor = Colors.blue;
+        statusColor = isDarkTheme
+            ? Colors.lightBlue.shade300
+            : Colors.blue.shade700;
         statusIcon = Icons.hourglass_top;
         statusText = l10n.getString('analyzingPhotos');
         statusDescription = l10n.getString('analyzingPhotosDescription');
         break;
       case 'approved':
-        statusColor = Colors.green;
+        statusColor = SemanticColors.of(context).success;
         statusIcon = Icons.verified;
         statusText = l10n.getString('verified');
         statusDescription = l10n.getString('verifiedDescription');
         break;
       case 'pending':
-        statusColor = Colors.orange;
+        // Amber needs opposite ends of the shade ramp per mode to stay
+        // readable: dark brown-amber on white, light amber on dark fills.
+        statusColor = isDarkTheme
+            ? Colors.amber.shade400
+            : const Color(0xFF92400E);
         statusIcon = Icons.pending;
         statusText = l10n.getString('underReview');
         statusDescription = l10n.getString('underReviewDescription');
         break;
       case 'rejected':
-        statusColor = Colors.red;
+        statusColor = Theme.of(context).colorScheme.error;
         statusIcon = Icons.error;
         statusText = l10n.getString('verificationRejected');
         statusDescription = autoRejected
@@ -842,7 +871,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
 
         break;
       default:
-        statusColor = Colors.grey;
+        statusColor = Theme.of(context).colorScheme.onSurfaceVariant;
         statusIcon = Icons.verified_user;
         statusText = l10n.getString('notVerified');
         statusDescription = l10n.getString('notVerifiedDescription');
@@ -1024,6 +1053,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
 
   Widget _buildApprovedState(LocalizationState l10n) {
     final colorScheme = Theme.of(context).colorScheme;
+    final semantic = SemanticColors.of(context);
 
     return Align(
       alignment: Alignment.topCenter,
@@ -1047,14 +1077,14 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
                         width: 88,
                         height: 88,
                         decoration: BoxDecoration(
-                          color: Colors.green.withValues(alpha: 0.12),
+                          color: semantic.success.withValues(alpha: 0.12),
                           shape: BoxShape.circle,
                         ),
                         alignment: Alignment.center,
-                        child: const Icon(
+                        child: Icon(
                           Icons.verified_rounded,
                           size: 52,
-                          color: Colors.green,
+                          color: semantic.success,
                         ),
                       ),
                       const SizedBox(height: 24),
@@ -1063,7 +1093,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
                         textAlign: TextAlign.center,
                         style: Theme.of(context).textTheme.headlineMedium
                             ?.copyWith(
-                              color: Colors.green,
+                              color: semantic.success,
                               fontWeight: FontWeight.bold,
                             ),
                       ),
@@ -1088,8 +1118,8 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
                   icon: const Icon(Icons.arrow_back),
                   label: Text(l10n.getString('generalBack')),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                    foregroundColor: Colors.white,
+                    backgroundColor: semantic.success,
+                    foregroundColor: semantic.onSuccess,
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     textStyle: const TextStyle(
                       fontSize: 16,
@@ -1117,25 +1147,26 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
       future: _translateGeminiReasoning(reasoning, l10n, translationService),
       builder: (context, snapshot) {
         final translatedReasoning = snapshot.data ?? reasoning;
+        final errorColor = Theme.of(context).colorScheme.error;
 
         return Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: Colors.red.withValues(alpha: 0.1),
+            color: errorColor.withValues(alpha: 0.1),
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
+            border: Border.all(color: errorColor.withValues(alpha: 0.3)),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
                 children: [
-                  Icon(Icons.smart_toy, color: Colors.red, size: 16),
+                  Icon(Icons.smart_toy, color: errorColor, size: 16),
                   const SizedBox(width: 8),
                   Text(
                     l10n.getString('aiAnalysisPrefix'),
-                    style: const TextStyle(
-                      color: Colors.red,
+                    style: TextStyle(
+                      color: errorColor,
                       fontWeight: FontWeight.bold,
                       fontSize: 14,
                     ),
@@ -1145,7 +1176,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
               const SizedBox(height: 8),
               Text(
                 translatedReasoning,
-                style: const TextStyle(color: Colors.red, fontSize: 14),
+                style: TextStyle(color: errorColor, fontSize: 14),
               ),
             ],
           ),
@@ -1220,26 +1251,27 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
     required LocalizationState l10n,
     required TranslationService translationService,
   }) {
+    final comparisonErrorColor = Theme.of(context).colorScheme.error;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.red.withValues(alpha: 0.06),
+        color: comparisonErrorColor.withValues(alpha: 0.06),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.red.withValues(alpha: 0.25)),
+        border: Border.all(color: comparisonErrorColor.withValues(alpha: 0.25)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Icon(Icons.compare, color: Colors.red, size: 16),
+              Icon(Icons.compare, color: comparisonErrorColor, size: 16),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   l10n.getString('verificationComparisonTitle'),
-                  style: const TextStyle(
-                    color: Colors.red,
+                  style: TextStyle(
+                    color: comparisonErrorColor,
                     fontWeight: FontWeight.bold,
                     fontSize: 14,
                   ),
@@ -1302,14 +1334,14 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
                       width: 20,
                       height: 20,
                       alignment: Alignment.center,
-                      decoration: const BoxDecoration(
-                        color: Colors.red,
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.error,
                         shape: BoxShape.circle,
                       ),
                       child: Text(
                         '${i + 1}',
-                        style: const TextStyle(
-                          color: Colors.white,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onError,
                           fontSize: 11,
                           fontWeight: FontWeight.bold,
                         ),
@@ -1608,6 +1640,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
   @override
   Widget build(BuildContext context) {
     final l10n = ref.watch(localizationProvider);
+    final semantic = SemanticColors.of(context);
     final userId = Supabase.instance.client.auth.currentUser?.id;
     final profile = userId == null
         ? null
@@ -1838,18 +1871,18 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
                                       ? _submitVerification
                                       : null,
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.green,
-                                    foregroundColor: Colors.white,
+                                    backgroundColor: semantic.success,
+                                    foregroundColor: semantic.onSuccess,
                                   ),
                                   child: _isSubmitting
-                                      ? const SizedBox(
+                                      ? SizedBox(
                                           height: 20,
                                           width: 20,
                                           child: CircularProgressIndicator(
                                             strokeWidth: 2,
                                             valueColor:
                                                 AlwaysStoppedAnimation<Color>(
-                                                  Colors.white,
+                                                  semantic.onSuccess,
                                                 ),
                                           ),
                                         )

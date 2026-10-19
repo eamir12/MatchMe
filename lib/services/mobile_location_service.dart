@@ -11,6 +11,7 @@ import 'package:matchme/services/pinned_location_gate.dart';
 import 'package:matchme/utils/permission_manager.dart';
 import 'package:matchme/services/user_activity_service.dart';
 import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/services/windows_location_channel.dart';
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:matchme/services/offline_trail_service.dart';
 
@@ -225,12 +226,13 @@ class MobileLocationService implements LocationService {
             return const Duration(seconds: 15);
           }
         })();
-        position = await Geolocator.getCurrentPosition(
-          locationSettings: LocationSettings(
-            accuracy: LocationAccuracy.best,
-            timeLimit: mobileTimeLimit,
-          ),
+        position = await WindowsLocationChannel.getPosition(
+          accuracy: LocationAccuracy.best,
+          timeLimit: mobileTimeLimit,
         );
+        if (position == null) {
+          throw TimeoutException('No position available');
+        }
       }
       _consecutiveGpsTimeouts = 0;
       print(
@@ -251,7 +253,7 @@ class MobileLocationService implements LocationService {
       final isTimeout = e is TimeoutException || lower.contains('timeout');
       if (isTimeout) {
         try {
-          final last = await Geolocator.getLastKnownPosition();
+          final last = await WindowsLocationChannel.getLastKnownPosition();
           if (last != null && _isServiceRunning && _isVisible) {
             print(
               '[${DateTime.now().toIso8601String()}] 📍 [MobileLoc] GPS timeout — using last known position',
@@ -285,12 +287,12 @@ class MobileLocationService implements LocationService {
     bool serviceEnabled;
     LocationPermission permission;
 
-    serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    serviceEnabled = await WindowsLocationChannel.isLocationServiceEnabled();
     if (!serviceEnabled) {
       return false;
     }
 
-    permission = await Geolocator.checkPermission();
+    permission = await WindowsLocationChannel.checkPermission();
 
     // If permission is already granted, return true
     if (permission == LocationPermission.whileInUse ||
@@ -311,7 +313,7 @@ class MobileLocationService implements LocationService {
       }
 
       // Request permission (PermissionManager will track this)
-      permission = await Geolocator.requestPermission();
+      permission = await WindowsLocationChannel.requestPermission();
       PermissionManager.markRequested('location');
 
       if (permission == LocationPermission.denied) {
@@ -326,7 +328,7 @@ class MobileLocationService implements LocationService {
       try {
         // On iOS, check if we have always permission
         // If user granted when-in-use, we need to request always for background location
-        final currentPermission = await Geolocator.checkPermission();
+        final currentPermission = await WindowsLocationChannel.checkPermission();
         if (currentPermission == LocationPermission.whileInUse) {
           // Request always authorization for background location sharing
           // Use Permission API directly for iOS always permission
@@ -352,7 +354,7 @@ class MobileLocationService implements LocationService {
     if (defaultTargetPlatform == TargetPlatform.android) {
       try {
         // Check if we have background location permission
-        final bgPermission = await Geolocator.checkPermission();
+        final bgPermission = await WindowsLocationChannel.checkPermission();
         if (bgPermission != LocationPermission.always &&
             bgPermission != LocationPermission.whileInUse) {
           // Background location permission not granted - background GPS may not work
@@ -428,7 +430,7 @@ class MobileLocationService implements LocationService {
       }
 
       // Check if location services are enabled
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      final serviceEnabled = await WindowsLocationChannel.isLocationServiceEnabled();
       if (!serviceEnabled) {
         return;
       }
@@ -591,7 +593,7 @@ class MobileLocationService implements LocationService {
     if (!hasPermission) {
       return false;
     }
-    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    final serviceEnabled = await WindowsLocationChannel.isLocationServiceEnabled();
     if (!serviceEnabled) {
       return false;
     }

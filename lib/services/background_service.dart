@@ -40,9 +40,15 @@ class BackgroundService {
   /// Store localized strings for the persistent "MatchMe Active" foreground
   /// notification so it appears in the user's chosen display language, and
   /// refresh the notification if the service is currently in the foreground.
+  ///
+  /// [genericBody] is the masked chat-notification body shown when the user
+  /// disabled message previews; the Kotlin poller reads it from prefs
+  /// (flutter.notifications_generic_message_body) so killed/background trays
+  /// match the display language instead of falling back to English.
   static Future<void> setNativeBackgroundNotificationStrings({
     required String title,
     required String text,
+    String? genericBody,
   }) async {
     if (kIsWeb || !Platform.isAndroid) return;
     try {
@@ -53,6 +59,9 @@ class BackgroundService {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('bgNotificationTitle', title);
       await prefs.setString('bgNotificationText', text);
+      if (genericBody != null && genericBody.isNotEmpty) {
+        await prefs.setString('notifications_generic_message_body', genericBody);
+      }
     } catch (_) {}
     try {
       await _channel.invokeMethod('setBackgroundNotificationStrings', {
@@ -117,6 +126,7 @@ class BackgroundService {
     String? originalContent,
     String? senderName,
     String? matchId,
+    bool? shouldAlert,
   }) async {
     if (kIsWeb || !Platform.isAndroid) {
       // print('🔄 [BACKGROUND] Skipping notification trigger - not Android platform');
@@ -134,6 +144,7 @@ class BackgroundService {
         'originalContent': originalContent,
         'senderName': senderName,
         'matchId': matchId,
+        'shouldAlert': shouldAlert,
         'currentViewingChatId': currentViewingChatId,
       });
       // print('🔄 [BACKGROUND] Android background service notification check triggered successfully');
@@ -901,6 +912,53 @@ class BackgroundService {
       // print('BackgroundService: dismissChatNotification result: $result');
     } catch (e) {
       // print('Failed to dismiss chat notification: $e');
+    }
+  }
+
+  /// Cancel server-posted (FCM SDK) tray cards by their notification tag
+  /// (Android only). Used by the expiry paths to drop the server card for an
+  /// event that a local card (or a consumed tap) already represents, so the
+  /// shade keeps exactly one entry per event.
+  static Future<void> cancelServerCard(String tag) async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    final trimmed = tag.trim();
+    if (trimmed.isEmpty) return;
+    try {
+      await _channel.invokeMethod('cancelServerCard', {'tag': trimmed});
+    } catch (e) {
+      // print('Failed to cancel server card: $e');
+    }
+  }
+
+  /// True when the match was already alerted on this device (native card,
+  /// server card or WorkManager fallback). Lets the foreground FCM handler
+  /// skip showing a second card when the native Realtime/poll path won the
+  /// race for the same match.
+  static Future<bool> wasMatchNotified(String matchId) async {
+    if (kIsWeb || !Platform.isAndroid) return false;
+    final trimmed = matchId.trim();
+    if (trimmed.isEmpty) return true;
+    try {
+      final result = await _channel.invokeMethod('wasMatchNotified', {
+        'matchId': trimmed,
+      });
+      return result == true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /// Record that the match was alerted (Android only): the native service and
+  /// the WorkManager fallback consult this before posting their own card, so
+  /// the foreground local card stays the single notification for the match.
+  static Future<void> markMatchNotified(String matchId) async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    final trimmed = matchId.trim();
+    if (trimmed.isEmpty) return;
+    try {
+      await _channel.invokeMethod('markMatchNotified', {'matchId': trimmed});
+    } catch (e) {
+      // print('Failed to mark match notified: $e');
     }
   }
 

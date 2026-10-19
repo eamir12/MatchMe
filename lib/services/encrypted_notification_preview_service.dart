@@ -1,5 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:matchme/providers/user_preferences_provider.dart';
 import 'package:matchme/services/chat_key_service.dart';
 import 'package:matchme/services/crypto_service.dart';
 import 'package:matchme/services/secure_storage_service.dart';
@@ -14,16 +16,40 @@ class EncryptedNotificationPreviewService {
   final SecureStorageService _secureStorage = SecureStorageService.instance;
   static const _previewEnabledPrefix = 'notification_preview_enabled:';
 
+  // Provider container (same pattern as MobileLocalNotificationService). When
+  // present, the preview preference is owned by userPreferencesProvider so it
+  // is persisted locally, synced to the server, and honored by the native
+  // Android service. The SecureStorage key is kept only as a legacy fallback
+  // and for the one-time migration performed by the provider.
+  static ProviderContainer? _container;
+  static void setProviderContainer(ProviderContainer container) {
+    _container = container;
+  }
+
   final ChatKeyService _chatKeyService = ChatKeyService.instance;
   final CryptoService _crypto = CryptoService.instance;
 
   Future<bool> isPreviewEnabled(String userId) async {
+    final container = _container;
+    if (container != null) {
+      return container
+          .read(userPreferencesProvider)
+          .notifications
+          .messagePreviews;
+    }
     final val = await _secureStorage.read('$_previewEnabledPrefix$userId');
     // Default to true so notifications show message content unless user opts out
     return val != 'false';
   }
 
   Future<void> setPreviewEnabled(String userId, bool enabled) async {
+    final container = _container;
+    if (container != null) {
+      await container
+          .read(userPreferencesProvider.notifier)
+          .setMessagePreviews(enabled);
+    }
+    // Mirror to the legacy key so the non-wired fallback path stays coherent.
     await _secureStorage.write(
       '$_previewEnabledPrefix$userId',
       enabled ? 'true' : 'false',

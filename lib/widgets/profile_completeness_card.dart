@@ -67,7 +67,7 @@ class ProfileCompletenessCard extends ConsumerWidget {
         border: Border.all(
           color: isFull
               ? Colors.green.withValues(alpha: 0.45)
-              : Colors.grey.shade300,
+              : colorScheme.outlineVariant,
         ),
       ),
       child: ProfileCompletenessSummary(
@@ -200,7 +200,7 @@ class _ProfileCompletenessBannerState
                   child: LinearProgressIndicator(
                     value: score / 100,
                     minHeight: 6,
-                    backgroundColor: Colors.grey.shade200,
+                    backgroundColor: colorScheme.surfaceContainerHighest,
                     color: colorScheme.primary,
                   ),
                 ),

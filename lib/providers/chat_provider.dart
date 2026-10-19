@@ -117,7 +117,46 @@ String? replyQuotedTranslatedText(ChatMessageModel original) {
 
 // Debouncer for reaction updates to prevent rapid clicks
 final Map<String, Timer> _reactionDebouncer = {};
+final Map<String, Stopwatch> _incomingMessageTraces = {};
+final Map<String, Timer> _incomingMessageTraceCleanup = {};
 Future<void>? _startupTranslationSyncInFlight;
+
+String _incomingMessageTraceKey(String matchId, String messageId) =>
+    '$matchId:$messageId';
+
+void _startIncomingMessageTrace(String matchId, String messageId) {
+  final key = _incomingMessageTraceKey(matchId, messageId);
+  _incomingMessageTraceCleanup.remove(key)?.cancel();
+  final trace = Stopwatch()..start();
+  _incomingMessageTraces[key] = trace;
+  _incomingMessageTraceCleanup[key] = Timer(const Duration(seconds: 30), () {
+    if (identical(_incomingMessageTraces[key], trace)) {
+      _incomingMessageTraces.remove(key);
+      _incomingMessageTraceCleanup.remove(key);
+    }
+  });
+}
+
+void _logIncomingMessageTrace(
+  String matchId,
+  String messageId,
+  String stage, {
+  String detail = '',
+  bool finish = false,
+}) {
+  final key = _incomingMessageTraceKey(matchId, messageId);
+  final trace = _incomingMessageTraces[key];
+  if (trace == null) return;
+  debugPrint(
+    '[CHAT_INCOMING] id=$messageId stage=$stage '
+    'elapsedMs=${trace.elapsedMilliseconds}'
+    '${detail.isEmpty ? '' : ' $detail'}',
+  );
+  if (finish) {
+    _incomingMessageTraces.remove(key);
+    _incomingMessageTraceCleanup.remove(key)?.cancel();
+  }
+}
 
 // Cache for language detection results to avoid calling identifyLanguage
 // for the same text multiple times during re-evaluation waves.
@@ -228,7 +267,117 @@ Future<void> migrateLegacyTranslationPrefs() async {
 class _TranslationCacheEntry {
   final String translation;
   final int version;
-  const _TranslationCacheEntry(this.translation, this.version);
+  /// The original text (translation-provider `text` param) the translation
+  /// was resolved for. The memory fast path below is honored only when the
+  /// bubble's current content matches, so an edited message forces a fresh
+  /// resolution instead of being served its pre-edit translation.
+  final String? contentFingerprint;
+  const _TranslationCacheEntry(
+    this.translation,
+    this.version, {
+    this.contentFingerprint,
+  });
+}
+
+/// Synchronous peek at the in-memory translation cache for a message.
+///
+/// `translationFamilyProvider` is a `FutureProvider`, so even a value that is
+/// already cached is delivered on a later frame: the first watched frame of a
+/// fresh instance is always `AsyncLoading`. Without this peek, bubbles briefly
+/// fell back to the original text whenever translation was toggled back on or
+/// the list remounted a bubble (scroll-anchor correction), which read as a
+/// flicker.
+///
+/// The entry is only served when its content fingerprint matches [text], so
+/// an edited message re-resolves instead of showing its pre-edit translation.
+/// The stored version is intentionally not compared to the current version:
+/// [TranslationNotifier.setTranslation] bumps the version after persisting
+/// the very same translation, and `.value` retention already surfaces
+/// version-stale results while the provider reloads, so a version guard here
+/// would only reintroduce the one-frame fallback this exists to remove.
+/// Persisted-prefs entries carry no fingerprint and are never served here.
+String? peekCachedTranslation({
+  required String messageId,
+  required String targetLanguage,
+  required String text,
+}) {
+  final entry = _translationResultCache['$messageId|$targetLanguage'];
+  if (entry == null) return null;
+  if (entry.contentFingerprint != text) return null;
+  if (entry.translation.trim().isEmpty) return null;
+  return entry.translation;
+}
+
+/// Test-only hook that primes the in-memory translation cache so widget
+/// tests can exercise [peekCachedTranslation] (the real provider writes the
+/// cache only while resolving through the full async pipeline).
+@visibleForTesting
+void debugSeedTranslationCache({
+  required String messageId,
+  required String targetLanguage,
+  required String text,
+  required String translation,
+  int version = 0,
+}) {
+  _translationResultCache['$messageId|$targetLanguage'] =
+      _TranslationCacheEntry(translation, version, contentFingerprint: text);
+}
+
+/// Seeds the in-memory translation cache from an already-decrypted message
+/// list so a cold chat entry can render cached translations on the very
+/// first frame (via [peekCachedTranslation]) instead of showing the original
+/// text until the async pipeline resolves.
+///
+/// Entries are stored with a never-matching version (-1), which keeps
+/// [translationFamilyProvider]'s authoritative validation (edit markers,
+/// AAD-bound decryption) in charge: the pipeline still runs and overwrites
+/// the seed with a version-tagged result. The seed only bridges the first
+/// frame. Returns the number of entries written.
+int seedTranslationCacheFromMessages({
+  required List<ChatMessageModel> messages,
+  required String matchId,
+  required String targetLanguage,
+}) {
+  var seeded = 0;
+  for (final message in messages) {
+    final translated = message.contentTranslated;
+    if (translated == null || translated.isEmpty || translated == 'null') {
+      continue;
+    }
+    if (message.contentOriginal.isEmpty) continue;
+    final cachedTarget = normalizeLanguageCode(
+      message.translatedTargetLanguage ?? message.translatedLang ?? '',
+    );
+    if (cachedTarget != targetLanguage) continue;
+    // Same-language rows carry the original as their "translation" (Case B),
+    // so there is nothing to bridge.
+    final source = normalizeLanguageCode(message.detectedSourceLanguage ?? '');
+    if (source == targetLanguage) continue;
+    if (translated.trim() == message.contentOriginal.trim()) continue;
+    // The model does not expose `translated_source_edited_at`, so edited
+    // messages always go through the pipeline to verify that the cached
+    // translation still matches the current edit.
+    if (message.editedAt != null) continue;
+    final key = '${message.id}|$targetLanguage';
+    final existing = _translationResultCache[key];
+    if (existing != null &&
+        existing.contentFingerprint == message.contentOriginal &&
+        existing.translation.trim().isNotEmpty) {
+      continue;
+    }
+    _translationResultCache[key] = _TranslationCacheEntry(
+      translated,
+      -1,
+      contentFingerprint: message.contentOriginal,
+    );
+    seeded++;
+  }
+  if (seeded > 0) {
+    _translationDiag(
+      'seed match=${_diagId(matchId)} target=$targetLanguage count=$seeded',
+    );
+  }
+  return seeded;
 }
 
 // In-memory snapshot of the last List<ChatMessageModel> emitted by
@@ -262,29 +411,49 @@ class ChatSyncService {
 
   Future<void> syncMessages(String matchId) async {
     if (matchId.isEmpty) return;
+    final syncStartedAt = DateTime.now();
     try {
       // debugPrint('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
       // debugPrint('ðŸ”„ SYNC START: syncMessages called for matchId=$matchId');
       // debugPrint('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
 
-      final data = await supabase
-          .from('chat_messages')
-          .select(
-            'id, match_id, sender_id, created_at, edited_at, delivered_at, read_at, '
-            'reaction_summary, reply_to_message_id, '
-            'detected_source_language, translated_target_language, '
-            'translated_source_edited_at, '
-            'encryption_scheme, sender_key_id, recipient_key_id, recipient_id, '
-            'content_original_encrypted, content_original_nonce, '
-            'content_translated_encrypted, content_translated_nonce, '
-            'wrapped_keys, translation_capable',
-          )
-          .eq('match_id', matchId)
-          .order('created_at', ascending: true);
+      // PostgREST caps each response page (normally at 1,000 rows). Fetch
+      // every page with a stable tie-breaker so long conversations do not
+      // silently stop at the oldest page or skip rows sharing a timestamp.
+      const pageSize = 1000;
+      final data = <Map<String, dynamic>>[];
+      var offset = 0;
+      while (true) {
+        final page = await supabase
+            .from('chat_messages')
+            .select(
+              'id, match_id, sender_id, created_at, edited_at, delivered_at, read_at, '
+              'reaction_summary, reply_to_message_id, '
+              'detected_source_language, translated_target_language, '
+              'translated_source_edited_at, '
+              'encryption_scheme, sender_key_id, recipient_key_id, recipient_id, '
+              'content_original_encrypted, content_original_nonce, '
+              'content_translated_encrypted, content_translated_nonce, '
+              'wrapped_keys, translation_capable',
+            )
+            .eq('match_id', matchId)
+            .order('created_at', ascending: true)
+            .order('id', ascending: true)
+            .range(offset, offset + pageSize - 1);
+        final pageRows = page.cast<Map<String, dynamic>>();
+        data.addAll(pageRows);
+        if (pageRows.length < pageSize) break;
+        offset += pageSize;
+      }
+
+      debugPrint(
+        '[CHAT_SYNC] fetched ${data.length} messages in '
+        '${DateTime.now().difference(syncStartedAt).inMilliseconds}ms',
+      );
 
       // Pre-warm peer public keys to persistent disk cache while online
       final keyIds = <String>{};
-      for (final msg in (data as List)) {
+      for (final msg in data) {
         final sk = msg['sender_key_id'] as String?;
         if (sk != null && sk.isNotEmpty) keyIds.add(sk);
         final rk = msg['recipient_key_id'] as String?;
@@ -296,7 +465,7 @@ class ChatSyncService {
 
       // Replace all messages for this match with the current database state
       // This ensures deleted messages are removed from local cache
-      await localDb.saveMessages(matchId, data.cast<Map<String, dynamic>>());
+      await localDb.saveMessages(matchId, data);
 
       // debugPrint('ðŸ”„ SYNC: Saved ${data.length} messages to local database');
 
@@ -309,7 +478,7 @@ class ChatSyncService {
         // Collect message IDs that need to be marked as delivered
         final messagesToDeliver = <String>[];
 
-        for (final msg in data as List) {
+        for (final msg in data) {
           final msgId = msg['id'] as String?;
           final senderId = msg['sender_id'] as String?;
           final deliveredAt = msg['delivered_at'];
@@ -370,10 +539,32 @@ class ChatSyncService {
     } catch (e) {
       // debugPrint('âŒ SYNC ERROR: $e\n$st');
       // Keep the error surfaced but avoid noisy logging here.
+      debugPrint(
+        '[CHAT_SYNC] fetch/save failed after '
+        '${DateTime.now().difference(syncStartedAt).inMilliseconds}ms: $e',
+      );
     }
     // debugPrint('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
     // debugPrint('ðŸ”„ SYNC END: syncMessages completed');
     // debugPrint('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
+  }
+
+  Future<void> syncMessageStatuses(String matchId) async {
+    if (matchId.isEmpty) return;
+    if (shouldSkipSupabaseCalls()) return;
+    try {
+      final cached = await localDb.getMessages(matchId);
+      if (cached.isEmpty) return;
+      final data = await supabase
+          .from('chat_messages')
+          .select('id, delivered_at, read_at')
+          .eq('match_id', matchId);
+      if (data.isEmpty) return;
+      await localDb.mergeMessageStatuses(
+        matchId,
+        data.cast<Map<String, dynamic>>(),
+      );
+    } catch (_) {}
   }
 
   // Diagnostic function to test if RPC function is working
@@ -490,13 +681,47 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
     }
     // Coalesce rapid stream emissions so the chat UI only rebuilds once
     // when multiple sync/decryption cycles fire in quick succession.
-    void debouncedEmit(List<ChatMessageModel> messages) {
+    void debouncedEmit(
+      List<ChatMessageModel> messages, {
+      String traceStage = 'stream_emit',
+      bool finishTraces = false,
+    }) {
       if (disposed || streamController.isClosed) return;
       _lastEmittedMessages[matchId] = messages;
+      // Cold-entry first-frame bridge: seed cached translations from this
+      // decrypted list so visible bubbles can render them immediately via
+      // peekCachedTranslation instead of flashing the original text while
+      // translationFamilyProvider resolves. Uses the current UI language, so
+      // the seed also covers enabling translation later in the session.
+      try {
+        seedTranslationCacheFromMessages(
+          messages: messages,
+          matchId: matchId,
+          targetLanguage: normalizeLanguageCode(
+            ref.read(localizationProvider).currentLocale.languageCode,
+          ),
+        );
+      } catch (_) {}
+      final tracedIds = messages
+          .map((message) => message.id)
+          .where(
+            (id) => _incomingMessageTraces.containsKey(
+              _incomingMessageTraceKey(matchId, id),
+            ),
+          )
+          .toSet();
       emitDebounce?.cancel();
       emitDebounce = Timer(const Duration(milliseconds: 50), () {
         if (!disposed && !streamController.isClosed) {
           streamController.add(messages);
+          for (final id in tracedIds) {
+            _logIncomingMessageTrace(
+              matchId,
+              id,
+              traceStage,
+              finish: finishTraces,
+            );
+          }
         }
       });
     }
@@ -549,6 +774,21 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
         var models = normalized
             .map((json) => ChatMessageModel.fromJson(json))
             .toList();
+        for (final model in models) {
+          _logIncomingMessageTrace(
+            matchId,
+            model.id,
+            'local_watch_decoded',
+            detail: 'messageCount=${models.length}',
+          );
+        }
+        // Hive writes can append realtime arrivals after optimistic sends.
+        // Normalize order at the stream boundary so Phase 1, Phase 2, cached
+        // snapshots, and the reversed chat list all use the same chronology.
+        models.sort((a, b) {
+          final byTime = a.createdAt.compareTo(b.createdAt);
+          return byTime != 0 ? byTime : a.id.compareTo(b.id);
+        });
 
         // Phase 1 — Emit raw models immediately so the loading spinner
         // disappears.  Decryption runs asynchronously in Phase 2.
@@ -574,14 +814,14 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
                 : m.replyToContent,
             replyToContentTranslated:
                 (originalTrans != null && originalTrans.isNotEmpty)
-                    ? originalTrans
-                    : m.replyToContentTranslated,
+                ? originalTrans
+                : m.replyToContentTranslated,
           );
         }).toList();
         debugPrint(
           '✨ [Phase1] Emitting ${resolvedPhase1.length} messages to UI',
         );
-        debouncedEmit(resolvedPhase1);
+        debouncedEmit(resolvedPhase1, traceStage: 'phase1_ui_emit');
 
         // Phase 2 — Decrypt v1 encrypted messages in the background
         // and re-emit when done.
@@ -756,6 +996,16 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
                 };
               }),
             );
+            for (final result in results) {
+              final model = models[result['i'] as int];
+              _logIncomingMessageTrace(
+                matchId,
+                model.id,
+                'decryption_complete',
+                detail:
+                    'attempted=${result['attempted']} failed=${result['failed']}',
+              );
+            }
 
             // Apply all decrypted content to models and collect DB writes.
             for (final r in results) {
@@ -884,6 +1134,9 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
                 );
               } catch (_) {}
               if (prefsTarget != null && prefsTarget.isNotEmpty) {
+                final modelsById = <String, ChatMessageModel>{
+                  for (final m in models) m.id: m,
+                };
                 for (final u in decryptedUpdates) {
                   final mid = u['id']?.toString();
                   final tr = u['content_translated']?.toString();
@@ -892,10 +1145,14 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
                       tr != null &&
                       tr.isNotEmpty) {
                     unawaited(_persistTranslation(mid, prefsTarget, tr));
+                    final originalText = modelsById[mid]?.contentOriginal ?? '';
                     _translationResultCache['$mid|$prefsTarget'] =
                         _TranslationCacheEntry(
                           tr,
                           ref.read(translationVersionProvider),
+                          contentFingerprint: originalText.isEmpty
+                              ? null
+                              : originalText,
                         );
                   }
                 }
@@ -954,12 +1211,16 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
                   : m.replyToContent,
               replyToContentTranslated:
                   (originalTrans != null && originalTrans.isNotEmpty)
-                      ? originalTrans
-                      : m.replyToContentTranslated,
+                  ? originalTrans
+                  : m.replyToContentTranslated,
             );
           }).toList();
 
-          debouncedEmit(resolved);
+          debouncedEmit(
+            resolved,
+            traceStage: 'phase2_ui_emit',
+            finishTraces: true,
+          );
           // Persist resolved reply previews to Hive (best-effort, no await)
           // so incoming reply quotes survive app restarts and render
           // immediately offline. Only writes rows that gained a preview.
@@ -1349,15 +1610,40 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
           final newMatchId = newRecord['match_id']?.toString();
           if (newMatchId == matchId) {
             final currentUserId = supabase.auth.currentUser?.id;
+            final messageId = newRecord['id']?.toString();
+            final isIncoming =
+                currentUserId != null &&
+                newRecord['sender_id']?.toString() != currentUserId;
+            debugPrint(
+              '[CHAT_REALTIME] insert match=$matchId id=${messageId ?? 'unknown'} '
+              'incoming=$isIncoming userKnown=${currentUserId != null}',
+            );
+            if (isIncoming && messageId != null && messageId.isNotEmpty) {
+              _startIncomingMessageTrace(matchId, messageId);
+              _logIncomingMessageTrace(
+                matchId,
+                messageId,
+                'realtime_received',
+                detail: 'createdAt=${newRecord['created_at'] ?? 'unknown'}',
+              );
+            }
+            final cacheWrite = Stopwatch()..start();
             await localDb.addMessages(matchId, [
               newRecord,
             ], currentUserId: currentUserId);
+            if (isIncoming && messageId != null && messageId.isNotEmpty) {
+              _logIncomingMessageTrace(
+                matchId,
+                messageId,
+                'cache_write_complete',
+                detail: 'writeMs=${cacheWrite.elapsedMilliseconds}',
+              );
+            }
             // If the message is incoming, mark it delivered in the
             // background. We don't await — the bubble can show without
             // waiting for the RPC.
-            if (currentUserId != null &&
-                newRecord['sender_id']?.toString() != currentUserId) {
-              final mid = newRecord['id']?.toString();
+            if (isIncoming) {
+              final mid = messageId;
               if (mid != null && mid.isNotEmpty) {
                 unawaited(
                   supabase
@@ -1675,6 +1961,7 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
       });
     }
 
+    Future<void> openingSync = Future<void>.value();
     SupabaseRealtimeManager.instance.register(channelName, () {
       channel = supabase.channel(channelName);
       channel!
@@ -1690,12 +1977,22 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
             callback: handleChanges,
           )
           .subscribe((status, err) async {
+            debugPrint(
+              '[CHAT_REALTIME] match=$matchId status=$status'
+              '${err == null ? '' : ' error=$err'}',
+            );
             if (!ref.mounted || disposed) return;
             if (status == RealtimeSubscribeStatus.subscribed) {
-              // Run a full sync ONCE on subscribe, to catch up (guarded)
+              // The opening fetch starts in parallel with the realtime
+              // handshake. Wait for it, then do a second catch-up after the
+              // subscription is live so inserts that landed during the
+              // opening fetch cannot be missed.
               try {
-                if (syncService != null) {
-                  await syncService.syncMessages(matchId);
+                final service = syncService;
+                if (service != null) {
+                  await openingSync;
+                  if (disposed || !ref.mounted) return;
+                  await service.syncMessages(matchId);
                 }
               } catch (e) {
                 // debugPrint('Error syncing messages on subscribe for $matchId: $e');
@@ -1707,8 +2004,27 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
       return channel!;
     });
 
+    // The local cache is emitted immediately above, but it can be stale (for
+    // example, if this chat has not been opened on this device recently).
+    // Start a server reconciliation as soon as the chat provider is created;
+    // do not make the user wait for the realtime socket's SUBSCRIBED callback
+    // before fetching the missing rows. The callback above performs a second
+    // reconciliation once realtime is active to close the fetch/subscribe gap.
+    if (syncService != null && !shouldSkipSupabaseCalls()) {
+      openingSync = syncService.syncMessages(matchId);
+      unawaited(openingSync);
+    }
+
     ref.onDispose(() {
       disposed = true;
+      final tracePrefix = '$matchId:';
+      for (final key
+          in _incomingMessageTraces.keys
+              .where((key) => key.startsWith(tracePrefix))
+              .toList()) {
+        _incomingMessageTraces.remove(key);
+        _incomingMessageTraceCleanup.remove(key)?.cancel();
+      }
       keepAliveTimer?.cancel();
       realtimeSyncDebounce?.cancel();
       emitDebounce?.cancel();
@@ -1773,10 +2089,9 @@ class ChatService {
     // Supabase reachability is the only signal: if we cannot round-trip with
     // it, the recipient's chat key is not coming and the send has to take the
     // offline path. A working internet with a dead backend is still offline.
-    final isOnline =
-        (await probeSupabaseReachability(
-          log: (m) => debugPrint('📤 [sendMessage:probe] $m'),
-        )).isReachable;
+    final isOnline = (await probeSupabaseReachability(
+      log: (m) => debugPrint('📤 [sendMessage:probe] $m'),
+    )).isReachable;
 
     if (!isOnline) {
       // ── OFFLINE PATH ─────────────────────────────────────────────
@@ -1936,6 +2251,7 @@ class ChatService {
           firstItem['content_original'] = optimisticRow['content_original'];
         }
       }
+      firstItem['isPending'] = false;
       await localDb.mergeMessages(matchId, [firstItem]);
       // Update the chats-box last-message preview immediately so the sender
       // sees their new last message in the chat list without waiting for a
@@ -2809,6 +3125,37 @@ class TranslationNotifier extends Notifier<TranslationStates> {
   // Base prefs key - actual stored key is namespaced per-user: '${_prefsKeyBase}_<userId>'
   static const String _prefsKeyBase = 'translation_states';
 
+  /// Per-match count of user-initiated [setTranslation] operations whose
+  /// local write has not settled yet.
+  ///
+  /// `syncChatsNow` applies the server's translation flags through
+  /// [setTranslationSilent]/[clearTranslationSilent]. A sync whose snapshot
+  /// was fetched before the toggle's RPC committed still holds the previous
+  /// value, and applying it resurrected that value in memory — observed as
+  /// translations re-appearing for a few hundred ms after a disable, before
+  /// the next realtime event corrected it. The silent setters and the
+  /// realtime applier skip matches with a pending toggle.
+  ///
+  /// A plain set was insufficient: rapid consecutive toggles of the same
+  /// match removed the match when the FIRST write completed, leaving the
+  /// still-in-flight later writes unguarded.
+  final Map<String, int> _pendingToggleWrites = {};
+
+  /// Per-match chain that serializes the server writes of consecutive
+  /// toggles. Without it, two presses fired two overlapping RPCs; on a slow
+  /// network the first press's RPC could commit server-side AFTER the second
+  /// press's RPC and permanently revert the user's final choice.
+  final Map<String, Future<void>> _toggleWriteChains = {};
+
+  /// Server `updated_at` of the newest realtime translation event processed
+  /// per match. Realtime delivery can reorder events (observed: a disable
+  /// echo landing after the following enable echo), so events older than the
+  /// newest processed one are dropped.
+  final Map<String, DateTime> _lastRemoteTranslationEventAt = {};
+
+  bool _isTogglePending(String matchId) =>
+      (_pendingToggleWrites[matchId] ?? 0) > 0;
+
   @override
   TranslationStates build() {
     // Load for the currently signed-in user (if any)
@@ -3057,8 +3404,7 @@ class TranslationNotifier extends Notifier<TranslationStates> {
         final mid = chat['match_id']?.toString();
         if (mid == null || mid.isEmpty) continue;
         final lang = chat['translation_language']?.toString();
-        hydrated[mid] =
-            (lang != null && lang.isNotEmpty)
+        hydrated[mid] = (lang != null && lang.isNotEmpty)
             ? normalizeLanguageCode(lang)
             : targetFallback;
       }
@@ -3080,8 +3426,28 @@ class TranslationNotifier extends Notifier<TranslationStates> {
     }
   }
 
-  Future<void> setTranslation(String matchId, String? targetLang) async {
+  Future<void> setTranslation(String matchId, String? targetLang) {
+    // Mark the match as locally-toggling before any await so a concurrent
+    // `syncChatsNow`/realtime event holding a pre-RPC server snapshot cannot
+    // apply its stale flag while the write below is in flight (see
+    // _pendingToggleWrites). Counted, not a set: overlapping toggles of the
+    // same match must keep the guard up until the LAST one settles.
+    _pendingToggleWrites.update(matchId, (n) => n + 1, ifAbsent: () => 1);
+    return _setTranslation(matchId, targetLang).whenComplete(() {
+      final remaining = (_pendingToggleWrites[matchId] ?? 1) - 1;
+      if (remaining <= 0) {
+        _pendingToggleWrites.remove(matchId);
+      } else {
+        _pendingToggleWrites[matchId] = remaining;
+      }
+    });
+  }
+
+  Future<void> _setTranslation(String matchId, String? targetLang) async {
     final previous = state[matchId];
+    _translationDiag(
+      'toggle match=${_diagId(matchId)} previous=$previous next=$targetLang',
+    );
 
     // Optimistically update in-memory state and prefs
     if (targetLang == null) {
@@ -3091,10 +3457,9 @@ class TranslationNotifier extends Notifier<TranslationStates> {
     }
     await _saveToPrefs();
 
-    final userId = Supabase.instance.client.auth.currentUser?.id;
-
     // Immediately update local cache to reflect the new flag for UX
     try {
+      final userId = Supabase.instance.client.auth.currentUser?.id;
       if (userId != null) {
         final localDb = ref.read(localDbProvider);
         await localDb.updateChatTranslation(
@@ -3111,8 +3476,34 @@ class TranslationNotifier extends Notifier<TranslationStates> {
     // Notify UI providers to refresh translations
     ref.read(translationVersionProvider.notifier).increment();
 
-    // Persist to server; skip if offline but still succeed locally
-    // This allows toggling translations on/off even when offline
+    // Serialize the server write per match so consecutive toggles commit in
+    // press order. See [_toggleWriteChains].
+    final chained = (_toggleWriteChains[matchId] ?? Future<void>.value())
+        .then((_) => _writeTranslationToServer(matchId, targetLang, previous));
+    final safeChain = chained.catchError((Object _) {});
+    _toggleWriteChains[matchId] = safeChain;
+    try {
+      await chained;
+    } finally {
+      if (identical(_toggleWriteChains[matchId], safeChain)) {
+        _toggleWriteChains.remove(matchId);
+      }
+    }
+  }
+
+  /// Server write half of [setTranslation], run on the per-match chain.
+  ///
+  /// Persists to the server; skips if offline but still succeeds locally —
+  /// this allows toggling translations on/off even when offline. Offline
+  /// writes are queued so the next `syncChatsNow` cannot pull the stale
+  /// server row and silently revert the choice.
+  Future<void> _writeTranslationToServer(
+    String matchId,
+    String? targetLang,
+    String? previous,
+  ) async {
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+
     if (!shouldSkipSupabaseCalls()) {
       try {
         if (userId != null) {
@@ -3146,26 +3537,34 @@ class TranslationNotifier extends Notifier<TranslationStates> {
           } catch (_) {}
         }
       } catch (e) {
-        // Revert optimistic update only if RPC call fails
-        if (previous == null) {
-          state = {...state}..remove(matchId);
-        } else {
-          state = {...state, matchId: previous};
-        }
-        await _saveToPrefs();
-
-        // Revert local cache
-        try {
-          if (userId != null) {
-            final localDb = ref.read(localDbProvider);
-            await localDb.updateChatTranslation(
-              userId,
-              matchId,
-              previous != null,
-              previous,
-            );
+        // Revert the optimistic update only if no newer toggle for this
+        // match has superseded it; otherwise the revert would clobber the
+        // user's newer choice.
+        if (state[matchId] == targetLang) {
+          if (previous == null) {
+            state = {...state}..remove(matchId);
+          } else {
+            state = {...state, matchId: previous};
           }
-        } catch (_) {}
+          await _saveToPrefs();
+
+          // Revert local cache
+          try {
+            if (userId != null) {
+              final localDb = ref.read(localDbProvider);
+              await localDb.updateChatTranslation(
+                userId,
+                matchId,
+                previous != null,
+                previous,
+              );
+            }
+          } catch (_) {}
+
+          // The optimistic bump above already fired; bump again so every
+          // visible bubble re-evaluates against the reverted state.
+          ref.read(translationVersionProvider.notifier).increment();
+        }
 
         rethrow;
       }
@@ -3205,9 +3604,39 @@ class TranslationNotifier extends Notifier<TranslationStates> {
   /// when the periodic 60s `syncChatsNow` had finally re-read the row).
   Future<void> applyRemoteTranslationUpdate(
     String matchId,
-    String? targetLang,
-  ) async {
+    String? targetLang, {
+    DateTime? updatedAt,
+  }) async {
     if (matchId.isEmpty) return;
+
+    // Realtime delivery can be delayed or reordered relative to the writes
+    // that produced it. Record the newest server timestamp seen even when
+    // the payload matches the local state (the echo-suppression no-op
+    // below), so an older event arriving later is dropped instead of
+    // reverting a just-confirmed toggle.
+    final eventAt = updatedAt?.toUtc();
+    if (eventAt != null) {
+      final lastEventAt = _lastRemoteTranslationEventAt[matchId];
+      if (lastEventAt != null && !eventAt.isAfter(lastEventAt)) {
+        _translationDiag(
+          'remote-update-skip match=${_diagId(matchId)} '
+          'reason=stale-event eventAt=$eventAt last=$lastEventAt',
+        );
+        return;
+      }
+      _lastRemoteTranslationEventAt[matchId] = eventAt;
+    }
+
+    // While a user-initiated toggle is in flight the local state is the
+    // user's latest intent; an echo (possibly from an earlier press) must
+    // not override it.
+    if (_isTogglePending(matchId)) {
+      _translationDiag(
+        'remote-update-skip match=${_diagId(matchId)} reason=toggle-pending',
+      );
+      return;
+    }
+
     final previous = state[matchId];
     if (targetLang == null) {
       if (previous == null) return; // Already off
@@ -3216,6 +3645,10 @@ class TranslationNotifier extends Notifier<TranslationStates> {
       if (previous == targetLang) return; // Already set to this target
       state = {...state, matchId: targetLang};
     }
+    _translationDiag(
+      'remote-update match=${_diagId(matchId)} previous=$previous '
+      'next=$targetLang',
+    );
 
     // Mirror to SharedPreferences so a provider rebuild (e.g. via
     // ref.invalidate) would re-load the correct value rather than the
@@ -3255,8 +3688,18 @@ class TranslationNotifier extends Notifier<TranslationStates> {
   void setTranslationSilent(String matchId, String targetLang) {
     Future.microtask(() {
       if (!ref.mounted) return;
+      if (_isTogglePending(matchId)) {
+        _translationDiag(
+          'sync-silent-skip match=${_diagId(matchId)} set=$targetLang '
+          'reason=toggle-pending',
+        );
+        return;
+      }
       if (state[matchId] == targetLang) return;
       state = {...state, matchId: targetLang};
+      _translationDiag(
+        'sync-silent-set match=${_diagId(matchId)} next=$targetLang',
+      );
     });
   }
 
@@ -3266,8 +3709,16 @@ class TranslationNotifier extends Notifier<TranslationStates> {
   void clearTranslationSilent(String matchId) {
     Future.microtask(() {
       if (!ref.mounted) return;
+      if (_isTogglePending(matchId)) {
+        _translationDiag(
+          'sync-silent-skip match=${_diagId(matchId)} clear '
+          'reason=toggle-pending',
+        );
+        return;
+      }
       if (!state.containsKey(matchId)) return;
       state = {...state}..remove(matchId);
+      _translationDiag('sync-silent-clear match=${_diagId(matchId)}');
     });
   }
 }
@@ -3418,6 +3869,28 @@ Map<String, String> getLanguageDisplayNames(List<String> langCodes) {
 }
 // --- END Available Translation Languages Provider ---
 
+// ── Chat translation flicker diagnostics ─────────────────────────────
+// Temporary traces (see chat_screen.dart) proving that re-enabling chat
+// translation serves already-resolved translations instead of leaving
+// bubbles on a pending phase while the async pipeline runs.
+// Capture with: adb logcat | findstr ChatFlicker
+//
+// Uses `debugPrintSynchronously` on purpose: main.dart replaces the
+// `debugPrint` variable with a substring whitelist that would drop these
+// lines. Flip [_chatFlickerDiagnosticsEnabled] to false (or remove this
+// block and its call sites) once the behavior is verified.
+const bool _chatFlickerDiagnosticsEnabled = true;
+
+void _translationDiag(String message) {
+  if (!_chatFlickerDiagnosticsEnabled) return;
+  debugPrintSynchronously('[ChatFlicker][provider] $message');
+}
+
+String _diagId(String? id) {
+  if (id == null || id.isEmpty) return 'none';
+  return id.length <= 8 ? id : id.substring(0, 8);
+}
+
 // ---
 // --- *** UPDATED: translationFamilyProvider (translates to current UI language)
 // --- Translates incoming messages to the current app UI language when translation is enabled.
@@ -3455,6 +3928,9 @@ final translationFamilyProvider = FutureProvider.autoDispose.family<String, Stri
   final translationEnabled = ref.watch(translationProvider)[matchId] != null;
 
   if (!translationEnabled) {
+    _translationDiag(
+      'family off msg=${_diagId(messageId)} match=${_diagId(matchId)}',
+    );
     // Translation is off for this chat.
     return text;
   }
@@ -3466,20 +3942,21 @@ final translationFamilyProvider = FutureProvider.autoDispose.family<String, Stri
   // 2. Load message data once from local DB for both sender check and cache check
   if (matchId.isEmpty) return text;
 
-  // Check in-memory cache first — returning the cached result immediately
-  // avoids the async gap (DB read → decrypt → Supabase fetch) that causes
-  // translations to flash when re-entering a chat.
+  // Cache key for current-target persistence. We still validate the message
+  // row before using any cached value because older builds stored original
+  // text here when translation failed.
   final cacheKey = '$messageId|$targetLanguage';
-  final cachedEntry = _translationResultCache[cacheKey];
   final currentVersion = ref.read(translationVersionProvider);
-  if (cachedEntry != null && cachedEntry.version == currentVersion) {
-    return cachedEntry.translation;
-  }
+  // Do not trust the process/persisted cache until the stored message row
+  // proves that this value is a current translation for the active target.
+  // Older builds cached the original on translation failure, which could
+  // otherwise bypass the translation-ready gate after an upgrade.
 
   String translateResult(String result) {
     _translationResultCache[cacheKey] = _TranslationCacheEntry(
       result,
       currentVersion,
+      contentFingerprint: text,
     );
     // Mirror to local storage (SharedPreferences) so the translation is
     // available immediately on the next cold start, even when Supabase is
@@ -3493,6 +3970,40 @@ final translationFamilyProvider = FutureProvider.autoDispose.family<String, Stri
     return result;
   }
 
+  // MEMORY FAST PATH: return the last resolved value for this
+  // message+target pairing without touching Hive or the network. Every
+  // visible incoming bubble owns a translationFamilyProvider instance, and
+  // instances are autoDispose — re-entering a chat re-runs the full async
+  // pipeline (prefs decrypt + whole-blob Hive read + AES decrypt + language
+  // detection + possible Supabase fetch) per bubble, during which the chat
+  // screen holds incoming bubbles hidden ("only sent messages show"). The
+  // version guard keeps the entry invalidated whenever the translation
+  // version bumps (edits, language switch, translation payload merges), so
+  // a version-matched hit is exactly what the previous resolution returned.
+  _translationDiag(
+    'family start msg=${_diagId(messageId)} target=$targetLanguage '
+    'version=$currentVersion',
+  );
+  final cachedEntry = _translationResultCache[cacheKey];
+  if (cachedEntry != null &&
+      cachedEntry.version == currentVersion &&
+      cachedEntry.contentFingerprint == text) {
+    final cachedText = cachedEntry.translation.trim();
+    if (cachedText.isNotEmpty) {
+      _translationDiag(
+        'memory-hit msg=${_diagId(messageId)} target=$targetLanguage '
+        'version=$currentVersion len=${cachedEntry.translation.length}',
+      );
+      return cachedEntry.translation;
+    }
+  }
+  final missReason = cachedEntry == null
+      ? 'absent'
+      : cachedEntry.version != currentVersion
+      ? 'version ${cachedEntry.version}->$currentVersion'
+      : 'content-changed';
+  _translationDiag('memory-miss msg=${_diagId(messageId)} reason=$missReason');
+
   // Cold-start offline fallback: if the in-memory cache missed (fresh app
   // launch), check the SharedPreferences mirror before touching Hive. This
   // lets a chat opened with no connectivity render its last-known
@@ -3503,10 +4014,18 @@ final translationFamilyProvider = FutureProvider.autoDispose.family<String, Stri
       targetLanguage,
     );
     if (persisted != null && persisted.isNotEmpty) {
-      // Populate the in-memory cache so subsequent rebuilds hit it.
+      _translationDiag(
+        'persisted-hit msg=${_diagId(messageId)} target=$targetLanguage '
+        'len=${persisted.length}',
+      );
+      // Populate the in-memory cache so subsequent rebuilds hit it. Keep any
+      // existing fingerprint (e.g. one just seeded from the message list) so
+      // first-frame peeks keep working while this pipeline resolves; a stale
+      // fingerprint still rejects changed text.
       _translationResultCache[cacheKey] = _TranslationCacheEntry(
         persisted,
         currentVersion,
+        contentFingerprint: cachedEntry?.contentFingerprint,
       );
       // Don't return yet: the Hive plaintext below is authoritative and may
       // be newer (e.g. after an edit). This warms the cache only; the
@@ -3520,7 +4039,11 @@ final translationFamilyProvider = FutureProvider.autoDispose.family<String, Stri
   final chatKeyState = ref.read(chatKeyProvider);
   final currentUserId = supabase.auth.currentUser?.id ?? '';
 
-  final messages = await localDb.getMessages(matchId);
+  // Snapshot read (decode-cached): one visible bubble instance runs per
+  // incoming message on every chat entry, so N full-blob jsonDecodes of the
+  // same conversation were paid for each re-open. The snapshot returns the
+  // same rows with the decode amortized across the bubbles.
+  final messages = await localDb.getMessagesSnapshot(matchId);
   if (!ref.mounted) return text;
   final message = messages.firstWhere(
     (m) => m['id'].toString() == messageId,
@@ -3554,7 +4077,24 @@ final translationFamilyProvider = FutureProvider.autoDispose.family<String, Stri
       localTargetRaw != null &&
       localTargetRaw.isNotEmpty) {
     try {
-      if (normalizeLanguageCode(localTargetRaw) == targetLanguage) {
+      final localSource = message['detected_source_language']?.toString();
+      final localSourceNormalized = localSource == null
+          ? null
+          : (isValidLanguageCode(localSource)
+                ? normalizeLanguageCode(localSource)
+                : null);
+      // Case C reuse: the cached plaintext is a translation FOR the current
+      // UI language (target matches). It must only be skipped when the
+      // message source IS the UI language (Case B shows the original, so a
+      // same-language "translation" adds nothing). The previous condition
+      // required source == UI, which is inverted: for any genuine translation
+      // (source != UI, e.g. Hebrew message viewed with English UI) the fast
+      // path never fired and every bubble re-ran decryption/detection and —
+      // when the private key was not yet loaded — a per-message Supabase
+      // fetch before it was allowed on screen.
+      if (normalizeLanguageCode(localTargetRaw) == targetLanguage &&
+          (localSourceNormalized == null ||
+              localSourceNormalized != targetLanguage)) {
         // Ensure the cached plaintext still describes the current content.
         // Its AAD binds the target language but not the content, so verify
         // the version marker when the row was edited.
@@ -3569,6 +4109,24 @@ final translationFamilyProvider = FutureProvider.autoDispose.family<String, Stri
         }
       }
     } catch (_) {}
+  }
+
+  // EARLY CASE B FAST PATH: when the server-detected source language
+  // already equals the current UI language, the pipeline's Case B branch
+  // (further down) returns the original text unconditionally. Concluding
+  // that right after the row read — instead of after the per-message
+  // Supabase fetch + translation-key decryption + edit verification below
+  // — is what lets previously received same-language messages render
+  // together with the outgoing ones on chat re-entry, instead of popping
+  // in visibly later on every visit.
+  if (serverSourceLang != null && isValidLanguageCode(serverSourceLang)) {
+    final earlySourceNormalized = normalizeLanguageCode(serverSourceLang);
+    if (earlySourceNormalized == targetLanguage) {
+      debugPrint(
+        '[Translation] Early Case B — UI matches cached source ($earlySourceNormalized), showing original',
+      );
+      return translateResult(text);
+    }
   }
 
   // For encrypted messages, content_translated_encrypted may contain the
@@ -3827,7 +4385,7 @@ final translationFamilyProvider = FutureProvider.autoDispose.family<String, Stri
                           return rid != null && rid.isNotEmpty ? rid : null;
                         }(),
                       );
-                  if (!ref.mounted) return translateResult(text);
+                  if (!ref.mounted) return '';
                   if (adopted != null && adopted.isNotEmpty) {
                     decryptedTranslation = adopted;
                     try {
@@ -4045,7 +4603,7 @@ final translationFamilyProvider = FutureProvider.autoDispose.family<String, Stri
     debugPrint(
       'ðŸ”„ Translation Provider: No language info available, showing original',
     );
-    return translateResult(text);
+    return '';
   }
 
   // Case A: UI != source AND UI != target -> Need to translate
@@ -4058,7 +4616,7 @@ final translationFamilyProvider = FutureProvider.autoDispose.family<String, Stri
   final isOffline = shouldSkipSupabaseCalls();
   if (isOffline) {
     _addPendingTranslation(matchId, messageId);
-    return translateResult(text);
+    return '';
   }
 
   // If the message has an encrypted translation that we couldn't decrypt
@@ -4237,7 +4795,7 @@ final translationFamilyProvider = FutureProvider.autoDispose.family<String, Stri
   final batchState = ref.read(translationBatchStateProvider.notifier);
   if (batchState.isRunningForMessage(matchId, messageId)) {
     // debugPrint('🔄 Translation Provider: Already translating $messageId, skipping duplicate');
-    return translateResult(text);
+    return '';
   }
 
   /// Runs the one shared batch request for this match + language: candidate
@@ -4728,12 +5286,11 @@ final translationFamilyProvider = FutureProvider.autoDispose.family<String, Stri
   }
 
   // Check mounted again before returning
-  if (!ref.mounted) {
-    return translateResult(text);
-  }
+  if (!ref.mounted) return '';
 
-  // Return original text if no fresh translation available
-  return translateResult(text);
+  // An unavailable/failed translation remains undisplayed. Never cache or
+  // expose the untranslated original as a fallback for incoming messages.
+  return '';
 });
 
 // Strip emojis and most non-letter characters to improve language identification.

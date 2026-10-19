@@ -14,6 +14,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:matchme/services/windows_location_channel.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:matchme/providers/current_location_provider.dart';
@@ -650,11 +651,10 @@ class PinnedLocationNotifier extends Notifier<PinnedLocationState> {
     }
     final position = await LocationDeduplicator.getPosition(
       label: label,
-      fetcher: () => Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.best,
-        ),
-      ).timeout(const Duration(seconds: 15)),
+      fetcher: () => WindowsLocationChannel.getPosition(
+        accuracy: LocationAccuracy.best,
+        timeLimit: const Duration(seconds: 15),
+      ),
     );
     if (position == null) {
       throw StateError('No fresh location was available to finish pin setup');

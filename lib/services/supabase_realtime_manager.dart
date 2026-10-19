@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:matchme/services/connectivity_restore_coordinator.dart';
+import 'package:matchme/services/offline_cache_manager.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// Centralized manager for all Supabase Realtime channels.
@@ -26,7 +29,11 @@ class SupabaseRealtimeManager {
   final Map<String, RealtimeChannel> _active = {};
 
   bool _isPaused = false;
+  Timer? _watchdogTimer;
   late final void Function() _restoreSubscription;
+
+  /// How often the watchdog checks whether a paused manager should resume.
+  static const Duration _watchdogInterval = Duration(seconds: 20);
 
   // ---------------------------------------------------------------------------
   // Public API
@@ -66,7 +73,10 @@ class SupabaseRealtimeManager {
   }) {
     final alreadyActive = _active.containsKey(name);
     _factories[name] = factory;
-    if (_isPaused) return;
+    if (_isPaused) {
+      _resumeIfBackendReachable();
+      return;
+    }
     if (alreadyActive || !activateNow) return;
     _activate(name);
   }
@@ -88,6 +98,7 @@ class SupabaseRealtimeManager {
       Supabase.instance.client.realtime.disconnect();
     } catch (_) {}
     _active.clear();
+    _startWatchdog();
   }
 
   /// Resume all channels and reconnect the WebSocket.
@@ -95,6 +106,7 @@ class SupabaseRealtimeManager {
   void resumeAll() {
     if (!_isPaused) return;
     _isPaused = false;
+    _stopWatchdog();
     debugPrint(
       '🟢 [REALTIME-MGR] Resuming all channels (${_factories.length} registered)',
     );
@@ -110,6 +122,7 @@ class SupabaseRealtimeManager {
 
   /// Dispose everything – call on app shutdown.
   void dispose() {
+    _stopWatchdog();
     _restoreSubscription();
     _factories.clear();
     for (final channel in _active.values.toList()) {
@@ -125,6 +138,30 @@ class SupabaseRealtimeManager {
   // ---------------------------------------------------------------------------
 
   void _onRestore() {
+    resumeAll();
+  }
+
+  void _startWatchdog() {
+    _watchdogTimer ??= Timer.periodic(_watchdogInterval, (_) {
+      if (!_isPaused) {
+        _stopWatchdog();
+        return;
+      }
+      _resumeIfBackendReachable();
+    });
+  }
+
+  void _stopWatchdog() {
+    _watchdogTimer?.cancel();
+    _watchdogTimer = null;
+  }
+
+  void _resumeIfBackendReachable() {
+    if (!_isPaused) return;
+    if (!OfflineCacheManager.instance.isSupabaseAvailable) return;
+    debugPrint(
+      '🟠 [REALTIME-MGR] Watchdog: channels paused while backend reachable — resuming',
+    );
     resumeAll();
   }
 

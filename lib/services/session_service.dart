@@ -20,6 +20,7 @@ import 'package:matchme/services/network_availability.dart';
 import 'package:matchme/services/secure_storage_service.dart';
 import 'package:matchme/services/sensitive_session_store.dart';
 import 'package:matchme/services/user_activity_service.dart';
+import 'package:matchme/services/windows_location_channel.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
@@ -28,6 +29,7 @@ import 'package:matchme/utils/offline_utils.dart';
 class SessionService {
   static final DeviceInfoPlugin _deviceInfo = DeviceInfoPlugin();
   static const String _prefsFcmTokenKey = 'fcm_token';
+  static const String _prefsWnsChannelKey = 'wns_channel_uri';
   static const String _prefsPendingAuthMethodKey = 'pending_auth_method';
   static const String _prefsCurrentAuthMethodPrefix = 'current_auth_method:';
   static const String _prefsPersistedSupabaseSessionKey =
@@ -1122,6 +1124,17 @@ class SessionService {
     }
   }
 
+  static Future<String?> _getStoredWnsChannel() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final v = prefs.getString(_prefsWnsChannelKey);
+      final trimmed = v?.trim();
+      return (trimmed == null || trimmed.isEmpty) ? null : trimmed;
+    } catch (_) {
+      return null;
+    }
+  }
+
   static Future<void> _storeFcmToken(String token) async {
     final trimmed = token.trim();
     if (trimmed.isEmpty) return;
@@ -1145,6 +1158,21 @@ class SessionService {
       // install stops receiving pushes. FCM then reports the FID as
       // unregistered, which the senders treat like an expired token.
       await FirebaseMessaging.instance.unregister();
+    } catch (_) {}
+  }
+
+  static Future<void> deleteWnsChannel() async {
+    // Logging out on Windows: drop the cached channel so the next session
+    // re-registers. WNS has no client-side unregister API; the server prunes
+    // the row via revoked/whatever session lifecycle. (Stale URIs keep
+    // working server-side, matching FCM's UNREGISTERED cleanup.)
+    await clearLocalWnsChannel();
+  }
+
+  static Future<void> clearLocalWnsChannel() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_prefsWnsChannelKey);
     } catch (_) {}
   }
 
@@ -1436,6 +1464,17 @@ class SessionService {
       metadata['fcm_token'] = fcmToken;
       metadata['fcm_token_updated_at'] = DateTime.now().toIso8601String();
     }
+    // Windows WNS channel (MSIX): registered by WindowsPushChannelService on
+    // app start; server prunes stale URIs and clears pruned state via the
+    // clear_user_session_wns_channel RPC.
+    if (platformText == 'windows') {
+      final wnsChannel = await _getStoredWnsChannel();
+      if (wnsChannel != null && wnsChannel.startsWith('https://')) {
+        metadata['wns_channel_uri'] = wnsChannel;
+        metadata['wns_channel_uri_updated_at'] =
+            DateTime.now().toIso8601String();
+      }
+    }
     if (userTimezone != null) {
       metadata['user_timezone'] = userTimezone;
     }
@@ -1567,18 +1606,17 @@ class SessionService {
     } catch (_) {}
 
     try {
-      final permission = await Geolocator.checkPermission();
+      final permission = await WindowsLocationChannel.checkPermission();
       final granted =
           permission == LocationPermission.always ||
           permission == LocationPermission.whileInUse;
       if (!granted) return null;
 
-      final pos = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.low,
-          timeLimit: Duration(seconds: 4),
-        ),
+      final pos = await WindowsLocationChannel.getPosition(
+        accuracy: LocationAccuracy.low,
+        timeLimit: const Duration(seconds: 4),
       );
+      if (pos == null) return null;
       return await inferCountryCodeFromCoordinates(pos.latitude, pos.longitude);
     } catch (_) {
       return null;

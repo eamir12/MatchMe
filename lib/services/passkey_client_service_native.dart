@@ -19,9 +19,15 @@ final PasskeyAuthenticator _authenticator = PasskeyAuthenticator();
 /// iOS passkeys are temporarily disabled: the app is not associated with a
 /// relying-party domain (no `webcredentials:` Associated Domains entitlement
 /// and no apple-app-site-association file), so every ASAuthorization ceremony
-/// fails with "domain not associated". Until that domain setup exists, report
-/// the feature as unavailable on iOS so the UI never offers it. Re-enable by
+/// fails with "domain not associated". Until that domain setup exists, refuse
+/// to start a ceremony on iOS so the UI never offers one. Re-enable by
 /// removing this gate once the entitlement and AASA file are configured.
+///
+/// This gate only disables the *ceremony* entry points ([isAuthenticationSupported]
+/// and [isRegistrationSupported]). It must never leak into
+/// [getDeviceAvailability]: the iPhone itself supports passkeys, and reporting
+/// it as an unsupported device told users their phone was incapable when only
+/// the app's domain association was missing.
 bool get _passkeysTemporarilyDisabledOnIos => Platform.isIOS;
 
 Future<bool> isAuthenticationSupported() => _isPasskeySupported();
@@ -29,11 +35,11 @@ Future<bool> isAuthenticationSupported() => _isPasskeySupported();
 Future<bool> isRegistrationSupported() => _isPasskeySupported();
 
 /// Raw availability flags for this device, used by the UI to explain *why*
-/// passkey sign-in is or isn't offered rather than just hiding it.
+/// passkey sign-in is or isn't offered rather than just hiding it. This probe
+/// is deliberately independent of [_passkeysTemporarilyDisabledOnIos] so the
+/// app-side limitation can be explained as such instead of being blamed on
+/// the device.
 Future<PasskeyDeviceAvailability> getDeviceAvailability() async {
-  if (_passkeysTemporarilyDisabledOnIos) {
-    return PasskeyDeviceAvailability.unavailable;
-  }
   try {
     if (Platform.isAndroid) {
       final a = await _authenticator.getAvailability().android();

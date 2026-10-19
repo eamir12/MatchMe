@@ -460,7 +460,11 @@ class _BillingEntryCard extends StatelessWidget {
       'promoCode',
     ]);
     final transactionId = entry.transactionId?.trim() ?? '';
-    final status = _statusDisplay(entry, l10n);
+    final status = _statusDisplay(
+      entry,
+      l10n,
+      Theme.of(context).brightness == Brightness.dark,
+    );
 
     final effectiveAmountLabel = isPromo
         ? l10n.getString('billingFree')
@@ -734,35 +738,42 @@ class _BillingStatusStyle {
 _BillingStatusStyle _statusDisplay(
   SubscriptionQueueEntry entry,
   LocalizationState l10n,
+  bool isDark,
 ) {
   if (entry.isCancelled) {
     return _BillingStatusStyle(
       label: l10n.getString('billingCancelled'),
-      background: Colors.red.shade50,
-      foreground: Colors.red.shade700,
+      background: isDark
+          ? Colors.red.withValues(alpha: 0.18)
+          : Colors.red.shade50,
+      foreground: isDark ? Colors.red.shade200 : Colors.red.shade700,
     );
   }
 
   if (entry.isActive) {
     return _BillingStatusStyle(
       label: l10n.getString('billingActive'),
-      background: Colors.green.shade50,
-      foreground: Colors.green.shade700,
+      background: isDark
+          ? Colors.green.withValues(alpha: 0.18)
+          : Colors.green.shade50,
+      foreground: isDark ? Colors.green.shade200 : Colors.green.shade700,
     );
   }
 
   if (entry.isPending && !entry.hasStarted) {
     return _BillingStatusStyle(
       label: l10n.getString('billingScheduled'),
-      background: Colors.blue.shade50,
-      foreground: Colors.blue.shade700,
+      background: isDark
+          ? Colors.blue.withValues(alpha: 0.18)
+          : Colors.blue.shade50,
+      foreground: isDark ? Colors.blue.shade200 : Colors.blue.shade700,
     );
   }
 
   return _BillingStatusStyle(
     label: l10n.getString('billingCompleted'),
-    background: Colors.grey.shade200,
-    foreground: Colors.grey.shade800,
+    background: isDark ? Colors.grey.withValues(alpha: 0.18) : Colors.grey.shade200,
+    foreground: isDark ? Colors.grey.shade300 : Colors.grey.shade800,
   );
 }
 

@@ -7,6 +7,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:matchme/providers/visibility_provider.dart';
+import 'package:matchme/services/windows_location_channel.dart';
 
 /// Manages all app permissions with the following behavior:
 /// 1. On first install, requests all permissions sequentially before showing home screen
@@ -103,7 +104,7 @@ class PermissionManager {
 
     if (hasBeenRequestedThisRun(key)) {
       // Already requested this run, just check status
-      final permission = await Geolocator.checkPermission();
+      final permission = await WindowsLocationChannel.checkPermission();
       return permission == LocationPermission.whileInUse ||
           permission == LocationPermission.always;
     }
@@ -112,16 +113,16 @@ class PermissionManager {
 
     try {
       // Check if location services are enabled
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      final serviceEnabled = await WindowsLocationChannel.isLocationServiceEnabled();
       if (!serviceEnabled) {
         return false;
       }
 
       // Check current permission status
-      LocationPermission permission = await Geolocator.checkPermission();
+      LocationPermission permission = await WindowsLocationChannel.checkPermission();
 
       if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
+        permission = await WindowsLocationChannel.requestPermission();
         if (permission == LocationPermission.denied) {
           return false;
         }

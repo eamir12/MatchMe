@@ -33,7 +33,13 @@ import 'package:matchme/widgets/safe_text.dart';
 
 class EventsTab extends ConsumerStatefulWidget {
   final GlobalKey<NavigatorState> navigatorKey;
-  const EventsTab({super.key, required this.navigatorKey});
+  final ScrollController? scrollController;
+
+  const EventsTab({
+    super.key,
+    required this.navigatorKey,
+    this.scrollController,
+  });
 
   @override
   ConsumerState<EventsTab> createState() => _EventsTabState();
@@ -72,6 +78,7 @@ class _EventsTabState extends ConsumerState<EventsTab> {
           return MaterialPageRoute(
             builder: (context) => EventsScreen(
               showAppBar: false,
+              scrollController: widget.scrollController,
               onAddEvent: () => Navigator.of(context).pushNamed('/add'),
               onOpenEvent: (event) => Navigator.of(
                 context,
@@ -115,7 +122,10 @@ class _EventsTabState extends ConsumerState<EventsTab> {
         }
 
         return MaterialPageRoute(
-          builder: (context) => EventsScreen(showAppBar: false),
+          builder: (context) => EventsScreen(
+            showAppBar: false,
+            scrollController: widget.scrollController,
+          ),
         );
       },
     );
@@ -224,6 +234,7 @@ class _EventsSearchFieldState extends ConsumerState<EventsSearchField> {
 
 class EventsScreen extends ConsumerWidget {
   final bool showAppBar;
+  final ScrollController? scrollController;
   final VoidCallback? onAddEvent;
   final void Function(EventModel event)? onOpenEvent;
   final VoidCallback? onImportGoogleCalendar;
@@ -233,6 +244,7 @@ class EventsScreen extends ConsumerWidget {
   const EventsScreen({
     super.key,
     this.showAppBar = true,
+    this.scrollController,
     this.onAddEvent,
     this.onOpenEvent,
     this.onImportGoogleCalendar,
@@ -627,6 +639,7 @@ class EventsScreen extends ConsumerWidget {
             .read(eventManagerProvider.notifier)
             .fetchUserEvents(forceRemote: true),
         child: CustomScrollView(
+          controller: scrollController,
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
             SliverToBoxAdapter(

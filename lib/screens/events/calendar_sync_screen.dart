@@ -2031,7 +2031,7 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                       ? Icons.phone_iphone
                       : Icons.calendar_today,
                   size: 64,
-                  color: Colors.grey,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
                 const SizedBox(height: 16),
                 Text(
@@ -2080,8 +2080,10 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                         _isOutlookInstalled &&
                             !kIsWeb &&
                             _selectedProvider == CalendarProvider.outlook
-                        ? Colors.orange
-                        : Colors.grey,
+                        ? (Theme.of(context).brightness == Brightness.dark
+                              ? Colors.amber.shade300
+                              : Colors.orange.shade800)
+                        : Theme.of(context).colorScheme.onSurfaceVariant,
                     fontWeight:
                         _isOutlookInstalled &&
                             !kIsWeb &&
@@ -2115,7 +2117,9 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             fontSize: 12,
-                            color: Colors.grey[600],
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurfaceVariant,
                             fontStyle: FontStyle.italic,
                           ),
                         ),

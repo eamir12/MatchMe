@@ -191,7 +191,9 @@ class _LocationShareBannerState extends ConsumerState<LocationShareBanner> {
                       onPressed: widget.onChangeDuration,
                       style: OutlinedButton.styleFrom(
                         backgroundColor: Theme.of(context).colorScheme.primary,
-                        foregroundColor: Colors.white,
+                        foregroundColor: Theme.of(
+                          context,
+                        ).colorScheme.onPrimary,
                         padding: const EdgeInsets.symmetric(
                           horizontal: 10,
                           vertical: 5,
@@ -206,8 +208,8 @@ class _LocationShareBannerState extends ConsumerState<LocationShareBanner> {
                       icon: const Icon(Icons.timer_outlined, size: 14),
                       label: Text(
                         l10n.getString('locationShareChangeDuration'),
-                        style: const TextStyle(
-                          color: Colors.white,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onPrimary,
                           fontSize: 10,
                           fontWeight: FontWeight.w600,
                         ),
@@ -221,7 +223,7 @@ class _LocationShareBannerState extends ConsumerState<LocationShareBanner> {
                       onPressed: widget.onStopSharing,
                       style: OutlinedButton.styleFrom(
                         backgroundColor: Theme.of(context).colorScheme.error,
-                        foregroundColor: Colors.white,
+                        foregroundColor: Theme.of(context).colorScheme.onError,
                         padding: const EdgeInsets.symmetric(
                           horizontal: 10,
                           vertical: 5,
@@ -236,8 +238,8 @@ class _LocationShareBannerState extends ConsumerState<LocationShareBanner> {
                       icon: const Icon(Icons.stop, size: 14),
                       label: Text(
                         l10n.getString('locationShareStop'),
-                        style: const TextStyle(
-                          color: Colors.white,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onError,
                           fontSize: 10,
                           fontWeight: FontWeight.w600,
                         ),
@@ -300,9 +302,9 @@ class _LocationShareBannerState extends ConsumerState<LocationShareBanner> {
                       color: Theme.of(context).colorScheme.tertiary,
                       shape: BoxShape.circle,
                     ),
-                    child: const Icon(
+                    child: Icon(
                       Icons.location_on,
-                      color: Colors.white,
+                      color: Theme.of(context).colorScheme.onTertiary,
                       size: 18,
                     ),
                   ),
@@ -348,7 +350,9 @@ class _LocationShareBannerState extends ConsumerState<LocationShareBanner> {
                           backgroundColor: Theme.of(
                             context,
                           ).colorScheme.tertiary,
-                          foregroundColor: Colors.white,
+                          foregroundColor: Theme.of(
+                            context,
+                          ).colorScheme.onTertiary,
                           padding: const EdgeInsets.symmetric(
                             horizontal: 10,
                             vertical: 5,
@@ -363,8 +367,8 @@ class _LocationShareBannerState extends ConsumerState<LocationShareBanner> {
                         icon: const Icon(Icons.map, size: 14),
                         label: Text(
                           l10n.getString('locationShareBannerView'),
-                          style: const TextStyle(
-                            color: Colors.white,
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.onTertiary,
                             fontSize: 11,
                             fontWeight: FontWeight.w600,
                           ),
@@ -427,9 +431,9 @@ class _LocationShareBannerState extends ConsumerState<LocationShareBanner> {
                       color: Theme.of(context).colorScheme.tertiary,
                       shape: BoxShape.circle,
                     ),
-                    child: const Icon(
+                    child: Icon(
                       Icons.people,
-                      color: Colors.white,
+                      color: Theme.of(context).colorScheme.onTertiary,
                       size: 18,
                     ),
                   ),
@@ -473,7 +477,9 @@ class _LocationShareBannerState extends ConsumerState<LocationShareBanner> {
                         onPressed: widget.onStopSharing,
                         style: OutlinedButton.styleFrom(
                           backgroundColor: Theme.of(context).colorScheme.error,
-                          foregroundColor: Colors.white,
+                          foregroundColor: Theme.of(
+                            context,
+                          ).colorScheme.onError,
                           padding: const EdgeInsets.symmetric(
                             horizontal: 10,
                             vertical: 5,
@@ -488,8 +494,8 @@ class _LocationShareBannerState extends ConsumerState<LocationShareBanner> {
                         icon: const Icon(Icons.stop, size: 14),
                         label: Text(
                           l10n.getString('locationShareStop'),
-                          style: const TextStyle(
-                            color: Colors.white,
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.onError,
                             fontSize: 11,
                             fontWeight: FontWeight.w600,
                           ),
@@ -568,8 +574,12 @@ class _LiveDotState extends State<_LiveDot>
                 shape: BoxShape.circle,
                 color: Theme.of(context).colorScheme.primary,
               ),
-              child: const Center(
-                child: Icon(Icons.share_location, color: Colors.white, size: 9),
+              child: Center(
+                child: Icon(
+                  Icons.share_location,
+                  color: Theme.of(context).colorScheme.onPrimary,
+                  size: 9,
+                ),
               ),
             ),
           ],

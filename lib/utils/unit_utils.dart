@@ -4,6 +4,7 @@ import 'dart:async';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/services/windows_location_channel.dart';
 import 'package:flutter/foundation.dart';
 import '../web_imports.dart' as html;
 
@@ -85,9 +86,9 @@ Future<String?> getCountryCodeFromPosition(Position position) async {
 Future<String?> getCountryCodeFromLocation() async {
   try {
     // Check location permissions
-    LocationPermission permission = await Geolocator.checkPermission();
+    LocationPermission permission = await WindowsLocationChannel.checkPermission();
     if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
+      permission = await WindowsLocationChannel.requestPermission();
       if (permission == LocationPermission.denied) {
         return null;
       }
@@ -154,11 +155,11 @@ Future<String?> getCountryCodeFromLocation() async {
         },
       );
     } else {
-      position = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.low,
-        ),
+      position = await WindowsLocationChannel.getPosition(
+        accuracy: LocationAccuracy.low,
+        timeLimit: const Duration(seconds: 5),
       );
+      if (position == null) return null;
     }
     if (position == null) return null;
 

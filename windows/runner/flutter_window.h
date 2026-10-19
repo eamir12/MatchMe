@@ -6,6 +6,8 @@
 
 #include <memory>
 
+#include "location_channel.h"
+#include "push_channel.h"
 #include "win32_window.h"
 
 // A window that does nothing but host a Flutter view.
@@ -28,6 +30,12 @@ class FlutterWindow : public Win32Window {
 
   // The Flutter instance hosted by this window.
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
+
+  // Custom location channel with native timeout (Windows).
+  std::unique_ptr<LocationChannel> location_channel_;
+
+  // Custom WNS push channel (Windows, MSIX).
+  std::unique_ptr<PushChannel> push_channel_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

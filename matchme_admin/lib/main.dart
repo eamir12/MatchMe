@@ -24708,20 +24708,26 @@ const Map<String, String> _defaultTranslations = {
   'securityCenterPasskeyCtaAddAnother': 'Add another passkey',
   'securityCenterPasskeyCtaCreate': 'Create passkey',
   'securityCenterPasskeyCtaRemoveAll': 'Remove all passkeys',
+  'securityCenterPasskeyPrimaryAccountReady':
+      'Your account has a passkey for faster, passwordless sign-in.',
   'securityCenterPasskeyPrimaryOff':
       'Add a passkey for faster, more secure sign-in.',
   'securityCenterPasskeyPrimaryReady':
       'Passkeys are ready for faster, passwordless sign-in.',
   'securityCenterPasskeyPrimarySignedIn':
       'You signed in with a passkey on this device.',
+  'securityCenterPasskeySecondaryAppNotAvailable':
+      'Passkey sign-in isn\'t available in this app on this platform yet.',
   'securityCenterPasskeySecondaryProtected':
       'A passkey is already protecting this account.',
   'securityCenterPasskeySecondaryReady':
-      'This device and server are ready for a new passkey.',
+      'Create a passkey on this device to sign in without a password.',
   'securityCenterPasskeySecondarySetupRequired':
       'Server configuration is still required before passkeys can be added.',
   'securityCenterPasskeySecondaryUnsupported':
       'This device does not support passkeys.',
+  'securityCenterPasskeySessionAccountReady':
+      'Your account has a passkey for use on supported devices.',
   'securityCenterPasskeySessionOther':
       'You signed in with {method}. Add a passkey for future sign-ins.',
   'securityCenterPasskeySessionPasskey':
@@ -24731,6 +24737,7 @@ const Map<String, String> _defaultTranslations = {
   'securityCenterSettingsEntryBody':
       'Manage your authenticator, passkeys, and recovery options',
   'securityCenterStatusActive': 'Active',
+  'securityCenterStatusAdded': 'Added',
   'securityCenterStatusAttention': 'Attention',
   'securityCenterStatusAvailable': 'Available',
   'securityCenterStatusReady': 'Ready',
@@ -25008,7 +25015,7 @@ const Map<String, String> _defaultTranslations = {
   'settingsMfaSetupInstruction':
       'Scan the QR code with your authenticator app, or enter the code manually',
   'settingsMfaSetupTitle': 'Set up authenticator app',
-  'settingsMfaTitle': 'Authenticator app',
+  'settingsMfaTitle': 'Two-factor authentication',
   'settingsMfaUpdate': 'Update 2FA',
   'settingsMfaUseAuthenticatorCode': 'Use authenticator code instead',
   'settingsMfaUseEmailCode': 'Use email code instead',

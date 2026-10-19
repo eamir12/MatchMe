@@ -794,6 +794,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                           ],
                         )
                   : ListView.builder(
+                      primary: true,
                       itemCount:
                           finalChats.length +
                           (!_showArchived && !selecting ? 1 : 0),

@@ -327,7 +327,9 @@ class _EmailChangeScreenState extends ConsumerState<EmailChangeScreen> {
                     borderRadius: BorderRadius.circular(8),
                   ),
                   filled: true,
-                  fillColor: Colors.grey.shade100,
+                  fillColor: Theme.of(
+                    context,
+                  ).colorScheme.surfaceContainerHighest,
                 ),
               ),
               const SizedBox(height: 16),
@@ -364,7 +366,9 @@ class _EmailChangeScreenState extends ConsumerState<EmailChangeScreen> {
                 _getTranslation('settingsChangeEmailDescription'),
                 style: Theme.of(
                   context,
-                ).textTheme.bodySmall?.copyWith(color: Colors.grey.shade600),
+                ).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
             ],
 
@@ -407,7 +411,7 @@ class _EmailChangeScreenState extends ConsumerState<EmailChangeScreen> {
                         ? '${_getTranslation('settingsChangeEmailCodeExpires')}: ${_getTimeRemaining()}'
                         : '',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Colors.grey.shade600,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
                   ),
                   TextButton(

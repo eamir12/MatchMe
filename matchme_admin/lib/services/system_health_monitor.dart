@@ -122,9 +122,11 @@ class ProjectErrorsStatus {
 
 /// Sign-in activity, auth failures, and usage metrics from THIS project's
 /// `project-logs-health` edge function (Supabase Management API: ClickHouse
-/// logs for auth, disk utilization, API request counts). Null until the
-/// first successful probe; [configured] is false while the function has no
-/// `MANAGEMENT_API_TOKEN` secret (rows render as unavailable, not alarmed).
+/// logs for auth, disk utilization, API request counts; served from the
+/// 30-minute sampler snapshots when fresh, fresh collection otherwise).
+/// Null until the first successful probe; [configured] is false while the
+/// function has no `MANAGEMENT_API_TOKEN` secret (rows render as
+/// unavailable, not alarmed).
 class ProjectLogsStatus {
   const ProjectLogsStatus({
     required this.checkedAt,
@@ -439,16 +441,23 @@ class SystemHealthMonitor with WidgetsBindingObserver {
   static final SystemHealthMonitor _instance = SystemHealthMonitor._internal();
   static SystemHealthMonitor get instance => _instance;
 
-  static const Duration _dbProbeInterval = Duration(seconds: 10);
+  // Free-plan budget: every probe is a DB round trip recorded in the
+  // project's logs, so cadences are deliberately unhurried. 30s keeps the
+  // latency history chart meaningful without 8.6k health_check calls/day.
+  static const Duration _dbProbeInterval = Duration(seconds: 30);
   static const Duration _dbProbeTimeout = Duration(seconds: 6);
   static const Duration _queueProbeInterval = Duration(seconds: 30);
   // Statuspage asks callers not to poll faster than once per 60 seconds.
   static const Duration _statusPageInterval = Duration(seconds: 60);
-  static const Duration _projectErrorsInterval = Duration(seconds: 60);
-  // Management API calls are rate-limited (30/min for logs/usage). One probe
-  // makes ~6 calls, so a 60s cadence (~6 calls/min) stays well under the
-  // quota while matching the Project errors card's refresh rate.
-  static const Duration _projectLogsInterval = Duration(seconds: 60);
+  // `admin_get_health_errors` is a cheap RPC, but it still lands in the
+  // PostgREST logs on every call; 5 minutes is plenty for an informational
+  // card while cutting its log footprint 5x.
+  static const Duration _projectErrorsInterval = Duration(minutes: 5);
+  // The edge function serves the health_sampler's 30-minute snapshots
+  // (40-minute TTL), so this poll costs one cached edge invocation and
+  // almost never touches the Management API. Keep it well above the
+  // sampler cadence so the card shows fresh snapshot ages, not stale ones.
+  static const Duration _projectLogsInterval = Duration(minutes: 15);
   static const Duration _slowLatencyThreshold = Duration(milliseconds: 1500);
   static const Duration _heartbeatStaleAfter = Duration(minutes: 3);
   static const Duration _statusChangeGrace = Duration(seconds: 15);

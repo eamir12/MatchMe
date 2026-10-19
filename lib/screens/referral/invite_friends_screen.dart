@@ -143,7 +143,9 @@ class _InviteFriendsScreenState extends ConsumerState<InviteFriendsScreen> {
                     Text(
                       l10n.getString('inviteFriendsCheckConnection'),
                       textAlign: TextAlign.center,
-                      style: const TextStyle(color: Colors.grey),
+                      style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                     ),
                     const SizedBox(height: 24),
                     ElevatedButton(
@@ -182,7 +184,10 @@ class _InviteFriendsScreenState extends ConsumerState<InviteFriendsScreen> {
                   Text(
                     l10n.getString('inviteFriendsDescription'),
                     textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 16, color: Colors.grey),
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                   ),
                   const SizedBox(height: 32),
                   Container(
@@ -191,9 +196,13 @@ class _InviteFriendsScreenState extends ConsumerState<InviteFriendsScreen> {
                       vertical: 16,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.grey.shade100,
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.surfaceContainerHighest,
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.grey.shade300),
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.outlineVariant,
+                      ),
                     ),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -279,7 +288,10 @@ class _InviteFriendsScreenState extends ConsumerState<InviteFriendsScreen> {
                   Text(
                     l10n.getString('inviteFriendsDescription'),
                     textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 16, color: Colors.grey),
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                   ),
                   const SizedBox(height: 32),
                   Container(
@@ -288,9 +300,13 @@ class _InviteFriendsScreenState extends ConsumerState<InviteFriendsScreen> {
                       vertical: 16,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.grey.shade100,
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.surfaceContainerHighest,
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.grey.shade300),
+                      border: Border.all(
+                        color: Theme.of(context).colorScheme.outlineVariant,
+                      ),
                     ),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,

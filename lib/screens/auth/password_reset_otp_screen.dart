@@ -93,7 +93,10 @@ class _PasswordResetOtpScreenState
     required bool met,
     required String label,
   }) {
-    final color = met ? Colors.green.shade700 : Colors.grey.shade600;
+    final isDarkTheme = Theme.of(context).brightness == Brightness.dark;
+    final color = met
+        ? (isDarkTheme ? Colors.green.shade300 : Colors.green.shade700)
+        : Theme.of(context).colorScheme.onSurfaceVariant;
     return Row(
       children: [
         Icon(

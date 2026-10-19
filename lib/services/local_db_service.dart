@@ -1295,10 +1295,23 @@ class LocalDbService {
               // the client cache must reset to server values (default false).
               // Do NOT preserve cached translation settings.
 
+              final incomingLastId = incoming['last_message_id']?.toString();
+              final existingLastId = existingEntry['last_message_id']
+                  ?.toString();
+
               // Preserve existing last_message when the server returns it empty
               // (e.g. for v1 encrypted messages where the server doesn't have
               // the decrypted content).  The local DB may have a decrypted preview
               // set by recomputeChatLastMessagePreviewFromMessages.
+              //
+              // Only for the SAME message, though: when the server's
+              // last_message_id has advanced, the cached text describes the
+              // previous message, and keeping it would pin that text under the
+              // new id. Rows that render last_message directly (translation
+              // disabled, or source == UI language) would then show the
+              // previous message until some later sync happened to heal the
+              // row. A new id with no readable plaintext stays blank — the
+              // pending state — and is filled by recompute/decrypt/sync.
               final incomingMsg = incoming['last_message'] as String?;
               final existingMsg = existingEntry['last_message'] as String?;
               final incomingEncryptedPreview =
@@ -1306,12 +1319,17 @@ class LocalDbService {
                       as String?;
               final incomingScheme =
                   incoming['last_message_encryption_scheme'] as String?;
+              final sameMessageAsIncoming =
+                  incomingLastId == null ||
+                  incomingLastId.isEmpty ||
+                  incomingLastId == existingLastId;
               final existingLooksEncrypted =
                   incomingScheme == 'v1' &&
                   existingMsg != null &&
                   (existingMsg == incomingEncryptedPreview ||
                       looksLikeEncryptedPreview(existingMsg));
-              if ((incomingMsg == null || incomingMsg.isEmpty) &&
+              if (sameMessageAsIncoming &&
+                  (incomingMsg == null || incomingMsg.isEmpty) &&
                   existingMsg != null &&
                   existingMsg.isNotEmpty &&
                   !existingLooksEncrypted) {
@@ -1339,9 +1357,6 @@ class LocalDbService {
                   incoming['last_message_translated'] as String?;
               final existingTranslated =
                   existingEntry['last_message_translated'] as String?;
-              final incomingLastId = incoming['last_message_id']?.toString();
-              final existingLastId = existingEntry['last_message_id']
-                  ?.toString();
 
               // A preview that is still raw ciphertext must never reach the
               // cache: get_user_recent_chats exposes
@@ -1378,6 +1393,20 @@ class LocalDbService {
                 if (existingTranslatedMarker != null) {
                   incoming['last_message_translated_edited_at'] =
                       existingTranslatedMarker;
+                }
+                // The target language is part of the cached translation's
+                // validity contract (previewTranslationIsCurrent rejects a
+                // translation whose target no longer matches the UI language),
+                // so it must survive with the text it belongs to.
+                final incomingTargetLang =
+                    incoming['last_message_target_language']?.toString();
+                final existingTargetLang =
+                    existingEntry['last_message_target_language']?.toString();
+                if ((incomingTargetLang == null ||
+                        incomingTargetLang.isEmpty) &&
+                    existingTargetLang != null &&
+                    existingTargetLang.isNotEmpty) {
+                  incoming['last_message_target_language'] = existingTargetLang;
                 }
               } else if (incomingTranslated == null ||
                   incomingTranslated.isEmpty) {
@@ -1893,6 +1922,55 @@ class LocalDbService {
     return [];
   }
 
+  /// Decoded-row cache used by [getMessagesSnapshot]: per matchId, the raw
+  /// Hive string is held alongside its decoded rows so the cache can be
+  /// validated against the current raw value (any write produces a different
+  /// string → cache miss → re-decode; a stale entry can never be served).
+  final Map<String, (String, List<Map<String, dynamic>>)>
+  _messagesDecodeCache = {};
+
+  /// Cached-decode counterpart of [getMessages].
+  ///
+  /// Every chat entry re-reads the whole conversation blob once per message
+  /// that needs a translation resolution (translationFamilyProvider) and a
+  /// handful of bookkeeping lookups — and each of those calls used to repeat
+  /// the full `jsonDecode` of the chat history on the UI isolate. With one
+  /// read per bubble this was O(N) full-blob decodes of the same list, and
+  /// the decode cost showed up on screen as previously received messages
+  /// rendering visibly later than the outgoing ones when the chat is
+  /// re-entered.
+  ///
+  /// Callers get fresh top-level row copies (mirroring getMessages' own
+  /// normalization mutation) so shared cached state is never mutated.
+  Future<List<Map<String, dynamic>>> getMessagesSnapshot(String matchId) async {
+    final box = await _getMessagesBox();
+    final raw = box.get(matchId);
+    if (raw == null) return const [];
+    final cached = _messagesDecodeCache[matchId];
+    if (cached != null && cached.$1 == raw) {
+      return cached.$2.map((m) => Map<String, dynamic>.from(m)).toList();
+    }
+    final List<Map<String, dynamic>> decoded;
+    try {
+      decoded = (jsonDecode(raw) as List).cast<Map<String, dynamic>>();
+    } catch (_) {
+      return const [];
+    }
+    for (final msg in decoded) {
+      if (msg['id'] != null && msg['id'] is! String) {
+        msg['id'] = msg['id'].toString();
+      }
+      if (msg['sender_id'] != null && msg['sender_id'] is! String) {
+        msg['sender_id'] = msg['sender_id'].toString();
+      }
+      if (msg['match_id'] != null && msg['match_id'] is! String) {
+        msg['match_id'] = msg['match_id'].toString();
+      }
+    }
+    _messagesDecodeCache[matchId] = (raw, decoded);
+    return decoded.map((m) => Map<String, dynamic>.from(m)).toList();
+  }
+
   /// Full-text search across cached message bodies.
   ///
   /// Runs entirely on-device. Messages are end-to-end encrypted, so the server
@@ -2357,6 +2435,66 @@ class LocalDbService {
       await box.put(matchId, jsonEncode(messages));
     } catch (_) {
       // Best-effort: a status-only merge failure must not break the chat UI.
+    }
+  }
+
+  Future<void> mergeMessageStatuses(
+    String matchId,
+    List<Map<String, dynamic>> statuses,
+  ) async {
+    if (matchId.isEmpty || statuses.isEmpty) return;
+    try {
+      final box = await _getMessagesBox();
+      final messages = await getMessages(matchId);
+      if (messages.isEmpty) return;
+
+      final indexById = <String, int>{
+        for (var i = 0; i < messages.length; i++)
+          if (messages[i]['id'] != null) messages[i]['id'].toString(): i,
+      };
+
+      DateTime? parseInstant(dynamic value) {
+        final text = value?.toString();
+        if (text == null || text.isEmpty) return null;
+        return DateTime.tryParse(text)?.toUtc();
+      }
+
+      var changed = false;
+      for (final status in statuses) {
+        final id = status['id']?.toString();
+        if (id == null || id.isEmpty) continue;
+        final index = indexById[id];
+        if (index == null) continue;
+
+        final msg = Map<String, dynamic>.from(messages[index]);
+        final serverDelivered = parseInstant(status['delivered_at']);
+        final serverRead = parseInstant(status['read_at']);
+
+        final localDeliveredInstant = parseInstant(msg['delivered_at']);
+        if (serverDelivered != null &&
+            (localDeliveredInstant == null ||
+                serverDelivered.isAfter(localDeliveredInstant))) {
+          msg['delivered_at'] = status['delivered_at'].toString();
+          changed = true;
+        }
+
+        final localReadInstant = parseInstant(msg['read_at']);
+        if (serverRead != null &&
+            (localReadInstant == null || serverRead.isAfter(localReadInstant))) {
+          msg['read_at'] = status['read_at'].toString();
+          changed = true;
+        }
+
+        if (changed) messages[index] = msg;
+      }
+
+      if (!changed) return;
+      final newData = jsonEncode(messages);
+      if (newData != box.get(matchId)) {
+        await box.put(matchId, newData);
+      }
+    } catch (_) {
+      // Best-effort reconciliation; the next full sync covers any failure.
     }
   }
 

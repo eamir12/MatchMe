@@ -1,7 +1,8 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
-import { bidiIsolate, enforceTitleBody, firstTokenName } from "../_shared/notification_limits.ts";
+import { bidiIsolate, enforceTitleBody } from "../_shared/notification_limits.ts";
+import { isWnsChannelUri, sendWnsToast, wnsLaunchUri, WnsSendResult } from "../_shared/wns.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -255,6 +256,45 @@ function isPushEnabledForPrefs(
   }
 }
 
+// Top-level `message_previews` flag (default true). Killed/background pushes
+// bypass every client gate, so when the recipient turned message previews off
+// the server must replace the tray body with a generic localized string.
+function isMessagePreviewsEnabled(prefs: unknown): boolean {
+  try {
+    if (prefs == null || typeof prefs !== "object" || Array.isArray(prefs)) return true;
+    const v = (prefs as Record<string, unknown>)["message_previews"];
+    if (typeof v === "boolean") return v;
+    return true;
+  } catch (_) {
+    return true;
+  }
+}
+
+// Whether the recipient wants a sound for this notification type. Mirrors the
+// client's isMethodEnabled(sound): a global `sound:false` disables every type;
+// otherwise an explicit matrix[key].sound wins, else default true.
+function isSoundEnabledForPrefs(prefs: unknown, matrixKey: PushMatrixKey): boolean {
+  try {
+    if (prefs == null || typeof prefs !== "object" || Array.isArray(prefs)) return true;
+    const p = prefs as Record<string, unknown>;
+    const gm = p["global_methods"];
+    if (gm != null && typeof gm === "object" && !Array.isArray(gm)) {
+      if ((gm as Record<string, unknown>)["sound"] === false) return false;
+    }
+    const matrix = p["matrix"];
+    if (matrix != null && typeof matrix === "object" && !Array.isArray(matrix)) {
+      const entry = (matrix as Record<string, unknown>)[matrixKey];
+      if (entry != null && typeof entry === "object" && !Array.isArray(entry)) {
+        const v = (entry as Record<string, unknown>)["sound"];
+        if (typeof v === "boolean") return v;
+      }
+    }
+    return true;
+  } catch (_) {
+    return true;
+  }
+}
+
 // MatchMe ships exactly three languages: en, es, he. Keep this list and
 // _pushStrings in sync with the AppLanguage entries in
 // lib/providers/locale_provider.dart. Anything else falls back to English
@@ -449,6 +489,71 @@ async function recordInboxNotification(
   }
 }
 
+// The client refreshes this short-lived heartbeat while a specific chat is
+// actually visible. This check is shared by both translated and legacy chat
+// push paths, and must run before either inbox insertion or FCM delivery.
+async function isRecipientViewingMatch(
+  adminClient: SupabaseClient,
+  userId: string,
+  matchId: string,
+  requestId: string,
+): Promise<boolean> {
+  const freshSince = new Date(Date.now() - 45_000).toISOString();
+  const { data, error } = await adminClient
+    .from("user_chat_view_state")
+    .select("session_id")
+    .eq("user_id", userId)
+    .eq("match_id", matchId)
+    .eq("is_active", true)
+    .gte("updated_at", freshSince)
+    .limit(1);
+  if (error) {
+    console.log(`[push-message] chat_view_state_error id=${requestId}`, {
+      userId,
+      matchId,
+      ...formatSbErrorLocal(error),
+    });
+    return false;
+  }
+  return (data?.length ?? 0) > 0;
+}
+
+async function getUnreadChatMessageCount(
+  adminClient: SupabaseClient,
+  userId: string,
+  matchId: string,
+): Promise<number> {
+  const { count, error } = await adminClient
+    .from("chat_messages")
+    .select("id", { count: "exact", head: true })
+    .eq("match_id", matchId)
+    .neq("sender_id", userId)
+    .is("read_at", null);
+  return error ? 1 : (count ?? 1);
+}
+
+async function getUnreadChatNotificationBodies(
+  adminClient: SupabaseClient,
+  userId: string,
+  matchId: string,
+): Promise<string[]> {
+  const { data, error } = await adminClient
+    .from("user_notifications")
+    .select("body, created_at")
+    .eq("user_id", userId)
+    .eq("type", "chat_message")
+    .is("read_at", null)
+    .is("deleted_at", null)
+    .contains("data", { matchId })
+    .order("created_at", { ascending: false })
+    .limit(5);
+  if (error || !data) return [];
+  return data
+    .map((row) => String((row as { body?: unknown }).body ?? "").trim())
+    .filter((body) => body.length > 0)
+    .reverse();
+}
+
 function formatSbErrorLocal(err: unknown): Record<string, unknown> {
   try {
     if (!err || typeof err !== "object") return { error: String(err) };
@@ -473,6 +578,7 @@ async function sendFcmV1({
   channelId,
   badge,
   silent,
+  sound,
 }: {
   serviceAccount: ServiceAccount;
   accessToken: string;
@@ -484,6 +590,7 @@ async function sendFcmV1({
   channelId?: string;
   badge?: number;
   silent?: boolean;
+  sound?: boolean;
 }): Promise<{ ok: boolean; status: number; body: unknown }> {
   const projectId = serviceAccount.project_id.trim();
   const url = `https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`;
@@ -505,9 +612,12 @@ async function sendFcmV1({
   const resolvedBadge = typeof badge === "number" && Number.isFinite(badge)
     ? Math.min(99, Math.max(0, Math.floor(badge)))
     : 1;
-  // Silent (retraction) pushes carry data only: no tray card, just a wakeup
-  // so clients can cancel/rebuild the grouped chat notification. iOS needs
-  // push-type background + content-available and NO alert block.
+  // Sound is opt-out per recipient preference; default true preserves the
+  // previous always-sound behavior for unaffected accounts.
+  const playSound = sound !== false;
+  // Silent pushes carry data only: clients rebuild/update the existing
+  // grouped chat card without issuing another alert. iOS needs push-type
+  // background + content-available and NO alert block.
   if (silent === true) {
     const silentBody = {
       message: {
@@ -570,7 +680,7 @@ async function sendFcmV1({
           ...(collapse ? { tag: collapse } : {}),
           channelId: resolvedChannel,
           notificationPriority: "PRIORITY_HIGH",
-          defaultSound: true,
+          defaultSound: playSound,
         },
       },
       apns: {
@@ -583,10 +693,15 @@ async function sendFcmV1({
         payload: {
           aps: {
             alert: { title: notification.title, body: notification.body },
-            sound: "default",
+            ...(playSound ? { sound: "default" } : {}),
             badge: resolvedBadge,
             "content-available": 1,
             "mutable-content": 1,
+            // Client-side dedupe parity with the Android `tag`: iOS surfaces
+            // this as threadIdentifier on the delivered notification, letting
+            // the app detect "the server card for this event is already in
+            // Notification Center" before posting a local duplicate.
+            ...(collapse ? { "thread-id": collapse } : {}),
           },
         },
       },
@@ -808,6 +923,41 @@ serve(async (req) => {
       return Array.from(new Set(tokens));
     }
 
+    // Windows desktop recipient channels. The MSIX-packaged client registers
+    // its WNS channel URI on its platform='windows' session row (metadata
+    // wns_channel_uri), refreshed by the client on every app start because
+    // WNS channels expire after ~30 days. UNREGISTERED pruning happens in
+    // cron-jobs via clear_user_session_wns_channel when the dispatcher
+    // reports 410 (or in session upsert via channel steal).
+    async function loadWnsChannels(userId: string): Promise<string[]> {
+      try {
+        const { data, error } = await adminClient
+          .from("user_session")
+          .select("id, metadata")
+          .eq("user_id", userId)
+          .eq("revoked", false)
+          .eq("platform", "windows");
+        if (error) {
+          console.log(`[push-message] wns_channels_error id=${requestId}`, {
+            recipientId: userId,
+            ...formatSbError(error),
+          });
+          return [];
+        }
+        const channels = ((data as unknown[] | null) ?? [])
+          .map((r) => {
+            const md = (r as { metadata?: Record<string, unknown> }).metadata ?? {};
+            const uri = String(md["wns_channel_uri"] ?? "").trim();
+            return uri || null;
+          })
+          .filter((u): u is string => typeof u === "string" && isWnsChannelUri(u));
+        return Array.from(new Set(channels));
+      } catch (e) {
+        console.log(`[push-message] wns_channels_throw id=${requestId}`, { error: String(e) });
+        return [];
+      }
+    }
+
     let serviceAccount: ServiceAccount;
     try {
       serviceAccount = JSON.parse(fcmServiceAccountJson) as ServiceAccount;
@@ -896,7 +1046,8 @@ serve(async (req) => {
       }
 
       const displayNameFor = (userId: string): string => {
-        return firstTokenName(usersById.get(userId) || "Someone");
+        const raw = (usersById.get(userId) ?? "").trim();
+        return raw ? maskFullName(raw) : "Someone";
       };
 
       const recipients = [user1Id, user2Id];
@@ -944,16 +1095,18 @@ serve(async (req) => {
             return { recipientId, requested: 0, sent: 0, failed: 0, skipped: "disabled", failures: [] as unknown[] };
           }
           const tokens = await loadUserTokens(recipientId);
+          const wnsChannels = await loadWnsChannels(recipientId);
           console.log(`[push-message] tokens id=${requestId}`, {
             recipientId,
             tokens: tokens.length,
+            wns: wnsChannels.length,
           });
-          if (tokens.length === 0) return { recipientId, requested: 0, sent: 0, failed: 0, failures: [] as unknown[] };
+          if (tokens.length === 0 && wnsChannels.length === 0) return { recipientId, requested: 0, sent: 0, failed: 0, failures: [] as unknown[] };
 
           const badge = await fetchBadgeCount(adminClient, recipientId);
 
-          const results = await Promise.allSettled(
-            tokens.map((token) =>
+          const results = await Promise.allSettled([
+            ...tokens.map((token) =>
               sendFcmV1({
                 serviceAccount,
                 accessToken,
@@ -964,9 +1117,19 @@ serve(async (req) => {
                 collapseKey: `new_match_${matchId}`,
                 channelId: "chat_messages",
                 badge,
+                sound: isSoundEnabledForPrefs(prefs, "new_match"),
               })
             ),
-          );
+            ...wnsChannels.map((channel) =>
+              sendWnsToast(adminClient, {
+                channelUri: channel,
+                title: notification.title,
+                body: notification.body,
+                launch: wnsLaunchUri(matchId),
+                tag: `new_match_${matchId}`,
+              })
+            ),
+          ]);
 
           const successes: unknown[] = [];
           const failures: unknown[] = [];
@@ -981,7 +1144,7 @@ serve(async (req) => {
 
           return {
             recipientId,
-            requested: tokens.length,
+            requested: tokens.length + wnsChannels.length,
             sent: successes.length,
             failed: failures.length,
             failures,
@@ -1049,13 +1212,16 @@ serve(async (req) => {
 
       const { data: msgRow, error: msgErr } = await adminClient
         .from("chat_messages")
-        .select("id, match_id, sender_id")
+        .select("id, match_id, sender_id, read_at")
         .eq("id", messageId)
         .maybeSingle();
 
       if (msgErr || !msgRow) {
         console.log(`[push-message] message_not_found id=${requestId}`, { messageId });
         return jsonResponse({ error: "Message not found" }, 404);
+      }
+      if (msgRow.read_at != null) {
+        return jsonResponse({ ok: true, sent: 0, skipped: "message_already_read" });
       }
 
       const tMatchId = String(msgRow.match_id ?? "").trim();
@@ -1080,11 +1246,18 @@ serve(async (req) => {
         recipientId,
         requestId,
       });
-      const senderName = resolvedRawName ||
-        pushString(profile.locale, "someone");
+      const senderName = resolvedRawName
+        ? maskFullName(resolvedRawName)
+        : pushString(profile.locale, "someone");
 
       const enforced = enforceTitleBody(senderName, providedBody);
-      const notification = { title: enforced.title, body: enforced.body };
+      // Message previews off → mask both the tray and inbox body. This branch
+      // is called only after translate-proxy has a displayable message.
+      const enforcedPush = isMessagePreviewsEnabled(profile.prefs)
+        ? enforced
+        : enforceTitleBody(senderName, pushString(profile.locale, "newMessageBody"));
+      const inboxNotification = { title: enforcedPush.title, body: enforcedPush.body };
+      let notification = { title: enforcedPush.title, body: enforcedPush.body };
       const data: Record<string, string> = {
         matchId: tMatchId,
         match_id: tMatchId,
@@ -1098,18 +1271,47 @@ serve(async (req) => {
         kind: "message",
         type: "chat_message",
         preview_capable: "true",
+        aggregated_messages: "true",
       };
+
+      if (await isRecipientViewingMatch(adminClient, recipientId, tMatchId, requestId)) {
+        console.log(`[push-message] suppress_viewed_chat id=${requestId}`, {
+          recipientId,
+          matchId: tMatchId,
+        });
+        return jsonResponse({ ok: true, sent: 0, skipped: "chat_viewed" });
+      }
 
       // The inbox records every chat message, regardless of push
       // preferences or registered devices (deduped per message by the DB).
       await recordInboxNotification(adminClient, {
         userId: recipientId,
         type: "chat_message",
-        title: notification.title,
-        body: notification.body,
+        title: inboxNotification.title,
+        body: inboxNotification.body,
         data,
         requestId,
       });
+
+      const previewBodies = isMessagePreviewsEnabled(profile.prefs)
+        ? await getUnreadChatNotificationBodies(adminClient, recipientId, tMatchId)
+        : [];
+      if (previewBodies.length > 1) {
+        const aggregated = enforceTitleBody(
+          notification.title,
+          previewBodies.join("\n"),
+        );
+        // enforceTitleBody also reports whether it had to truncate. That is
+        // useful internally, but FCM v1's notification object only accepts
+        // title/body/image. Passing `truncated` here makes FCM reject the
+        // whole push (while the inbox row above has already been saved).
+        notification = { title: aggregated.title, body: aggregated.body };
+      }
+      const unreadCount = await getUnreadChatMessageCount(adminClient, recipientId, tMatchId);
+      const shouldAlert = unreadCount <= 1;
+      data["should_alert"] = shouldAlert ? "true" : "false";
+      data["notification_title"] = notification.title;
+      data["notification_body"] = notification.body;
 
       // Server-side prefs gate: only the FCM send is gated; the inbox row
       // above is unconditional.
@@ -1119,36 +1321,61 @@ serve(async (req) => {
       }
 
       const recipientTokens = await loadUserTokens(recipientId);
+      const recipientWns = await loadWnsChannels(recipientId);
       console.log(`[push-message] chat_tokens id=${requestId}`, {
         recipientId,
         tokens: recipientTokens.length,
+        wns: recipientWns.length,
       });
-      if (recipientTokens.length === 0) {
+      if (recipientTokens.length === 0 && recipientWns.length === 0) {
         return jsonResponse({ ok: true, sent: 0 });
       }
 
       const badge = await fetchBadgeCount(adminClient, recipientId);
 
+      // Per-device targets across transports: FCM tokens (ios/android/web) and
+      // WNS channel URIs (windows). Both share the same tag/collapse contract
+      // so retries replace the tray entry instead of stacking.
+      type ChannelTarget = { kind: "fcm" | "wns"; token: string };
+      const targets: ChannelTarget[] = [
+        ...recipientTokens.map((t): ChannelTarget => ({ kind: "fcm", token: t })),
+        ...recipientWns.map((uri): ChannelTarget => ({ kind: "wns", token: uri })),
+      ];
       const results = await Promise.allSettled(
-        recipientTokens.map((token) =>
-          sendFcmV1({
-            serviceAccount,
-            accessToken,
-            token,
-            notification,
-            data,
-            tag: `match_${tMatchId}`,
-            collapseKey: `match_${tMatchId}`,
-            channelId: "chat_messages",
-            badge,
-          })
+        targets.map((target) =>
+          target.kind === "wns"
+            ? sendWnsToast(adminClient, {
+                channelUri: target.token,
+                title: notification.title,
+                body: notification.body,
+                launch: wnsLaunchUri(tMatchId),
+                tag: `match_${tMatchId}`,
+                // A no-popup delivery into Action Center is the Windows form
+                // of FCM's silent push, used while older messages are still
+                // unread so the alert spotlight is not reset for each one.
+                suppressPopup: !shouldAlert,
+              })
+            : sendFcmV1({
+                serviceAccount,
+                accessToken,
+                token: target.token,
+                notification,
+                data,
+                tag: `match_${tMatchId}`,
+                collapseKey: `match_${tMatchId}`,
+                channelId: "chat_messages",
+                badge,
+                sound: shouldAlert && isSoundEnabledForPrefs(profile.prefs, "chat_messages"),
+                silent: !shouldAlert,
+              })
         ),
       );
       const successes: unknown[] = [];
       const failures: Array<Record<string, unknown>> = [];
       const retryableFailures: Array<{ token: string; detail: Record<string, unknown> }> = [];
+      const expiredWnsChannels: string[] = [];
       for (let i = 0; i < results.length; i++) {
-        const token = recipientTokens[i];
+        const token = targets[i].token;
         const r = results[i];
         if (r.status === "fulfilled") {
           if (r.value.ok) successes.push(r.value.body);
@@ -1161,6 +1388,8 @@ serve(async (req) => {
             // UNREGISTERED token) are logged only: retrying cannot fix them.
             if (r.value.status === 429 || r.value.status >= 500) {
               retryableFailures.push({ token, detail });
+            } else if ((r.value as unknown as WnsSendResult).expired === true) {
+              expiredWnsChannels.push(token);
             }
           }
         } else {
@@ -1169,9 +1398,22 @@ serve(async (req) => {
           retryableFailures.push({ token, detail: { error: String(r.reason) } });
         }
       }
+      // Expired WNS channels are permanent (app reinstalled / 30-day expiry):
+      // prune the registration instead of retrying until the client reregisters.
+      if (expiredWnsChannels.length > 0) {
+        for (const uri of expiredWnsChannels) {
+          try {
+            await adminClient.rpc("clear_user_session_wns_channel", { p_wns_channel_uri: uri });
+          } catch (e) {
+            console.log(`[push-message] wns_channel_prune_failed id=${requestId}`, {
+              error: String(e),
+            });
+          }
+        }
+      }
       console.log(`[push-message] chat_send_result id=${requestId}`, {
         recipientId,
-        requested: recipientTokens.length,
+        requested: targets.length,
         sent: successes.length,
         failed: failures.length,
         failures,
@@ -1182,6 +1424,9 @@ serve(async (req) => {
         const queueRows = retryableFailures.map((f) => ({
           user_id: recipientId,
           fcm_token: f.token,
+          // WNS channel URIs ride the same queue column; the cron-jobs
+          // dispatcher discriminates by the *.notify.windows.com host.
+          platform: isWnsChannelUri(f.token) ? "windows" : null,
           title: notification.title,
           body: notification.body,
           data,
@@ -1271,7 +1516,8 @@ serve(async (req) => {
         return jsonResponse({ ok: true, sent: 0, skipped: "disabled" });
       }
       const rTokens = await loadUserTokens(rRecipientId);
-      if (rTokens.length === 0) {
+      const rWnsChannels = await loadWnsChannels(rRecipientId);
+      if (rTokens.length === 0 && rWnsChannels.length === 0) {
         return jsonResponse({ ok: true, sent: 0 });
       }
       const rBadge = await fetchBadgeCount(adminClient, rRecipientId);
@@ -1288,8 +1534,14 @@ serve(async (req) => {
         kind: mode,
         type: mode,
       };
-      const rResults = await Promise.allSettled(
-        rTokens.map((token) =>
+      // Silence on FCM = data-only refresh. WNS cannot express that until the
+      // app reacts, so the Action Center entry with this tag is REPLACED with
+      // a suppressed-popup placeholder (same group "matchme") instead of
+      // leaving the outdated message text visible after edit/deletion.
+      const retractionTitle = "MatchMe";
+      const retractionBody = "…";
+      const rResults = await Promise.allSettled([
+        ...rTokens.map((token) =>
           sendFcmV1({
             serviceAccount,
             accessToken,
@@ -1303,17 +1555,43 @@ serve(async (req) => {
             silent: true,
           })
         ),
-      );
+        ...rWnsChannels.map((channel) =>
+          sendWnsToast(adminClient, {
+            channelUri: channel,
+            title: retractionTitle,
+            body: retractionBody,
+            launch: wnsLaunchUri(rMatchId),
+            tag: `match_${rMatchId}`,
+            suppressPopup: true,
+          })
+        ),
+      ]);
       let rSent = 0;
       for (const r of rResults) {
         if (r.status === "fulfilled" && r.value.ok) rSent++;
       }
+      // Prune stale WNS channels the dispatcher reported as expired: entries
+      // [rTokens.length .. ) are WNS targets, in rWnsChannels order.
+      for (let i = rTokens.length; i < rTokens.length + rWnsChannels.length; i++) {
+        const r = rResults[i];
+        if (r.status !== "fulfilled") continue;
+        const v = r.value as unknown as WnsSendResult;
+        if (v.expired !== true) continue;
+        const channelUri = rWnsChannels[i - rTokens.length];
+        try {
+          await adminClient.rpc("clear_user_session_wns_channel", { p_wns_channel_uri: channelUri });
+        } catch (e) {
+          console.log(`[push-message] wns_retraction_prune_failed id=${requestId}`, {
+            error: String(e),
+          });
+        }
+      }
       return jsonResponse({
         ok: true,
         mode,
-        requested: rTokens.length,
+        requested: rTokens.length + rWnsChannels.length,
         sent: rSent,
-        failed: rTokens.length - rSent,
+        failed: rTokens.length + rWnsChannels.length - rSent,
       });
     }
 
@@ -1360,7 +1638,7 @@ serve(async (req) => {
 
       const { data: msgRow, error: msgErr } = await adminClient
         .from("chat_messages")
-        .select("id, match_id, sender_id, encryption_scheme, created_at")
+        .select("id, match_id, sender_id, encryption_scheme, created_at, read_at")
         .eq("id", messageId)
         .maybeSingle();
 
@@ -1369,6 +1647,10 @@ serve(async (req) => {
         return jsonResponse({ error: "Message not found" }, 404);
       }
       messageRow = msgRow as Record<string, unknown>;
+    }
+
+    if (messageRow["read_at"] != null) {
+      return jsonResponse({ ok: true, sent: 0, skipped: "message_already_read" });
     }
 
     const matchId = String(messageRow["match_id"] ?? "").trim() || matchIdHint;
@@ -1468,8 +1750,9 @@ serve(async (req) => {
       recipientId,
       requestId,
     });
-    const senderName = resolvedRawName ||
-      pushString(recipientProfile.locale, "someone");
+    const senderName = resolvedRawName
+      ? maskFullName(resolvedRawName)
+      : pushString(recipientProfile.locale, "someone");
 
     const encryptionScheme = String(messageRow["encryption_scheme"] ?? "v1").trim().toLowerCase();
 
@@ -1484,6 +1767,7 @@ serve(async (req) => {
 
     // Look up recipient's chat to check translation language preference
     let recipientTargetLang: string | null = null;
+    let recipientTranslationEnabled = false;
     try {
       const { data: recipientChat } = await adminClient
         .from("chats")
@@ -1491,10 +1775,26 @@ serve(async (req) => {
         .eq("user_id", recipientId)
         .eq("match_id", matchId)
         .maybeSingle();
-      if (recipientChat?.translation_enabled && recipientChat.translation_language) {
+      recipientTranslationEnabled = recipientChat?.translation_enabled === true;
+      if (recipientTranslationEnabled && recipientChat?.translation_language) {
         recipientTargetLang = String(recipientChat.translation_language).trim().toLowerCase();
       }
     } catch (_) {}
+
+    // Encrypted messages configured for translation are published only by
+    // translate-proxy after it has produced a current, decryptable result.
+    // Never create an inbox row or send the legacy generic placeholder here.
+    if (recipientTranslationEnabled) {
+      return jsonResponse({ ok: true, sent: 0, skipped: "translation_pending" });
+    }
+
+    // With previews enabled, this legacy encrypted-message path knows only a
+    // generic placeholder. Wait for translate-proxy, which can decrypt the
+    // message on the server and publish the actual display text. A generic
+    // body is permissible only when the user explicitly disabled previews.
+    if (isMessagePreviewsEnabled(recipientProfile.prefs)) {
+      return jsonResponse({ ok: true, sent: 0, skipped: "content_pending" });
+    }
 
     // If the server has a translation matching the recipient's target language, we could
     // include the translated text — but since we can't decrypt server-side without the
@@ -1539,6 +1839,14 @@ serve(async (req) => {
     );
     const notification = { title: enforced.title, body: enforced.body };
 
+    if (await isRecipientViewingMatch(adminClient, recipientId, matchId, requestId)) {
+      console.log(`[push-message] suppress_viewed_chat id=${requestId}`, {
+        recipientId,
+        matchId,
+      });
+      return jsonResponse({ ok: true, sent: 0, skipped: "chat_viewed" });
+    }
+
     // The inbox records every chat message, regardless of push preferences
     // or registered devices (deduped per message by the DB).
     await recordInboxNotification(adminClient, {
@@ -1549,6 +1857,11 @@ serve(async (req) => {
       data,
       requestId,
     });
+    const unreadCount = await getUnreadChatMessageCount(adminClient, recipientId, matchId);
+    const shouldAlert = unreadCount <= 1;
+    data["should_alert"] = shouldAlert ? "true" : "false";
+    data["notification_title"] = notification.title;
+    data["notification_body"] = notification.body;
 
     // Server-side prefs gate: only the FCM send is gated; the inbox row
     // above is unconditional.
@@ -1558,11 +1871,16 @@ serve(async (req) => {
     }
 
     const recipientTokens = await loadUserTokens(recipientId);
-    console.log(`[push-message] tokens id=${requestId}`, { recipientTokens: recipientTokens.length });
-    if (recipientTokens.length === 0) {
-      // No push target (desktop with no FCM registration, uninstalled
-      // client): best-effort email so the mention isn't silently lost.
-      // Gated by the same chat-push preference checked above.
+    const recipientWns = await loadWnsChannels(recipientId);
+    console.log(
+      `[push-message] tokens id=${requestId}`,
+      { fcm: recipientTokens.length, wns: recipientWns.length },
+    );
+    if (recipientTokens.length === 0 && recipientWns.length === 0) {
+      // No push target on any transport (uninstalled client, desktop without
+      // MSIX packaging running the realtime fallback): best-effort email so
+      // the mention isn't silently lost. Gated by the same chat-push
+      // preference checked above.
       const emailed = await sendOfflineMentionEmail({
         adminClient,
         recipientId,
@@ -1586,42 +1904,76 @@ serve(async (req) => {
       });
     }
 
-    if (uniqueTokens.length === 0) {
+    if (uniqueTokens.length === 0 && recipientWns.length === 0) {
       return jsonResponse({ ok: true, sent: 0 });
     }
 
     const badge = await fetchBadgeCount(adminClient, recipientId);
 
-    const results = await Promise.allSettled(
-      uniqueTokens.map((token) =>
-        sendFcmV1({
-          serviceAccount,
-          accessToken,
-          token,
-          notification,
-          data,
-          tag: `match_${matchId}`,
-          collapseKey: `match_${matchId}`,
-          channelId: "chat_messages",
-          badge,
-        })
+    type ChannelTarget = { kind: "fcm" | "wns"; token: string };
+    const legacyTargets: ChannelTarget[] = [
+      ...uniqueTokens.map((t): ChannelTarget => ({ kind: "fcm", token: t })),
+      ...recipientWns.map((uri): ChannelTarget => ({ kind: "wns", token: uri })),
+    ];
+    const legacyResults = await Promise.allSettled(
+      legacyTargets.map((target) =>
+        target.kind === "wns"
+          ? sendWnsToast(adminClient, {
+              channelUri: target.token,
+              title: notification.title,
+              body: notification.body,
+              launch: wnsLaunchUri(matchId),
+              tag: `match_${matchId}`,
+              suppressPopup: !shouldAlert,
+            })
+          : sendFcmV1({
+              serviceAccount,
+              accessToken,
+              token: target.token,
+              notification,
+              data,
+              tag: `match_${matchId}`,
+              collapseKey: `match_${matchId}`,
+              channelId: "chat_messages",
+              badge,
+              sound: shouldAlert && isSoundEnabledForPrefs(recipientProfile.prefs, "chat_messages"),
+              silent: !shouldAlert,
+            })
       ),
     );
 
   const successes: unknown[] = [];
   const failures: unknown[] = [];
-  for (const r of results) {
+  const expiredLegacyWns: string[] = [];
+  for (let i = 0; i < legacyResults.length; i++) {
+    const r = legacyResults[i];
     if (r.status === "fulfilled") {
-      if (r.value.ok) successes.push(r.value.body);
-      else failures.push({ status: r.value.status, body: r.value.body });
+      if (r.value.ok) {
+        successes.push(r.value.body);
+      } else {
+        failures.push({ status: r.value.status, body: r.value.body });
+        if ((r.value as unknown as WnsSendResult).expired === true &&
+            legacyTargets[i].kind === "wns") {
+          expiredLegacyWns.push(legacyTargets[i].token);
+        }
+      }
     } else {
       failures.push({ error: String(r.reason) });
+    }
+  }
+  for (const uri of expiredLegacyWns) {
+    try {
+      await adminClient.rpc("clear_user_session_wns_channel", { p_wns_channel_uri: uri });
+    } catch (e) {
+      console.log(`[push-message] wns_channel_prune_failed id=${requestId}`, {
+        error: String(e),
+      });
     }
   }
 
     let emailFallback = false;
     if (successes.length === 0 && failures.length > 0) {
-      // Tokens exist but all sends failed (stale/uninstalled): same fallback.
+      // Channels exist but all sends failed (stale/uninstalled): same fallback.
       emailFallback = await sendOfflineMentionEmail({
         adminClient,
         recipientId,
@@ -1633,7 +1985,7 @@ serve(async (req) => {
     }
     const response = {
       ok: true,
-      requested: uniqueTokens.length,
+      requested: legacyTargets.length,
       sent: successes.length,
       failed: failures.length,
       failures,

@@ -179,6 +179,7 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 val originalContent = call.argument<String>("originalContent")
                 val senderName = call.argument<String>("senderName")
                 val matchId = call.argument<String>("matchId")
+                val shouldAlert = call.argument<Boolean>("shouldAlert")
 
                 // Log.d("MatchMeBackgroundPlugin", "[PLUGIN] checkNotifications called with messageId: $messageId, translatedContent: '$translatedContent', originalContent: '$originalContent', senderName: '$senderName', matchId: '$matchId'")
 
@@ -193,7 +194,8 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                                 translatedContent,
                                 originalContent ?: translatedContent,
                                 senderName ?: "Someone",
-                                matchId
+                                matchId,
+                                shouldAlert
                             )
                         } catch (e: Exception) {
                             // Log.e("MatchMeBackgroundPlugin", "[PLUGIN] Error showing translated notification", e)
@@ -205,13 +207,24 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     CoroutineScope(Dispatchers.IO).launch {
                         try {
                             // Log.d("MatchMeBackgroundPlugin", "[PLUGIN] Calling MatchMeBackgroundService.checkForNotifications")
-                            MatchMeBackgroundService.checkForNotifications(context, messageId)
+                            MatchMeBackgroundService.checkForNotifications(context, messageId, matchId)
                             // Log.d("MatchMeBackgroundPlugin", "[PLUGIN] checkForNotifications completed")
                         } catch (e: Exception) {
                             // Log.e("MatchMeBackgroundPlugin", "[PLUGIN] Error checking notifications", e)
                         }
                     }
                 }
+                result.success(null)
+            }
+            "cancelServerCard" -> {
+                val tag = call.argument<String>("tag")
+                result.success(cancelServerCardByTag(tag.orEmpty()))
+            }
+            "wasMatchNotified" -> {
+                result.success(wasMatchNotified(call.argument<String>("matchId")))
+            }
+            "markMatchNotified" -> {
+                markMatchNotified(call.argument<String>("matchId"))
                 result.success(null)
             }
             "isIgnoringBatteryOptimizations" -> {
@@ -413,6 +426,62 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             ) == PackageManager.PERMISSION_GRANTED
         } else {
             true
+        }
+    }
+
+    // --- Notification dedupe / cleanup helpers. Same prefs contract as
+    // MatchMeBackgroundService and LocationWorker (plain
+    // FlutterSharedPreferences, "flutter." prefix). ---
+
+    private fun notifPrefs() =
+        context.getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
+
+    /** True when this match was already alerted on this device through any
+     *  path (native card, server card, WorkManager fallback). Lets the
+     *  foreground FCM handler skip a second card for the same match. */
+    private fun wasMatchNotified(matchId: String?): Boolean {
+        val id = matchId?.trim().orEmpty()
+        if (id.isEmpty()) return true
+        return try {
+            val prefs = notifPrefs()
+            prefs.getString("flutter.last_notified_match_id", null) == id ||
+                prefs.getString("flutter.worker_last_notified_key", null) == "match:$id"
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** Record the match as alerted so the native Realtime/poll paths and the
+     *  WorkManager fallback skip their own card for the same match. */
+    private fun markMatchNotified(matchId: String?) {
+        val id = matchId?.trim().orEmpty()
+        if (id.isEmpty()) return
+        try {
+            notifPrefs().edit()
+                .putString("flutter.last_notified_match_id", id)
+                .putString("flutter.worker_last_notified_key", "match:$id")
+                .apply()
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Cancel server-posted (FCM SDK) tray cards by exact tag. */
+    private fun cancelServerCardByTag(tag: String): Boolean {
+        val trimmed = tag.trim()
+        if (trimmed.isEmpty()) return false
+        return try {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE)
+                as android.app.NotificationManager
+            var cancelled = false
+            nm.activeNotifications
+                .filter { it.tag == trimmed }
+                .forEach { sbn ->
+                    nm.cancel(sbn.tag, sbn.id)
+                    cancelled = true
+                }
+            cancelled
+        } catch (_: Exception) {
+            false
         }
     }
 }

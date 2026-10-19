@@ -330,20 +330,32 @@ class TypingService {
   Future<RealtimeChannel?> _ensureChannel() {
     if (_disposed) return Future.value(null);
     if (shouldSkipSupabaseCalls()) return Future.value(null);
-    if (_channel != null) return Future.value(_channel);
     final inFlight = _channelFuture;
     if (inFlight != null) return inFlight;
 
-    // Fast path: the receive side already subscribed via the realtime
-    // manager — broadcasts can be sent over that same WebSocket.
+    // Prefer the manager's current channel before the cached handle. The
+    // manager replaces channels after a connectivity pause/resume, while this
+    // service can outlive that cycle; retaining its old handle silently sends
+    // typing events on a channel that is no longer joined.
     try {
       final shared = SupabaseRealtimeManager.instance.getChannel(_channelName);
       if (shared != null) {
+        final previous = _channel;
+        final previousWasOwned = _ownsChannel;
         _channel = shared;
         _ownsChannel = false;
+        if (previousWasOwned &&
+            previous != null &&
+            !identical(previous, shared)) {
+          unawaited(supabase.removeChannel(previous));
+        }
         return Future.value(shared);
       }
     } catch (_) {}
+
+    // No hub subscriber exists; reuse our own still-live channel, or create
+    // one if this is the first send.
+    if (_channel != null) return Future.value(_channel);
 
     final future = _createSendChannel();
     _channelFuture = future;

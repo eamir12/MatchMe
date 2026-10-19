@@ -643,19 +643,30 @@ async function handleEncryptedWebhook(
     .select("translation_enabled, translation_language, user_id")
     .eq("match_id", record.match_id);
   const recipientChat = chats?.find((c) => c.user_id !== record.sender_id);
-  const translationEnabled = !!(recipientChat?.translation_enabled && recipientChat?.translation_language);
+  const translationEnabled = recipientChat?.translation_enabled === true;
   const targetLang = recipientChat?.translation_language;
 
   // Determine the body text for the push notification.
   // - Translation enabled + already stored: decrypt the existing translation.
   // - Translation enabled + not yet stored: translate now and store.
-  // - Translation enabled but translation/storage failed: fall back to original.
+  // - Translation enabled but translation/storage failed: keep the message
+  //   completely undisclosed until a current translation is ready.
   // - Translation disabled: use the original plaintext.
   let bodyText = plaintextStr;
   let translatedSuccessfully = false;
 
+  if (translationEnabled && !targetLang) {
+    return new Response(
+      JSON.stringify({ status: "translation_pending", message_id: record.id }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+
   if (translationEnabled && targetLang) {
-    if (record.content_translated_encrypted && record.content_translated_nonce) {
+    const storedTranslationIsCurrent =
+      (record.translated_target_language || "").toLowerCase() === targetLang.toLowerCase() &&
+      (record.translated_source_edited_at ?? null) === (record.edited_at ?? null);
+    if (record.content_translated_encrypted && record.content_translated_nonce && storedTranslationIsCurrent) {
       // Already translated in a previous run — decrypt the stored translation.
       try {
         const detectedSourceLang = record.detected_source_language || "und";
@@ -674,8 +685,8 @@ async function handleEncryptedWebhook(
         bodyText = new TextDecoder().decode(decryptedTranslated);
         translatedSuccessfully = true;
       } catch (e) {
-        console.error("[translate-proxy] Decrypt-translation error, falling back to original:", e);
-        bodyText = plaintextStr;
+        console.error("[translate-proxy] Decrypt-translation error; translation is still pending:", e);
+        bodyText = "";
       }
     } else {
       // Translate now via DeepL, store, and use the translated text.
@@ -695,10 +706,9 @@ async function handleEncryptedWebhook(
         prevTarget,
       );
       if (!webhookClaim) {
-        // Someone else is translating (or just translated) this message.
-        // The push body falls back to the original plaintext; the chat UI
-        // picks up the translation the other request produces.
-        bodyText = plaintextStr;
+        // Another worker owns the translation claim. Do not publish the
+        // original while that translation is in flight.
+        bodyText = "";
       } else {
         try {
           const recipientUserId =
@@ -749,18 +759,25 @@ async function handleEncryptedWebhook(
               console.error(`[translate-proxy] DB update error for webhook message ${record.id}: ${updateErr.message}`);
             }
             await releaseClaim(record.id, webhookClaim, prevTarget);
-            bodyText = plaintextStr;
+            bodyText = "";
           } else {
             bodyText = translatedText;
             translatedSuccessfully = true;
           }
         } catch (error) {
-          console.error("[translate-proxy] Encrypted translation error, falling back to original:", error);
+          console.error("[translate-proxy] Encrypted translation failed; keeping notification pending:", error);
           await releaseClaim(record.id, webhookClaim, prevTarget);
-          bodyText = plaintextStr;
+          bodyText = "";
         }
       }
     }
+  }
+
+  if (translationEnabled && !translatedSuccessfully) {
+    return new Response(
+      JSON.stringify({ status: "translation_pending", message_id: record.id }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   }
 
   // Trigger the push notification with the resolved body text.

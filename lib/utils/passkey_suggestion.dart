@@ -38,6 +38,120 @@ enum PasskeySetupAction {
   showInstructions,
 }
 
+/// Device-setup copy and actions for explaining how to enable passkeys on a
+/// platform whose authenticator (Face ID, screen lock, Windows Hello) isn't
+/// ready yet. Used by both the sign-in card and the Security Center so the
+/// two screens cannot drift apart.
+class PasskeySetupInstructions {
+  const PasskeySetupInstructions({
+    required this.setupBodyKey,
+    required this.instructionsTitleKey,
+    required this.instructionsBodyKey,
+    required this.settingsButtonLabelKey,
+    required this.setupAction,
+  });
+
+  /// Concise card line telling the user what to enable on this device.
+  final String setupBodyKey;
+  final String instructionsTitleKey;
+  final String instructionsBodyKey;
+  final String? settingsButtonLabelKey;
+  final PasskeySetupAction setupAction;
+}
+
+class _PasskeySetupCopy {
+  const _PasskeySetupCopy({
+    required this.loginTitleKey,
+    required this.setupBodyKey,
+    required this.instructionsTitleKey,
+    required this.instructionsBodyKey,
+    required this.settingsButtonLabelKey,
+    required this.setupAction,
+  });
+
+  final String loginTitleKey;
+  final String setupBodyKey;
+  final String instructionsTitleKey;
+  final String instructionsBodyKey;
+  final String? settingsButtonLabelKey;
+  final PasskeySetupAction setupAction;
+}
+
+_PasskeySetupCopy _resolveSetupCopy({
+  required TargetPlatform platform,
+  required bool isWeb,
+}) {
+  if (isWeb) {
+    return const _PasskeySetupCopy(
+      loginTitleKey: 'authPasskeySetupWebLoginTitle',
+      setupBodyKey: 'authPasskeySetupWebInstructionsBody',
+      instructionsTitleKey: 'authPasskeySetupWebInstructionsTitle',
+      instructionsBodyKey: 'authPasskeySetupWebInstructionsBody',
+      settingsButtonLabelKey: null,
+      setupAction: PasskeySetupAction.showInstructions,
+    );
+  }
+  return switch (platform) {
+    TargetPlatform.iOS => const _PasskeySetupCopy(
+      loginTitleKey: 'authPasskeySetupIosLoginTitle',
+      setupBodyKey: 'authPasskeySetupIosBody',
+      instructionsTitleKey: 'authPasskeySetupIosInstructionsTitle',
+      instructionsBodyKey: 'authPasskeySetupIosInstructionsBody',
+      settingsButtonLabelKey: null,
+      setupAction: PasskeySetupAction.showInstructions,
+    ),
+    TargetPlatform.android => const _PasskeySetupCopy(
+      loginTitleKey: 'authPasskeySetupAndroidLoginTitle',
+      setupBodyKey: 'authPasskeySetupAndroidBody',
+      instructionsTitleKey: 'authPasskeySetupAndroidInstructionsTitle',
+      instructionsBodyKey: 'authPasskeySetupAndroidInstructionsBody',
+      settingsButtonLabelKey: 'authPasskeySetupAndroidButton',
+      setupAction: PasskeySetupAction.openAndroidSecuritySettings,
+    ),
+    TargetPlatform.windows => const _PasskeySetupCopy(
+      loginTitleKey: 'authPasskeySetupWindowsLoginTitle',
+      setupBodyKey: 'authPasskeySetupWindowsBody',
+      instructionsTitleKey: 'authPasskeySetupWindowsInstructionsTitle',
+      instructionsBodyKey: 'authPasskeySetupWindowsInstructionsBody',
+      settingsButtonLabelKey: 'authPasskeySetupWindowsButton',
+      setupAction: PasskeySetupAction.openWindowsSignInOptions,
+    ),
+    TargetPlatform.macOS => const _PasskeySetupCopy(
+      loginTitleKey: 'authPasskeySetupMacTitle',
+      setupBodyKey: 'authPasskeySetupMacBody',
+      instructionsTitleKey: 'authPasskeySetupMacInstructionsTitle',
+      instructionsBodyKey: 'authPasskeySetupMacInstructionsBody',
+      settingsButtonLabelKey: null,
+      setupAction: PasskeySetupAction.showInstructions,
+    ),
+    _ => const _PasskeySetupCopy(
+      loginTitleKey: 'authPasskeySetupOtherTitle',
+      setupBodyKey: 'authPasskeySetupOtherBody',
+      instructionsTitleKey: 'authPasskeySetupOtherInstructionsTitle',
+      instructionsBodyKey: 'authPasskeySetupOtherInstructionsBody',
+      settingsButtonLabelKey: null,
+      setupAction: PasskeySetupAction.showInstructions,
+    ),
+  };
+}
+
+/// Device-setup instructions for the current platform. Cards use
+/// [PasskeySetupInstructions.setupBodyKey] as their explanatory line and the
+/// remaining keys to open a how-to dialog.
+PasskeySetupInstructions resolvePasskeySetupInstructions({
+  required TargetPlatform platform,
+  bool isWeb = false,
+}) {
+  final copy = _resolveSetupCopy(platform: platform, isWeb: isWeb);
+  return PasskeySetupInstructions(
+    setupBodyKey: copy.setupBodyKey,
+    instructionsTitleKey: copy.instructionsTitleKey,
+    instructionsBodyKey: copy.instructionsBodyKey,
+    settingsButtonLabelKey: copy.settingsButtonLabelKey,
+    setupAction: copy.setupAction,
+  );
+}
+
 /// Chooses the passkey card's copy and whether to offer the passkey action.
 ///
 /// When no platform authenticator is enrolled the card explains the situation
@@ -50,72 +164,16 @@ PasskeyCardPresentation resolvePasskeyCardPresentation(
 }) {
   switch (capability) {
     case PasskeyDeviceCapability.noPlatformAuthenticator:
-      final configuration = isWeb
-          ? (
-              title: 'authPasskeySetupWebLoginTitle',
-              body: 'authPasskeySetupPasswordAlternative',
-              button: 'authPasskeySetupMoreInfoButton',
-              action: PasskeySetupAction.showInstructions,
-              instructionsTitle: 'authPasskeySetupWebInstructionsTitle',
-              instructionsBody: 'authPasskeySetupWebInstructionsBody',
-              settingsButton: null,
-            )
-          : switch (platform) {
-        TargetPlatform.iOS => (
-          title: 'authPasskeySetupIosLoginTitle',
-          body: 'authPasskeySetupPasswordAlternative',
-          button: 'authPasskeySetupMoreInfoButton',
-          action: PasskeySetupAction.showInstructions,
-          instructionsTitle: 'authPasskeySetupIosInstructionsTitle',
-          instructionsBody: 'authPasskeySetupIosInstructionsBody',
-          settingsButton: null,
-        ),
-        TargetPlatform.android => (
-          title: 'authPasskeySetupAndroidLoginTitle',
-          body: 'authPasskeySetupPasswordAlternative',
-          button: 'authPasskeySetupMoreInfoButton',
-          action: PasskeySetupAction.openAndroidSecuritySettings,
-          instructionsTitle: 'authPasskeySetupAndroidInstructionsTitle',
-          instructionsBody: 'authPasskeySetupAndroidInstructionsBody',
-          settingsButton: 'authPasskeySetupAndroidButton',
-        ),
-        TargetPlatform.windows => (
-          title: 'authPasskeySetupWindowsLoginTitle',
-          body: 'authPasskeySetupPasswordAlternative',
-          button: 'authPasskeySetupMoreInfoButton',
-          action: PasskeySetupAction.openWindowsSignInOptions,
-          instructionsTitle: 'authPasskeySetupWindowsInstructionsTitle',
-          instructionsBody: 'authPasskeySetupWindowsInstructionsBody',
-          settingsButton: 'authPasskeySetupWindowsButton',
-        ),
-        TargetPlatform.macOS => (
-          title: 'authPasskeySetupMacTitle',
-          body: 'authPasskeySetupPasswordAlternative',
-          button: 'authPasskeySetupMoreInfoButton',
-          action: PasskeySetupAction.showInstructions,
-          instructionsTitle: 'authPasskeySetupMacInstructionsTitle',
-          instructionsBody: 'authPasskeySetupMacInstructionsBody',
-          settingsButton: null,
-        ),
-        _ => (
-          title: 'authPasskeySetupOtherTitle',
-          body: 'authPasskeySetupPasswordAlternative',
-          button: 'authPasskeySetupMoreInfoButton',
-          action: PasskeySetupAction.showInstructions,
-          instructionsTitle: 'authPasskeySetupOtherInstructionsTitle',
-          instructionsBody: 'authPasskeySetupOtherInstructionsBody',
-          settingsButton: null,
-        ),
-      };
+      final copy = _resolveSetupCopy(platform: platform, isWeb: isWeb);
       return PasskeyCardPresentation(
-        titleKey: configuration.title,
-        bodyKey: configuration.body,
+        titleKey: copy.loginTitleKey,
+        bodyKey: 'authPasskeySetupPasswordAlternative',
         showActionButton: false,
-        moreInfoButtonKey: configuration.button,
-        setupAction: configuration.action,
-        setupButtonLabelKey: configuration.settingsButton,
-        setupInstructionsTitleKey: configuration.instructionsTitle,
-        setupInstructionsBodyKey: configuration.instructionsBody,
+        moreInfoButtonKey: 'authPasskeySetupMoreInfoButton',
+        setupAction: copy.setupAction,
+        setupButtonLabelKey: copy.settingsButtonLabelKey,
+        setupInstructionsTitleKey: copy.instructionsTitleKey,
+        setupInstructionsBodyKey: copy.instructionsBodyKey,
       );
     case PasskeyDeviceCapability.platformAuthenticatorReady:
     case PasskeyDeviceCapability.unsupported:

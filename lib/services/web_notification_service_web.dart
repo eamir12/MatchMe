@@ -92,6 +92,8 @@ class WebNotificationService {
     required String senderName,
     required String messageContent,
     required String matchId,
+    bool alreadyAggregated = false,
+    bool? shouldAlertOverride,
   }) async {
     if (!isSupported) {
       return;
@@ -114,7 +116,7 @@ class WebNotificationService {
     // History-merge so minimized/maximized/foreground all show the latest
     // context (mirrors mobile MessagingStyle + SW 5-message merge).
     final history = _messageHistory.putIfAbsent(chatId, () => <String>[]);
-    if (messageContent.trim().isNotEmpty) {
+    if (!alreadyAggregated && messageContent.trim().isNotEmpty) {
       final last = history.isNotEmpty ? history.last : null;
       if (last != messageContent) {
         history.add(messageContent);
@@ -123,14 +125,16 @@ class WebNotificationService {
         }
       }
     }
-    final mergedBody = history.isNotEmpty ? history.join('\n') : messageContent;
+    final mergedBody = alreadyAggregated
+        ? messageContent
+        : (history.isNotEmpty ? history.join('\n') : messageContent);
     // Updates replace silently via the same tag so follow-ups never go
     // missing. Record first post per chat for badge/count parity with mobile.
     _lastNotifiedChatIds.putIfAbsent(chatId, () => chatId.hashCode);
 
     try {
       final enforced = enforceTitleBody(
-        '💬 New message from ${firstTokenName(senderName)}',
+        '💬 New message from ${maskFullName(senderName)}',
         mergedBody,
       );
       // Close the previous notification with the same tag before posting the
@@ -142,6 +146,7 @@ class WebNotificationService {
         body: enforced.body,
         icon: '/icons/Icon-192.png',
         tag: 'match_$chatId',
+        renotify: shouldAlertOverride ?? false,
       );
 
       final notification = web.Notification(enforced.title, options);
@@ -334,6 +339,7 @@ class WebNotificationService {
     required String matchId,
     required String matchName,
     required String matchPhotoUrl,
+    String? tag,
   }) async {
     if (!isSupported) {
       return;
@@ -346,13 +352,16 @@ class WebNotificationService {
 
     try {
       final enforced = enforceTitleBody(
-        '💕 New match with ${firstTokenName(matchName)}',
+        '💕 New match with ${maskFullName(matchName)}',
         'New match! Tap to start chatting',
       );
       final options = web.NotificationOptions(
         body: enforced.body,
         icon: matchPhotoUrl.isNotEmpty ? matchPhotoUrl : '/icons/Icon-192.png',
-        tag: 'match_$matchId',
+        // Default matches the legacy local identity; callers pass the
+        // server push tag (e.g. the expiry collapse tag) so an already
+        // delivered server card is replaced instead of doubled.
+        tag: tag ?? 'match_$matchId',
       );
 
       final notification = web.Notification(enforced.title, options);

@@ -92,6 +92,24 @@ class AppThemeTokens {
   ];
 
   // ---------------------------------------------------------------------------
+  // Adaptive brand accents
+  // ---------------------------------------------------------------------------
+  /// Softens a brand/semantic accent for the current brightness.
+  ///
+  /// Decorative category colors (purple, teal, orange, brand blues) are tuned
+  /// for light surfaces and sink below contrast on dark fills. On dark
+  /// surfaces the glyph is lightened toward white so it stays legible on the
+  /// translucent [accentSurface] tint; light mode keeps the accent as-is.
+  static Color accentInk(Color accent, Brightness brightness) => brightness ==
+          Brightness.dark
+      ? (Color.lerp(accent, Colors.white, 0.55) ?? accent)
+      : accent;
+
+  /// Translucent companion fill for [accentInk] chips and avatar circles.
+  static Color accentSurface(Color accent, Brightness brightness) => accent
+      .withValues(alpha: brightness == Brightness.dark ? 0.24 : 0.12);
+
+  // ---------------------------------------------------------------------------
   // Color schemes
   // ---------------------------------------------------------------------------
   static ColorScheme lightColorScheme() {
@@ -411,28 +429,35 @@ class AppThemeTokens {
   }
 
   static TextTheme _styledTextTheme(TextTheme base, ColorScheme scheme) {
-    return base
-        .apply(bodyColor: scheme.onSurface, displayColor: scheme.onSurface)
-        .copyWith(
-          headlineLarge: base.headlineLarge?.copyWith(
-            inherit: true,
-            fontWeight: FontWeight.w700,
-            letterSpacing: -0.5,
-          ),
-          headlineMedium: base.headlineMedium?.copyWith(
-            inherit: true,
-            fontWeight: FontWeight.w600,
-            letterSpacing: -0.25,
-          ),
-          titleLarge: base.titleLarge?.copyWith(
-            inherit: true,
-            fontWeight: FontWeight.w600,
-          ),
-          bodyLarge: base.bodyLarge?.copyWith(
-            inherit: true,
-            fontWeight: FontWeight.w400,
-            height: 1.5,
-          ),
-        );
+    // Apply the scheme colors first, then tweak the styles on top of the
+    // *applied* theme. Deriving the copyWith source from `base` would leak
+    // the base colors back in: main.dart builds one text theme from
+    // ThemeData.light() and hands it to both themes, which rendered input
+    // text (bodyLarge) near-black on the dark surfaces.
+    final applied = base.apply(
+      bodyColor: scheme.onSurface,
+      displayColor: scheme.onSurface,
+    );
+    return applied.copyWith(
+      headlineLarge: applied.headlineLarge?.copyWith(
+        inherit: true,
+        fontWeight: FontWeight.w700,
+        letterSpacing: -0.5,
+      ),
+      headlineMedium: applied.headlineMedium?.copyWith(
+        inherit: true,
+        fontWeight: FontWeight.w600,
+        letterSpacing: -0.25,
+      ),
+      titleLarge: applied.titleLarge?.copyWith(
+        inherit: true,
+        fontWeight: FontWeight.w600,
+      ),
+      bodyLarge: applied.bodyLarge?.copyWith(
+        inherit: true,
+        fontWeight: FontWeight.w400,
+        height: 1.5,
+      ),
+    );
   }
 }

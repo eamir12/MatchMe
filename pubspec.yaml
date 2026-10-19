@@ -125,6 +125,10 @@ dev_dependencies:
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.4
 
+  # MSIX packaging for Windows WNS push (package identity required for
+  # PushNotificationChannelManager). Run: dart run msix:create
+  msix: ^3.16.9
+
   # --- Build runner & Riverpod 3 Generators ---
   build_runner: ^2.15.1
   riverpod_generator: ^4.0.4
@@ -184,6 +188,11 @@ dependency_overrides:
     path: third_party/firebase_core
   purchases_ui_flutter:
     path: third_party/purchases_ui_flutter
+  # MatchMe fork: keep the channel-based 2.4.28 implementation and harden its
+  # legacy serialized-list migration. R8 builds could persist Kotlin EmptyList
+  # descriptors that the plugin later rejected, preventing startup.
+  shared_preferences_android:
+    path: third_party/shared_preferences_android
   # freezed_annotation: ^3.0.0
 
 flutter:
@@ -256,3 +265,20 @@ flutter_launcher_icons:
   # renders the name under the icon). Regenerate sources with:
   #   dart run tools/generate_app_icon.dart && dart run flutter_launcher_icons
   image_path: "tools/icons/app_icon.png"
+
+msix_config:
+  # Identity copied from Microsoft Partner Center (App | Product identity):
+  # Package/Identity/Name + Publisher + PublisherDisplayName. The WNS Package
+  # SID is bound to this identity, so all five must stay in sync with
+  # Partner Center — see docs/windows-wns-push.md for the full setup.
+  display_name: MatchMe
+  publisher_display_name: EAmir
+  publisher: CN=D489A069-197E-4A4C-A149-FCF350D3685A
+  identity_name: EAmir.MatchMeApp
+  msix_version: 1.0.0.0
+  capabilities: internetClient
+  # Toast activation launches the app via protocol (matchme://chat/<id>).
+  protocol_activation: matchme
+  logo_path: tools/icons/app_icon.png
+  architecture: x64
+

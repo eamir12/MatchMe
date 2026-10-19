@@ -196,27 +196,29 @@ Future<SupabaseReachResult> evaluateSupabaseProbe(
   Duration confirmDelay = const Duration(milliseconds: 400),
   void Function(String message)? log,
 }) async {
-  log?.call('Supabase probe attempt 1 (budget ${budget.inSeconds}s)');
+  log?.call('Supabase probe attempt 1 (budget ${budget.inMilliseconds}ms)');
   final first = await _attemptSupabaseProbe(probe, budget, 1, log: log);
   if (first != null) return first;
 
   if (!confirm) {
     return SupabaseReachResult.unreachable(
       failureKind: SupabaseFailureKind.noResponse,
-      detail: 'no response within ${budget.inSeconds}s',
+      detail: 'no response within ${budget.inMilliseconds}ms',
     );
   }
 
   if (confirmDelay > Duration.zero) {
     await Future<void>.delayed(confirmDelay);
   }
-  log?.call('Supabase probe attempt 2 (budget ${confirmBudget.inSeconds}s)');
+  log?.call(
+    'Supabase probe attempt 2 (budget ${confirmBudget.inMilliseconds}ms)',
+  );
   final second = await _attemptSupabaseProbe(probe, confirmBudget, 2, log: log);
   if (second != null) return second;
 
   return SupabaseReachResult.unreachable(
     failureKind: SupabaseFailureKind.noResponse,
-    detail: 'no response within ${confirmBudget.inSeconds}s',
+    detail: 'no response within ${confirmBudget.inMilliseconds}ms',
     attempts: 2,
   );
 }

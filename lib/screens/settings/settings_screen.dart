@@ -431,6 +431,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                   ),
                 )
                 .toList();
+            // Fill almost the whole screen so the settings menu behind the
+            // sheet does not show through the scrim; only search results
+            // should be visible while searching.
+            final mediaQuery = MediaQuery.of(context);
+            final sheetMaxHeight =
+                mediaQuery.size.height -
+                mediaQuery.padding.top -
+                mediaQuery.viewInsets.bottom -
+                24;
             return Padding(
               padding: EdgeInsets.fromLTRB(
                 16,
@@ -438,79 +447,97 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                 16,
                 MediaQuery.viewInsetsOf(context).bottom + 16,
               ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  TextField(
-                    controller: queryController,
-                    autofocus: true,
-                    textInputAction: TextInputAction.search,
-                    textDirection: queryIsEmpty
-                        ? Directionality.of(context)
-                        : (queryIsRtl ? TextDirection.rtl : TextDirection.ltr),
-                    textAlign: queryIsEmpty
-                        ? TextAlign.start
-                        : (queryIsRtl ? TextAlign.right : TextAlign.left),
-                    decoration: InputDecoration(
-                      hintText: l10n.getString('settingsSearchHint'),
-                      prefixIcon: const Icon(Icons.search),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(16),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: sheetMaxHeight),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    TextField(
+                      controller: queryController,
+                      autofocus: true,
+                      textInputAction: TextInputAction.search,
+                      textDirection: queryIsEmpty
+                          ? Directionality.of(context)
+                          : (queryIsRtl
+                                ? TextDirection.rtl
+                                : TextDirection.ltr),
+                      textAlign: queryIsEmpty
+                          ? TextAlign.start
+                          : (queryIsRtl ? TextAlign.right : TextAlign.left),
+                      decoration: InputDecoration(
+                        hintText: l10n.getString('settingsSearchHint'),
+                        prefixIcon: const Icon(Icons.search),
+                        suffixIcon: queryIsEmpty
+                            ? null
+                            : IconButton(
+                                tooltip: l10n.getString('generalClear'),
+                                onPressed: () {
+                                  queryController.clear();
+                                  setSheetState(() {});
+                                },
+                                icon: const Icon(Icons.close),
+                              ),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
                       ),
+                      onChanged: (_) => setSheetState(() {}),
                     ),
-                    onChanged: (_) => setSheetState(() {}),
-                  ),
-                  const SizedBox(height: 12),
-                  if (filtered.isEmpty)
-                    Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: Text(
-                        l10n.getString('settingsSearchNoResults'),
-                        textAlign: TextAlign.center,
-                      ),
-                    )
-                  else
-                    Flexible(
-                      child: ListView.separated(
-                        shrinkWrap: true,
-                        itemCount: filtered.length,
-                        separatorBuilder: (context, index) =>
-                            const Divider(height: 1),
-                        itemBuilder: (context, index) {
-                          final destination = filtered[index];
-                          return ListTile(
-                            leading: Icon(destination.icon),
-                            title: Text(destination.label),
-                            subtitle: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  destination.group,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w700,
-                                    color: destination.accent,
-                                  ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  destination.description,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.visible,
-                                ),
-                              ],
+                    const SizedBox(height: 12),
+                    if (filtered.isEmpty)
+                      Expanded(
+                        child: Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Text(
+                              l10n.getString('settingsSearchNoResults'),
+                              textAlign: TextAlign.center,
                             ),
-                            trailing: Icon(directionalChevron(sheetContext)),
-                            onTap: () {
-                              Navigator.of(sheetContext).pop();
-                              destination.onTap();
-                            },
-                          );
-                        },
+                          ),
+                        ),
+                      )
+                    else
+                      Expanded(
+                        child: ListView.separated(
+                          itemCount: filtered.length,
+                          separatorBuilder: (context, index) =>
+                              const Divider(height: 1),
+                          itemBuilder: (context, index) {
+                            final destination = filtered[index];
+                            return ListTile(
+                              leading: Icon(destination.icon),
+                              title: Text(destination.label),
+                              subtitle: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    destination.group,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      color: destination.accent,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    destination.description,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.visible,
+                                  ),
+                                ],
+                              ),
+                              trailing: Icon(directionalChevron(sheetContext)),
+                              onTap: () {
+                                Navigator.of(sheetContext).pop();
+                                destination.onTap();
+                              },
+                            );
+                          },
+                        ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
             );
           },

@@ -1375,6 +1375,7 @@ class IsVisible extends _$IsVisible {
                 _applyRemoteVisibilitySnapshot(
                   manualVisible: remoteManual,
                   systemVisibilityStatus: remoteSystem,
+                  fromRealtime: true,
                 ),
               );
             },
@@ -1484,7 +1485,28 @@ class IsVisible extends _$IsVisible {
   Future<void> _applyRemoteVisibilitySnapshot({
     required bool manualVisible,
     String? systemVisibilityStatus,
+    bool fromRealtime = false,
   }) async {
+    // The local preference is the user's explicit choice on THIS device.
+    // If it disagrees with the remote value AND the update did not come
+    // from a Realtime change (i.e. another device), the local pref wins —
+    // the polled/remote value is likely stale (the DB write from the
+    // original toggle failed offline and was queued to the outbox).
+    // Push the local value back to the DB to heal the stale record
+    // instead of flipping the user's visibility against their will on
+    // every resume.  Realtime updates from another device DO override.
+    if (!fromRealtime &&
+        _manualVisibility != null &&
+        _manualVisibility != manualVisible) {
+      if (kDebugMode) {
+        print(
+          '🔵 [IsVisible] Remote visibility ($manualVisible) overridden by '
+          'local pref ($_manualVisibility) — pushing local to DB',
+        );
+      }
+      unawaited(_syncManualVisibilityChange(_manualVisibility!));
+      manualVisible = _manualVisibility!;
+    }
     _manualVisibility = manualVisible;
     _systemVisibilityStatus =
         (systemVisibilityStatus == null || systemVisibilityStatus.isEmpty)

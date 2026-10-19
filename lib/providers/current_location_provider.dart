@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:matchme/services/location_service.dart';
 import 'package:matchme/services/web_location_service.dart';
+import 'package:matchme/services/windows_location_channel.dart';
 import 'package:matchme/utils/location_deduplicator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/services/local_db_service.dart';
@@ -98,7 +99,7 @@ class CurrentLocationNotifier extends Notifier<Position?> {
         if (!hasPermission) return;
 
         try {
-          final last = await Geolocator.getLastKnownPosition();
+          final last = await WindowsLocationChannel.getLastKnownPosition();
           if (last != null) {
             await _processNewPosition(last);
           }
@@ -112,11 +113,10 @@ class CurrentLocationNotifier extends Notifier<Position?> {
           // all request position simultaneously.
           final current = await LocationDeduplicator.getPosition(
             label: 'currentLocationProvider',
-            fetcher: () => Geolocator.getCurrentPosition(
-              locationSettings: const LocationSettings(
-                accuracy: LocationAccuracy.best,
-              ),
-            ).timeout(const Duration(seconds: 15)),
+            fetcher: () => WindowsLocationChannel.getPosition(
+              accuracy: LocationAccuracy.best,
+              timeLimit: const Duration(seconds: 15),
+            ),
           );
           if (current != null) {
             await _processNewPosition(current);

@@ -21,6 +21,7 @@ treat them as third-party code, not app code.
 | `emoji_picker_flutter` | 4.5.4 | Applies `kotlin-android` inside a conditional; Flutter's regex still flags it (conditionals are ignored). One-line deletion, root shim supplies KGP | upstream removes the textual apply or Flutter's scanner learns conditionals |
 | `firebase_core` | 5.0.0 | Same pattern: `if (agpMajor < 9 \|\| !builtInKotlin) { apply ... }` — conditional, still flagged. Deleted the whole block (its vars were unused elsewhere) | upstream removes the textual apply |
 | `purchases_ui_flutter` | 10.15.2 | Same pattern: `if (findByName('kotlin') == null) { apply ... }` — conditional, still flagged. One-line deletion | upstream removes the textual apply |
+| `shared_preferences_android` | 2.4.28 | Serializes migrated legacy StringSets as Java `ArrayList`, safely accepts the old Kotlin empty-list singleton representation, and drops only unreadable legacy serialized-list preferences so they cannot block startup | upstream fixes empty-list serialization and corrupt legacy-value handling |
 
 Historical forks **deleted** once the `win32 ^6` wall fell (FSS 10 upgrade):
 `device_info_plus` (→ 13.3.0), `package_info_plus` (→ 10.2.2), `share_plus`

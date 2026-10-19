@@ -44,6 +44,26 @@ import 'package:matchme/utils/offline_utils.dart';
 const String kPinnedUpdatesChannel = 'pinned_location_updates';
 const String kPinnedChangedEvent = 'pinned_changed';
 
+class _PinnedCacheEntry {
+  _PinnedCacheEntry(this.value, this.at);
+
+  final bool value;
+  final DateTime at;
+}
+
+/// Short TTL cache for [pinnedPartnerProvider] results.
+///
+/// Every watched partner used to run its own `is_pinned_location_active`
+/// RPC on each invalidation, and a single refresh burst (30s poll tick,
+/// resume, users-table UPDATE fan-out) invalidated ALL watched partners at
+/// once — the 9-call fan-out seen in prod. A short TTL absorbs the bursts:
+/// within the window the cached verdict is served, outside it the RPC runs
+/// fresh. Direct realtime values (broadcast `is_pinned`, users-row flag)
+/// seed the cache so a pushed update is served immediately without any
+/// refetch, and expiry is still caught by the RPC at most one TTL later.
+const Duration _pinnedCacheTtl = Duration(seconds: 20);
+final Map<String, _PinnedCacheEntry> _pinnedCache = {};
+
 /// Whether [partnerId]'s matching currently uses a pinned home-base location.
 ///
 /// Fail-closed to false on any error / empty id / offline.
@@ -52,12 +72,19 @@ final pinnedPartnerProvider =
   final id = partnerId.trim();
   if (id.isEmpty) return false;
   if (shouldSkipSupabaseCalls()) return false;
+  final cached = _pinnedCache[id];
+  if (cached != null &&
+      DateTime.now().difference(cached.at) < _pinnedCacheTtl) {
+    return cached.value;
+  }
   try {
     final res = await Supabase.instance.client.rpc(
       'is_pinned_location_active',
       params: {'p_user_id': id},
     );
-    return res == true;
+    final value = res == true;
+    _pinnedCache[id] = _PinnedCacheEntry(value, DateTime.now());
+    return value;
   } catch (_) {
     return false;
   }
@@ -204,7 +231,11 @@ class PinnedPartnerRealtimeNotifier extends Notifier<int> {
             if (Supabase.instance.client.auth.currentSession == null) return;
             final changedId = _extractUserId(payload);
             if (changedId == null || changedId.isEmpty) return;
-            _handlePartnerUpdated(changedId, source: 'broadcast');
+            _handlePartnerUpdated(
+              changedId,
+              source: 'broadcast',
+              knownValue: _extractBool(payload, 'is_pinned'),
+            );
           },
         );
         channel.subscribe((status, err) {
@@ -257,7 +288,11 @@ class PinnedPartnerRealtimeNotifier extends Notifier<int> {
                 // Fast path post-migration: row carries the flag directly.
                 final direct = _extractDirectPinned(newRec);
                 if (direct != null) {
-                  _handlePartnerUpdated(changedId, source: 'users-direct');
+                  _handlePartnerUpdated(
+                    changedId,
+                    source: 'users-direct',
+                    knownValue: direct,
+                  );
                 } else {
                   // Pre-migration or unrelated edit: RPC refresh (cheap, rare).
                   _handlePartnerUpdated(changedId, source: 'users');
@@ -297,6 +332,20 @@ class PinnedPartnerRealtimeNotifier extends Notifier<int> {
     return null;
   }
 
+  /// Bool member of a broadcast payload (handles the nested `payload` map
+  /// shape some realtime versions deliver). Null when absent/not a bool.
+  bool? _extractBool(Map<String, dynamic> payload, String key) {
+    final dynamic nested = payload['payload'];
+    final Map<String, dynamic> data;
+    if (nested is Map) {
+      data = Map<String, dynamic>.from(nested);
+    } else {
+      data = payload;
+    }
+    final v = data[key];
+    return v is bool ? v : null;
+  }
+
   /// Post-migration fast path: users row carries the pinned flag.
   /// Returns null when columns are absent (pre-migration) or payload lacks them.
   bool? _extractDirectPinned(dynamic record) {
@@ -321,8 +370,17 @@ class PinnedPartnerRealtimeNotifier extends Notifier<int> {
     }
   }
 
-  void _handlePartnerUpdated(String partnerId, {required String source}) {
+  void _handlePartnerUpdated(
+    String partnerId, {
+    required String source,
+    bool? knownValue,
+  }) {
     if (!ref.mounted) return;
+    if (knownValue != null) {
+      // Authoritative push value: seed the cache so the invalidation below
+      // serves it without an RPC round trip.
+      _pinnedCache[partnerId] = _PinnedCacheEntry(knownValue, DateTime.now());
+    }
     debugPrint('📍 Pinned realtime: $source for partner=$partnerId — refreshing');
     _seenUpdates++;
     lastUpdatedUserId = partnerId;
@@ -362,6 +420,9 @@ class PinnedPartnerRealtimeNotifier extends Notifier<int> {
     _pollTimer = null;
     _resumeDispose?.call();
     _resumeDispose = null;
+    // Session-scoped cache: a different signed-in user must never inherit
+    // verdicts fetched for the previous one.
+    _pinnedCache.clear();
     final userId = _channelUserId;
     if (userId != null && userId.isNotEmpty) {
       SupabaseRealtimeManager.instance.unregister(

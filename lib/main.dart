@@ -29,6 +29,7 @@ import 'package:flutter/foundation.dart'
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:matchme/providers/auth_provider.dart';
 import 'package:matchme/providers/app_config_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
@@ -51,12 +52,14 @@ import 'package:matchme/screens/settings/security_center_screen.dart';
 import 'package:matchme/screens/settings/settings_screen.dart';
 import 'package:matchme/screens/subscription/subscription_payment_screen.dart';
 import 'package:matchme/services/secure_local_storage.dart';
+import 'package:matchme/services/ad_platform_support.dart';
 import 'package:matchme/services/outbox_sync_service.dart';
 import 'package:matchme/services/runtime_supabase_config.dart';
 import 'package:matchme/services/sensitive_session_store.dart';
 import 'package:matchme/services/auth_transition_guard.dart';
 import 'package:matchme/services/background_service.dart';
 import 'package:matchme/services/web_notification_service.dart';
+import 'package:matchme/services/chat_view_state_service.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/calendar_sync_service.dart';
 import 'package:matchme/services/local_db_service.dart'; // Added for explicit init
@@ -75,6 +78,7 @@ import 'package:matchme/services/offline_mutation_queue.dart'; // Added for offl
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:matchme/services/session_registration_coordinator.dart';
 import 'package:matchme/services/session_service.dart';
+import 'package:matchme/services/windows_push_channel_service.dart';
 import 'package:matchme/services/user_activity_service.dart';
 import 'package:matchme/services/app_info_service.dart';
 import 'package:matchme/services/outlook_web_auth.dart'
@@ -98,6 +102,7 @@ import 'package:matchme/providers/chat_provider.dart'
         migrateLegacyTranslationPrefs;
 import 'package:matchme/providers/match_notification_provider.dart'
     show matchNotificationProvider;
+import 'package:matchme/providers/notification_inbox_provider.dart';
 import 'package:matchme/services/global_sync_manager.dart';
 import 'package:matchme/providers/event_provider.dart';
 import 'package:matchme/utils/app_shortcuts.dart';
@@ -112,6 +117,8 @@ import 'package:timezone/data/latest.dart' as tz_data;
 import 'package:timezone/timezone.dart' as tz;
 // ignore: unnecessary_import - Kept for compatibility with other files that depend on it
 import 'package:matchme/services/mobile_local_notification_service.dart';
+import 'package:matchme/services/encrypted_notification_preview_service.dart';
+import 'package:matchme/services/expiry_local_schedule_service.dart';
 import 'package:matchme/services/app_badge_service.dart';
 import 'package:matchme/services/voice_guidance_service.dart';
 import 'package:matchme/widgets/safe_text.dart';
@@ -312,6 +319,7 @@ void _mainSync() {
   AdminBroadcastService.setAppInForeground(true);
   MobileLocalNotificationService.setProviderContainer(container);
   WebNotificationService.setProviderContainer(container);
+  EncryptedNotificationPreviewService.setProviderContainer(container);
   VoiceGuidanceService.setProviderContainer(container);
   print('[BOOTSTRAP] Initializing VoiceGuidanceService...');
   unawaited(VoiceGuidanceService.instance.loadEnabledFromPrefs());
@@ -374,6 +382,7 @@ void _mainSync() {
   ResumeDiagnostics.setEnabled(kDebugMode);
   ResumeDiagnostics.log('main() started');
 
+  _resetNativeAdState();
   _installWebVisibilityFrameKick();
 
   _bootstrapInitFuture = _bootstrapInitialize(container);
@@ -397,6 +406,32 @@ void _mainSync() {
 
   SchedulerBinding.instance.addTimingsCallback(logFirstFrameTiming);
   _installWebStartupWarmupFrames();
+}
+
+/// Triggers google_mobile_ads' internal `_init` cleanup on the platform side.
+///
+/// Touching [MobileAds.instance] makes the plugin send `'_init'`, which calls
+/// `instanceManager.disposeAllAds()` on Android. The Dart-side ad registry and
+/// its counter restart at 0 whenever the Dart isolate restarts (hot restart,
+/// engine recreation) — but the native ad map survives until `_init` arrives.
+/// Without this cleanup, the first `BannerAd.load()` after a restart assigns
+/// Dart adId 0 again, the platform side throws
+/// `IllegalArgumentException: Ad for following adId already exists: 0`, the
+/// load future never completes, and every later banner load wedges behind it.
+///
+/// Fire-and-forget BEFORE any ad widget can mount, Android/iOS only (the
+/// google_mobile_ads plugin registered there; elsewhere the call would just
+/// produce a MissingPluginException for nothing).
+void _resetNativeAdState() {
+  if (kIsWeb) return;
+  if (!isAdRenderNative) return;
+  try {
+    MobileAds.instance.updateRequestConfiguration(RequestConfiguration());
+  } catch (e) {
+    if (kDebugMode) {
+      debugPrint('[Ads] native ad state reset skipped: $e');
+    }
+  }
 }
 
 void _installWebVisibilityFrameKick() {
@@ -597,8 +632,13 @@ class _BootstrapAppState extends State<_BootstrapApp> {
         if (snapshot.hasError || result == null) {
           print(
             '[STARTUP_DIAG] selecting_bootstrap_error '
-            'errorType=${snapshot.error?.runtimeType ?? "none"}',
+            'errorType=${snapshot.error?.runtimeType ?? "none"} '
+            'error=${snapshot.error}',
           );
+          final bootstrapStack = snapshot.stackTrace;
+          if (bootstrapStack != null) {
+            print('[STARTUP_DIAG] bootstrap_error_stack $bootstrapStack');
+          }
           final err =
               snapshot.error?.toString() ??
               LocalizationState.defaultTranslation('bootstrapUnknownError');
@@ -700,6 +740,26 @@ void _applyNavigationFromPushData(
     return;
   }
 
+  // Tapping a card consumes the event: record matches so no poll/realtime
+  // path re-posts them, and drop sibling cards/alarms for the same expiry
+  // event so the shade cannot keep duplicates of what was just consumed.
+  try {
+    final tapType =
+        ((data['type'] ?? data['kind'] ?? data['notification_type']) as Object?)
+            ?.toString()
+            .trim()
+            .toLowerCase();
+    if (tapType == 'match' || tapType == 'new_match') {
+      final tappedMatchId =
+          (data['matchId'] ?? data['match_id'])?.toString().trim() ?? '';
+      if (tappedMatchId.isNotEmpty) {
+        unawaited(BackgroundService.markMatchNotified(tappedMatchId));
+      }
+    } else if (tapType == 'match_expiry' || tapType == 'pinned_expiry') {
+      unawaited(_reconcileExpiryEventOnOpen(data, kind: tapType!));
+    }
+  } catch (_) {}
+
   // Pinned-expiry tap: open Matching Settings directly (Home base card).
   try {
     final tapType =
@@ -742,6 +802,204 @@ void _applyNavigationFromPushData(
   }
 
   nav.pushNamed(effectiveRoute);
+}
+
+/// Threshold (seconds) of an expiry push payload.
+int? _expiryThresholdSecondsFromData(Map<String, dynamic> data) {
+  final raw = (data['threshold_seconds'] ?? data['thresholdSeconds'] ?? '')
+      .toString()
+      .trim();
+  return int.tryParse(raw);
+}
+
+/// Exact expiry instant (epoch ms) of an expiry push payload. Cron sends
+/// `expiry_at` as an ISO timestamp; raw epoch millis are tolerated too.
+int? _expiryMsFromData(Map<String, dynamic> data) {
+  final raw = (data['expiry_at'] ?? data['expiryAt'] ?? '').toString().trim();
+  if (raw.isEmpty) return null;
+  final parsed = DateTime.tryParse(raw);
+  if (parsed != null) return parsed.millisecondsSinceEpoch;
+  return int.tryParse(raw);
+}
+
+/// Tag of the server (FCM SDK) card for an expiry event. Mirrors the collapse
+/// tag built by cron-jobs/push-message:
+/// `${type}_${match_id ?? user_id}_${threshold_seconds}`.
+String _expiryServerCardTag({
+  required String kind,
+  required Map<String, dynamic> data,
+}) {
+  final key =
+      (data['match_id'] ??
+              data['matchId'] ??
+              data['user_id'] ??
+              data['userId'] ??
+              '')
+          .toString()
+          .trim();
+  final thr = (data['threshold_seconds'] ?? data['thresholdSeconds'] ?? '')
+      .toString()
+      .trim();
+  return thr.isEmpty ? '${kind}_$key' : '${kind}_${key}_$thr';
+}
+
+/// Mark a match-expiry warning as surfaced (the shared prefs gate the in-app
+/// scan writes too) and drop the OS-scheduled fallback alarm for that exact
+/// (match, threshold, expiry window) so no other path adds a second card.
+Future<void> _markExpiryWarningSurfaced(
+  Map<String, dynamic> data, {
+  String kind = 'match_expiry',
+}) async {
+  try {
+    if (kind != 'match_expiry') return;
+    final matchId =
+        (data['matchId'] ?? data['match_id'])?.toString().trim() ?? '';
+    final thresholdSeconds = _expiryThresholdSecondsFromData(data);
+    final expiryMs = _expiryMsFromData(data);
+    if (matchId.isEmpty || thresholdSeconds == null || expiryMs == null) {
+      return;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(
+      ExpiryLocalScheduleService.warnPrefsKey(
+        matchId: matchId,
+        thresholdSeconds: thresholdSeconds,
+        expiryMs: expiryMs,
+      ),
+      true,
+    );
+    await ExpiryLocalScheduleService.cancelThreshold(
+      matchId: matchId,
+      thresholdSeconds: thresholdSeconds,
+      expiryMs: expiryMs,
+    );
+  } catch (_) {}
+}
+
+/// Foreground expiry push (onMessage): exactly one card per
+/// (match, threshold, expiry window). The in-app scan writes the same gate,
+/// so whichever path fired first wins; the OS-scheduled alarm and any server
+/// card still in the shade for this exact event are dropped in favor of the
+/// card posted here.
+Future<void> _handleForegroundExpiryPush({
+  required String kind,
+  required Map<String, dynamic> data,
+  required String title,
+  required String body,
+}) async {
+  try {
+    final matchId =
+        (data['matchId'] ?? data['match_id'])?.toString().trim() ?? '';
+    final thresholdSeconds = _expiryThresholdSecondsFromData(data);
+    final expiryMs = _expiryMsFromData(data);
+    final serverTag = _expiryServerCardTag(kind: kind, data: data);
+
+    if (kind == 'match_expiry' &&
+        matchId.isNotEmpty &&
+        thresholdSeconds != null &&
+        expiryMs != null) {
+      final prefs = await SharedPreferences.getInstance();
+      final gateKey = ExpiryLocalScheduleService.warnPrefsKey(
+        matchId: matchId,
+        thresholdSeconds: thresholdSeconds,
+        expiryMs: expiryMs,
+      );
+      final alreadySurfaced = prefs.getBool(gateKey) ?? false;
+      unawaited(
+        ExpiryLocalScheduleService.cancelThreshold(
+          matchId: matchId,
+          thresholdSeconds: thresholdSeconds,
+          expiryMs: expiryMs,
+        ),
+      );
+      if (alreadySurfaced) {
+        // The in-app scan (or an earlier delivery of this same push) already
+        // surfaced this warning — a second card would double the event.
+        return;
+      }
+      if (defaultTargetPlatform == TargetPlatform.iOS &&
+          await MobileLocalNotificationService.hasDeliveredServerNotification(
+            serverTag,
+          )) {
+        // The server banner for this exact event is already delivered (drawn
+        // while the app was killed) — it is the notification. Record the
+        // gate so the in-app scan and restart paths stay quiet.
+        await prefs.setBool(gateKey, true);
+        return;
+      }
+      await prefs.setBool(gateKey, true);
+    }
+
+    // Pinned expiry (and any path that skipped the gate above): a delivered
+    // server banner for this exact event is already the notification.
+    if (defaultTargetPlatform == TargetPlatform.iOS &&
+        await MobileLocalNotificationService.hasDeliveredServerNotification(
+          serverTag,
+        )) {
+      return;
+    }
+
+    // Replace any server card for this exact event that was drawn while the
+    // app was backgrounded: the local card below is the single entry.
+    unawaited(BackgroundService.cancelServerCard(serverTag));
+
+    if (kIsWeb) {
+      await WebNotificationService.showMatchNotification(
+        matchId: matchId.isNotEmpty ? matchId : kind,
+        matchName: title,
+        matchPhotoUrl: '',
+        tag: serverTag,
+      );
+      return;
+    }
+
+    await MobileLocalNotificationService.showMatchExpiryNotification(
+      matchId: matchId.isNotEmpty ? matchId : kind,
+      title: title,
+      body: body,
+      notificationKey:
+          '${kind}_${thresholdSeconds ?? data['threshold_seconds'] ?? data['thresholdSeconds'] ?? 'warn'}',
+      serverTag: serverTag,
+    );
+  } catch (_) {}
+}
+
+/// Tap on an expiry card (onMessageOpenedApp / initial message): the event is
+/// consumed, so record it as surfaced and drop whatever other card or alarm
+/// for the same event may still be pending.
+Future<void> _reconcileExpiryEventOnOpen(
+  Map<String, dynamic> data, {
+  required String kind,
+}) async {
+  await _markExpiryWarningSurfaced(data, kind: kind);
+  unawaited(
+    BackgroundService.cancelServerCard(
+      _expiryServerCardTag(kind: kind, data: data),
+    ),
+  );
+}
+
+/// Foreground match push: the native Realtime/poll path may have already
+/// posted its own card for this match (or may post one later). Exactly one
+/// card per match: whichever path fires first wins, the loser skips, and the
+/// match is recorded as buzzed so the periodic poll cannot re-post it.
+Future<void> _showForegroundMatchPush({
+  required String matchId,
+  required String title,
+  required String body,
+}) async {
+  try {
+    if (await BackgroundService.wasMatchNotified(matchId)) return;
+    await BackgroundService.markMatchNotified(matchId);
+    // Replace any server card for this match drawn while the app was
+    // backgrounded: the local card below is the single entry.
+    unawaited(BackgroundService.cancelServerCard('new_match_$matchId'));
+    await MobileLocalNotificationService.showNewMatchNotification(
+      matchId: matchId,
+      title: title,
+      body: body,
+    );
+  } catch (_) {}
 }
 
 @pragma('vm:entry-point')
@@ -810,37 +1068,64 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
         return;
       }
 
-      if ((isChat || isMatch || isExpiry) &&
-          ((messageId != null && messageId.isNotEmpty) ||
-              (matchId != null && matchId.isNotEmpty) ||
-              isExpiry)) {
-        // Prefer data body, fall back to the system-tray notification body
-        // so killed-state pushes still carry text even when data is sparse.
-        final title =
-            (data['title'] ??
-                    data['senderName'] ??
-                    data['sender_name'] ??
-                    message.notification?.title ??
-                    'MatchMe')
-                .toString()
-                .trim();
-        final body =
-            (data['body'] ??
-                    data['message'] ??
-                    data['preview'] ??
-                    message.notification?.body ??
-                    '')
-                .toString()
-                .trim();
-
-        await BackgroundService.triggerNotificationCheck(
-          messageId: (messageId != null && messageId.isNotEmpty)
-              ? messageId
-              : null,
-          translatedContent: body.isNotEmpty ? body : null,
-          originalContent: body.isNotEmpty ? body : null,
-          senderName: title.isNotEmpty ? title : null,
-          matchId: (matchId != null && matchId.isNotEmpty) ? matchId : null,
+      if (isChat && !isMatch && !isExpiry) {
+        // Chat pushes: route through the native RPC path WITHOUT the server
+        // body. push-message always sends the localized placeholder ("New
+        // message" etc.) since it can't decrypt — passing it would clobber
+        // the real card the Realtime/native path posts. messageId marks an
+        // immediate trigger; the native service fetches the stored
+        // plaintext/translated text and drops the FCM SDK's tagged card
+        // (tag match_<matchId>) before posting, so background states
+        // converge on a single tray entry per chat.
+        if ((messageId != null && messageId.isNotEmpty) ||
+            (matchId != null && matchId.isNotEmpty)) {
+          await BackgroundService.triggerNotificationCheck(
+            messageId: (messageId != null && messageId.isNotEmpty)
+                ? messageId
+                : null,
+            matchId: (matchId != null && matchId.isNotEmpty) ? matchId : null,
+          );
+        }
+      } else if (isMatch) {
+        // Matches: the server FCM card (tag new_match_<matchId>) IS the
+        // notification, and the native RPC path knows that
+        // (isMatchPushInTray) — it only posts its own card when the server
+        // push never landed. Passing crafted copy here stacked a second
+        // match card next to the server one.
+        if (matchId != null && matchId.isNotEmpty) {
+          await BackgroundService.triggerNotificationCheck(matchId: matchId);
+        }
+      } else if (isExpiry) {
+        // The FCM SDK already draws the tray card for the notification
+        // payload; this handler must not post another one. Record the event
+        // against the shared expiry gate (same key the in-app scan uses) and
+        // drop the OS-scheduled fallback alarm so exactly one card remains.
+        await _markExpiryWarningSurfaced(data, kind: kind ?? 'match_expiry');
+      }
+    } else if (defaultTargetPlatform == TargetPlatform.iOS) {
+      final data = Map<String, dynamic>.from(message.data);
+      final kind = (data['kind'] ?? data['type'] ?? data['notification_type'])
+          ?.toString()
+          .trim()
+          .toLowerCase();
+      final matchId = (data['matchId'] ?? data['match_id'])?.toString().trim();
+      final messageId = (data['messageId'] ?? data['message_id'])
+          ?.toString()
+          .trim();
+      if ((kind == 'message' || kind == 'chat_message' || kind == 'chat') &&
+          matchId != null &&
+          matchId.isNotEmpty &&
+          data['should_alert'] == 'false') {
+        // Follow-up unread messages arrive data-only. Rebuild the same local
+        // conversation card silently instead of asking iOS to alert again.
+        await MobileLocalNotificationService.showMessageNotification(
+          chatId: matchId,
+          matchId: matchId,
+          senderName: (data['notification_title'] ?? 'Someone').toString(),
+          messageContent: (data['notification_body'] ?? '').toString(),
+          messageId: messageId,
+          alreadyAggregated: true,
+          shouldAlertOverride: false,
         );
       }
     }
@@ -951,15 +1236,17 @@ Future<void> _initializeFcmForCurrentUser() async {
         }
       } catch (_) {}
       try {
-        // Foreground pushes must still banner on iOS (maximized/focused UI).
-        // Local `showMessageNotification` suppresses only the open chat, so
-        // enabling the system banner here does not double-notify the
-        // active conversation — it fixes silent foreground on iOS.
+        // Foreground notifications are rendered by the shared app handler.
+        // Keep native iOS presentation disabled so it cannot bypass the
+        // currently-viewed-chat exception or duplicate our grouped card.
         await FirebaseMessaging.instance
             .setForegroundNotificationPresentationOptions(
-              alert: true,
-              badge: true,
-              sound: true,
+              // Foreground notifications are rendered by the app's shared
+              // per-type handler. Letting iOS auto-present FCM alerts here
+              // bypasses per-chat suppression and duplicates local cards.
+              alert: false,
+              badge: false,
+              sound: false,
             );
       } catch (_) {}
     }
@@ -981,6 +1268,22 @@ Future<void> _initializeFcmForCurrentUser() async {
       FirebaseMessaging.onMessage.listen((message) {
         // Handle admin broadcast messages
         AdminBroadcastService.handleBroadcastMessage(message);
+        // A foreground push means the backend just recorded a notification for
+        // this user (push-message writes the inbox row before sending FCM), so
+        // refresh the inbox: it must not depend on the Realtime socket being
+        // healthy (it may be reconnecting or the channel may have silently
+        // died). Realtime remains the primary path; this is the safety net.
+        final inboxContext = navigatorKey.currentContext;
+        if (inboxContext != null && supabase.auth.currentUser?.id != null) {
+          try {
+            unawaited(
+              ProviderScope.containerOf(
+                inboxContext,
+                listen: false,
+              ).read(notificationInboxProvider.notifier).refresh(),
+            );
+          } catch (_) {}
+        }
         final data = Map<String, dynamic>.from(message.data);
         final type = (data['type'] ?? data['kind'] ?? data['notification_type'])
             ?.toString()
@@ -1019,7 +1322,7 @@ Future<void> _initializeFcmForCurrentUser() async {
               : 'You have a new match. Tap to view.';
           if (matchId.isNotEmpty && !kIsWeb) {
             unawaited(
-              MobileLocalNotificationService.showNewMatchNotification(
+              _showForegroundMatchPush(
                 matchId: matchId,
                 title: title,
                 body: body,
@@ -1033,6 +1336,9 @@ Future<void> _initializeFcmForCurrentUser() async {
                 matchId: matchId.isNotEmpty ? matchId : 'unknown',
                 matchName: otherUser.isNotEmpty ? otherUser : title,
                 matchPhotoUrl: '',
+                // Same identity as the server push tag: a web card already
+                // delivered for this match gets replaced, not duplicated.
+                tag: matchId.isNotEmpty ? 'new_match_$matchId' : null,
               ),
             );
           }
@@ -1066,10 +1372,9 @@ Future<void> _initializeFcmForCurrentUser() async {
             );
           }
         } else if (type == 'match_expiry' || type == 'pinned_expiry') {
-          // Foreground expiry push: client timer only runs when UI is alive;
-          // FCM is the reliable path for minimized/maximized/foreground.
-          final matchId =
-              (data['matchId'] ?? data['match_id'])?.toString().trim() ?? '';
+          // Foreground expiry push: one card per (match, threshold, expiry
+          // window) — shared gate with the in-app scan, late OS alarm and
+          // stale server cards are dropped by the helper.
           final title = message.notification?.title?.trim().isNotEmpty == true
               ? message.notification!.title!.trim()
               : (type == 'pinned_expiry'
@@ -1078,27 +1383,14 @@ Future<void> _initializeFcmForCurrentUser() async {
           final body = message.notification?.body?.trim().isNotEmpty == true
               ? message.notification!.body!.trim()
               : 'Open the app to add more time.';
-          if (!kIsWeb) {
-            final safeType = type ?? 'match_expiry';
-            unawaited(
-              MobileLocalNotificationService.showMatchExpiryNotification(
-                matchId: matchId.isNotEmpty ? matchId : safeType,
-                title: title,
-                body: body,
-                notificationKey:
-                    '${safeType}_${data['threshold_seconds'] ?? data['thresholdSeconds'] ?? 'warn'}',
-              ),
-            );
-          } else {
-            final safeType = type ?? 'match_expiry';
-            unawaited(
-              WebNotificationService.showMatchNotification(
-                matchId: matchId.isNotEmpty ? matchId : safeType,
-                matchName: title,
-                matchPhotoUrl: '',
-              ),
-            );
-          }
+          unawaited(
+            _handleForegroundExpiryPush(
+              kind: type ?? 'match_expiry',
+              data: data,
+              title: title,
+              body: body,
+            ),
+          );
         } else if (type == 'ai_quota') {
           // Foreground admin AI-quota alert: Android does not auto-display
           // FCM notification payloads while the app is foregrounded, so
@@ -1179,24 +1471,42 @@ Future<void> _initializeFcmForCurrentUser() async {
             type == 'chat' ||
             (data['messageId'] ?? data['message_id']) != null) {
           // Foreground chat push: the Realtime path may be down (offline,
-          // reconnecting, backgrounded WebView). Show a local notification
-          // directly from FCM so foreground/maximized never goes silent.
-          // `showMessageNotification` itself suppresses the open chat and
-          // coalesces history, so double-posting with Realtime is safe.
+          // reconnecting, backgrounded WebView), so FCM is the fallback
+          // signal. On Android route it through the native background
+          // service — the same producer the Realtime path uses — so both
+          // converge on ONE tray card (notificationId = matchId.hashCode()).
+          // Posting the flutter_local_notifications card here stacked a
+          // second entry for every message because its id space (Dart
+          // hashCode) can never replace the native card. No content is
+          // passed: the native RPC path fetches the stored
+          // plaintext/translated text, so the localized placeholder body
+          // from the server push can't clobber a real card.
           final matchId =
               (data['matchId'] ?? data['match_id'])?.toString().trim() ?? '';
+          final messageId =
+              (data['messageId'] ?? data['message_id'])?.toString().trim() ??
+              '';
           final sender =
               (data['senderName'] ??
                       data['sender_name'] ??
+                      data['notification_title'] ??
                       message.notification?.title ??
                       'Someone')
                   .toString();
           final text =
-              (data['body'] ??
+              (data['notification_body'] ??
+                      data['body'] ??
                       data['message'] ??
                       message.notification?.body ??
                       'New message')
                   .toString();
+          final alreadyAggregated = data['aggregated_messages'] == 'true';
+          final alertValue = data['should_alert']?.toString();
+          final bool? shouldAlert = alertValue == 'true'
+              ? true
+              : alertValue == 'false'
+              ? false
+              : null;
           if (matchId.isNotEmpty) {
             if (kIsWeb) {
               unawaited(
@@ -1205,6 +1515,19 @@ Future<void> _initializeFcmForCurrentUser() async {
                   senderName: sender,
                   messageContent: text,
                   matchId: matchId,
+                  alreadyAggregated: alreadyAggregated,
+                  shouldAlertOverride: shouldAlert,
+                ),
+              );
+            } else if (defaultTargetPlatform == TargetPlatform.android) {
+              unawaited(
+                BackgroundService.triggerNotificationCheck(
+                  matchId: matchId,
+                  messageId: messageId.isNotEmpty ? messageId : null,
+                  translatedContent: text,
+                  originalContent: text,
+                  senderName: sender,
+                  shouldAlert: shouldAlert,
                 ),
               );
             } else {
@@ -1214,6 +1537,9 @@ Future<void> _initializeFcmForCurrentUser() async {
                   senderName: sender,
                   messageContent: text,
                   matchId: matchId,
+                  messageId: messageId.isNotEmpty ? messageId : null,
+                  alreadyAggregated: alreadyAggregated,
+                  shouldAlertOverride: shouldAlert,
                 ),
               );
             }
@@ -1516,6 +1842,35 @@ Future<void> _captureWebQueryParams(
   }
 }
 
+/// Windows: request a fresh WNS channel URI (fire-and-forget) so
+/// SessionService attaches `metadata.wns_channel_uri` on the next session
+/// registration. Server senders (push-message, cron-jobs) dispatch toasts
+/// through it while the app is closed. No-op on every other platform.
+Future<void> _registerWindowsWnsChannel() async {
+  if (kIsWeb) return;
+  try {
+    final uri = await WindowsPushChannelService.ensureChannel();
+    if (uri == null) {
+      debugPrint('[BOOTSTRAP] [WNS] No channel URI (unpackaged or failed)');
+      return;
+    }
+    final userId = supabase.auth.currentUser?.id;
+    if (userId == null || userId.isEmpty) {
+      debugPrint('[BOOTSTRAP] [WNS] Channel fetched before auth; session '
+          'registration will attach it');
+      return;
+    }
+    SessionRegistrationCoordinator.instance.scheduleImmediate(
+      userId: userId,
+      platform: 'windows',
+      source: 'wns-channel',
+    );
+    debugPrint('[BOOTSTRAP] [WNS] Channel registered');
+  } catch (e) {
+    debugPrint('⚠️ [BOOTSTRAP] [WNS] registration failed: $e');
+  }
+}
+
 /// Setup deep link handler for OAuth callbacks from Google and Outlook
 /// This is CRITICAL for the calendar sync OAuth flow to work on mobile
 Future<void> _setupDeepLinkHandler() async {
@@ -1545,6 +1900,18 @@ Future<void> _setupDeepLinkHandler() async {
     // This won't block the main flow
     scheduleMicrotask(() async {
       try {
+        // Windows cold-start via toast activation: the matchme:// URI arrives
+        // in the process command line (app_links cannot see it), so the
+        // native push channel reads it directly.
+        final windowsLaunch = await WindowsPushChannelService
+            .getInitialLaunchPayload();
+        if (windowsLaunch != null) {
+          debugPrint(
+            '[BOOTSTRAP] [DeepLink] Windows launch URI: $windowsLaunch',
+          );
+          await _processDeepLink(Uri.parse(windowsLaunch));
+          return;
+        }
         final initialLink = await appLinks.getInitialLink();
         if (initialLink != null) {
           debugPrint(
@@ -2513,6 +2880,19 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
         lastError = e;
         final backoffMs = min(300, 80 * (1 << min(attempt, 4)));
         await Future.delayed(Duration(milliseconds: backoffMs));
+      } catch (e, st) {
+        print(
+          '[STARTUP_DIAG] shared_prefs_init_failed '
+          'type=${e.runtimeType} error=$e',
+        );
+        if (e is PlatformException) {
+          print(
+            '[STARTUP_DIAG] shared_prefs_init_failed code=${e.code} '
+            'message=${e.message} details=${e.details}',
+          );
+        }
+        print('[STARTUP_DIAG] shared_prefs_init_failed stack=$st');
+        rethrow;
       }
     }
     if (lastError != null) throw lastError;
@@ -2920,6 +3300,11 @@ Future<String?> _runPostSupabaseInitBackground(
     // Must be done after Supabase is initialized
     unawaited(_setupDeepLinkHandler());
 
+    // Windows WNS push channel (MSIX): fire-and-forget so bootstrap is never
+    // gated on the native call. collectSessionInfo() picks the cached URI up
+    // on the next session registration.
+    unawaited(_registerWindowsWnsChannel());
+
     // Verify global instance matches
     if (supabaseInstance.client != Supabase.instance.client) {
       debugPrint(
@@ -3236,9 +3621,13 @@ Future<void> _runBackgroundSessionValidation(
       bool refreshSucceeded = false;
       for (int attempt = 1; attempt <= 3; attempt++) {
         try {
+          // 4s per attempt: the old 1.2s budget times out on a healthy but
+          // loaded backend during cold start (DNS + TLS + a slow first
+          // response), which produced false "network/timeout" failures from
+          // background validation that runs in parallel with the monitor.
           await SessionService.safeRefreshSession(
-            timeout: const Duration(milliseconds: 1200),
-          ).timeout(const Duration(milliseconds: 1200));
+            timeout: const Duration(milliseconds: 4000),
+          ).timeout(const Duration(milliseconds: 4000));
           debugPrint('✅ [BOOTSTRAP] Token refreshed successfully');
           refreshSucceeded = true;
           // Invalidate critical providers so they re-init with the fresh token.
@@ -3261,7 +3650,7 @@ Future<void> _runBackgroundSessionValidation(
               continue;
             }
             debugPrint(
-              '⚠️ [BOOTSTRAP] Token refresh failed after 3 rapid tries -> confirming offline with Supabase',
+              '⚠️ [BOOTSTRAP] Token refresh failed after 3 attempts -> confirming offline with Supabase',
             );
             await _applySupabaseUnreachable('token refresh failed');
             break;
@@ -3299,8 +3688,12 @@ Future<void> _runBackgroundSessionValidation(
     bool validationDone = false;
     for (int attempt = 1; attempt <= 3; attempt++) {
       try {
+        // 4s per attempt: 1.2s is below the round-trip time of a healthy but
+        // loaded backend during cold start, so getUser timed out against a
+        // server that was actually reachable and forced an unnecessary
+        // offline confirmation.
         await Supabase.instance.client.auth.getUser().timeout(
-          const Duration(milliseconds: 1200),
+          const Duration(milliseconds: 4000),
         );
         try {
           final prefs = await SharedPreferences.getInstance();
@@ -3321,7 +3714,7 @@ Future<void> _runBackgroundSessionValidation(
             continue;
           }
           debugPrint(
-            '⚠️ [BOOTSTRAP] getUser failed after 3 rapid tries -> confirming offline, using cached session',
+            '⚠️ [BOOTSTRAP] getUser failed after 3 attempts -> confirming offline, using cached session',
           );
           await _applySupabaseUnreachable('getUser failed');
           break;
@@ -3364,24 +3757,25 @@ Future<void> _runBackgroundSessionValidation(
 
 /// The single online/offline decision point of the bootstrap.
 ///
-/// Runs while the splash is still up, so it uses [kSupabaseStartupProbeTimeout]
-/// rather than the monitor's generous budget: a live `health_check` answers in
-/// a few hundred milliseconds, while a stalled database does not answer for
-/// ~5.3s (Kong) — the SDK spent ~11s on that one call, which is what kept the
-/// flashing logo on screen for 13s. The request is cancelled when the budget
+/// Runs deferred, after the first frame has painted (see
+/// [_runPostReachabilityGate]), so it is no longer racing the splash and uses
+/// the same generous budget as the runtime monitor. A 1.5s gate budget used to
+/// expire while a cold-start probe was still healthy in flight (DNS + TLS plus
+/// a loaded backend routinely exceed it), flipping the app offline until the
+/// monitor restored it seconds later. The request is cancelled when the budget
 /// expires instead of being left to run.
 ///
-/// One attempt, no confirming attempt: a false negative only costs a
-/// cached-data splash, because the runtime monitor keeps the full budget,
-/// confirms within seconds and restores the online state by itself.
+/// One attempt, no confirming attempt: a false negative only costs cached
+/// mode briefly, because the runtime monitor keeps the full budget, confirms
+/// within seconds and restores the online state by itself.
 ///
-/// Goes offline with `force: true` so the splash is not additionally delayed by
+/// Goes offline with `force: true` so the app is not additionally delayed by
 /// OfflineCacheManager's grace period. Returns true when the app may talk to
 /// Supabase.
 Future<bool> _applySupabaseReachabilityGate() async {
   final stopwatch = Stopwatch()..start();
   final result = await probeSupabaseReachability(
-    timeout: startupSupabaseProbeBudget(),
+    timeout: platformProbeTimeout(kSupabaseProbeTimeout),
     log: (message) => debugPrint('⏱️ [BOOTSTRAP] $message'),
   );
   stopwatch.stop();
@@ -5408,12 +5802,22 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
     );
 
     final currentUserId = authState.asData?.value.session?.user.id;
-    final currentUserProfile = currentUserId == null
-        ? null
-        : ref.watch(userProfileProvider(currentUserId)).asData?.value;
+    // Watch only the two profile fields the birthday overlay needs. Watching
+    // the whole profile rebuilt MatchMeApp (MaterialApp + two ThemeData
+    // objects) on every unrelated field that trickled in during profile sync.
+    final (DateTime?, String?) birthdayInputs = currentUserId == null
+        ? (null, null)
+        : ref.watch(
+            userProfileProvider(currentUserId).select(
+              (profile) => (
+                profile.asData?.value?.dateOfBirth,
+                profile.asData?.value?.userTimezone,
+              ),
+            ),
+          );
     final isBirthdayToday = _isUsersBirthdayToday(
-      dateOfBirth: currentUserProfile?.dateOfBirth,
-      userTimezone: currentUserProfile?.userTimezone,
+      dateOfBirth: birthdayInputs.$1,
+      userTimezone: birthdayInputs.$2,
     );
 
     final amoledEnabled = ref.watch(amoledThemeProvider);
@@ -5424,6 +5828,7 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: localization.getString('appName'),
+      navigatorObservers: [ChatViewStateService.routeObserver],
       locale: localization.currentLocale,
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,

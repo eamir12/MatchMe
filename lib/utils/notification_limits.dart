@@ -53,16 +53,26 @@ int notifUtf8Bytes(String s) => utf8.encode(s).length;
   return (text: '${buf.toString()}$ellipsis', truncated: true);
 }
 
-String firstTokenName(
-  String raw, [
-  int maxChars = NotifLimits.senderNameMaxChars,
-]) {
-  final t = raw
+/// Mirrors public.mask_full_name(TEXT): "FirstName L." for multi-word names
+/// (first name + last initial, e.g. "John S."), the first name alone for
+/// single-word names. Empty falls back to 'Someone' (notification template
+/// context; the SQL function returns 'Unknown User', which only appears in
+/// in-app RPCs). Idempotent: re-masking an already-masked name ("John S.")
+/// returns it unchanged, so server-produced titles pass through. Notification
+/// display MUST use this - not a first-name-only helper - so tray titles match
+/// what the app's other screens show.
+String maskFullName(String raw) {
+  final parts = raw
       .trim()
       .split(RegExp(r'\s+'))
-      .firstWhere((e) => e.isNotEmpty, orElse: () => '');
-  if (t.isEmpty) return 'Someone';
-  return t.length > maxChars ? t.substring(0, maxChars) : t;
+      .where((e) => e.isNotEmpty)
+      .toList();
+  if (parts.isEmpty) return 'Someone';
+  if (parts.length == 1) return parts.first;
+  final first = parts.first;
+  final last = parts.last;
+  if (last.isEmpty || last == first) return first;
+  return '$first ${last[0].toUpperCase()}.';
 }
 
 ({String title, String body, bool truncated}) enforceTitleBody(

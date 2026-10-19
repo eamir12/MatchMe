@@ -88,6 +88,21 @@ class ExternalEvent {
   });
 }
 
+/// How a Google ID token's nonce claim relates to the app's raw nonce.
+enum GoogleIdTokenNonce {
+  /// The token carries the hashed nonce claim that matches the raw nonce.
+  match,
+
+  /// The token carries no nonce claim; Supabase accepts it only when no
+  /// nonce parameter is sent either.
+  absent,
+
+  /// The token carries a nonce that doesn't match (e.g. minted by an older
+  /// app run before persistence); Supabase would reject it, so callers must
+  /// fall back to the interactive flow.
+  mismatch,
+}
+
 class WebCalendarService {
   static const List<String> _scopes = [
     google_calendar.CalendarApi.calendarReadonlyScope,
@@ -98,6 +113,7 @@ class WebCalendarService {
   static const String _googleAccessTokenExpiryKey =
       'google_calendar_access_token_expiry';
   static const String _googleUserEmailKey = 'google_calendar_user_email';
+  static const String _googleSignInNonceKey = 'google_sign_in_raw_nonce';
   static Future<void>? _sharedGoogleSignInInitFuture;
   static String? _lastInitializedClientId;
   static String? _lastInitializedServerClientId;
@@ -108,6 +124,58 @@ class WebCalendarService {
     return base64Url
         .encode(List<int>.generate(32, (_) => random.nextInt(256)))
         .replaceAll('=', '');
+  }
+
+  /// Returns the device's Google Sign-In nonce, generating and persisting it
+  /// on first use. Persistence matters for silently restored sessions: Google
+  /// embeds the hash of the nonce used at sign-in time in the ID token, and
+  /// Supabase re-hashes the raw nonce we pass to `signInWithIdToken` and
+  /// compares it with that claim. Without persistence a restarted app would
+  /// present a different nonce than the one baked into the restored token.
+  static Future<String> _loadOrCreateRawNonce() async {
+    final inMemory = _googleSignInRawNonce;
+    if (inMemory != null && inMemory.isNotEmpty) return inMemory;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final stored = prefs.getString(_googleSignInNonceKey);
+      if (stored != null && stored.isNotEmpty) {
+        _googleSignInRawNonce = stored;
+        return stored;
+      }
+      final created = _createGoogleSignInNonce();
+      await prefs.setString(_googleSignInNonceKey, created);
+      _googleSignInRawNonce = created;
+      return created;
+    } catch (_) {
+      return _googleSignInRawNonce ??= _createGoogleSignInNonce();
+    }
+  }
+
+  /// Inspects the nonce claim inside a Google ID token so a silently restored
+  /// session can be validated by Supabase.
+  ///
+  /// Supabase requires the claim and the `nonce` parameter to either both
+  /// exist (and match after SHA-256) or both be absent.
+  static GoogleIdTokenNonce googleIdTokenNonceState(
+    String idToken,
+    String rawNonce,
+  ) {
+    try {
+      final parts = idToken.split('.');
+      if (parts.length != 3) return GoogleIdTokenNonce.mismatch;
+      final payload = utf8.decode(
+        base64Url.decode(base64Url.normalize(parts[1])),
+      );
+      final claims = jsonDecode(payload);
+      if (claims is! Map<String, dynamic>) return GoogleIdTokenNonce.mismatch;
+      final claim = claims['nonce'];
+      if (claim is! String || claim.isEmpty) return GoogleIdTokenNonce.absent;
+      return claim == hashGoogleSignInNonce(rawNonce)
+          ? GoogleIdTokenNonce.match
+          : GoogleIdTokenNonce.mismatch;
+    } catch (_) {
+      return GoogleIdTokenNonce.mismatch;
+    }
   }
 
   final GoogleSignIn _googleSignIn = GoogleSignIn.instance;
@@ -161,7 +229,7 @@ class WebCalendarService {
   }) async {
     final normalizedClientId = clientId.trim();
     final normalizedServerClientId = serverClientId?.trim() ?? '';
-    final rawNonce = _googleSignInRawNonce ??= _createGoogleSignInNonce();
+    final rawNonce = await _loadOrCreateRawNonce();
     // Google embeds the hash in its ID token; Supabase verifies that claim
     // against the raw nonce passed to signInWithIdToken.
     final hashedNonce = hashGoogleSignInNonce(rawNonce);

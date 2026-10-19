@@ -9,6 +9,7 @@ import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/secure_storage_service.dart';
 import 'package:matchme/services/passkey_client_service.dart';
 import 'package:matchme/services/session_service.dart';
+import 'package:matchme/utils/passkey_device_capability.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -46,13 +47,33 @@ class PasskeyAvailabilityState {
     required this.isEnabled,
     required this.isPlatformSupported,
     required this.isRuntimeConfigured,
+    this.deviceCapability = PasskeyDeviceCapability.unsupported,
   });
 
   final bool isEnabled;
   final bool isPlatformSupported;
   final bool isRuntimeConfigured;
 
+  /// What this physical device can do with a passkey ceremony, independent of
+  /// whether the app is configured to run one here yet.
+  ///
+  /// The two facts diverge on iOS: the app-side domain-association gate keeps
+  /// [isPlatformSupported] false while the phone itself is fully
+  /// passkey-capable. The UI needs both to avoid telling iPhone users their
+  /// device doesn't support passkeys.
+  final PasskeyDeviceCapability deviceCapability;
+
   bool get canUse => isEnabled && isPlatformSupported && isRuntimeConfigured;
+
+  /// True when the device itself supports passkeys, even if this app cannot
+  /// run the ceremony here yet.
+  bool get deviceSupportsPasskeys =>
+      deviceCapability != PasskeyDeviceCapability.unsupported;
+
+  /// True when the device can run ceremonies once its platform authenticator
+  /// (Face ID / Touch ID / screen lock / Windows Hello) is set up.
+  bool get needsPlatformAuthenticatorSetup =>
+      deviceCapability == PasskeyDeviceCapability.noPlatformAuthenticator;
 }
 
 const String _prefsKnownPasskeyEmailsKey = 'passkey_known_enabled_emails';
@@ -470,6 +491,18 @@ class PasskeyAuthService {
   static const Duration _requestTimeout = Duration(seconds: 15);
   static const String _prefsSupabaseAnonKeyKey = 'runtime_supabase_anon_key';
 
+  /// The device's own passkey capability, independent of the app-side
+  /// ceremony gates, so the UI can say "your phone supports passkeys, the app
+  /// isn't set up for them here yet" instead of "device unsupported".
+  static Future<PasskeyDeviceCapability> _loadDeviceCapability() async {
+    try {
+      final availability = await PasskeyClientService.getDeviceAvailability();
+      return availability.capability;
+    } catch (_) {
+      return PasskeyDeviceCapability.unsupported;
+    }
+  }
+
   static Future<PasskeyAvailabilityState>
   loadAuthenticationAvailability() async {
     final isEnabled = await appConfigService.isPasskeysEnabled();
@@ -486,6 +519,7 @@ class PasskeyAuthService {
       isPlatformSupported:
           await PasskeyClientService.isAuthenticationSupported(),
       isRuntimeConfigured: await appConfigService.isPasskeysRuntimeConfigured(),
+      deviceCapability: await _loadDeviceCapability(),
     );
   }
 
@@ -503,6 +537,7 @@ class PasskeyAuthService {
       isEnabled: true,
       isPlatformSupported: await PasskeyClientService.isRegistrationSupported(),
       isRuntimeConfigured: await appConfigService.isPasskeysRuntimeConfigured(),
+      deviceCapability: await _loadDeviceCapability(),
     );
   }
 

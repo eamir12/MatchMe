@@ -3,7 +3,8 @@ import { serve } from 'std/http/server.ts';
 import { createClient } from 'supabase';
 import { RRule } from 'rrule-deno';
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
-import { bidiIsolate, enforceTitleBody, firstTokenName } from "../_shared/notification_limits.ts";
+import { bidiIsolate, enforceTitleBody, maskFullName } from "../_shared/notification_limits.ts";
+import { isWnsChannelUri, sendWnsToast, wnsLaunchUri } from "../_shared/wns.ts";
 import { handleHealthSampler } from "./health_sampler.ts";
 
 // Initialize Supabase Admin Client
@@ -388,6 +389,11 @@ async function sendFcmV1({
             badge: resolvedBadge,
             'content-available': 1,
             'mutable-content': 1,
+            // Same delivered-notification identity as the Android `tag`:
+            // the app checks threadIdentifier to see whether the server card
+            // for this event (expiry/admin) is already sitting in
+            // Notification Center before posting its own local card.
+            ...(collapse ? { 'thread-id': collapse } : {}),
           },
         },
       },
@@ -1619,7 +1625,24 @@ async function handleNotificationQueueProcessing(invocationId: string) {
         const safeRowBadge = Number.isFinite(rowBadge) && rowBadge >= 0
           ? Math.min(99, Math.floor(rowBadge))
           : 1;
-        const result = await sendFcmV1({
+        // Transport dispatch: WNS channel URIs (queued with platform
+        // 'windows', token stored in fcm_token) are toasts; everything else
+        // goes through FCM v1 the same way the direct push-message path does.
+        const isWnsTarget = isWnsChannelUri(token);
+        const result = isWnsTarget
+          ? await sendWnsToast(supabase, {
+              channelUri: token,
+              title,
+              body,
+              launch: wnsLaunchUri(data.match_id ?? data.matchId ?? data.user_id),
+              tag: collapseTag,
+              // Chat retry rows queued while older messages were unread
+              // land in Action Center silently, matching FCM silent pushes.
+              suppressPopup:
+                data.silent === 'true' ||
+                (data.type === 'chat_message' && data.should_alert === 'false'),
+            })
+          : await sendFcmV1({
           serviceAccount,
           accessToken,
           token,
@@ -1685,7 +1708,11 @@ async function handleNotificationQueueProcessing(invocationId: string) {
           return;
         }
 
-        const unregistered = isFcmUnregistered(result.status, result.body);
+        // WNS channel invalidation is permanent (410 Gone): prune the
+        // registration. FCM UNREGISTERED keeps its existing RPC.
+        const unregistered = isWnsTarget
+          ? (result as { expired?: boolean }).expired === true
+          : isFcmUnregistered(result.status, result.body);
         const shouldFail = unregistered || nextAttempts >= maxAttempts;
         const retryAt = new Date(Date.now() + Math.min(60, 5 * nextAttempts) * 60_000).toISOString();
 
@@ -1697,6 +1724,7 @@ async function handleNotificationQueueProcessing(invocationId: string) {
           maxAttempts,
           fcmStatus: result.status,
           fcmBody: result.body,
+          transport: isWnsTarget ? 'wns' : 'fcm',
           dataType: data.type ?? null,
           broadcastId: data.broadcast_id ?? null,
           fcmTokenPrefix: tokenPrefix(token),
@@ -1704,10 +1732,15 @@ async function handleNotificationQueueProcessing(invocationId: string) {
 
         if (unregistered) {
           try {
-            await supabase.rpc('clear_user_session_fcm_token', { p_fcm_token: token });
+            if (isWnsTarget) {
+              await supabase.rpc('clear_user_session_wns_channel', { p_wns_channel_uri: token });
+            } else {
+              await supabase.rpc('clear_user_session_fcm_token', { p_fcm_token: token });
+            }
           } catch (e) {
-            logError(invocationId, 'Failed to clear UNREGISTERED FCM token', e, {
+            logError(invocationId, 'Failed to clear UNREGISTERED credential', e, {
               fcmTokenPrefix: tokenPrefix(token),
+              transport: isWnsTarget ? 'wns' : 'fcm',
             });
           }
         }
@@ -1903,11 +1936,21 @@ async function handleMatchExpiryWarnings(invocationId: string) {
     for (const s of (sessions ?? []) as Array<Record<string, unknown>>) {
       const uid = String(s.user_id ?? '').trim();
       const meta = s.metadata as Record<string, unknown> | null | undefined;
-      const tok = String((meta as Record<string, unknown> | undefined)?.['fcm_token'] ?? '').trim();
-      if (!uid || !tok || tok.length < 10) continue;
+      if (!uid) continue;
       const plat = String(s.platform ?? 'unknown').trim() || 'unknown';
       const arr = tokensByUser.get(uid) ?? [];
-      if (!arr.some((e) => e.token === tok)) arr.push({ token: tok, platform: plat });
+      // FCM tokens (ios/android/web) and WNS channel URIs (windows) share the
+      // queue column; the drainer dispatches per transport.
+      const tok = String(meta?.['fcm_token'] ?? '').trim();
+      if (tok && tok.length >= 10) {
+        if (!arr.some((e) => e.token === tok)) arr.push({ token: tok, platform: plat });
+      }
+      const wnsUri = String(meta?.['wns_channel_uri'] ?? '').trim();
+      if (wnsUri && isWnsChannelUri(wnsUri)) {
+        if (!arr.some((e) => e.token === wnsUri)) {
+          arr.push({ token: wnsUri, platform: plat === 'unknown' ? 'windows' : plat });
+        }
+      }
       tokensByUser.set(uid, arr);
     }
 
@@ -1934,7 +1977,7 @@ async function handleMatchExpiryWarnings(invocationId: string) {
 
         const locale = String((userRec?.preferred_language as string) ?? 'en').trim().toLowerCase() || 'en';
         const otherRec = userMap.get(otherUid);
-        const otherName = firstTokenName(String((otherRec?.name as string) ?? ''));
+        const otherName = maskFullName(String((otherRec?.name as string) ?? ''));
         const minutesLeft = Math.max(1, Math.ceil(c.remainingSec / 60));
         let title = await getTranslation(locale, 'matchExpiryTitle');
         let body = await getTranslation(locale, 'matchExpiryBody');
@@ -1950,7 +1993,7 @@ async function handleMatchExpiryWarnings(invocationId: string) {
           body = enforced.body || body;
         }
 
-        const data = { type: 'match_expiry', user_id: uid, match_id: c.matchId, threshold_seconds: c.threshold, expiry_at: c.expiryIso, remaining_seconds: c.remainingSec, other_user_id: otherUid };
+        const data = { type: 'match_expiry', kind: 'match_expiry', user_id: uid, match_id: c.matchId, threshold_seconds: c.threshold, expiry_at: c.expiryIso, remaining_seconds: c.remainingSec, other_user_id: otherUid };
 
         // Inbox records every warning, regardless of push preferences or
         // registered devices.
@@ -2119,11 +2162,21 @@ async function handlePinnedExpiryWarnings(invocationId: string) {
     for (const s of (sessions ?? []) as Array<Record<string, unknown>>) {
       const uid = String(s.user_id ?? '').trim();
       const meta = s.metadata as Record<string, unknown> | null | undefined;
-      const tok = String((meta as Record<string, unknown> | undefined)?.['fcm_token'] ?? '').trim();
-      if (!uid || !tok || tok.length < 10) continue;
+      if (!uid) continue;
       const plat = String(s.platform ?? 'unknown').trim() || 'unknown';
       const arr = tokensByUser.get(uid) ?? [];
-      if (!arr.some((e) => e.token === tok)) arr.push({ token: tok, platform: plat });
+      // FCM tokens (ios/android/web) and WNS channel URIs (windows) share the
+      // queue column; the drainer dispatches per transport. (Pinned expiry.)
+      const tok = String(meta?.['fcm_token'] ?? '').trim();
+      if (tok && tok.length >= 10) {
+        if (!arr.some((e) => e.token === tok)) arr.push({ token: tok, platform: plat });
+      }
+      const wnsUri = String(meta?.['wns_channel_uri'] ?? '').trim();
+      if (wnsUri && isWnsChannelUri(wnsUri)) {
+        if (!arr.some((e) => e.token === wnsUri)) {
+          arr.push({ token: wnsUri, platform: plat === 'unknown' ? 'windows' : plat });
+        }
+      }
       tokensByUser.set(uid, arr);
     }
 
@@ -2164,7 +2217,7 @@ async function handlePinnedExpiryWarnings(invocationId: string) {
         body = enforced.body || body;
       }
 
-      const data = { type: 'pinned_expiry', user_id: c.userId, threshold_seconds: c.threshold, expiry_at: c.expiryIso, remaining_seconds: c.remainingSec };
+      const data = { type: 'pinned_expiry', kind: 'pinned_expiry', user_id: c.userId, threshold_seconds: c.threshold, expiry_at: c.expiryIso, remaining_seconds: c.remainingSec };
 
       // Inbox records every warning, regardless of push preferences or
       // registered devices.

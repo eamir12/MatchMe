@@ -35,13 +35,13 @@ void main() {
       expect(issues.isEmpty, true);
     });
 
-    test('firstTokenName truncates to 20', () {
-      expect(firstTokenName('Alexander Superlongname'), 'Alexander');
-      expect(firstTokenName(''), 'Someone');
-      expect(
-        firstTokenName('Avraham Avinu'.padRight(50, 'x')).length <= 20,
-        true,
-      );
+    test('maskFullName mirrors mask_full_name ("John S.")', () {
+      expect(maskFullName('John Smith'), 'John S.');
+      expect(maskFullName('John Michael Smith'), 'John S.');
+      expect(maskFullName('Prince'), 'Prince');
+      expect(maskFullName(''), 'Someone');
+      // Idempotent: already-masked server/RPC titles pass through unchanged.
+      expect(maskFullName('John S.'), 'John S.');
     });
 
     test('enforceTitleBody caps queue sizes', () {

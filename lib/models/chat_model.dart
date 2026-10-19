@@ -10,6 +10,7 @@ class ChatModel {
   final List<String> otherUserPhotos;
   final String lastMessage;
   final String? lastMessageTranslated; // Translated version of last message
+  final String? lastMessageTranslatedTargetLanguage;
   final String lastMessageId; // <-- [FIX 2] ADD THIS
   final String? lastMessageSenderId; // ID of user who sent the last message
   final DateTime lastMessageAt;
@@ -56,6 +57,7 @@ class ChatModel {
     this.otherUserPhotos = const [],
     required this.lastMessage,
     this.lastMessageTranslated,
+    this.lastMessageTranslatedTargetLanguage,
     required this.lastMessageId, // <-- [FIX 2] ADD THIS
     this.lastMessageSenderId,
     required this.lastMessageAt,
@@ -150,6 +152,8 @@ class ChatModel {
       lastMessageTranslated: looksLikeEncryptedBlob(rawLastMessageTranslated)
           ? null
           : rawLastMessageTranslated,
+      lastMessageTranslatedTargetLanguage: json['last_message_target_language']
+          ?.toString(),
       lastMessageId: json['last_message_id'] ?? '', // <-- [FIX 2] ADD THIS
       lastMessageSenderId: json['last_message_sender_id'] as String?,
       lastMessageAt: messageTime,
@@ -162,7 +166,7 @@ class ChatModel {
       lastMessageSourceLanguage:
           json['last_message_source_language'] as String?,
       matchedIntent: json['matched_intent'] as String?,
-    matchType: (json['match_type'] as String?) ?? '',
+      matchType: (json['match_type'] as String?) ?? '',
       lastMessageEditedAt: _normalizeMarker(json['last_message_edited_at']),
       lastMessageTranslatedEditedAt: _normalizeMarker(
         json['last_message_translated_edited_at'],
@@ -243,6 +247,7 @@ class ChatModel {
     List<String>? otherUserPhotos,
     String? lastMessage,
     Object? lastMessageTranslated = _unset,
+    Object? lastMessageTranslatedTargetLanguage = _unset,
     String? lastMessageId,
     String? lastMessageSenderId,
     DateTime? lastMessageAt,
@@ -255,7 +260,7 @@ class ChatModel {
     Object? lastMessageSourceLanguage = _unset,
     String? matchedIntent,
     String? lastMessageEditedAt,
-    String? lastMessageTranslatedEditedAt,
+    Object? lastMessageTranslatedEditedAt = _unset,
     Object? archivedAt = _unset,
   }) {
     return ChatModel(
@@ -267,6 +272,10 @@ class ChatModel {
       lastMessageTranslated: identical(lastMessageTranslated, _unset)
           ? this.lastMessageTranslated
           : lastMessageTranslated as String?,
+      lastMessageTranslatedTargetLanguage:
+          identical(lastMessageTranslatedTargetLanguage, _unset)
+          ? this.lastMessageTranslatedTargetLanguage
+          : lastMessageTranslatedTargetLanguage as String?,
       lastMessageId: lastMessageId ?? this.lastMessageId,
       lastMessageSenderId: lastMessageSenderId ?? this.lastMessageSenderId,
       lastMessageAt: lastMessageAt ?? this.lastMessageAt,
@@ -280,10 +289,12 @@ class ChatModel {
           ? this.lastMessageSourceLanguage
           : lastMessageSourceLanguage as String?,
       matchedIntent: matchedIntent ?? this.matchedIntent,
-    matchType: matchType.isEmpty ? matchType : matchType,
+      matchType: matchType.isEmpty ? matchType : matchType,
       lastMessageEditedAt: lastMessageEditedAt ?? this.lastMessageEditedAt,
       lastMessageTranslatedEditedAt:
-          lastMessageTranslatedEditedAt ?? this.lastMessageTranslatedEditedAt,
+          identical(lastMessageTranslatedEditedAt, _unset)
+          ? this.lastMessageTranslatedEditedAt
+          : lastMessageTranslatedEditedAt as String?,
       archivedAt: identical(archivedAt, _unset)
           ? this.archivedAt
           : archivedAt as String?,
@@ -302,6 +313,8 @@ class ChatModel {
         listEquals(other.otherUserPhotos, otherUserPhotos) &&
         other.lastMessage == lastMessage &&
         other.lastMessageTranslated == lastMessageTranslated &&
+        other.lastMessageTranslatedTargetLanguage ==
+            lastMessageTranslatedTargetLanguage &&
         other.lastMessageId == lastMessageId &&
         other.lastMessageSenderId == lastMessageSenderId &&
         other.lastMessageAt == lastMessageAt &&
@@ -319,13 +332,14 @@ class ChatModel {
   }
 
   @override
-  int get hashCode => Object.hash(
+  int get hashCode => Object.hashAll([
     matchId,
     otherUserId,
     otherUserName,
     Object.hashAll(otherUserPhotos),
     lastMessage,
     lastMessageTranslated,
+    lastMessageTranslatedTargetLanguage,
     lastMessageId,
     lastMessageSenderId,
     lastMessageAt,
@@ -340,10 +354,10 @@ class ChatModel {
     lastMessageEditedAt,
     lastMessageTranslatedEditedAt,
     archivedAt,
-  );
+  ]);
 
   @override
   String toString() {
-    return 'ChatModel(matchId: $matchId, otherUserId: $otherUserId, otherUserName: $otherUserName, lastMessage: $lastMessage, lastMessageTranslated: $lastMessageTranslated, lastMessageId: $lastMessageId, lastMessageSenderId: $lastMessageSenderId, lastMessageAt: $lastMessageAt, unreadCount: $unreadCount, eventId: $eventId, eventName: $eventName, eventLink: $eventLink, translationEnabled: $translationEnabled, translationLanguage: $translationLanguage, lastMessageSourceLanguage: $lastMessageSourceLanguage, matchedIntent: $matchedIntent, lastMessageEditedAt: $lastMessageEditedAt, lastMessageTranslatedEditedAt: $lastMessageTranslatedEditedAt, archivedAt: $archivedAt)';
+    return 'ChatModel(matchId: $matchId, otherUserId: $otherUserId, otherUserName: $otherUserName, lastMessage: $lastMessage, lastMessageTranslated: $lastMessageTranslated, lastMessageTranslatedTargetLanguage: $lastMessageTranslatedTargetLanguage, lastMessageId: $lastMessageId, lastMessageSenderId: $lastMessageSenderId, lastMessageAt: $lastMessageAt, unreadCount: $unreadCount, eventId: $eventId, eventName: $eventName, eventLink: $eventLink, translationEnabled: $translationEnabled, translationLanguage: $translationLanguage, lastMessageSourceLanguage: $lastMessageSourceLanguage, matchedIntent: $matchedIntent, lastMessageEditedAt: $lastMessageEditedAt, lastMessageTranslatedEditedAt: $lastMessageTranslatedEditedAt, archivedAt: $archivedAt)';
   }
 }

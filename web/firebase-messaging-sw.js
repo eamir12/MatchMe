@@ -12,10 +12,12 @@ firebase.initializeApp({
 
 const messaging = firebase.messaging();
 
+// v5: tags aligned with the server contract (admin_<id>, expiry _<threshold>)
+// so a card delivered by FCM never doubles a locally-posted one.
 // v4: + silent edit/delete retraction closes the stale grouped card.
 // skipWaiting + claim so rebooted/offline browsers pick up the fix without
 // waiting for the old worker to release its clients.
-const SW_VERSION = 'v4-notif-fix';
+const SW_VERSION = 'v5-tag-align';
 try {
   self.addEventListener('install', (event) => {
     try {
@@ -82,9 +84,13 @@ self.addEventListener('message', (event) => {
 });
 
 messaging.onBackgroundMessage(async (payload) => {
-  const title = (payload && payload.notification && payload.notification.title) ? payload.notification.title : 'MatchMe';
-  const body = (payload && payload.notification && payload.notification.body) ? payload.notification.body : '';
   const data = (payload && payload.data) ? payload.data : {};
+  const title = (payload && payload.notification && payload.notification.title)
+    ? payload.notification.title
+    : (data.notification_title || 'MatchMe');
+  const body = (payload && payload.notification && payload.notification.body)
+    ? payload.notification.body
+    : (data.notification_body || '');
   const dataType = (data.type || data.kind || data.notification_type || data.notificationType || '').toString().trim();
   const isAdminBroadcast = dataType === 'admin_broadcast';
 
@@ -130,11 +136,16 @@ messaging.onBackgroundMessage(async (payload) => {
   }
   // Distinct tags so chat history, match banners, and expiry warnings never
   // clobber each other when the browser is minimized/closed/offline.
-  // Chat keeps `match_<id>` for 5-message history merging.
+  // Chat keeps `match_<id>` for 5-message history merging. All tags mirror
+  // the server contract (push-message / cron-jobs collapseTag) so a server
+  // webpush card and this worker's card replace each other, never stack.
+  const expiryThreshold = (data.threshold_seconds ?? data.thresholdSeconds ?? '')
+    .toString()
+    .trim();
   const tag = isAdminBroadcast
-    ? (broadcastId ? `admin_broadcast_${broadcastId}` : 'admin_broadcast')
+    ? (broadcastId ? `admin_${broadcastId}` : 'admin_broadcast')
     : isExpiry
-      ? `${rawKind}_${matchId || broadcastId || 'warn'}`
+      ? `${rawKind}_${matchId || broadcastId || 'warn'}${expiryThreshold ? `_${expiryThreshold}` : ''}`
       : isMatch
         ? (matchId ? `new_match_${matchId}` : 'new_match')
         : (matchId ? `match_${matchId}` : (data.tag || data.collapseKey || data.collapse_key || '').toString().trim());
@@ -148,7 +159,10 @@ messaging.onBackgroundMessage(async (payload) => {
     }
   }
 
-  const history = isAdminBroadcast ? null : _pushMessageHistory(matchId, messageId, body);
+  const alreadyAggregated = data.aggregated_messages === 'true';
+  const history = (isAdminBroadcast || alreadyAggregated)
+    ? null
+    : _pushMessageHistory(matchId, messageId, body);
   const mergedBody = history ? history.map((m) => (m && m.text) ? m.text : '').filter(Boolean).join('\n') : '';
 
   self.registration.showNotification(title, {
@@ -158,7 +172,7 @@ messaging.onBackgroundMessage(async (payload) => {
     data,
     tag: tag || undefined,
     renotify: false,
-    silent: history ? history.length > 1 : false,
+    silent: data.should_alert === 'false' || (history ? history.length > 1 : false),
   });
 });
 

@@ -135,9 +135,11 @@ Future<void> showReactionPicker(
                         backgroundColor: Colors.transparent,
                         builder: (context) => Container(
                           height: MediaQuery.of(context).size.height * 0.75,
-                          decoration: const BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.vertical(
+                          decoration: BoxDecoration(
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.surfaceContainerLow,
+                            borderRadius: const BorderRadius.vertical(
                               top: Radius.circular(20),
                             ),
                           ),
@@ -223,10 +225,10 @@ Future<void> showReactionPicker(
                         ],
                       ),
                       alignment: Alignment.center,
-                      child: const Icon(
+                      child: Icon(
                         Icons.add,
                         size: 28,
-                        color: Colors.grey,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
                     ),
                   ),

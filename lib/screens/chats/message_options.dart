@@ -114,9 +114,11 @@ Future<String?> showMessageOptions(
                           builder: (pickerContext) => Container(
                             height:
                                 MediaQuery.of(pickerContext).size.height * 0.75,
-                            decoration: const BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.vertical(
+                            decoration: BoxDecoration(
+                              color: Theme.of(
+                                pickerContext,
+                              ).colorScheme.surfaceContainerLow,
+                              borderRadius: const BorderRadius.vertical(
                                 top: Radius.circular(20),
                               ),
                             ),
@@ -169,10 +171,14 @@ Future<String?> showMessageOptions(
                                 emojiViewConfig: EmojiViewConfig(
                                   columns: 8,
                                   emojiSizeMax: 32,
-                                  backgroundColor: Colors.white,
+                                  backgroundColor: Theme.of(
+                                    pickerContext,
+                                  ).colorScheme.surfaceContainerLow,
                                 ),
                                 categoryViewConfig: CategoryViewConfig(
-                                  backgroundColor: Colors.white,
+                                  backgroundColor: Theme.of(
+                                    pickerContext,
+                                  ).colorScheme.surfaceContainerLow,
                                   indicatorColor: Theme.of(
                                     pickerContext,
                                   ).colorScheme.primary,
@@ -181,7 +187,9 @@ Future<String?> showMessageOptions(
                                   ).colorScheme.primary,
                                 ),
                                 searchViewConfig: SearchViewConfig(
-                                  backgroundColor: Colors.grey.shade200,
+                                  backgroundColor: Theme.of(
+                                    pickerContext,
+                                  ).colorScheme.surfaceContainerHighest,
                                 ),
                               ),
                               ),

@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/background_service.dart';
+import 'package:matchme/services/secure_storage_service.dart';
 import 'package:matchme/utils/permission_coordinator.dart';
 import 'package:matchme/utils/resume_diagnostics.dart';
 import 'package:matchme/utils/offline_utils.dart';
@@ -81,6 +82,12 @@ class NotificationPreferencesState {
   final int? pausedUntilEpochMsUtc;
   final int? pausedDurationSeconds;
   final bool pausedIndefinitely;
+
+  /// Whether system-tray/FCM notifications may show decrypted message content.
+  /// When false the tray body is replaced with a generic "New message" string.
+  /// Server-visible (stored at the top level of notification_preferences) so
+  /// killed/background pushes respect it, since those bypass every client gate.
+  final bool messagePreviews;
   static const Object _unset = Object();
 
   const NotificationPreferencesState({
@@ -89,6 +96,7 @@ class NotificationPreferencesState {
     this.pausedUntilEpochMsUtc,
     this.pausedDurationSeconds,
     this.pausedIndefinitely = false,
+    this.messagePreviews = true,
   });
 
   static const Map<NotificationMethod, bool> _defaultGlobalMethods = {
@@ -203,6 +211,7 @@ class NotificationPreferencesState {
     Object? pausedUntilEpochMsUtc = _unset,
     Object? pausedDurationSeconds = _unset,
     bool? pausedIndefinitely,
+    bool? messagePreviews,
   }) {
     return NotificationPreferencesState(
       matrix: matrix ?? this.matrix,
@@ -214,6 +223,7 @@ class NotificationPreferencesState {
           ? this.pausedDurationSeconds
           : pausedDurationSeconds as int?,
       pausedIndefinitely: pausedIndefinitely ?? this.pausedIndefinitely,
+      messagePreviews: messagePreviews ?? this.messagePreviews,
     );
   }
 }
@@ -272,6 +282,15 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
   static const _prefsUnitSystemKey = 'unit_system_override';
   static const _prefsTimeFormatKey = 'time_format_override';
   static const _prefsBackgroundMatchingKey = 'flutter.background_matching_mode';
+  /// Mirror of the visibility provider's backup key
+  /// (`visibility_provider.dart`). It is set while Background Matching is
+  /// temporarily disabled because the user is invisible; the DB column is
+  /// intentionally left untouched, so the settings sync must not resurrect
+  /// the local pref (or the in-memory state) from the remote value while it
+  /// is set — otherwise the next visibility evaluation disables it again and
+  /// the user sees the toggle flip back on.
+  static const _prefsBackgroundMatchingBackupKey =
+      'flutter.background_matching_backup';
   static const _prefsLegacyHighAccuracyKey = 'flutter.high_accuracy_mode';
   static const _prefsPendingBackgroundMatchingEnableKey =
       'flutter.background_matching_mode_pending_enable';
@@ -296,11 +315,16 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
       'notifications_paused_duration_seconds';
   static const _prefsPausedIndefinitelyKey =
       'notifications_paused_indefinitely';
+  static const _prefsMessagePreviewsKey = 'notifications_message_previews_v1';
+  static const _legacyPreviewEnabledPrefix = 'notification_preview_enabled:';
   static const _prefsPreferredCurrencyKey = 'preferred_currency_override';
   static const _prefsRecentCurrenciesKey = 'recent_currencies_v1';
 
   final supabase = Supabase.instance.client;
   Timer? _notificationUnpauseTimer;
+  /// Cached mirror of [_prefsBackgroundMatchingBackupKey]; refreshed whenever
+  /// preferences are loaded. Read synchronously from [_mergeRealtimeUpdate].
+  bool _backgroundMatchingTemporarilyDisabled = false;
   RealtimeChannel? _settingsSubscription;
   String? _settingsSubscriptionUserId;
   StreamSubscription<AuthState>? _authStateSubscription;
@@ -434,6 +458,8 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
           (prefs.containsKey(_prefsLegacyHighAccuracyKey)
               ? prefs.getBool(_prefsLegacyHighAccuracyKey)!
               : true);
+      _backgroundMatchingTemporarilyDisabled =
+          prefs.getBool(_prefsBackgroundMatchingBackupKey) ?? false;
       if (prefs.containsKey(_prefsLegacyHighAccuracyKey)) {
         await prefs.setBool(_prefsBackgroundMatchingKey, highAccuracy);
         await prefs.remove(_prefsLegacyHighAccuracyKey);
@@ -461,6 +487,24 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
       );
       final pausedIndefinitely =
           prefs.getBool(_prefsPausedIndefinitelyKey) ?? false;
+      var localMessagePreviews =
+          prefs.getBool(_prefsMessagePreviewsKey) ?? true;
+      // One-time migration from the legacy client-only SecureStorage flag
+      // (notification_preview_enabled:<userId>) into the server-visible key.
+      if (!prefs.containsKey(_prefsMessagePreviewsKey)) {
+        final legacyUserId = supabase.auth.currentUser?.id;
+        if (legacyUserId != null) {
+          try {
+            final legacy = await SecureStorageService.instance.read(
+              '$_legacyPreviewEnabledPrefix$legacyUserId',
+            );
+            if (legacy != null) {
+              localMessagePreviews = legacy != 'false';
+            }
+          } catch (_) {}
+        }
+        await prefs.setBool(_prefsMessagePreviewsKey, localMessagePreviews);
+      }
       final localPreferredCurrency = _normalizeCurrencyCode(
         prefs.getString(_prefsPreferredCurrencyKey),
       );
@@ -522,6 +566,7 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
             pausedUntilEpochMsUtc: pausedUntilMsUtc,
             pausedDurationSeconds: pausedDurationSeconds,
             pausedIndefinitely: pausedIndefinitely,
+            messagePreviews: localMessagePreviews,
           ),
           preferredCurrency: localPreferredCurrency,
           recentCurrencies: localRecentCurrencies,
@@ -569,6 +614,7 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
             int? remotePausedUntilMsUtc = pausedUntilMsUtc;
             int? remotePausedDurationSeconds = pausedDurationSeconds;
             bool remotePausedIndefinitely = pausedIndefinitely;
+            bool remoteMessagePreviews = localMessagePreviews;
             Map<NotificationType, Map<NotificationMethod, bool>> remoteMatrix =
                 localMatrix;
 
@@ -603,6 +649,9 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
               remotePausedIndefinitely =
                   remoteNotifPrefs['paused_indefinitely'] as bool? ??
                   remotePausedIndefinitely;
+              remoteMessagePreviews =
+                  remoteNotifPrefs['message_previews'] as bool? ??
+                  remoteMessagePreviews;
 
               final parsedMatrix = _parseMatrix(remoteNotifPrefs['matrix']);
               if (parsedMatrix != null) {
@@ -667,13 +716,17 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
             state = state.copyWith(
               unitSystem: _parseUnitSystem(remoteUnitStr) ?? state.unitSystem,
               timeFormat: _parseTimeFormat(remoteTimeStr) ?? state.timeFormat,
-              backgroundMatchingMode: remoteHighAccuracy ?? highAccuracy,
+              backgroundMatchingMode:
+                  _backgroundMatchingTemporarilyDisabled
+                  ? state.backgroundMatchingMode
+                  : (remoteHighAccuracy ?? highAccuracy),
               notifications: NotificationPreferencesState(
                 matrix: remoteMatrix,
                 globalMethods: remoteGlobalMethods,
                 pausedUntilEpochMsUtc: remotePausedUntilMsUtc,
                 pausedDurationSeconds: remotePausedDurationSeconds,
                 pausedIndefinitely: remotePausedIndefinitely,
+                messagePreviews: remoteMessagePreviews,
               ),
               preferredCurrency:
                   remotePreferredCurrency ?? localPreferredCurrency,
@@ -693,7 +746,8 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
             if (remoteThemeStr != null) {
               await prefs.setString('theme_mode', remoteThemeStr);
             }
-            if (remoteHighAccuracy != null) {
+            if (remoteHighAccuracy != null &&
+                !_backgroundMatchingTemporarilyDisabled) {
               await prefs.setBool(
                 _prefsBackgroundMatchingKey,
                 remoteHighAccuracy,
@@ -766,6 +820,10 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
                 _prefsPausedIndefinitelyKey,
                 remotePausedIndefinitely,
               );
+              await prefs.setBool(
+                _prefsMessagePreviewsKey,
+                remoteMessagePreviews,
+              );
               await prefs.setString(
                 _prefsMatrixKey,
                 jsonEncode(_matrixToJson(remoteMatrix)),
@@ -792,6 +850,7 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
           pausedUntilEpochMsUtc: pausedUntilMsUtc,
           pausedDurationSeconds: pausedDurationSeconds,
           pausedIndefinitely: pausedIndefinitely,
+          messagePreviews: localMessagePreviews,
         ),
         preferredCurrency: localPreferredCurrency,
         recentCurrencies: localRecentCurrencies,
@@ -1174,6 +1233,16 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
     await _saveNotificationPreferences();
   }
 
+  /// Toggles whether system-tray/FCM notifications may show decrypted message
+  /// content. Persisted locally and synced to the server so killed/background
+  /// pushes and the native Android service respect it.
+  Future<void> setMessagePreviews(bool value) async {
+    state = state.copyWith(
+      notifications: state.notifications.copyWith(messagePreviews: value),
+    );
+    await _saveNotificationPreferences();
+  }
+
   Future<void> _saveNotificationPreferences() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -1225,6 +1294,7 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
         _prefsPausedIndefinitelyKey,
         notifs.pausedIndefinitely,
       );
+      await prefs.setBool(_prefsMessagePreviewsKey, notifs.messagePreviews);
       await prefs.setString(
         _prefsMatrixKey,
         jsonEncode(_matrixToJson(notifs.matrix)),
@@ -1243,6 +1313,7 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
                   'paused_until_ms_utc': notifs.pausedUntilEpochMsUtc,
                   'paused_duration_seconds': notifs.pausedDurationSeconds,
                   'paused_indefinitely': notifs.pausedIndefinitely,
+                  'message_previews': notifs.messagePreviews,
                   'matrix': matrixJson,
                   'global_methods': {
                     'push': notifs.enablePushNotifications,
@@ -1350,7 +1421,9 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
           ? _parseTimeFormat(remoteTimeStr) ?? currentPrefs.timeFormat
           : currentPrefs.timeFormat,
       backgroundMatchingMode:
-          remoteHighAccuracy ?? currentPrefs.backgroundMatchingMode,
+          remoteHighAccuracy == true && _backgroundMatchingTemporarilyDisabled
+          ? currentPrefs.backgroundMatchingMode
+          : (remoteHighAccuracy ?? currentPrefs.backgroundMatchingMode),
       notifications: notifications,
       preferredCurrency:
           remotePreferredCurrency ?? currentPrefs.preferredCurrency,
@@ -1417,6 +1490,7 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
       final pausedDurationSeconds = (data['paused_duration_seconds'] as num?)
           ?.toInt();
       final pausedIndefinitely = data['paused_indefinitely'] as bool? ?? false;
+      final messagePreviews = data['message_previews'] as bool? ?? true;
 
       Map<NotificationMethod, bool> parsedGlobalMethods =
           NotificationPreferencesState._defaultGlobalMethods;
@@ -1443,6 +1517,7 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
         pausedUntilEpochMsUtc: pausedUntilMsUtc,
         pausedDurationSeconds: pausedDurationSeconds,
         pausedIndefinitely: pausedIndefinitely,
+        messagePreviews: messagePreviews,
       );
     } catch (_) {
       return null;

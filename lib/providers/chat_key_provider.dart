@@ -49,6 +49,9 @@ class ChatKeyNotifier extends Notifier<ChatKeyState> {
   late Future<void> _initFuture;
   String? _initializedForUserId;
   bool _resumeListenerRegistered = false;
+  VoidCallback? _resumeListenerDispose;
+  bool _resumeRefreshInFlight = false;
+  DateTime? _lastResumeRefreshAt;
 
   /// The user id the provider's current state was initialized for. Null
   /// until the first init starts. Consumers use this to detect whether
@@ -58,6 +61,15 @@ class ChatKeyNotifier extends Notifier<ChatKeyState> {
 
   @override
   ChatKeyState build() {
+    // The provider is invalidated on login/logout (bootstrap, navigation,
+    // profile wizard), which discards this notifier and builds a new one.
+    // Without disposing the old listener here, every invalidation leaked a
+    // resume callback that fired a full offline key refresh on reconnect.
+    ref.onDispose(() {
+      _resumeListenerDispose?.call();
+      _resumeListenerDispose = null;
+      _resumeListenerRegistered = false;
+    });
     _initFuture = _init();
     return const ChatKeyState();
   }
@@ -71,11 +83,23 @@ class ChatKeyNotifier extends Notifier<ChatKeyState> {
     // without any user action.
     if (!_resumeListenerRegistered) {
       _resumeListenerRegistered = true;
-      onSupabaseResume(() {
+      _resumeListenerDispose = onSupabaseResume(() {
+        // The restore coordinator fires short bursts of events (the
+        // connectivity monitor, then FCM's registerSession a few seconds
+        // later). One key refresh is enough — the cooldown dedupes the burst.
+        if (_resumeRefreshInFlight) return;
+        final now = DateTime.now();
+        if (_lastResumeRefreshAt != null &&
+            now.difference(_lastResumeRefreshAt!) <
+                const Duration(seconds: 15)) {
+          return;
+        }
+        _lastResumeRefreshAt = now;
         debugPrint(
           '🔑 [ChatKeyProvider] Connectivity resumed — re-running key init',
         );
-        unawaited(refresh());
+        _resumeRefreshInFlight = true;
+        unawaited(refresh().whenComplete(() => _resumeRefreshInFlight = false));
       });
     }
 

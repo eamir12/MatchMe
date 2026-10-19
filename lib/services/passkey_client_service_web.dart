@@ -8,10 +8,12 @@ import 'passkey_client_exception.dart';
 
 /// Raw availability for the browser. The web path has no separate platform
 /// authenticator concept, so `hasPlatformAuthenticator` mirrors support.
+///
+/// Like the native probe, this deliberately ignores
+/// [_passkeysTemporarilyDisabledOnIos]: the iOS browser still supports
+/// WebAuthn, only the relying-party domain association is missing, and the UI
+/// needs to explain the difference.
 Future<PasskeyDeviceAvailability> getDeviceAvailability() async {
-  if (_passkeysTemporarilyDisabledOnIos) {
-    return PasskeyDeviceAvailability.unavailable;
-  }
   if (web.window.isSecureContext != true) {
     return PasskeyDeviceAvailability.unavailable;
   }
@@ -28,8 +30,10 @@ Future<PasskeyDeviceAvailability> getDeviceAvailability() async {
 /// iOS passkeys are temporarily disabled in the browser too: every browser
 /// on iOS is WebKit, and ceremonies fail there for the same reason they
 /// fail in the native app — the relying party is not associated with a
-/// domain. Until that domain setup exists, report the feature as
-/// unavailable on iOS so the UI never offers it. Re-enable by removing
+/// domain. Until that domain setup exists, refuse to start a ceremony on
+/// iOS so the UI never offers one. This gate only affects
+/// [isAuthenticationSupported]/[isRegistrationSupported]; the availability
+/// probe above still reports the device truthfully. Re-enable by removing
 /// this gate once the AASA/origin configuration is in place.
 ///
 /// Every non-Safari iOS browser still reports WebKit's UA tokens, and

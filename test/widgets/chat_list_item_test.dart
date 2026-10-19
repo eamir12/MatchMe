@@ -130,6 +130,109 @@ void main() {
     expect(find.text('3'), findsOneWidget);
   });
 
+  testWidgets(
+    'unread badge waits for a pending translation instead of arriving first',
+    (tester) async {
+      final chat = ChatModel(
+        matchId: 'match-pending-tx',
+        otherUserId: 'other-user-pending-tx',
+        otherUserName: 'Bella V.',
+        lastMessage: 'Hola!',
+        lastMessageId: 'message-pending-tx',
+        lastMessageSenderId: 'other-user-pending-tx',
+        lastMessageAt: DateTime(2026, 1, 1),
+        unreadCount: 1,
+        translationEnabled: true,
+        lastMessageSourceLanguage: 'es',
+        lastMessageTranslated: null,
+      );
+      final l10n = LocalizationState(
+        currentLocale: const Locale('en'),
+        textDirection: TextDirection.ltr,
+        strings: const {},
+        supportedLanguages: const [],
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            localizationProvider.overrideWithValue(l10n),
+            otherUserProfileProvider(
+              chat.otherUserId,
+            ).overrideWith((ref) => Future<UserProfile?>.value(null)),
+          ],
+          child: MaterialApp(
+            home: Scaffold(body: ChatListItem(chat: chat)),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // While the translation is in flight the row must not show the unread
+      // badge on its own, and must not fall back to the untranslated text.
+      expect(find.bySemanticsLabel('1 unread messages'), findsNothing);
+      expect(find.text('1'), findsNothing);
+      expect(find.text('Hola!'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'translated preview and unread badge reveal together on the age line',
+    (tester) async {
+      final chat = ChatModel(
+        matchId: 'match-tx-ready',
+        otherUserId: 'other-user-tx-ready',
+        otherUserName: 'Bella V.',
+        lastMessage: 'Hola!',
+        lastMessageId: 'message-tx-ready',
+        lastMessageSenderId: 'other-user-tx-ready',
+        lastMessageAt: DateTime(2026, 1, 1),
+        unreadCount: 1,
+        translationEnabled: true,
+        lastMessageSourceLanguage: 'es',
+        lastMessageTranslated: 'How are you?',
+      );
+      final l10n = LocalizationState(
+        currentLocale: const Locale('en'),
+        textDirection: TextDirection.ltr,
+        strings: const {},
+        supportedLanguages: const [],
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            localizationProvider.overrideWithValue(l10n),
+            otherUserProfileProvider(chat.otherUserId).overrideWith(
+              (ref) => Future<UserProfile?>.value(
+                UserProfile.fromMap({
+                  'id': chat.otherUserId,
+                  'name': 'Bella Valentine',
+                  'dateOfBirth': '2000-01-01',
+                }),
+              ),
+            ),
+          ],
+          child: MaterialApp(
+            home: Scaffold(body: ChatListItem(chat: chat)),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('How are you?'), findsOneWidget);
+      expect(find.bySemanticsLabel('1 unread messages'), findsOneWidget);
+
+      // The badge shares the age/gender line instead of owning a row under
+      // the timestamp: both centers sit on the same vertical position.
+      final badgeCenter = tester.getCenter(find.text('1'));
+      final ageCenter = tester.getCenter(find.textContaining('Age:'));
+      expect((badgeCenter.dy - ageCenter.dy).abs() <= 6, isTrue);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   // Regression: a chat row rendered the base64 content_translated_encrypted
   // blob when decryption could not run. A message must never be shown in its
   // encrypted form because the user cannot read it.

@@ -1,12 +1,14 @@
-// health_sampler — 5-minute snapshots of system-health metrics for the
+// health_sampler — 30-minute snapshots of system-health metrics for the
 // admin System Health History screen (admin_health_snapshots table).
 //
 // Runs inside the cron-jobs edge function (invoked every minute by pg_cron).
-// A stateless gate skips all work until the newest snapshot is ~4.5 minutes
-// old, so the effective sampling cadence is ~5 minutes regardless of the
-// 1-minute trigger. Each source is collected independently; a failing
-// source simply omits its row (a gap in history, never a cron-jobs task
-// failure — this task never throws).
+// A stateless gate skips all work until the newest snapshot is ~29.5 minutes
+// old, so the effective sampling cadence is ~30 minutes regardless of the
+// 1-minute trigger. The admin live probe (`project-logs-health`) serves
+// these snapshots with a 40-minute TTL, so a missing run is retried by the
+// next cron minute and still covered. Each source is collected
+// independently; a failing source simply omits its row (a gap in history,
+// never a cron-jobs task failure — this task never throws).
 //
 // Sources per sample:
 //  db        — timed health_check() RPC (latency, success)
@@ -24,7 +26,7 @@ import {
   FETCH_TIMEOUT_MS,
 } from "../_shared/project_logs_health.ts";
 
-const SAMPLE_INTERVAL_MS = 4.5 * 60 * 1000;
+const SAMPLE_INTERVAL_MS = 29.5 * 60 * 1000;
 
 type SnapshotRow = {
   source: "db" | "queue" | "statuspage" | "usage" | "auth" | "errors";

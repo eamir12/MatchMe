@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:matchme/services/windows_location_channel.dart';
 import 'package:matchme/providers/invisibility_rules_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/models/invisibility_rules.dart';
@@ -449,7 +450,7 @@ class _InvisibilityRulesScreenState
           return;
         }
 
-        final last = await Geolocator.getLastKnownPosition();
+        final last = await WindowsLocationChannel.getLastKnownPosition();
         if (last != null && isDialogOpen && context.mounted) {
           setState(() {
             latitude ??= last.latitude;
@@ -457,11 +458,16 @@ class _InvisibilityRulesScreenState
           });
         }
 
-        final current = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(
-            accuracy: LocationAccuracy.high,
-          ),
-        ).timeout(const Duration(seconds: 10));
+        final current = await WindowsLocationChannel.getPosition(
+          accuracy: LocationAccuracy.high,
+          timeLimit: const Duration(seconds: 10),
+        );
+        if (current == null) {
+          if (isDialogOpen && context.mounted) {
+            setState(() => isFetchingLocation = false);
+          }
+          return;
+        }
 
         if (isDialogOpen && context.mounted) {
           setState(() {
@@ -589,7 +595,10 @@ class _InvisibilityRulesScreenState
                     kIsWeb
                         ? '${l10n.getString('settingsLocationRadiusDesc')} (${l10n.getString('settingsWebGpsAccuracy')})'
                         : '${l10n.getString('settingsLocationRadiusDesc')} (${l10n.getString('settingsMobileGpsAccuracy')})',
-                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                     textAlign: TextAlign.center,
                   ),
                 ],
@@ -1601,7 +1610,7 @@ class _InvisibilityRulesScreenState
           return;
         }
 
-        final last = await Geolocator.getLastKnownPosition();
+        final last = await WindowsLocationChannel.getLastKnownPosition();
         if (last != null && isDialogOpen && context.mounted) {
           setState(() {
             latitude ??= last.latitude;
@@ -1609,11 +1618,16 @@ class _InvisibilityRulesScreenState
           });
         }
 
-        final current = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(
-            accuracy: LocationAccuracy.high,
-          ),
-        ).timeout(const Duration(seconds: 10));
+        final current = await WindowsLocationChannel.getPosition(
+          accuracy: LocationAccuracy.high,
+          timeLimit: const Duration(seconds: 10),
+        );
+        if (current == null) {
+          if (isDialogOpen && context.mounted) {
+            setState(() => isFetchingLocation = false);
+          }
+          return;
+        }
 
         if (isDialogOpen && context.mounted) {
           setState(() {
@@ -1730,7 +1744,10 @@ class _InvisibilityRulesScreenState
                     kIsWeb
                         ? '${l10n.getString('settingsLocationRadiusDesc')} (${l10n.getString('settingsWebGpsAccuracy')})'
                         : '${l10n.getString('settingsLocationRadiusDesc')} (${l10n.getString('settingsMobileGpsAccuracy')})',
-                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                     textAlign: TextAlign.center,
                   ),
                 ],
@@ -2036,7 +2053,9 @@ class _InvisibilityRulesScreenState
                           }
                         });
                       },
-                      backgroundColor: Colors.grey.shade100,
+                      backgroundColor: Theme.of(
+                        context,
+                      ).colorScheme.surfaceContainerHighest,
                       selectedColor: Theme.of(
                         context,
                       ).colorScheme.secondary.withValues(alpha: 0.2),

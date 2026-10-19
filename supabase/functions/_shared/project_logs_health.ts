@@ -4,8 +4,9 @@
 //
 // Used by two callers:
 //  - the `project-logs-health` edge function (admin app live probes; passes
-//    detail=true to also fetch the latest auth-error message), and
-//  - the `health_sampler` task inside `cron-jobs` (5-minute snapshots for
+//    detail=true to also fetch the latest auth-error message; usually served
+//    from 30-minute snapshots instead of calling the Management API), and
+//  - the `health_sampler` task inside `cron-jobs` (30-minute snapshots for
 //    the System Health History screen; detail=false to save one API call).
 //
 // Requires the MANAGEMENT_API_TOKEN secret. Never throws: failures are
@@ -188,50 +189,46 @@ export async function collectProjectLogsHealth(
   payload.configured = true;
 
   const startStr = clickhouseTime(start);
+  const failurePredicate =
+    `severity_text = 'ERROR' or toInt32OrZero(log_attributes['status']) >= 500`;
   const failureFilter =
     `where source = 'auth_logs'\n` +
     `  and timestamp >= '${startStr}'\n` +
-    `  and (severity_text = 'ERROR' or toInt32OrZero(log_attributes['status']) >= 500)`;
+    `  and (${failurePredicate})`;
 
-  const signins = await runLogsQuery(
-    `select count() as n, max(timestamp) as last_at\n` +
+  // ONE combined query for sign-ins + errors. Each ClickHouse call scans the
+  // whole requested window, and this module is invoked by the admin live
+  // probe AND the sampler, so the former two queries doubled the project's
+  // log-query byte usage for every probe. countIf/maxIf give both metrics
+  // from a single scan.
+  const loginPredicate =
+    `log_attributes['auth_event.action'] = 'login' and severity_text != 'ERROR'`;
+  const combined = await runLogsQuery(
+    `select ` +
+      `countIf(${loginPredicate}) as signins_n, ` +
+      `maxIf(timestamp, ${loginPredicate}) as signins_last_at, ` +
+      `countIf(${failurePredicate}) as errors_n, ` +
+      `maxIf(timestamp, ${failurePredicate}) as errors_last_at\n` +
       `from logs\n` +
       `where source = 'auth_logs'\n` +
-      `  and timestamp >= '${startStr}'\n` +
-      `  and log_attributes['auth_event.action'] = 'login'\n` +
-      `  and severity_text != 'ERROR'`,
-    ["n", "last_at"],
+      `  and timestamp >= '${startStr}'`,
+    ["signins_n", "signins_last_at", "errors_n", "errors_last_at"],
     start,
     now,
     supabaseUrl,
     managementToken,
   );
-  if (signins.error) warnings.push(`signins_query_failed: ${signins.error}`);
-  const signinRow = signins.rows[0];
-  if (signinRow) {
-    payload.signins_15m = numOrNull(signinRow.n) ?? 0;
-    payload.signins_last_at = isoOrNull(signinRow.last_at);
-  } else if (!signins.error) {
-    warnings.push("signins_query_returned_no_row");
-  }
-
-  const failures = await runLogsQuery(
-    `select count() as n, max(timestamp) as last_at\nfrom logs\n${failureFilter}`,
-    ["n", "last_at"],
-    start,
-    now,
-    supabaseUrl,
-    managementToken,
-  );
-  if (failures.error) warnings.push(`auth_error_query_failed: ${failures.error}`);
-  const failureRow = failures.rows[0];
+  if (combined.error) warnings.push(`auth_logs_query_failed: ${combined.error}`);
+  const combinedRow = combined.rows[0];
   let errorCount = 0;
-  if (failureRow) {
-    errorCount = numOrNull(failureRow.n) ?? 0;
+  if (combinedRow) {
+    payload.signins_15m = numOrNull(combinedRow.signins_n) ?? 0;
+    payload.signins_last_at = isoOrNull(combinedRow.signins_last_at);
+    errorCount = numOrNull(combinedRow.errors_n) ?? 0;
     payload.auth_errors_15m = errorCount;
-    payload.auth_last_error_at = isoOrNull(failureRow.last_at);
-  } else if (!failures.error) {
-    warnings.push("auth_error_query_returned_no_row");
+    payload.auth_last_error_at = isoOrNull(combinedRow.errors_last_at);
+  } else if (!combined.error) {
+    warnings.push("auth_logs_query_returned_no_row");
   }
 
   if (wantDetail && errorCount > 0) {

@@ -66,6 +66,28 @@ bool get isAdRenderSupported {
   }
 }
 
+/// Whether the google_mobile_ads *native* plugin is registered on this
+/// platform.
+///
+/// Unlike [isAdRenderSupported] (which also covers web), this is true only for
+/// Android and iOS: the web path never uses `MobileAds`, and desktop builds
+/// have no plugin registrant at all. Callers that touch the native plugin
+/// directly (e.g. the startup `_init` state reset in main.dart) must gate on
+/// this, or they produce a guaranteed MissingPluginException.
+bool get isAdRenderNative {
+  if (kIsWeb) return false;
+  switch (defaultTargetPlatform) {
+    case TargetPlatform.android:
+    case TargetPlatform.iOS:
+      return true;
+    case TargetPlatform.windows:
+    case TargetPlatform.macOS:
+    case TargetPlatform.linux:
+    case TargetPlatform.fuchsia:
+      return false;
+  }
+}
+
 bool _loggedUnsupported = false;
 
 /// Logs, once per run, that ads are being skipped and why. Without this the

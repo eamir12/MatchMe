@@ -17,10 +17,12 @@ import 'package:matchme/services/session_service.dart';
 import 'package:matchme/services/secure_storage_service.dart';
 import 'package:matchme/screens/settings/sensitive_action_verification.dart';
 import 'package:matchme/utils/offline_utils.dart';
+import 'package:matchme/utils/passkey_suggestion.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:matchme/theme/app_button_styles.dart';
+import 'package:matchme/widgets/passkey_setup_dialog.dart';
 import 'package:matchme/widgets/safe_text.dart';
 
 class SecurityCenterScreen extends ConsumerStatefulWidget {
@@ -1055,38 +1057,60 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
     required bool hasPasskeys,
     required bool isPasskeySession,
     required bool justAdded,
+    required bool canUsePasskeysHere,
   }) {
     if (hasPasskeys && isPasskeySession) {
       return 'securityCenterPasskeyPrimarySignedIn';
     }
     if (hasPasskeys || justAdded) {
-      return 'securityCenterPasskeyPrimaryReady';
+      // Account-scoped wording when this platform/app cannot run a ceremony
+      // here: the passkey exists for the account, but promising "ready"
+      // sign-in on this device would be false.
+      return canUsePasskeysHere
+          ? 'securityCenterPasskeyPrimaryReady'
+          : 'securityCenterPasskeyPrimaryAccountReady';
     }
     return 'securityCenterPasskeyPrimaryOff';
   }
 
   String _passkeySecondaryTextKey({
+    required PasskeyDeviceCapability deviceCapability,
     required bool platformSupported,
-    required bool runtimeConfigured,
+    required bool canUsePasskeysHere,
     required bool hasPasskeys,
+    required String noAuthenticatorBodyKey,
   }) {
-    if (!platformSupported) return 'securityCenterPasskeySecondaryUnsupported';
-    if (!runtimeConfigured) {
-      return 'securityCenterPasskeySecondarySetupRequired';
+    if (canUsePasskeysHere) {
+      if (hasPasskeys) return 'securityCenterPasskeySecondaryProtected';
+      return 'securityCenterPasskeySecondaryReady';
     }
-    if (hasPasskeys) return 'securityCenterPasskeySecondaryProtected';
-    return 'securityCenterPasskeySecondaryReady';
+    // WebAuthn works on this device, only the platform authenticator (face /
+    // fingerprint / screen lock / Windows Hello) still needs to be set up —
+    // the platform-specific setup line is provided by the caller.
+    if (deviceCapability == PasskeyDeviceCapability.noPlatformAuthenticator) {
+      return noAuthenticatorBodyKey;
+    }
+    // Device is passkey-capable, but this app cannot run a ceremony on this
+    // platform yet (for example iOS while the app has no associated domain).
+    if (platformSupported ||
+        deviceCapability == PasskeyDeviceCapability.platformAuthenticatorReady) {
+      return 'securityCenterPasskeySecondaryAppNotAvailable';
+    }
+    return 'securityCenterPasskeySecondaryUnsupported';
   }
 
   String _passkeySessionTextKey({
     required bool hasPasskeys,
     required bool isPasskeySession,
+    required bool canUsePasskeysHere,
   }) {
     if (isPasskeySession) {
       return 'securityCenterPasskeySessionPasskey';
     }
     if (hasPasskeys) {
-      return 'securityCenterPasskeySessionReady';
+      return canUsePasskeysHere
+          ? 'securityCenterPasskeySessionReady'
+          : 'securityCenterPasskeySessionAccountReady';
     }
     return 'securityCenterPasskeySessionOther';
   }
@@ -1429,6 +1453,20 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
     );
   }
 
+  Future<void> _showPasskeySetupInstructions(
+    LocalizationState l10n,
+    PasskeySetupInstructions instructions,
+  ) {
+    return showPasskeySetupInstructionsDialog(
+      context,
+      l10n: l10n,
+      titleKey: instructions.instructionsTitleKey,
+      bodyKey: instructions.instructionsBodyKey,
+      setupAction: instructions.setupAction,
+      settingsButtonLabelKey: instructions.settingsButtonLabelKey,
+    );
+  }
+
   Widget _buildPasskeyCard(
     LocalizationState l10n, {
     required PasskeyAvailabilityState state,
@@ -1440,43 +1478,59 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
     final colors = theme.colorScheme;
     final isPasskeySession = _isPasskeyAuthMethod(authMethod);
     final hasAvailablePasskeys = hasPasskeys || _hasAddedPasskeyThisSession;
-    final platformSupported = state.isPlatformSupported;
-    final runtimeConfigured = state.isRuntimeConfigured;
+    final deviceCapability = state.deviceCapability;
+    // The device's own capability, falling back to the ceremony probe so a
+    // failed capability query never downgrades a working device.
+    final deviceSupportsPasskeys =
+        deviceCapability != PasskeyDeviceCapability.unsupported ||
+        state.isPlatformSupported;
+    final canUsePasskeysHere =
+        state.isEnabled &&
+        state.isPlatformSupported &&
+        state.isRuntimeConfigured;
+    final setupInstructions = resolvePasskeySetupInstructions(
+      platform: defaultTargetPlatform,
+      isWeb: kIsWeb,
+    );
+    // Offer the how-to help exactly where it can change the outcome: the
+    // device needs its platform authenticator set up, or everything is ready
+    // and the user still needs to create their first passkey here.
+    final showSetupHelp =
+        deviceCapability == PasskeyDeviceCapability.noPlatformAuthenticator ||
+        (canUsePasskeysHere && !hasAvailablePasskeys);
     final accent = hasAvailablePasskeys
         ? colors.primary
-        : platformSupported && runtimeConfigured
+        : canUsePasskeysHere
         ? Colors.green.shade700
         : colors.secondary;
-    final canAddPasskey =
-        state.isEnabled &&
-        platformSupported &&
-        runtimeConfigured &&
-        canManageSensitiveActions &&
-        !_isEnrollingPasskey;
+    final statusLabelKey = hasAvailablePasskeys
+        ? (canUsePasskeysHere
+              ? 'securityCenterStatusActive'
+              : 'securityCenterStatusAdded')
+        : (canUsePasskeysHere
+              ? 'securityCenterStatusReady'
+              : 'securityCenterStatusAttention');
 
     return _SecurityFeatureCard(
       accent: accent,
       icon: Icons.key_rounded,
       title: l10n.getString('settingsPasskeyTitle'),
-      statusLabel: l10n.getString(
-        hasAvailablePasskeys
-            ? 'securityCenterStatusActive'
-            : platformSupported && runtimeConfigured
-            ? 'securityCenterStatusReady'
-            : 'securityCenterStatusAttention',
-      ),
+      statusLabel: l10n.getString(statusLabelKey),
       body: l10n.getString(
         _passkeyPrimaryTextKey(
           hasPasskeys: hasAvailablePasskeys,
           isPasskeySession: isPasskeySession,
           justAdded: _hasAddedPasskeyThisSession,
+          canUsePasskeysHere: canUsePasskeysHere,
         ),
       ),
       secondaryBody: l10n.getString(
         _passkeySecondaryTextKey(
-          platformSupported: platformSupported,
-          runtimeConfigured: runtimeConfigured,
+          deviceCapability: deviceCapability,
+          platformSupported: state.isPlatformSupported,
+          canUsePasskeysHere: canUsePasskeysHere,
           hasPasskeys: hasAvailablePasskeys,
+          noAuthenticatorBodyKey: setupInstructions.setupBodyKey,
         ),
       ),
       child: Column(
@@ -1484,33 +1538,22 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
         children: [
           Row(
             children: [
+              // Device capability only. Server-side configuration is an
+              // implementation detail the user cannot act on and previously
+              // produced contradictory tiles ("Device: Unsupported" next to
+              // "Server: Ready").
               _buildMetric(
-                icon: platformSupported
+                icon: deviceSupportsPasskeys
                     ? Icons.devices_outlined
                     : Icons.phonelink_erase_outlined,
-                color: platformSupported
+                color: deviceSupportsPasskeys
                     ? Colors.green.shade700
                     : colors.onSurfaceVariant,
                 label: l10n.getString('securityCenterMetricDevice'),
                 value: l10n.getString(
-                  platformSupported
+                  deviceSupportsPasskeys
                       ? 'securityCenterMetricDeviceSupported'
                       : 'securityCenterMetricDeviceUnsupported',
-                ),
-              ),
-              const SizedBox(width: 10),
-              _buildMetric(
-                icon: runtimeConfigured
-                    ? Icons.cloud_done_outlined
-                    : Icons.settings_ethernet_outlined,
-                color: runtimeConfigured
-                    ? Colors.green.shade700
-                    : colors.secondary,
-                label: l10n.getString('securityCenterMetricServer'),
-                value: l10n.getString(
-                  runtimeConfigured
-                      ? 'securityCenterMetricServerReady'
-                      : 'securityCenterMetricServerSetup',
                 ),
               ),
             ],
@@ -1542,6 +1585,7 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
                       _passkeySessionTextKey(
                         hasPasskeys: hasAvailablePasskeys,
                         isPasskeySession: isPasskeySession,
+                        canUsePasskeysHere: canUsePasskeysHere,
                       ),
                       params: isPasskeySession
                           ? null
@@ -1557,32 +1601,52 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
           ),
           const SizedBox(height: 12),
           _buildActionWrap([
-            FilledButton.icon(
-              style: AppButtonStyles.primaryButton(context),
-              onPressed: canAddPasskey
-                  ? () => _handlePasskeyEnrollment(l10n)
-                  : null,
-              icon: _isEnrollingPasskey
-                  ? SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          colors.onPrimary,
+            // Only offer creating a passkey where a ceremony can actually run.
+            // A disabled "Create passkey" button on a platform the app cannot
+            // support yet reads as a device limitation and invites failed
+            // attempts.
+            if (canUsePasskeysHere)
+              FilledButton.icon(
+                style: AppButtonStyles.primaryButton(context),
+                onPressed:
+                    canManageSensitiveActions && !_isEnrollingPasskey
+                    ? () => _handlePasskeyEnrollment(l10n)
+                    : null,
+                icon: _isEnrollingPasskey
+                    ? SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            colors.onPrimary,
+                          ),
                         ),
-                      ),
-                    )
-                  : const Icon(Icons.add_link_rounded),
-              label: Text(
-                l10n.getString(
-                  hasAvailablePasskeys
-                      ? 'securityCenterPasskeyCtaAddAnother'
-                      : 'securityCenterPasskeyCtaCreate',
+                      )
+                    : const Icon(Icons.add_link_rounded),
+                label: Text(
+                  l10n.getString(
+                    hasAvailablePasskeys
+                        ? 'securityCenterPasskeyCtaAddAnother'
+                        : 'securityCenterPasskeyCtaCreate',
+                  ),
                 ),
               ),
-            ),
-            if (hasAvailablePasskeys)
+            if (showSetupHelp)
+              OutlinedButton.icon(
+                style: AppButtonStyles.secondaryButton(context),
+                onPressed: () =>
+                    _showPasskeySetupInstructions(l10n, setupInstructions),
+                icon: const Icon(Icons.info_outline_rounded),
+                label: Text(
+                  l10n.getString('authPasskeySetupMoreInfoButton'),
+                ),
+              ),
+            // Passkey removal is account-wide (it revokes every registered
+            // passkey for the user, wherever it was created). Never offer that
+            // destructive, account-scoped action on a device that cannot
+            // create or use passkeys itself.
+            if (hasAvailablePasskeys && canUsePasskeysHere)
               OutlinedButton.icon(
                 style: AppButtonStyles.destructiveButton(context),
                 onPressed: !canManageSensitiveActions || _isRevokingPasskeys
@@ -1605,7 +1669,7 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
                 ),
               ),
           ]),
-          if (!canManageSensitiveActions) ...[
+          if (!canManageSensitiveActions && canUsePasskeysHere) ...[
             const SizedBox(height: 12),
             SensitiveActionsOfflineNotice(
               message: l10n.getString('offlineSensitiveActionsRequireInternet'),
@@ -1977,6 +2041,7 @@ class _SecurityCenterSnapshot {
         'isEnabled': passkeyState.isEnabled,
         'isPlatformSupported': passkeyState.isPlatformSupported,
         'isRuntimeConfigured': passkeyState.isRuntimeConfigured,
+        'deviceCapability': passkeyState.deviceCapability.name,
       },
       'authMethod': authMethod,
       'hasPasskeys': hasPasskeys,
@@ -2003,6 +2068,9 @@ class _SecurityCenterSnapshot {
                   passkeyStateJson['isPlatformSupported'] == true,
               isRuntimeConfigured:
                   passkeyStateJson['isRuntimeConfigured'] == true,
+              deviceCapability: _parseDeviceCapability(
+                passkeyStateJson['deviceCapability'],
+              ),
             )
           : const PasskeyAvailabilityState(
               isEnabled: true,
@@ -2019,6 +2087,16 @@ int _parseInt(Object? value) {
   if (value is int) return value;
   if (value is num) return value.toInt();
   return int.tryParse(value?.toString() ?? '') ?? 0;
+}
+
+PasskeyDeviceCapability _parseDeviceCapability(Object? value) {
+  final name = value?.toString().trim();
+  if (name != null && name.isNotEmpty) {
+    for (final capability in PasskeyDeviceCapability.values) {
+      if (capability.name == name) return capability;
+    }
+  }
+  return PasskeyDeviceCapability.unsupported;
 }
 
 class _MfaRecoveryCodesDialog extends StatelessWidget {

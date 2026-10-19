@@ -5,6 +5,7 @@ import 'dart:async';
 import 'dart:ui' as ui;
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:matchme/theme/app_theme_tokens.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
@@ -833,7 +834,7 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                   height: 4,
                   margin: const EdgeInsets.only(bottom: 20),
                   decoration: BoxDecoration(
-                    color: Colors.grey.shade300,
+                    color: Theme.of(context).colorScheme.outlineVariant,
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
@@ -842,12 +843,14 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                     Container(
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
-                        color: Colors.blue.shade100,
+                        color: Colors.blue.withValues(alpha: 0.15),
                         shape: BoxShape.circle,
                       ),
                       child: Icon(
                         Icons.share_location,
-                        color: Colors.blue.shade700,
+                        color: Theme.of(context).brightness == Brightness.dark
+                            ? Colors.blue.shade300
+                            : Colors.blue.shade700,
                         size: 22,
                       ),
                     ),
@@ -868,7 +871,9 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                                 .getString('locationShareBannerSharingWith')
                                 .replaceAll('{name}', widget.otherUserName),
                             style: TextStyle(
-                              color: Colors.grey.shade600,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurfaceVariant,
                               fontSize: 13,
                             ),
                           ),
@@ -882,14 +887,25 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  tileColor: Colors.blue.shade50,
+                  tileColor: AppThemeTokens.accentSurface(
+                    Colors.blue.shade700,
+                    Theme.of(context).brightness,
+                  ),
                   leading: Icon(
                     Icons.timer_outlined,
-                    color: Colors.blue.shade700,
+                    color: AppThemeTokens.accentInk(
+                      Colors.blue.shade700,
+                      Theme.of(context).brightness,
+                    ),
                   ),
                   title: Text(
                     l10n.getString('locationShareChangeDuration'),
-                    style: TextStyle(color: Colors.blue.shade800),
+                    style: TextStyle(
+                      color: AppThemeTokens.accentInk(
+                        Colors.blue.shade800,
+                        Theme.of(context).brightness,
+                      ),
+                    ),
                   ),
                   onTap: () async {
                     Navigator.of(sheetContext).pop();
@@ -924,14 +940,18 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  tileColor: Colors.red.shade50,
-                  leading: const Icon(
+                  tileColor: Theme.of(
+                    context,
+                  ).colorScheme.error.withValues(alpha: 0.12),
+                  leading: Icon(
                     Icons.stop_circle_outlined,
-                    color: Colors.red,
+                    color: Theme.of(context).colorScheme.error,
                   ),
                   title: Text(
                     l10n.getString('locationShareStop'),
-                    style: const TextStyle(color: Colors.red),
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
                   ),
                   onTap: () async {
                     Navigator.of(sheetContext).pop();
@@ -2162,7 +2182,7 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                       }(),
                       style: Theme.of(
                         context,
-                      ).textTheme.bodyMedium?.copyWith(color: Colors.grey[600]),
+                      ).textTheme.bodyMedium?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
                     ),
                   ],
                 ),
@@ -2451,7 +2471,9 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                 child: Text(
                   l10n.getString('matchProfileNoLanguages'),
                   textDirection: ui.TextDirection.ltr,
-                  style: const TextStyle(color: Colors.grey),
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
               )
             else
@@ -2570,7 +2592,9 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
                             side: BorderSide(
-                              color: Colors.grey.shade200,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.outlineVariant,
                               width: 1,
                             ),
                           ),
@@ -2810,7 +2834,7 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
       child: Text(
         title,
         style: Theme.of(context).textTheme.titleSmall?.copyWith(
-          color: Colors.grey[600],
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
           fontWeight: FontWeight.bold,
           letterSpacing: 0.5,
         ),
@@ -3011,25 +3035,41 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
         text = l10n.getString('rematchIndicator', params: {'count': '$occ'});
       }
     }
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final rematchInk = AppThemeTokens.accentInk(
+      Colors.purple.shade700,
+      Theme.of(context).brightness,
+    );
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.purple.shade50,
+        color: isDark
+            ? AppThemeTokens.accentSurface(
+                Colors.purple.shade700,
+                Brightness.dark,
+              )
+            : Colors.purple.shade50,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.purple.shade200),
+        border: Border.all(
+          color: isDark
+              ? Colors.purple.shade700.withValues(alpha: 0.35)
+              : Colors.purple.shade200,
+        ),
       ),
       child: Row(
         children: [
           Container(
             padding: const EdgeInsets.all(6),
             decoration: BoxDecoration(
-              color: Colors.purple.shade100,
+              color: isDark
+                  ? Colors.purple.shade700.withValues(alpha: 0.30)
+                  : Colors.purple.shade100,
               shape: BoxShape.circle,
             ),
             child: Icon(
               Icons.repeat_rounded,
               size: 16,
-              color: Colors.purple.shade700,
+              color: rematchInk,
             ),
           ),
           const SizedBox(width: 10),
@@ -3038,7 +3078,7 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
               text,
               style: TextStyle(
                 fontSize: 13,
-                color: Colors.purple.shade700,
+                color: rematchInk,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -3050,25 +3090,41 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
 
   Widget _buildRetroBanner(BuildContext context, LocalizationState l10n) {
     final text = l10n.getString('retroBanner');
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final retroInk = AppThemeTokens.accentInk(
+      Colors.teal.shade700,
+      Theme.of(context).brightness,
+    );
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.teal.shade50,
+        color: isDark
+            ? AppThemeTokens.accentSurface(
+                Colors.teal.shade700,
+                Brightness.dark,
+              )
+            : Colors.teal.shade50,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.teal.shade200),
+        border: Border.all(
+          color: isDark
+              ? Colors.teal.shade700.withValues(alpha: 0.35)
+              : Colors.teal.shade200,
+        ),
       ),
       child: Row(
         children: [
           Container(
             padding: const EdgeInsets.all(6),
             decoration: BoxDecoration(
-              color: Colors.teal.shade100,
+              color: isDark
+                  ? Colors.teal.shade700.withValues(alpha: 0.30)
+                  : Colors.teal.shade100,
               shape: BoxShape.circle,
             ),
             child: Icon(
               Icons.wifi_off_rounded,
               size: 16,
-              color: Colors.teal.shade700,
+              color: retroInk,
             ),
           ),
           const SizedBox(width: 10),
@@ -3077,7 +3133,7 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
               text,
               style: TextStyle(
                 fontSize: 13,
-                color: Colors.teal.shade700,
+                color: retroInk,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -3103,7 +3159,10 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
       margin: const EdgeInsets.symmetric(vertical: 4),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade200, width: 1),
+        side: BorderSide(
+          color: Theme.of(context).colorScheme.outlineVariant,
+          width: 1,
+        ),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -3112,14 +3171,20 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
           children: [
             Row(
               children: [
-                Icon(Icons.map_outlined, size: 18, color: Colors.blue.shade700),
+                Icon(
+                  Icons.map_outlined,
+                  size: 18,
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? Colors.blue.shade300
+                      : Colors.blue.shade700,
+                ),
                 const SizedBox(width: 8),
                 Flexible(
                   child: Text(
                     l10n.getString('matchMiniMapTitle'),
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       fontWeight: FontWeight.w600,
-                      color: Colors.grey[800],
+                      color: Theme.of(context).colorScheme.onSurface,
                     ),
                   ),
                 ),
@@ -3196,7 +3261,7 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
     if (hasIntentions) {
       if (rows.isNotEmpty) {
         rows.add(
-          Divider(height: 20, thickness: 1, color: Colors.grey.shade200),
+          Divider(height: 20, thickness: 1),
         );
       }
       rows.add(
@@ -3213,7 +3278,7 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
     if (sharedInterestCount != null) {
       if (rows.isNotEmpty) {
         rows.add(
-          Divider(height: 20, thickness: 1, color: Colors.grey.shade200),
+          Divider(height: 20, thickness: 1),
         );
       }
       final scoreColor = sharedInterestColor(
@@ -3358,16 +3423,21 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
     String? subtitle,
     Widget? subtitleWidget,
   }) {
+    final brightness = Theme.of(context).brightness;
+    final accent = AppThemeTokens.accentInk(iconColor, brightness);
+    final accentBg = brightness == Brightness.dark
+        ? AppThemeTokens.accentSurface(iconColor, brightness)
+        : iconBackground;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
-            color: iconBackground,
+            color: accentBg,
             shape: BoxShape.circle,
           ),
-          child: Icon(icon, size: 18, color: iconColor),
+          child: Icon(icon, size: 18, color: accent),
         ),
         const SizedBox(width: 12),
         Expanded(
@@ -3378,7 +3448,7 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                 title,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   fontWeight: FontWeight.w600,
-                  color: Colors.grey[800],
+                  color: Theme.of(context).colorScheme.onSurface,
                 ),
               ),
               if (subtitleWidget != null) ...[
@@ -3911,13 +3981,22 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade200),
+        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
       ),
       margin: const EdgeInsets.only(bottom: 8, left: 8, right: 8),
       child: ListTile(
         leading: CircleAvatar(
-          backgroundColor: iconColor.withValues(alpha: 0.1),
-          child: Icon(icon, color: iconColor),
+          backgroundColor: AppThemeTokens.accentSurface(
+            iconColor,
+            Theme.of(context).brightness,
+          ),
+          child: Icon(
+            icon,
+            color: AppThemeTokens.accentInk(
+              iconColor,
+              Theme.of(context).brightness,
+            ),
+          ),
         ),
         title: Text(
           label,
@@ -3925,7 +4004,13 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
         ),
         subtitle: Text(
           url,
-          style: TextStyle(color: Colors.blue.shade700, fontSize: 13),
+          style: TextStyle(
+            color: AppThemeTokens.accentInk(
+              Colors.blue.shade700,
+              Theme.of(context).brightness,
+            ),
+            fontSize: 13,
+          ),
           textDirection: ui.TextDirection.ltr,
         ),
         trailing: const Icon(Icons.open_in_new, size: 18),
@@ -3980,14 +4065,14 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade200),
+        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
       ),
       margin: const EdgeInsets.only(bottom: 8, left: 8, right: 8),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         child: Row(
           children: [
-            Icon(icon, color: Colors.grey[600], size: 20),
+            Icon(icon, color: Theme.of(context).colorScheme.onSurfaceVariant, size: 20),
             const SizedBox(width: 12),
             Expanded(
               child: Text(
@@ -4212,14 +4297,14 @@ class _TranslatableProfileTextState
         elevation: 0,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
-          side: BorderSide(color: Colors.grey.shade200),
+          side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
         ),
         margin: const EdgeInsets.only(bottom: 8, left: 8, right: 8),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           child: Row(
             children: [
-              Icon(Icons.work_outline, color: Colors.grey[600], size: 20),
+              Icon(Icons.work_outline, color: Theme.of(context).colorScheme.onSurfaceVariant, size: 20),
               const SizedBox(width: 12),
               Expanded(child: textWidget),
             ],
@@ -4278,7 +4363,7 @@ class _TranslatableProfileTextState
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade200),
+        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
       ),
       margin: const EdgeInsets.only(bottom: 8, left: 8, right: 8),
       child: Padding(
@@ -4290,7 +4375,7 @@ class _TranslatableProfileTextState
               padding: const EdgeInsets.only(top: 2),
               child: Icon(
                 Icons.work_outline,
-                color: Colors.grey[600],
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
                 size: 20,
               ),
             ),
@@ -4629,10 +4714,19 @@ class _MatchExtensionSectionState
     );
   }
 
-  Color _countdownColor(Duration remaining) {
-    if (remaining <= const Duration(minutes: 60)) return Colors.red.shade600;
-    if (remaining <= const Duration(hours: 24)) return Colors.amber.shade700;
-    return Colors.grey.shade700;
+  Color _countdownColor(Duration remaining, Brightness brightness) {
+    // Shade-600/700 hues sink below text contrast on the dark card fills;
+    // dark mode steps each status up to a lighter tone.
+    final isDark = brightness == Brightness.dark;
+    if (remaining <= const Duration(minutes: 60)) {
+      return isDark ? Colors.red.shade300 : Colors.red.shade600;
+    }
+    if (remaining <= const Duration(hours: 24)) {
+      return isDark ? Colors.amber.shade400 : Colors.amber.shade700;
+    }
+    return isDark
+        ? Theme.of(context).colorScheme.onSurfaceVariant
+        : Colors.grey.shade700;
   }
 
   String _hintText(LocalizationState l10n, String duration) {
@@ -4657,7 +4751,10 @@ class _MatchExtensionSectionState
     required int extensionSeconds,
     required String otherName,
   }) {
-    final countdownColor = _countdownColor(remaining);
+    final countdownColor = _countdownColor(
+      remaining,
+      Theme.of(context).brightness,
+    );
     final shouldFlash =
         remaining > Duration.zero && remaining <= const Duration(minutes: 15);
     final duration = formatCountdownHmsWithPrefs(context, ref, remaining);
@@ -4666,7 +4763,7 @@ class _MatchExtensionSectionState
       elevation: 1,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade200),
+        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),

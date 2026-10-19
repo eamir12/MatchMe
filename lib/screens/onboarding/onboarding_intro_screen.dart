@@ -284,7 +284,10 @@ class _OnboardingIntroScreenState extends ConsumerState<OnboardingIntroScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: ShrinkText(l10n.getString('onboardingTourTitle')),
+          // Each tour names itself: the core tour is "Discover MatchMe",
+          // section tours use their chapter title (e.g. "Your matches")
+          // instead of every tour claiming to be the core one.
+          title: ShrinkText(l10n.getString(widget.tour.titleKey)),
           actions: [
             Center(
               child: Padding(
@@ -318,10 +321,12 @@ class _OnboardingIntroScreenState extends ConsumerState<OnboardingIntroScreen> {
               // card below scrolls internally), landscape shares the width.
               // The frame never grows taller than the body itself, so short
               // landscape screens get a smaller phone instead of an overflow.
+              // The generous cap lets maximized desktop windows show a large
+              // mock-up instead of a postage stamp surrounded by dead space.
               var frameHeight =
-                  (constraints.maxHeight * (isLandscape ? 0.75 : 0.64)).clamp(
+                  (constraints.maxHeight * (isLandscape ? 0.85 : 0.64)).clamp(
                     280.0,
-                    640.0,
+                    820.0,
                   );
               if (frameHeight > constraints.maxHeight) {
                 frameHeight = constraints.maxHeight;
@@ -334,61 +339,83 @@ class _OnboardingIntroScreenState extends ConsumerState<OnboardingIntroScreen> {
               }
 
               if (isLandscape) {
-                return Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    SizedBox(
-                      width: frameWidth,
-                      height: frameHeight,
-                      child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 420),
-                        switchInCurve: Curves.easeOutCubic,
-                        switchOutCurve: Curves.easeInCubic,
-                        transitionBuilder: (child, animation) => FadeTransition(
-                          opacity: animation,
-                          child: SlideTransition(
-                            position: Tween<Offset>(
-                              begin: rtl
-                                  ? const Offset(-0.06, 0)
-                                  : const Offset(0.06, 0),
-                              end: Offset.zero,
-                            ).animate(animation),
-                            child: child,
-                          ),
-                        ),
-                        child: PhoneFrame(
-                          key: ValueKey('onboarding-chapter-$_chapterIndex'),
-                          child: buildOnboardingReplica(
-                            _chapter.scene,
-                            OnboardingSceneData(
-                              text: l10n.getString,
-                              highlight: _beat.highlight,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 24),
-                    Flexible(
-                      child: Column(
+                // Wide windows (desktop, web, tablet landscape): phone on the
+                // left with the narration beside it, as one centered cluster
+                // with a shared max width — on a maximized window the mock-up
+                // and card must not stretch to the window edges (tiny phone
+                // far left, full-width narration banner far right).
+                return Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 1060),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 28),
+                      child: Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Flexible(
-                            flex: 10,
-                            child: _buildSubtitleCard(
-                              context,
-                              l10n,
-                              colors,
-                              beatText,
+                          SizedBox(
+                            width: frameWidth,
+                            height: frameHeight,
+                            child: AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 420),
+                              switchInCurve: Curves.easeOutCubic,
+                              switchOutCurve: Curves.easeInCubic,
+                              transitionBuilder: (child, animation) =>
+                                  FadeTransition(
+                                    opacity: animation,
+                                    child: SlideTransition(
+                                      position: Tween<Offset>(
+                                        begin: rtl
+                                            ? const Offset(-0.06, 0)
+                                            : const Offset(0.06, 0),
+                                        end: Offset.zero,
+                                      ).animate(animation),
+                                      child: child,
+                                    ),
+                                  ),
+                              child: PhoneFrame(
+                                key: ValueKey(
+                                  'onboarding-chapter-$_chapterIndex',
+                                ),
+                                child: buildOnboardingReplica(
+                                  _chapter.scene,
+                                  OnboardingSceneData(
+                                    text: l10n.getString,
+                                    highlight: _beat.highlight,
+                                  ),
+                                ),
+                              ),
                             ),
                           ),
-                          const SizedBox(height: 12),
-                          _buildChapterDots(context, colors, l10n),
-                          const SizedBox(height: 10),
+                          const SizedBox(width: 32),
+                          Flexible(
+                            child: ConstrainedBox(
+                              // Readable line length: the card keeps a
+                              // ~520 px measure instead of stretching the
+                              // narration into one window-wide line.
+                              constraints: const BoxConstraints(maxWidth: 520),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Flexible(
+                                    flex: 10,
+                                    child: _buildSubtitleCard(
+                                      context,
+                                      l10n,
+                                      colors,
+                                      beatText,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 12),
+                                  _buildChapterDots(context, colors, l10n),
+                                  const SizedBox(height: 10),
+                                ],
+                              ),
+                            ),
+                          ),
                         ],
                       ),
                     ),
-                  ],
+                  ),
                 );
               }
 
@@ -457,11 +484,22 @@ class _OnboardingIntroScreenState extends ConsumerState<OnboardingIntroScreen> {
         // Controls live in the bottom bar, pinned to the bottom of the
         // screen on every device size and orientation — they can never be
         // pushed off-screen by the phone frame or long narration text.
+        // On wide windows the bar shares the body's max width (heightFactor
+        // keeps the bar at its intrinsic height) so Back/Next stay visually
+        // attached to the centered content instead of hugging the window
+        // edges.
         bottomNavigationBar: SafeArea(
           top: false,
           child: Padding(
             padding: const EdgeInsets.only(bottom: 14),
-            child: _buildControls(context, l10n, colors, rtl),
+            child: Align(
+              alignment: Alignment.center,
+              heightFactor: 1.0,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 1060),
+                child: _buildControls(context, l10n, colors, rtl),
+              ),
+            ),
           ),
         ),
       ),

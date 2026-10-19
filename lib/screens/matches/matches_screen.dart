@@ -496,6 +496,7 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
                     ),
                     Expanded(
                       child: SingleChildScrollView(
+                        primary: true,
                         padding: const EdgeInsets.only(bottom: 80),
                         child: Column(
                           children: [

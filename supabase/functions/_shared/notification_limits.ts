@@ -63,10 +63,24 @@ export function truncateUtf8Bytes(input: string, maxBytes: number): { text: stri
   return { text: `${s.slice(0, cut)}${ellipsis}`, truncated: true };
 }
 
-export function firstTokenName(raw: string, maxChars = NOTIF_LIMITS.senderNameMaxChars): string {
-  const t = String(raw ?? '').trim().split(/\s+/)[0] ?? '';
-  if (!t) return 'Someone';
-  return t.length > maxChars ? t.slice(0, maxChars) : t;
+// Mirrors public.mask_full_name(TEXT): "FirstName L." for multi-word names
+// (first name + last initial, e.g. "John S."), the first name alone for
+// single-word names. Empty/null falls back to 'Someone' (notification
+// template context; the SQL function returns 'Unknown User', which only
+// appears in in-app RPCs). Idempotent: re-masking an already-masked name
+// ("John S.") returns it unchanged, so server-produced titles pass through.
+// Notification display MUST use this - not a first-name-only helper - so
+// tray titles match what the app's other screens show.
+export function maskFullName(raw: string | null | undefined): string {
+  const trimmed = String(raw ?? '').trim();
+  if (!trimmed) return 'Someone';
+  const parts = trimmed.split(/\s+/).filter((p) => p.length > 0);
+  if (parts.length === 0) return 'Someone';
+  if (parts.length === 1) return parts[0];
+  const first = parts[0];
+  const last = parts[parts.length - 1];
+  if (!last || last === first) return first;
+  return `${first} ${last.charAt(0).toUpperCase()}.`;
 }
 
 // Unicode bidi isolation: FSI (U+2068) picks the isolate direction from the

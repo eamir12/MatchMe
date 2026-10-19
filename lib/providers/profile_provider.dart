@@ -2487,7 +2487,9 @@ userProfileProvider = StreamProvider.family<UserProfile?, String>((
         debugPrint(
           '[ProfileProvider] userProfileProvider triggered syncProfile',
         );
-        return ref.read(profileSyncProvider).syncProfile(userId);
+        return ref
+            .read(profileSyncProvider)
+            .syncProfile(userId, source: 'user-profile-local-null');
       }());
       return null;
     }
@@ -2501,7 +2503,10 @@ userProfileProvider = StreamProvider.family<UserProfile?, String>((
         debugPrint(
           '[ProfileProvider] userProfileProvider missing subscription expiry fields; syncing',
         );
-        return ref.read(profileSyncProvider).syncProfile(userId);
+        return ref.read(profileSyncProvider).syncProfile(
+          userId,
+          source: 'user-profile-missing-subscription-fields',
+        );
       }());
     }
 
@@ -2607,6 +2612,13 @@ final otherUserProfileProvider = FutureProvider.family<UserProfile?, String>((
 
   final localDb = ref.read(localDbProvider);
 
+  // No authenticated session (logout in progress, app woken in background,
+  // signed-out admin preview): PostgREST executes as anon, RLS rejects the
+  // users/user_profiles reads with 42501 (a 401 on the wire) and every open
+  // screen fails over and over. Cached profiles stay readable offline; only
+  // the network paths below are session-gated.
+  final hasSession = supabase.auth.currentUser != null;
+
   try {
     final isOnline = ref.read(connectivityProvider).value ?? true;
     // Try cached profile first
@@ -2631,7 +2643,8 @@ final otherUserProfileProvider = FutureProvider.family<UserProfile?, String>((
           DateTime.now().difference(cachedAt) > const Duration(minutes: 1);
       final isIncompleteForHome =
           !_hasCompleteOtherUserProfileForHome(cached);
-      if (isOnline &&
+      if (hasSession &&
+          isOnline &&
           (isStale || isIncompleteForHome) &&
           _shouldAttemptOtherUserProfileRefresh(
             userId,
@@ -2673,6 +2686,10 @@ final otherUserProfileProvider = FutureProvider.family<UserProfile?, String>((
     }
 
     if (!isOnline) return null;
+
+    // Without a session the two queries below can only fail (RLS/anon);
+    // return the "no cached data" answer without generating 401 noise.
+    if (!hasSession) return null;
 
     if (kIsWeb) {
       debugPrint('🔍 [WEB] otherUserProfileProvider - Fetching fresh profile');
@@ -5132,7 +5149,12 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
             .update({'photos': newPhotos})
             .eq('user_id', userId)
             .catchError((e) {
-              unawaited(ref.read(profileSyncProvider).syncProfile(userId));
+              unawaited(
+                ref.read(profileSyncProvider).syncProfile(
+                  userId,
+                  source: 'photo-add-persist-recovery',
+                ),
+              );
             }),
       );
     }
@@ -5213,7 +5235,12 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
             .update({'photos': newPhotos})
             .eq('user_id', userId)
             .catchError((e) {
-              unawaited(ref.read(profileSyncProvider).syncProfile(userId));
+              unawaited(
+                ref.read(profileSyncProvider).syncProfile(
+                  userId,
+                  source: 'photo-remove-persist-recovery',
+                ),
+              );
             })
             .whenComplete(() async {
               // Delete the storage object from Supabase storage
@@ -5335,7 +5362,12 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
             .update({'photos': newPhotos})
             .eq('user_id', userId)
             .catchError((e) {
-              unawaited(ref.read(profileSyncProvider).syncProfile(userId));
+              unawaited(
+                ref.read(profileSyncProvider).syncProfile(
+                  userId,
+                  source: 'photo-replace-persist-recovery',
+                ),
+              );
             })
             .whenComplete(() async {
               // Delete the old storage object from Supabase storage
@@ -5413,7 +5445,12 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
             .update({'photos': photos})
             .eq('user_id', userId)
             .catchError((e) {
-              unawaited(ref.read(profileSyncProvider).syncProfile(userId));
+              unawaited(
+                ref.read(profileSyncProvider).syncProfile(
+                  userId,
+                  source: 'photo-reorder-persist-recovery',
+                ),
+              );
             }),
       );
     }

@@ -429,9 +429,11 @@ TextStyle withEmojiFallback(TextStyle style) {
         (f) =>
             f != 'Noto Sans Symbols' &&
             f != 'Noto Sans Symbols2' &&
+            f != 'Noto Sans' &&
             !platformSet.contains(f),
       )
       .toList();
+  final primary = style.fontFamily ?? kAppDefaultTextFontFamily;
   return style.copyWith(
     // When `fontFamily` is null, dart:ui promotes the FIRST
     // `fontFamilyFallback` entry to the preferred font. That entry is an
@@ -441,8 +443,19 @@ TextStyle withEmojiFallback(TextStyle style) {
     // font that had them while only the space came from the emoji font.
     // Android's emoji fonts carry no space glyph, so it fell through to a
     // normal one there. A text font must always win the first slot.
-    fontFamily: style.fontFamily ?? kAppDefaultTextFontFamily,
+    fontFamily: primary,
     fontFamilyFallback: [
+      // A bundled TEXT font must come before the color emoji fonts. Every
+      // emoji font's cmap maps the bare keycap bases (U+0030-0039, #, *) to
+      // EMPTY glyphs - in the bundled Twemoji Mozilla they exist only as
+      // components of the keycap sequences (u30-u39 have no outline and no
+      // COLR layers, so they draw as blank spaces). A system primary that
+      // fails to load (e.g. the Android chat composer's Roboto on devices
+      // where the engine cannot match the family name, or Windows' Segoe UI
+      // Emoji win) then swallows digits as invisible width. Bundled Noto
+      // Sans has real digit/letter glyphs and zero emoji-claimable glyphs,
+      // so it resolves text safely while emoji still prefer system fonts.
+      if (primary != kAppDefaultTextFontFamily) kAppDefaultTextFontFamily,
       ...platform,
       ...filtered,
       'Noto Sans Symbols',

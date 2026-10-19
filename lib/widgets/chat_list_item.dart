@@ -13,6 +13,7 @@ import 'package:matchme/utils/encrypted_text_guard.dart';
 import 'package:matchme/utils/emoji_presentation_utils.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/time_format_utils.dart';
+import 'package:matchme/utils/translation_edit_marker.dart';
 import 'package:matchme/widgets/multi_select.dart';
 import 'package:matchme/widgets/signed_image.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -127,48 +128,40 @@ class ChatListItem extends ConsumerWidget {
         chat.lastMessageSenderId != null &&
         chat.lastMessageSenderId != supabase.auth.currentUser?.id;
 
-    // Determine what message to display based on translation status
+    // Determine what message to display based on translation status.
+    // [isTranslationPending] is true while an incoming message needs a
+    // translation that has not landed yet: the preview stays blank on purpose
+    // (never the untranslated original), and every unread affordance is held
+    // back with it so the badge, the bold name and the translated text all
+    // reveal in one frame — matching the push/inbox, which the server also
+    // only publishes once the translation exists.
     String displayMessage = '';
+    bool isTranslationPending = false;
 
     if (isIncomingMessage && chat.translationEnabled) {
       final uiLang = normalizeLanguageCode(
         ref.watch(localizationProvider).currentLocale.languageCode,
       );
-      // For incoming messages with translation enabled:
-      // - If source language is different from UI and no translation exists, show nothing
-      // - If source language matches UI, always show original message (even if translation exists)
-      // - If source language is different from UI and translation exists, show translation
-
-      // First check if source language matches UI - if so, show original
-      if (chat.lastMessageSourceLanguage != null) {
-        final sourceLang = normalizeLanguageCode(
-          chat.lastMessageSourceLanguage!,
-        );
-        if (sourceLang == uiLang) {
-          // Source matches UI - show original message
-          displayMessage = chat.lastMessage;
-        } else {
-          // Source differs from UI - show translation if available,
-          // otherwise nothing until it lands (never the untranslated
-          // original, never a "Loading…" placeholder).
-          if (chat.lastMessageTranslated != null &&
-              chat.lastMessageTranslated!.isNotEmpty &&
-              chat.lastMessageTranslated != 'null') {
-            displayMessage = chat.lastMessageTranslated!;
-          } else {
-            displayMessage = '';
-          }
-        }
+      final translated = chat.lastMessageTranslated;
+      final target = chat.lastMessageTranslatedTargetLanguage;
+      final translationMatchesContent =
+          chat.lastMessageEditedAt == null ||
+          chat.lastMessageEditedAt!.isEmpty ||
+          translationEditMarkersMatch(
+            chat.lastMessageTranslatedEditedAt,
+            chat.lastMessageEditedAt,
+          );
+      if (translated != null &&
+          translated.isNotEmpty &&
+          translated != 'null' &&
+          target != null &&
+          normalizeLanguageCode(target) == uiLang &&
+          translationMatchesContent) {
+        displayMessage = translated;
       } else {
-        // No source language info - try to show translation if available,
-        // otherwise nothing until the language is resolved/translated.
-        if (chat.lastMessageTranslated != null &&
-            chat.lastMessageTranslated!.isNotEmpty &&
-            chat.lastMessageTranslated != 'null') {
-          displayMessage = chat.lastMessageTranslated!;
-        } else {
-          displayMessage = '';
-        }
+        // Translation-enabled incoming content stays hidden until a usable
+        // result for this target language and message revision is available.
+        isTranslationPending = true;
       }
     } else {
       // For outgoing messages or when translation is disabled, show original message
@@ -212,10 +205,18 @@ class ChatListItem extends ConsumerWidget {
       displaySafeText((searchSnippet ?? '').trim()),
     );
     final showingSearchSnippet =
-        activeSearchQuery.isNotEmpty && activeSearchSnippet.isNotEmpty;
+        !isTranslationPending &&
+        activeSearchQuery.isNotEmpty &&
+        activeSearchSnippet.isNotEmpty;
     final listPreviewText = showingSearchSnippet
         ? activeSearchSnippet
         : previewMessage;
+    // Unread affordances (badge, bold name, border) stay hidden while the
+    // preview is blank only because its translation is still in flight, so
+    // they appear together with the text instead of the badge arriving first.
+    final bool showUnreadIndicators =
+        chat.unreadCount > 0 &&
+        !(isTranslationPending && listPreviewText.isEmpty);
     final ui.TextDirection messageDir =
         RegExp(r'[a-zA-Z]').hasMatch(listPreviewText)
         ? ui.TextDirection.ltr
@@ -228,10 +229,7 @@ class ChatListItem extends ConsumerWidget {
       child: Ink(
         decoration: BoxDecoration(
           color: selected
-              ? Theme.of(context)
-                  .colorScheme
-                  .primary
-                  .withValues(alpha: 0.08)
+              ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.08)
               : Theme.of(context).colorScheme.surface,
           borderRadius: BorderRadius.circular(16),
           boxShadow: [
@@ -244,7 +242,7 @@ class ChatListItem extends ConsumerWidget {
           border: Border.all(
             color: selected
                 ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.45)
-                : showUnreadBorder && chat.unreadCount > 0
+                : showUnreadBorder && showUnreadIndicators
                 ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.2)
                 : Colors.transparent,
             width: 1,
@@ -256,46 +254,46 @@ class ChatListItem extends ConsumerWidget {
           onTap: selectionMode
               ? onToggleSelect
               : () async {
-            final otherProfile = otherProfileAsync.value;
-            final profileName =
-                otherProfile?.name.formatAsFirstNameLastInitial() ?? '';
-            final resolvedName = profileName.trim().isNotEmpty
-                ? profileName
-                : fallbackName;
+                  final otherProfile = otherProfileAsync.value;
+                  final profileName =
+                      otherProfile?.name.formatAsFirstNameLastInitial() ?? '';
+                  final resolvedName = profileName.trim().isNotEmpty
+                      ? profileName
+                      : fallbackName;
 
-            // When opened from a chats-list search, hand the query (and the
-            // newest matching message id) to the chat so it auto-scrolls to
-            // the found text instead of landing at the bottom.
-            final pendingQuery = (searchQuery ?? '').trim();
-            final pendingMessageId = (searchMessageId ?? '').trim();
-            // The list search field holds focus (and the keyboard) while the
-            // user types. Drop it before opening the chat: the opened chat
-            // already shows the searched text via its pre-seeded in-chat
-            // search, so no further typing is needed and the keyboard would
-            // only hide the results.
-            FocusManager.instance.primaryFocus?.unfocus();
-            await Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => ChatScreen(
-                  matchId: chat.matchId,
-                  otherUserName: resolvedName,
-                  otherUserId: chat.otherUserId,
-                  initialSearchQuery: pendingQuery.isNotEmpty
-                      ? pendingQuery
-                      : null,
-                  initialHighlightMessageId: pendingMessageId.isNotEmpty
-                      ? pendingMessageId
-                      : null,
-                ),
-              ),
-            );
+                  // When opened from a chats-list search, hand the query (and the
+                  // newest matching message id) to the chat so it auto-scrolls to
+                  // the found text instead of landing at the bottom.
+                  final pendingQuery = (searchQuery ?? '').trim();
+                  final pendingMessageId = (searchMessageId ?? '').trim();
+                  // The list search field holds focus (and the keyboard) while the
+                  // user types. Drop it before opening the chat: the opened chat
+                  // already shows the searched text via its pre-seeded in-chat
+                  // search, so no further typing is needed and the keyboard would
+                  // only hide the results.
+                  FocusManager.instance.primaryFocus?.unfocus();
+                  await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => ChatScreen(
+                        matchId: chat.matchId,
+                        otherUserName: resolvedName,
+                        otherUserId: chat.otherUserId,
+                        initialSearchQuery: pendingQuery.isNotEmpty
+                            ? pendingQuery
+                            : null,
+                        initialHighlightMessageId: pendingMessageId.isNotEmpty
+                            ? pendingMessageId
+                            : null,
+                      ),
+                    ),
+                  );
 
-            final userId = supabase.auth.currentUser?.id;
-            if (userId != null) {
-              ref.invalidate(recentChatsProvider(userId));
-            }
-          },
+                  final userId = supabase.auth.currentUser?.id;
+                  if (userId != null) {
+                    ref.invalidate(recentChatsProvider(userId));
+                  }
+                },
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(
@@ -303,10 +301,8 @@ class ChatListItem extends ConsumerWidget {
               children: [
                 AnimatedSwitcher(
                   duration: const Duration(milliseconds: 150),
-                  transitionBuilder: (child, animation) => FadeTransition(
-                    opacity: animation,
-                    child: child,
-                  ),
+                  transitionBuilder: (child, animation) =>
+                      FadeTransition(opacity: animation, child: child),
                   child: selectionMode
                       ? SelectionCheckCircle(
                           key: const ValueKey('chat_check'),
@@ -331,7 +327,7 @@ class ChatListItem extends ConsumerWidget {
                               maxLines: 2,
                               overflow: TextOverflow.visible,
                               style: TextStyle(
-                                fontWeight: chat.unreadCount > 0
+                                fontWeight: showUnreadIndicators
                                     ? FontWeight.w700
                                     : FontWeight.w600,
                                 fontSize: 16,
@@ -342,62 +338,24 @@ class ChatListItem extends ConsumerWidget {
                             ),
                           ),
                           const SizedBox(width: 8),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              Text(
-                                formatDateAndTimeOfDateTimeWithPrefs(
-                                  context,
-                                  ref,
-                                  l10n,
-                                  chat.lastMessageAt.toLocal(),
-                                ),
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Theme.of(context).disabledColor,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                              if (chat.unreadCount > 0) ...[
-                                const SizedBox(height: 6),
-                                Semantics(
-                                  container: true,
-                                  label: l10n.getString(
-                                    'chatsUnreadMessages',
-                                    params: {
-                                      'count': chat.unreadCount.toString(),
-                                    },
-                                  ),
-                                  excludeSemantics: true,
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 8,
-                                      vertical: 2,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.primary,
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
-                                    child: Text(
-                                      chat.unreadCount.toString(),
-                                      style: TextStyle(
-                                        color: Theme.of(
-                                          context,
-                                        ).colorScheme.onPrimary,
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ],
+                          Text(
+                            formatDateAndTimeOfDateTimeWithPrefs(
+                              context,
+                              ref,
+                              l10n,
+                              chat.lastMessageAt.toLocal(),
+                            ),
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Theme.of(context).disabledColor,
+                              fontWeight: FontWeight.w500,
+                            ),
                           ),
                         ],
                       ),
-                      if (ageGender.isNotEmpty || isOtherTyping) ...[
+                      if (ageGender.isNotEmpty ||
+                          isOtherTyping ||
+                          showUnreadIndicators) ...[
                         const SizedBox(height: 2),
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.center,
@@ -442,6 +400,45 @@ class ChatListItem extends ConsumerWidget {
                                 ),
                               ),
                             ],
+                            // Unread count rides on the age/gender line
+                            // (trailing edge) instead of owning a row under
+                            // the timestamp — the common chat-app pattern of
+                            // pairing the badge with the row's secondary text.
+                            if (showUnreadIndicators) ...[
+                              const SizedBox(width: 8),
+                              Semantics(
+                                container: true,
+                                label: l10n.getString(
+                                  'chatsUnreadMessages',
+                                  params: {
+                                    'count': chat.unreadCount.toString(),
+                                  },
+                                ),
+                                excludeSemantics: true,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.primary,
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: Text(
+                                    chat.unreadCount.toString(),
+                                    style: TextStyle(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.onPrimary,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ],
@@ -460,13 +457,11 @@ class ChatListItem extends ConsumerWidget {
                             final base = withEmojiFallback(
                               TextStyle(
                                 inherit: false,
-                                fontFamily:
-                                    Theme.of(context)
-                                        .textTheme
-                                        .bodyMedium
-                                        ?.fontFamily,
+                                fontFamily: Theme.of(
+                                  context,
+                                ).textTheme.bodyMedium?.fontFamily,
                                 fontSize: 14,
-                                color: chat.unreadCount > 0
+                                color: showUnreadIndicators
                                     ? Theme.of(context).colorScheme.onSurface
                                     : Theme.of(context).colorScheme.onSurface
                                           .withValues(alpha: 0.7),
@@ -590,8 +585,11 @@ class ChatListItem extends ConsumerWidget {
         ),
       ),
       error: (e, s) => CircleAvatar(
-        backgroundColor: Colors.grey.shade400,
-        child: const Icon(Icons.person, color: Colors.white),
+        backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+        child: Icon(
+          Icons.person,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
       ),
     );
   }
@@ -658,14 +656,10 @@ class _ChatRowMenuButton extends ConsumerWidget {
     required this.onSelect,
   });
 
-  Future<void> _open(
-    BuildContext buttonContext,
-    LocalizationState l10n,
-  ) async {
+  Future<void> _open(BuildContext buttonContext, LocalizationState l10n) async {
     // Anchor the popup at the button itself (just below its bottom edge)
     // so the menu opens next to the ⋮ regardless of screen position or RTL.
-    final RenderBox button =
-        buttonContext.findRenderObject() as RenderBox;
+    final RenderBox button = buttonContext.findRenderObject() as RenderBox;
     final RenderBox overlay =
         Navigator.of(buttonContext).overlay!.context.findRenderObject()
             as RenderBox;
@@ -728,11 +722,7 @@ class _ChatRowMenuButton extends ConsumerWidget {
     final colors = Theme.of(context).colorScheme;
     return IconButton(
       visualDensity: VisualDensity.compact,
-      icon: Icon(
-        Icons.more_vert,
-        size: 20,
-        color: colors.onSurfaceVariant,
-      ),
+      icon: Icon(Icons.more_vert, size: 20, color: colors.onSurfaceVariant),
       tooltip: MaterialLocalizations.of(context).moreButtonTooltip,
       onPressed: () => _open(context, l10n),
     );

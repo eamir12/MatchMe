@@ -102,7 +102,12 @@ class MatchMeBackgroundService : Service() {
     // If we don't re-enter foreground mode quickly, the OS can kill/crash-loop us.
     @Volatile private var foregroundStarted: Boolean = false
     
-    // Deduplication tracking
+    // Deduplication tracking. `lastNotifiedMessageId` is the exact message
+    // the last chat notification was posted for: FCM, the Realtime plugin
+    // path and the RPC poll can all fire for the same message, and without
+    // it each one alerted again (the chat-level `lastNotifiedMatchId` alone
+    // is bypassed by design on specific requests). Cleared by
+    // ACTION_RESET_CHAT_NOTIFICATION so edits/retractions can re-post.
     private var lastNotifiedMessageId: String? = null
     private var lastNotifiedMatchId: String? = null
     // Match-buzz dedup, separate from message dedup (both share the matchId
@@ -112,7 +117,9 @@ class MatchMeBackgroundService : Service() {
     // match per device, ever.
     private var lastNotifiedMatchBuzzId: String? = null
     private val PREF_LAST_MATCH_BUZZ_ID = "flutter.last_notified_match_id"
+    private val PREF_LAST_MESSAGE_ID = "flutter.last_notified_message_id"
     private val PREF_WORKER_NOTIFIED_KEY = "flutter.worker_last_notified_key"
+    private val PREF_CHAT_ALERTED_IDS = "flutter.chat_notification_alerted_ids"
 
     private fun wasMatchBuzzed(matchId: String): Boolean {
         if (matchId.isBlank()) return false
@@ -138,6 +145,55 @@ class MatchMeBackgroundService : Service() {
         }
     }
 
+    // Same cross-path / cross-process dedupe as matches, for messages: the
+    // exact message that last alerted this device is mirrored to prefs so a
+    // service restart or the WorkManager fallback never buzzes it twice.
+    private fun wasMessageBuzzed(messageId: String): Boolean {
+        if (messageId.isBlank()) return false
+        if (messageId == lastNotifiedMessageId) return true
+        return try {
+            val prefs = securePrefs()
+            prefs.getString(PREF_LAST_MESSAGE_ID, null) == messageId ||
+                prefs.getString(PREF_WORKER_NOTIFIED_KEY, null) == "msg:$messageId"
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun recordMessageBuzzed(messageId: String) {
+        if (messageId.isBlank()) return
+        lastNotifiedMessageId = messageId
+        try {
+            securePrefs().edit()
+                .putString(PREF_LAST_MESSAGE_ID, messageId)
+                .putString(PREF_WORKER_NOTIFIED_KEY, "msg:$messageId")
+                .apply()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun wasChatNotificationAlerted(matchId: String): Boolean {
+        if (matchId.isBlank()) return false
+        return try {
+            securePrefs().getStringSet(PREF_CHAT_ALERTED_IDS, emptySet())
+                ?.contains(matchId) == true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun recordChatNotificationAlerted(matchId: String) {
+        if (matchId.isBlank()) return
+        try {
+            val prefs = securePrefs()
+            val ids = prefs.getStringSet(PREF_CHAT_ALERTED_IDS, emptySet())
+                ?.toMutableSet() ?: mutableSetOf()
+            ids.add(matchId)
+            prefs.edit().putStringSet(PREF_CHAT_ALERTED_IDS, ids).apply()
+        } catch (_: Exception) {
+        }
+    }
+
     // True when the server FCM push for this match is already sitting in the
     // tray. push-message sends match pushes with the tag "new_match_<matchId>",
     // so the poll/realtime fallback can key off exactly that: the localized
@@ -154,6 +210,101 @@ class MatchMeBackgroundService : Service() {
         }
     }
 
+    // Same story for chat pushes (push-message tags them "match_<matchId>").
+    // When that card is already in the tray — drawn while no client code could
+    // run (killed app, notification+data push) — it IS this message's
+    // notification: the poll/realtime path that catches up after a restart
+    // must record the message and leave the card, not buzz a second time.
+    private fun isChatPushInTray(chatId: String): Boolean {
+        if (chatId.isBlank()) return false
+        return try {
+            val tag = "match_$chatId"
+            notificationManager.activeNotifications.any { sbn -> sbn.tag == tag }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    // Cancels the server FCM chat card (push-message tags chat pushes
+    // "match_<matchId>") before the native card is (re)posted. In
+    // background/killed states the FCM SDK draws that tagged card while the
+    // realtime/native path posts its own untagged card with
+    // notificationId = matchId.hashCode(); the two identities can never
+    // replace each other, so every message stacked a second tray entry.
+    // Returns true when a removed card was posted recently — delivery already
+    // buzzed the user, so the replacement must not buzz again.
+    private fun removeServerChatCard(matchId: String, freshWithinMs: Long = 30_000L): Boolean {
+        if (matchId.isBlank()) return false
+        return try {
+            val tag = "match_$matchId"
+            val now = System.currentTimeMillis()
+            var removedFresh = false
+            notificationManager.activeNotifications
+                .filter { sbn -> sbn.tag == tag }
+                .forEach { sbn ->
+                    if (now - sbn.postTime <= freshWithinMs) removedFresh = true
+                    notificationManager.cancel(sbn.tag, sbn.id)
+                }
+            removedFresh
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    // Same identity story as removeServerChatCard, for match cards
+    // (push-message tags match pushes "new_match_<matchId>").
+    private fun cancelServerMatchCard(matchId: String): Boolean {
+        if (matchId.isBlank()) return false
+        return try {
+            val tag = "new_match_$matchId"
+            var cancelled = false
+            notificationManager.activeNotifications
+                .filter { sbn -> sbn.tag == tag }
+                .forEach { sbn ->
+                    notificationManager.cancel(sbn.tag, sbn.id)
+                    cancelled = true
+                }
+            cancelled
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    // Late or redelivered FCM deliveries draw the SDK's tagged card even when
+    // our own card for the same chat/match already exists (there is no client
+    // hook for notification+data pushes while backgrounded). Whenever a
+    // periodic check runs, drop tagged server cards that duplicate a card we
+    // currently show. Never cancels a server card unless our own live card
+    // for the same chat/match is present, so a notification is never lost.
+    private fun sweepDuplicateServerCards() {
+        try {
+            val active = notificationManager.activeNotifications
+            if (active.size < 2) return
+            active.forEach { sbn ->
+                val tag = sbn.tag ?: return@forEach
+                if (tag.startsWith("new_match_")) {
+                    val matchId = tag.removePrefix("new_match_")
+                    val ourId = activeMatchNotificationIds[matchId]
+                    if (ourId != null &&
+                        active.any { it.id == ourId && it.tag == null }
+                    ) {
+                        notificationManager.cancel(sbn.tag, sbn.id)
+                    }
+                } else if (tag.startsWith("match_") &&
+                    !tag.startsWith("match_expiry_")
+                ) {
+                    val matchId = tag.removePrefix("match_")
+                    val ourId = activeNotificationIds[matchId]
+                        ?: matchId.hashCode()
+                    if (active.any { it.id == ourId && it.tag == null }) {
+                        notificationManager.cancel(sbn.tag, sbn.id)
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+    }
+
     // Location share state
     @Volatile private var lsMatchId: String? = null
     @Volatile private var lsOtherUserId: String? = null
@@ -165,6 +316,9 @@ class MatchMeBackgroundService : Service() {
     // Notification countdown timer - updates every second while sharing is active
     private var lsNotificationTimer: kotlinx.coroutines.Job? = null
     private val activeNotificationIds = mutableMapOf<String, Int>() // matchId -> notificationId
+    // Same bookkeeping for match ("New Match!") cards so the duplicate sweep
+    // and the delayed-push cancel can tell our card apart from the server's.
+    private val activeMatchNotificationIds = mutableMapOf<String, Int>() // matchId -> notificationId
     private var currentlyViewingChatId: String? = null // Track which chat the user is currently viewing
 
     // Message history for MessagingStyle (Sender -> List of Messages)
@@ -508,10 +662,11 @@ class MatchMeBackgroundService : Service() {
             context.startService(intent)
         }
 
-        fun checkForNotifications(context: Context, messageId: String?) {
+        fun checkForNotifications(context: Context, messageId: String?, matchId: String? = null) {
             val intent = Intent(context, MatchMeBackgroundService::class.java).apply {
                 action = "CHECK_NOTIFICATIONS"
                 putExtra("specificMessageId", messageId)
+                if (!matchId.isNullOrBlank()) putExtra(EXTRA_MATCH_ID, matchId)
             }
             context.startService(intent)
         }
@@ -522,7 +677,8 @@ class MatchMeBackgroundService : Service() {
             translatedContent: String,
             originalContent: String,
             senderName: String,
-            matchId: String? = null
+            matchId: String? = null,
+            shouldAlert: Boolean? = null,
         ) {
             val intent = Intent(context, MatchMeBackgroundService::class.java).apply {
                 action = "SHOW_TRANSLATED_NOTIFICATION"
@@ -531,6 +687,7 @@ class MatchMeBackgroundService : Service() {
                 putExtra("originalContent", originalContent)
                 putExtra("senderName", senderName)
                 putExtra("matchId", matchId)
+                shouldAlert?.let { putExtra("shouldAlert", it) }
             }
             context.startService(intent)
         }
@@ -588,6 +745,95 @@ class MatchMeBackgroundService : Service() {
         // This ensures consistency between Flutter and Android native code
         return getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
     }
+
+    // ------------------------------------------------------------------
+    // Notification preference enforcement (killed/background paths bypass
+    // every Dart gate, so the native service must mirror the client rules).
+    // Keys are the Dart SharedPreferences keys with Flutter's "flutter."
+    // prefix, written by lib/providers/user_preferences_provider.dart.
+    // ------------------------------------------------------------------
+
+    private fun readPausedUntilMs(): Long {
+        val p = securePrefs()
+        return try {
+            p.getLong("flutter.notifications_paused_until_ms_utc", 0L)
+        } catch (_: Exception) {
+            try {
+                p.getInt("flutter.notifications_paused_until_ms_utc", 0).toLong()
+            } catch (_: Exception) {
+                0L
+            }
+        }
+    }
+
+    /** Mirrors isPushEnabledForPrefs: paused > global push > matrix[key].push > legacy flag. */
+    private fun isNotifTypePushEnabled(matrixKey: String, legacyKey: String): Boolean {
+        return try {
+            val p = securePrefs()
+            if (p.getBoolean("flutter.notifications_paused_indefinitely", false)) return false
+            if (readPausedUntilMs() > System.currentTimeMillis()) return false
+            if (!p.getBoolean("flutter.notifications_global_push_v1", true)) return false
+            val raw = p.getString("flutter.notifications_matrix_v1", null)
+            if (!raw.isNullOrBlank()) {
+                val entry = org.json.JSONObject(raw).optJSONObject(matrixKey)
+                val v = entry?.opt("push")
+                if (v is Boolean) return v
+            }
+            p.getBoolean(legacyKey, true)
+        } catch (_: Exception) {
+            true
+        }
+    }
+
+    /** Mirrors isMethodEnabled(sound): global sound > matrix[key].sound > legacy. */
+    private fun isNotifTypeSoundEnabled(matrixKey: String, legacyKey: String): Boolean {
+        return try {
+            val p = securePrefs()
+            if (!p.getBoolean("flutter.notifications_global_sound_v1", true)) return false
+            val raw = p.getString("flutter.notifications_matrix_v1", null)
+            if (!raw.isNullOrBlank()) {
+                val entry = org.json.JSONObject(raw).optJSONObject(matrixKey)
+                val v = entry?.opt("sound")
+                if (v is Boolean) return v
+            }
+            p.getBoolean(legacyKey, true)
+        } catch (_: Exception) {
+            true
+        }
+    }
+
+    /** message_previews flag (default true); when off the tray body is masked. */
+    private fun isMessagePreviewsEnabled(): Boolean {
+        return try {
+            securePrefs().getBoolean("flutter.notifications_message_previews_v1", true)
+        } catch (_: Exception) {
+            true
+        }
+    }
+
+    /** Generic, localized body used when previews are disabled. Dart writes the
+     *  localized string (flutter.notifications_generic_message_body); fall back
+     *  to English when it has not been synced yet. */
+    private fun genericMessageBody(): String {
+        val localized = try {
+            securePrefs().getString("flutter.notifications_generic_message_body", null)
+        } catch (_: Exception) {
+            null
+        }
+        return if (!localized.isNullOrBlank()) localized else "New message"
+    }
+
+    private fun chatPushEnabled(): Boolean =
+        isNotifTypePushEnabled("chat_messages", "flutter.notifications_chat")
+
+    private fun chatSoundEnabled(): Boolean =
+        isNotifTypeSoundEnabled("chat_messages", "flutter.notifications_sound")
+
+    private fun matchPushEnabled(): Boolean =
+        isNotifTypePushEnabled("new_match", "flutter.notifications_new_match")
+
+    private fun matchSoundEnabled(): Boolean =
+        isNotifTypeSoundEnabled("new_match", "flutter.notifications_new_match")
 
     private fun logEvent(msg: String) {
         try {
@@ -1617,6 +1863,37 @@ class MatchMeBackgroundService : Service() {
                         lastNotifiedMatchBuzzId = null
                         // Log.d(TAG, "Cleared lastNotifiedMatchBuzzId for chat: $matchId")
                     }
+                    try {
+                        val ids = securePrefs()
+                            .getStringSet(PREF_CHAT_ALERTED_IDS, emptySet())
+                            ?.toMutableSet() ?: mutableSetOf()
+                        ids.remove(matchId)
+                        securePrefs().edit().putStringSet(PREF_CHAT_ALERTED_IDS, ids).apply()
+                    } catch (_: Exception) {
+                    }
+
+                    // Allow the following post to alert even if the latest
+                    // unread message was already notified before its content
+                    // changed (edit/retraction repost flow). Cross-process
+                    // dedupe mirrors are cleared with it, but only when they
+                    // actually hold a message key so a match buzz record is
+                    // left alone.
+                    val clearedMessageId = lastNotifiedMessageId
+                        ?: (try {
+                            securePrefs().getString(PREF_LAST_MESSAGE_ID, null)
+                        } catch (_: Exception) {
+                            null
+                        })
+                    lastNotifiedMessageId = null
+                    try {
+                        val prefs = securePrefs()
+                        val edit = prefs.edit().remove(PREF_LAST_MESSAGE_ID)
+                        if (prefs.getString(PREF_WORKER_NOTIFIED_KEY, null) == "msg:$clearedMessageId") {
+                            edit.remove(PREF_WORKER_NOTIFIED_KEY)
+                        }
+                        edit.apply()
+                    } catch (_: Exception) {
+                    }
 
                     // Clear message history for this specific chat so expanded notifications only show new messages
                     // This ensures expanded notifications only show messages that arrived after entering the chat
@@ -1637,6 +1914,10 @@ class MatchMeBackgroundService : Service() {
                     } else {
                         // Log.d(TAG, "No active notification found for chat: $matchId")
                     }
+                    // The FCM SDK's tagged card for this chat is not tracked in
+                    // activeNotificationIds; drop it too so entering the chat
+                    // always clears whatever card represents it.
+                    removeServerChatCard(matchId)
                 }
             }
             ACTION_SET_VIEWING_CHAT -> {
@@ -1650,6 +1931,7 @@ class MatchMeBackgroundService : Service() {
             }
             "CHECK_NOTIFICATIONS" -> {
                 val messageId = intent.getStringExtra("specificMessageId")
+                val serverCardMatchId = intent.getStringExtra(EXTRA_MATCH_ID)
                 // Log.d(TAG, "[ANDROID] Manual notification check triggered for messageId: $messageId")
                 // Run notification check in a coroutine
                 CoroutineScope(Dispatchers.IO).launch {
@@ -1659,7 +1941,7 @@ class MatchMeBackgroundService : Service() {
                             delay(300) // Wait for translation to be saved
                         }
                         // Log.d(TAG, "[ANDROID] Starting notification check for messageId: $messageId")
-                        checkForNotifications(messageId)
+                        checkForNotifications(messageId, serverCardMatchId)
                         // Log.d(TAG, "[ANDROID] Notification check completed for messageId: $messageId")
                     } catch (e: Exception) {
                         // Log.e(TAG, "[ANDROID] Error in manual notification check", e)
@@ -1672,11 +1954,22 @@ class MatchMeBackgroundService : Service() {
                 val originalContent = intent.getStringExtra("originalContent") ?: ""
                 val senderName = intent.getStringExtra("senderName") ?: "Someone"
                 val matchId = intent.getStringExtra("matchId")
+                val shouldAlert = if (intent.hasExtra("shouldAlert")) {
+                    intent.getBooleanExtra("shouldAlert", true)
+                } else {
+                    null
+                }
 
                 // Log.d(TAG, "[ANDROID] Show translated notification: sender='$senderName', translated='$translatedContent', original='$originalContent', matchId='$matchId'")
 
                 // Show notification directly with the translated content
-                showTranslatedNotification(senderName, translatedContent, messageId, matchId)
+                showTranslatedNotification(
+                    senderName,
+                    translatedContent,
+                    messageId,
+                    matchId,
+                    shouldAlert,
+                )
             }
             ACTION_PROCESS_LOCATION_UPDATE -> {
                 logEvent("ACTION_PROCESS_LOCATION_UPDATE: hasResult=${LocationResult.hasResult(intent)} visible=$isVisible appForeground=$appInForeground shareActive=${isLocationShareActive()}")
@@ -2786,52 +3079,111 @@ class MatchMeBackgroundService : Service() {
         return false
     }
 
-    private fun showTranslatedNotification(senderName: String, content: String, messageId: String, matchId: String? = null) {
+    private fun showTranslatedNotification(
+        senderName: String,
+        content: String,
+        messageId: String,
+        matchId: String? = null,
+        shouldAlertOverride: Boolean? = null,
+    ) {
         // Log.d(TAG, "[ANDROID] Showing translated notification: sender='$senderName', content='$content', matchId='$matchId'")
+
+        // Settings enforcement: killed/background paths bypass Dart's gates.
+        if (!chatPushEnabled()) {
+            return
+        }
+
+        // Same message can arrive via several paths (Realtime plugin, FCM,
+        // RPC poll). Only the first one alerts; later ones must not buzz
+        // again for an identical message (checked across process restarts
+        // too — see wasMessageBuzzed).
+        if (wasMessageBuzzed(messageId)) {
+            return
+        }
+
+        // Previews off → mask the body with a generic localized string.
+        val effectiveContent = if (isMessagePreviewsEnabled()) content else genericMessageBody()
 
         val effectiveMatchId = matchId ?: "unknown"
 
         // Check if we should show notification alert (skip alert if viewing chat AND app is in foreground)
         val isViewingThisChat = effectiveMatchId == currentlyViewingChatId
-        val shouldAlert = !isViewingThisChat || !appInForeground
+        if (isViewingThisChat && appInForeground) return
+        val shouldAlert = shouldAlertOverride ?: !wasChatNotificationAlerted(effectiveMatchId)
 
-        if (shouldAlert) {
+        if (!wasMessageBuzzed(messageId)) {
             // Use the chat ID hash as the notification ID so all messages from the same
             // chat group together (was previously senderName.hashCode(), which could
             // collide when two chats have senders with the same name hash).
             val notificationId = effectiveMatchId.hashCode()
+
+            // Collapse the FCM SDK's tagged card onto this one (single tray
+            // entry per chat). Silent when a fresh server card was just
+            // dropped while the app is not foreground: delivery already
+            // buzzed for this message.
+            val replacedFreshServerCard = removeServerChatCard(effectiveMatchId)
 
             // Log.d(TAG, "[ANDROID] Showing notification: sender='$senderName', content='$content', silent=$isViewingThisChat")
             // Pass content as-is; showNotification's MessagingStyle will render the
             // sender as the title and the message as the body.
             showNotification(
                 title = senderName,
-                content = content,
+                content = effectiveContent,
                 notificationId = notificationId,
                 senderName = senderName,
                 matchId = effectiveMatchId,
-                silent = isViewingThisChat,
+                silent = isViewingThisChat || !shouldAlert || (replacedFreshServerCard && !appInForeground),
+                soundEnabled = shouldAlert && chatSoundEnabled(),
             )
             activeNotificationIds[effectiveMatchId] = notificationId
 
             // Update last notified
             lastNotifiedMatchId = effectiveMatchId
+            if (shouldAlert) recordChatNotificationAlerted(effectiveMatchId)
+            recordMessageBuzzed(messageId)
             // Log.d(TAG, "Set lastNotifiedMatchId to: $effectiveMatchId, stored notificationId: $notificationId")
         } else {
             // Log.d(TAG, "[ANDROID] Skipping notification - currently viewing chat and app is in foreground: $effectiveMatchId")
         }
     }
 
-    private suspend fun checkForNotifications(specificMessageId: String? = null) {
+    private suspend fun checkForNotifications(
+        specificMessageId: String? = null,
+        serverCardMatchId: String? = null
+    ) {
         if (userId == null || supabaseUrl == null || supabaseKey == null) return
+        // A session whose refresh already failed permanently cannot poll:
+        // sending its dead token produced a silent 401 every cycle.
+        if (authPermanentlyFailed) return
 
-        // Throttle notification checks to prevent excessive calls
-        val now = System.currentTimeMillis()
-        if (now - lastNotificationCheckTime < notificationCheckThrottleMs) {
-            // Log.d(TAG, "Skipping notification check - throttled (last check: ${now - lastNotificationCheckTime}ms ago)")
-            return
+        // Throttle notification checks to prevent excessive calls. Specific
+        // requests (a message id from FCM/Realtime) are immediate triggers
+        // and must not be swallowed by a check that ran moments earlier.
+        if (specificMessageId == null) {
+            val now = System.currentTimeMillis()
+            if (now - lastNotificationCheckTime < notificationCheckThrottleMs) {
+                // Log.d(TAG, "Skipping notification check - throttled (last check: ${now - lastNotificationCheckTime}ms ago)")
+                return
+            }
+            lastNotificationCheckTime = now
         }
-        lastNotificationCheckTime = now
+
+        // The FCM SDK's tagged card for this chat (drawn by the push that
+        // triggered this check) is superseded the moment this request runs:
+        // drop it up front — even when the RPC ends up answering "nothing
+        // unread" — and remember whether it had just buzzed so the
+        // replacement card stays silent. Only for explicit message requests:
+        // match-triggered checks must not cancel a chat card.
+        val capturedServerCardFresh =
+            if (!serverCardMatchId.isNullOrBlank() && specificMessageId != null) {
+                removeServerChatCard(serverCardMatchId)
+            } else {
+                false
+            }
+
+        // Keep the JWT fresh even when Dart is gone (killed app / Doze): the
+        // poll is the only notification safety net in that state.
+        try { ensureValidJwt() } catch (_: Exception) {}
 
         // Log.d(TAG, "Checking for notifications via RPC... (Message ID: $specificMessageId)")
         val url = "$supabaseUrl/rest/v1/rpc/check_unread_notifications"
@@ -2844,16 +3196,17 @@ class MatchMeBackgroundService : Service() {
 
         val requestBody = jsonBody.toString().toRequestBody("application/json".toMediaType())
 
-        val request = okhttp3.Request.Builder()
-            .url(url)
-            .post(requestBody)
-            .addHeader("apikey", supabaseKey!!)
-            .addHeader("Authorization", bearerAuthHeader())
-            .addHeader("Content-Type", "application/json")
-            .build()
+        val response = executeWithFreshJwt {
+            okhttp3.Request.Builder()
+                .url(url)
+                .post(requestBody)
+                .addHeader("apikey", supabaseKey!!)
+                .addHeader("Authorization", bearerAuthHeader())
+                .addHeader("Content-Type", "application/json")
+                .build()
+        } ?: return
 
         try {
-            val response = httpClient.newCall(request).execute()
             if (response.isSuccessful) {
                 val responseBody = response.body?.string()
                 // Log.d(TAG, "Notification check response: $responseBody")
@@ -2866,11 +3219,18 @@ class MatchMeBackgroundService : Service() {
                         val unreadMessages = data.optInt("unread_messages_count", 0)
                         
                         if (unreadMatches > 0) {
-                            val matchName = data.optString("latest_match_name", "Someone")
+                            val rawMatchName = data.optString("latest_match_name", "Someone")
+                            // Normalize through maskFullName ("John S.") so the
+                            // match card always matches the format the app's other
+                            // screens use - regardless of which producer wrote the
+                            // name (RPC, server push, older raw payloads).
+                            // Hashing keeps the raw name: the notify-id and the
+                            // legacy match-id fallback must stay stable.
+                            val matchName = maskFullName(rawMatchName)
                             val matchId = data.optString("latest_match_id", "")
-                            
+
                             // Fallback to hash if ID is missing (backward compatibility with old RPC)
-                            val effectiveMatchId = if (matchId.isNotEmpty()) matchId else matchName.hashCode().toString()
+                            val effectiveMatchId = if (matchId.isNotEmpty()) matchId else rawMatchName.hashCode().toString()
                             
                             if (!wasMatchBuzzed(effectiveMatchId)) {
                                 if (isMatchPushInTray(effectiveMatchId)) {
@@ -2884,21 +3244,52 @@ class MatchMeBackgroundService : Service() {
                                     // Use match name hash as ID to group match notifications.
                                     // senderName stays null: showNotification titles
                                     // sender-less (match/system) alerts with safeTitle
-                                    // ("New Match!") instead of the firstTokenName
+                                    // ("New Match!") instead of the maskFullName
                                     // fallback ("Someone").
-                                    showNotification("New Match!", "You matched with $matchName!", matchName.hashCode(), null, effectiveMatchId)
+                                    val matchNotifyId = matchName.hashCode()
+                                    showNotification("New Match!", "You matched with $matchName!", matchNotifyId, null, effectiveMatchId, soundEnabled = matchSoundEnabled())
+                                    activeMatchNotificationIds[effectiveMatchId] = matchNotifyId
                                     recordMatchBuzzed(effectiveMatchId)
                                 }
                             } else {
                                 // Log.d(TAG, "Skipping duplicate match notification for ID: $effectiveMatchId")
+                                // Already buzzed earlier (Realtime/poll recorded it).
+                                // A delayed FCM delivery or a queue retry can still
+                                // draw the SDK's tagged card next to our own: drop
+                                // it while our own card is actually showing so the
+                                // match keeps exactly one tray entry.
+                                val ourNotifyId = activeMatchNotificationIds[effectiveMatchId]
+                                val ourCardActive = ourNotifyId != null &&
+                                    notificationManager.activeNotifications.any {
+                                        it.id == ourNotifyId && it.tag == null
+                                    }
+                                if (ourCardActive && isMatchPushInTray(effectiveMatchId)) {
+                                    cancelServerMatchCard(effectiveMatchId)
+                                }
                             }
                         } else if (unreadMessages > 0) {
-                            val sender = data.optString("latest_message_sender", "Someone")
-                            val content = data.optString("latest_message_content", "Sent a message")
-                            val messageId = data.optString("latest_message_id", "")
-                            val matchId = data.optString("latest_match_id", "")
-                            val translationEnabled = data.optBoolean("translation_enabled", false)
-                            val translationAvailable = data.optBoolean("translation_available", false)
+                            // The RPC no longer returns message bodies (chats
+                            // are end-to-end encrypted; the server sends a
+                            // generic placeholder). JSON null renders as the
+                            // literal "null" via org.json's optString because
+                            // its fallback only applies when the key is
+                            // MISSING - sanitize both fields so old and new
+                            // payloads always render a sane notification.
+                            val rawSender = data.optString("latest_message_sender", "Someone")
+                                            val sender = if (rawSender.isBlank() || rawSender == "null") "Someone" else rawSender
+                            val rawContent = data.optString("latest_message_content", "Sent a message")
+                            val content = if (rawContent.isBlank() || rawContent == "null") "Sent a message" else rawContent
+            // Previews off → mask the body; keep the sender title intact.
+            val displayContent = if (isMessagePreviewsEnabled()) content else genericMessageBody()
+            // The RPC cannot decrypt E2E content. Do not surface its generic
+            // placeholder when previews are enabled, or before an enabled
+            // translation has been produced by translate-proxy.
+            if (isMessagePreviewsEnabled() || data.optBoolean("translation_enabled", false)) {
+                return@checkForNotifications
+            }
+            val messageId = data.optString("latest_message_id", "")
+            val matchId = data.optString("latest_match_id", "")
+
 
                             // Validate that this is actually an unread message
                             // The RPC function should only return unread messages, but double-check
@@ -2907,13 +3298,27 @@ class MatchMeBackgroundService : Service() {
                                 return@checkForNotifications
                             }
 
-                            if (translationEnabled && !translationAvailable) {
-                                // Log.d(TAG, "[ANDROID] Skipping notification - translation pending for messageId: $messageId")
+                            // One alert per message across all trigger paths
+                            // (FCM push, Realtime, poll) — RAM + prefs, so a
+                            // process restart cannot re-buzz either.
+                            if (wasMessageBuzzed(messageId)) {
                                 return@checkForNotifications
                             }
 
                             // Use match ID for deduplication - one notification per chat
                             val effectiveChatId = if (matchId.isNotEmpty()) matchId else sender.hashCode().toString()
+
+                            // The chat's FCM card may already be showing (drawn
+                            // while the app was killed/backgrounded, so no code
+                            // recorded the buzz). That card is the notification
+                            // for this message: record it and leave the card —
+                            // re-posting here would buzz a second time for the
+                            // same message right after the app restarts.
+                            if (isChatPushInTray(effectiveChatId)) {
+                                lastNotifiedMatchId = effectiveChatId
+                                recordMessageBuzzed(messageId)
+                                return@checkForNotifications
+                            }
 
                             // If specificMessageId was requested, we ALWAYS notify, ignoring deduplication
                             // This is because Realtime triggered it, so it MUST be new
@@ -2946,14 +3351,24 @@ class MatchMeBackgroundService : Service() {
                             // Allow notification if:
                             // 1. It's a specific request (immediate trigger), OR
                             // 2. It's not a duplicate
-                            val shouldAlert = isSpecificRequest || effectiveChatId != lastNotifiedMatchId
+                            val shouldAlert = !wasChatNotificationAlerted(effectiveChatId)
 
-                            if (shouldAlert) {
+                            if (isSpecificRequest || !wasMessageBuzzed(messageId)) {
                                 // Log.d(TAG, "[ANDROID] Processing message from $sender (Chat ID: $effectiveChatId, viewing: $isViewingThisChat, shouldAlert: $shouldAlert, content: '$content')")
                                 // Use the chat ID hash as the notification ID so all messages from the same
                                 // chat group together (was previously sender.hashCode(), which could
                                 // collide when two chats have senders with the same name hash).
                                 val notificationId = effectiveChatId.hashCode()
+                                // Collapse the FCM SDK's tagged card onto this
+                                // one (see removeServerChatCard): one tray
+                                // entry per chat no matter which path fired.
+                                // The up-front capture already dropped the
+                                // card this request was triggered by; skip a
+                                // redundant second scan in that case.
+                                val replacedFreshServerCard =
+                                    (capturedServerCardFresh &&
+                                        serverCardMatchId == effectiveChatId) ||
+                                        removeServerChatCard(effectiveChatId)
                                 // Pass content as-is; showNotification's MessagingStyle will render the
                                 // sender as the title and the message as the body. Previously we passed
                                 // "$sender: $content" as the body, which produced notifications that
@@ -2961,21 +3376,18 @@ class MatchMeBackgroundService : Service() {
                                 // Log.d(TAG, "[ANDROID] Showing notification: sender='$sender', content='$content', silent=$isViewingThisChat")
                                 showNotification(
                                     title = sender,
-                                    content = content,
+                                    content = displayContent,
                                     notificationId = notificationId,
                                     senderName = sender,
                                     matchId = matchId,
-                                    silent = isViewingThisChat,
+                                    silent = isViewingThisChat || !shouldAlert || (replacedFreshServerCard && !appInForeground),
+                                    soundEnabled = shouldAlert && chatSoundEnabled(),
                                 )
                                 activeNotificationIds[effectiveChatId] = notificationId
 
-                                // Only update lastNotifiedMatchId if we actually alerted (not for silent notifications)
-                                if (shouldAlert) {
-                                    lastNotifiedMatchId = effectiveChatId
-                                    // Log.d(TAG, "Set lastNotifiedMatchId to: $effectiveChatId, stored notificationId: $notificationId")
-                                } else {
-                                    // Log.d(TAG, "Posted silent notification for viewed chat: $effectiveChatId")
-                                }
+                                lastNotifiedMatchId = effectiveChatId
+                                if (shouldAlert) recordChatNotificationAlerted(effectiveChatId)
+                                recordMessageBuzzed(messageId)
                             } else {
                                 // Log.d(TAG, "[ANDROID] Skipping duplicate message notification for chat ID: $effectiveChatId (lastNotifiedMatchId: $lastNotifiedMatchId, isSpecificRequest: $isSpecificRequest)")
                             }
@@ -2988,9 +3400,16 @@ class MatchMeBackgroundService : Service() {
                 val errorBody = response.body?.string()
                 // Log.e(TAG, "Notification check failed: ${response.code}, body: $errorBody")
             }
-            response.close()
         } catch (e: Exception) {
             // Log.e(TAG, "Error checking notifications", e)
+        } finally {
+            // Early returns inside the block above must not leak the response.
+            try { response.close() } catch (_: Exception) {}
+            // Late/redelivered pushes draw server cards invisibly (no client
+            // hook for notification+data while backgrounded); converge the
+            // tray on every check so one card per chat/match is enforced,
+            // including the early-return paths above.
+            sweepDuplicateServerCards()
         }
     }
 
@@ -3019,13 +3438,22 @@ class MatchMeBackgroundService : Service() {
         return "$out…"
     }
 
-    private fun firstTokenName(raw: String?): String {
-        val t = raw?.trim()?.split(Regex("\\s+"))?.firstOrNull { it.isNotEmpty() }.orEmpty()
-        if (t.isEmpty()) return "Someone"
-        return if (t.length > 20) t.substring(0, 20) else t
+    // Mirrors public.mask_full_name(TEXT): "FirstName L." for multi-word names
+    // (first name + last initial, e.g. "John S."), the first name alone for
+    // single-word names. Empty falls back to "Someone". Idempotent: the RPC and
+    // server pushes already return "John S." - re-masking passes it through -
+    // so every tray title matches what the app's other screens show.
+    private fun maskFullName(raw: String?): String {
+        val parts = raw?.trim()?.split(Regex("\\s+"))?.filter { it.isNotEmpty() }.orEmpty()
+        if (parts.isEmpty()) return "Someone"
+        if (parts.size == 1) return parts[0]
+        val first = parts[0]
+        val last = parts[parts.size - 1]
+        if (last.isEmpty() || last == first) return first
+        return "$first ${last[0].uppercaseChar()}."
     }
 
-    private fun showNotification(title: String, content: String, notificationId: Int? = null, senderName: String? = null, matchId: String? = null, silent: Boolean = false) {
+    private fun showNotification(title: String, content: String, notificationId: Int? = null, senderName: String? = null, matchId: String? = null, silent: Boolean = false, soundEnabled: Boolean = true) {
         // Transport/display guard: never overflow tray or FCM 4KB budget.
         val safeTitle = truncateNotifBytes(title.trim(), 500)
         val safeContent = truncateNotifBytes(content.trim().ifEmpty { "New message" }, 1500)
@@ -3076,7 +3504,7 @@ class MatchMeBackgroundService : Service() {
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(true)
-            .setDefaults(if (silent) 0 else NotificationCompat.DEFAULT_ALL) // No sounds/vibration for silent
+            .setDefaults(if (silent || !soundEnabled) 0 else NotificationCompat.DEFAULT_ALL) // Respect sound preference
             .setOnlyAlertOnce(silent) // Silent notifications don't alert
             .setContentIntent(pendingIntent)
 
@@ -3086,8 +3514,8 @@ class MatchMeBackgroundService : Service() {
         // MessagingStyle branch with a broken key and miss the history.
         // A null/blank senderName means a match or system alert (never a
         // "Someone"): keep it empty so the standard branch below uses the
-        // real title instead of the firstTokenName fallback.
-        val effectiveSenderName = senderName?.trim().takeIf { !it.isNullOrEmpty() }?.let { firstTokenName(it) }.orEmpty()
+        // real title instead of the maskFullName fallback.
+        val effectiveSenderName = senderName?.trim().takeIf { !it.isNullOrEmpty() }?.let { maskFullName(it) }.orEmpty()
         val effectiveMatchId = matchId?.trim().orEmpty()
         if (effectiveSenderName.isNotEmpty() && effectiveMatchId.isNotEmpty()) {
             // Get message history for this chat (already populated when messages arrived)
@@ -3263,6 +3691,48 @@ class MatchMeBackgroundService : Service() {
             refreshToken = latestRt
         }
         refreshJwtToken(effectiveRt)
+    }
+
+    /**
+     * Executes [build] and, when the server rejects the bearer token with a
+     * 401, refreshes the access token once and retries the request a single
+     * time. Returns null when the request failed to execute or no retry is
+     * possible — callers own closing the returned response.
+     *
+     * Shared fix for the recurring okhttp 401s on
+     * check_unread_notifications / update_user_activity / report_client_error:
+     * those paths kept sending the token captured at session start, so every
+     * background cycle silently failed until the app was reopened.
+     */
+    private suspend fun executeWithFreshJwt(build: () -> okhttp3.Request): okhttp3.Response? {
+        repeat(2) { attempt ->
+            val request = try {
+                build()
+            } catch (_: Exception) {
+                return null
+            }
+            val response = try {
+                httpClient.newCall(request).execute()
+            } catch (_: Exception) {
+                return null
+            }
+            if (response.code != 401 || attempt == 1) {
+                return response
+            }
+            try { response.close() } catch (_: Exception) {}
+
+            // Access token rejected: refresh once, then rebuild with the new
+            // bearer header and retry.
+            val rt = refreshToken
+            if (rt.isNullOrBlank()) {
+                return null
+            }
+            refreshJwtToken(rt)
+            if (authPermanentlyFailed || userToken.isNullOrBlank()) {
+                return null
+            }
+        }
+        return null
     }
 
     private suspend fun syncTokensToDartStorage(newAccessToken: String, newRefreshToken: String?, fullResponse: JSONObject) {
@@ -3513,15 +3983,18 @@ class MatchMeBackgroundService : Service() {
 
         val requestBody = jsonBody.toString().toRequestBody("application/json".toMediaType())
 
-        val request = okhttp3.Request.Builder()
-            .url(url)
-            .post(requestBody)
-            .addHeader("apikey", supabaseKey!!)
-            .addHeader("Authorization", "Bearer $userToken")
-            .addHeader("Content-Type", "application/json")
-            .build()
+        // Refresh-and-retry once on 401 so a rotated/expired token does not
+        // turn the online heartbeat into a silent failure for the session.
+        val response = executeWithFreshJwt {
+            okhttp3.Request.Builder()
+                .url(url)
+                .post(requestBody)
+                .addHeader("apikey", supabaseKey!!)
+                .addHeader("Authorization", bearerAuthHeader())
+                .addHeader("Content-Type", "application/json")
+                .build()
+        } ?: return
 
-        val response = httpClient.newCall(request).execute()
         try {
             if (!response.isSuccessful) {
                 val errorBody = response.body?.string()
@@ -4012,7 +4485,9 @@ class MatchMeBackgroundService : Service() {
         val uid = userId ?: return
         val url = supabaseUrl ?: return
         val key = supabaseKey ?: return
-        if (userToken.isNullOrBlank()) return
+        // Allow a dead-but-refreshable access token through: the helper below
+        // refreshes once on 401. Only give up when there is nothing to refresh.
+        if (userToken.isNullOrBlank() && refreshToken.isNullOrBlank()) return
         val now = System.currentTimeMillis()
         val last = realtimeJoinErrorLastReportAt[topic] ?: 0L
         if (now - last < 3600000L) return
@@ -4033,14 +4508,15 @@ class MatchMeBackgroundService : Service() {
                     })
                 }
                 val reqBody = body.toString().toRequestBody("application/json".toMediaType())
-                val request = okhttp3.Request.Builder()
-                    .url("$url/rest/v1/rpc/report_client_error")
-                    .post(reqBody)
-                    .addHeader("apikey", key)
-                    .addHeader("Authorization", bearerAuthHeader())
-                    .addHeader("Content-Type", "application/json")
-                    .build()
-                httpClient.newCall(request).execute().use { /* ignore result; table is the record */ }
+                executeWithFreshJwt {
+                    okhttp3.Request.Builder()
+                        .url("$url/rest/v1/rpc/report_client_error")
+                        .post(reqBody)
+                        .addHeader("apikey", key)
+                        .addHeader("Authorization", bearerAuthHeader())
+                        .addHeader("Content-Type", "application/json")
+                        .build()
+                }?.close() // ignore result; table is the record
             } catch (_: Exception) {
                 // Reporting must never break the service.
             }

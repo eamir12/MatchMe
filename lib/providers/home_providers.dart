@@ -15,6 +15,7 @@ import 'package:matchme/services/background_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/services/web_notification_service.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/providers/user_preferences_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/services/translation_service.dart';
 import 'package:matchme/services/app_config_service.dart';
@@ -267,27 +268,7 @@ Duration _previewTranslationRetryDelay(int attempt) {
   }
 }
 
-// Timers for pending translation notifications. If a translation doesn't arrive
-// within the timeout, we fire the notification anyway with whatever content is
-// available so the user isn't left without a notification.
 final Map<String, Timer> _pendingTranslationTimeoutTimers = <String, Timer>{};
-const Duration _pendingTranslationTimeout = Duration(seconds: 10);
-
-void _schedulePendingTranslationTimeout(String messageId) {
-  // Cancel any existing timer for this message
-  _pendingTranslationTimeoutTimers[messageId]?.cancel();
-  _pendingTranslationTimeoutTimers[messageId] = Timer(
-    _pendingTranslationTimeout,
-    () {
-      // If the message is still pending after the timeout, the translation
-      // never arrived. Remove from pending and clear any other state so the
-      // next sync/realtime pass can show the notification with available content.
-      if (_pendingTranslatedNotificationMessageIds.remove(messageId)) {
-        _pendingTranslationTimeoutTimers.remove(messageId);
-      }
-    },
-  );
-}
 
 // Tracks userIds that have already had their one-time initial server sync
 // kicked off by recentChatsProvider's first build. Without this guard,
@@ -425,9 +406,9 @@ final initialHomeSyncProvider = FutureProvider.autoDispose.family<void, String>(
     // in _warmMatchedUsersAfterHomeSync lets whichever pass wins keep it and
     // the other return immediately, so it never runs twice.
     unawaited(
-      Future<void>.delayed(const Duration(milliseconds: 500)).then(
-        (_) => _warmMatchedUsersAfterHomeSync(ref, userId),
-      ),
+      Future<void>.delayed(
+        const Duration(milliseconds: 500),
+      ).then((_) => _warmMatchedUsersAfterHomeSync(ref, userId)),
     );
     return;
   }
@@ -555,7 +536,8 @@ Future<void> _warmMatchedUsersAfterHomeSync(Ref ref, String userId) async {
         );
       }
     } catch (_) {}
-  } catch (_) {} finally {
+  } catch (_) {
+  } finally {
     _matchedUsersWarmInProgress.remove(userId);
   }
 }
@@ -815,8 +797,8 @@ Future<void> _refreshPreviewForIncomingRealtimeMessage({
           wrappedKeys != null &&
           isIncoming) {
         try {
-          final decrypted =
-              await EncryptedNotificationPreviewService.instance.decryptPreview(
+          final decrypted = await EncryptedNotificationPreviewService.instance
+              .decryptPreview(
                 messageId: messageId,
                 matchId: matchId,
                 senderId: senderId,
@@ -842,16 +824,7 @@ Future<void> _refreshPreviewForIncomingRealtimeMessage({
       }
     }
 
-    // 2. Recompute the preview from the messages box (now holding the
-    // plaintext) so watchChats emits the new last message immediately.
-    try {
-      await localDb.recomputeChatLastMessagePreviewFromMessages(
-        currentUserId,
-        matchId,
-      );
-    } catch (_) {}
-
-    // 3. Translation, single-flight: only for incoming messages in chats with
+    // 2. Translation, single-flight: only for incoming messages in chats with
     // translation on, and only when no current translation is cached yet.
     if (!isIncoming) return;
     bool translationEnabled = false;
@@ -863,7 +836,25 @@ Future<void> _refreshPreviewForIncomingRealtimeMessage({
     } catch (_) {
       return;
     }
-    if (!translationEnabled) return;
+    if (!translationEnabled) {
+      // Without translation, the original is the ready-to-display content.
+      try {
+        await localDb.recomputeChatLastMessagePreviewFromMessages(
+          currentUserId,
+          matchId,
+        );
+      } catch (_) {}
+      return;
+    }
+    // Advance the chat row to this message id now, but the chat-list widget
+    // will keep its body and unread affordances hidden until a matching
+    // translation (or confirmed same-language result) is written below.
+    try {
+      await localDb.recomputeChatLastMessagePreviewFromMessages(
+        currentUserId,
+        matchId,
+      );
+    } catch (_) {}
     try {
       final cached = await localDb.getMessageById(matchId, messageId);
       if (cached != null) {
@@ -883,17 +874,39 @@ Future<void> _refreshPreviewForIncomingRealtimeMessage({
               normalizeEditMarker(cached['translated_source_edited_at']),
               normalizeEditMarker(cached['edited_at']),
             )) {
-          return; // current translation already cached — nothing to do.
+          await localDb.updateChatLastMessageTranslation(
+            currentUserId,
+            matchId,
+            messageId,
+            rawTranslated,
+            targetLanguage: uiLang,
+            editedAt: normalizeEditMarker(cached['edited_at']),
+          );
+          return; // Current translation is ready and already cached.
         }
-        final sourceRaw = (cached['detected_source_language'] ??
-                newRecord['detected_source_language'])
-            ?.toString();
+        final sourceRaw =
+            (cached['detected_source_language'] ??
+                    newRecord['detected_source_language'])
+                ?.toString();
         if (sourceRaw != null &&
             sourceRaw.isNotEmpty &&
             sourceRaw != 'null' &&
             isValidLanguageCode(sourceRaw) &&
             normalizeLanguageCode(sourceRaw) == uiLang) {
-          return; // Case B: message is already in the UI language.
+          // Same-language content needs no AI translation, but still wait
+          // until language detection has established that it is displayable.
+          final original = cached['content_original']?.toString();
+          if (original != null && original.isNotEmpty) {
+            await localDb.updateChatLastMessageTranslation(
+              currentUserId,
+              matchId,
+              messageId,
+              original,
+              targetLanguage: uiLang,
+              editedAt: normalizeEditMarker(cached['edited_at']),
+            );
+          }
+          return;
         }
       }
     } catch (_) {}
@@ -911,6 +924,44 @@ Future<void> _refreshPreviewForIncomingRealtimeMessage({
       ),
     );
   } catch (_) {}
+}
+
+/// In-flight guard for [_scheduleCoalescedPreviewRecompute], keyed by
+/// `userId|matchId`.
+final Set<String> _previewRecomputeInFlight = <String>{};
+
+/// Refreshes a chats-row preview from the local messages box without waiting
+/// for the next sync. Used when a realtime INSERT arrives for a message that
+/// is already cached (the open chat's own fetch/subscription usually won the
+/// race against this channel): the sync trigger may be coalesced away by the
+/// rapid-fire guards, which used to leave the list row showing the previous
+/// message while the open chat already had the new one.
+///
+/// Coalesced per match so the cold-start realtime replay (one INSERT per
+/// cached message) costs one recompute per chat, not one per message.
+void _scheduleCoalescedPreviewRecompute(
+  LocalDbService localDb,
+  String userId,
+  String matchId,
+) {
+  final key = '$userId|$matchId';
+  if (!_previewRecomputeInFlight.add(key)) return;
+  unawaited(() async {
+    try {
+      // Never recompute from an empty message store: recompute deletes the
+      // chat row when it finds no messages, and this path can run before the
+      // message itself is persisted.
+      final messages = await localDb.getMessages(matchId);
+      if (messages.isEmpty) return;
+      await localDb.recomputeChatLastMessagePreviewFromMessages(
+        userId,
+        matchId,
+      );
+    } catch (_) {
+    } finally {
+      _previewRecomputeInFlight.remove(key);
+    }
+  }());
 }
 
 Duration _jitteredBackoff(int attempt) {
@@ -1372,6 +1423,55 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                   }
                 }
 
+                // Persist a translation the moment it lands, BEFORE any of the
+                // notification short-circuits below can return. The open chat
+                // (and the tray/inbox) can show the new message + translation
+                // while the chats-row preview still holds the previous one:
+                // e.g. the chat screen's own channel won the race and this
+                // message was already in the local store, or the app was
+                // backgrounded and this is a replayed UPDATE. Without this,
+                // those paths returned before the preview writeback and the
+                // list row only healed on a later (possibly coalesced-away)
+                // sync. updateChatLastMessageTranslation also self-heals an
+                // out-of-order row by recomputing from the messages box.
+                if (isTranslationUpdate &&
+                    messageId != null &&
+                    matchId != null) {
+                  final previewText =
+                      serverTranslatedContent ?? decryptedTranslation;
+                  final hasUsablePreview =
+                      previewText != null &&
+                      previewText.isNotEmpty &&
+                      previewText != 'null';
+                  if (hasUsablePreview) {
+                    if (hasValidTranslationForContent) {
+                      unawaited(
+                        localDb.updateChatLastMessageTranslation(
+                          currentUserId,
+                          matchId,
+                          messageId,
+                          previewText,
+                          targetLanguage: normalizeLanguageCode(
+                            payload.newRecord['translated_target_language']
+                                    as String? ??
+                                localUiLang,
+                          ),
+                          editedAt: rowEditedAt,
+                        ),
+                      );
+                    } else if (rowEditedAt != null) {
+                      unawaited(
+                        localDb.updateChatLastMessageTranslation(
+                          currentUserId,
+                          matchId,
+                          messageId,
+                          null,
+                        ),
+                      );
+                    }
+                  }
+                }
+
                 final usableContent =
                     (originalContent != null && originalContent.isNotEmpty) ||
                     (decryptedContent != null);
@@ -1411,6 +1511,16 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                       _pendingTranslationTimeoutTimers
                           .remove(messageId)
                           ?.cancel();
+                      // The message is already cached (e.g. the open chat's
+                      // own fetch beat this channel), so refresh the chats-row
+                      // preview from the local store right here instead of
+                      // trusting the sync trigger, which the rapid-fire
+                      // guards can coalesce away.
+                      _scheduleCoalescedPreviewRecompute(
+                        localDb,
+                        currentUserId,
+                        matchId,
+                      );
                       return;
                     }
                   }
@@ -1495,7 +1605,6 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                       '🔔 [NOTIFY] INSERT event with translation enabled - deferring notification until translation arrives',
                     );
                     _pendingTranslatedNotificationMessageIds.add(messageId);
-                    _schedulePendingTranslationTimeout(messageId);
                     return;
                   }
 
@@ -1520,21 +1629,28 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                       }
                     }
 
-                    final isPendingTranslation =
-                        _pendingTranslatedNotificationMessageIds.contains(
-                          messageId,
-                        );
-                    // Fire if: pending + translation available, OR
-                    //          not pending (timeout fired, show with available content)
+                    final sourceLang = normalizeLanguageCode(
+                      payload.newRecord['detected_source_language']
+                              ?.toString() ??
+                          '',
+                    );
+                    final uiLang = normalizeLanguageCode(localUiLang);
+                    final translationReady =
+                        hasValidTranslationForContent ||
+                        (isValidLanguageCode(sourceLang) &&
+                            sourceLang == uiLang);
+                    // A timeout or unrelated message update must never reveal
+                    // the original while translation is enabled.
                     final shouldNotifyTranslationUpdate =
-                        hasAnyTranslation ||
-                        decryptedTranslation != null ||
-                        !isPendingTranslation;
+                        !isTranslationEnabled || translationReady;
                     if (!shouldNotifyTranslationUpdate) {
                       return;
                     }
                     // Remove from pending set when notification fires
                     _pendingTranslatedNotificationMessageIds.remove(messageId);
+                    _pendingTranslationTimeoutTimers
+                        .remove(messageId)
+                        ?.cancel();
                   }
 
                   final sourceLanguage =
@@ -1547,7 +1663,17 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                       translatedText != 'null';
 
                   String? displayContent;
-                  if (isTranslationEnabled &&
+                  final previewsEnabled = ref
+                      .read(userPreferencesProvider)
+                      .notifications
+                      .messagePreviews;
+                  if (!previewsEnabled) {
+                    // Message previews disabled: mask the tray body with a
+                    // generic string instead of suppressing the notification.
+                    displayContent = ref
+                        .read(localizationProvider)
+                        .getString('pushNewMessageBodyFallback');
+                  } else if (isTranslationEnabled &&
                       sourceLanguage != null &&
                       sourceLanguage.isNotEmpty) {
                     final sourceLang = normalizeLanguageCode(sourceLanguage);
@@ -1562,10 +1688,10 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                           : null;
                     }
                   } else if (isTranslationEnabled) {
-                    // No source language info → show translation if available, else original
+                    // Unknown source language is not a displayable fallback.
                     displayContent = hasValidTranslation
                         ? translatedText
-                        : (decryptedContent ?? originalContent);
+                        : null;
                   } else {
                     // Translation disabled → show original
                     displayContent = decryptedContent ?? originalContent;
@@ -1678,8 +1804,9 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                         matchId: matchId,
                       );
                     });
-                  } else if (Platform.isIOS) {
-                    // On iOS, use iOS notification service
+                  } else if (Platform.isIOS || Platform.isWindows) {
+                    // iOS and Windows both use the flutter_local_notifications
+                    // service (Windows toasts via flutter_local_notifications_windows).
                     final iosTime = DateTime.now();
                     final iosTimestamp =
                         '${iosTime.hour.toString().padLeft(2, '0')}:${iosTime.minute.toString().padLeft(2, '0')}:${iosTime.second.toString().padLeft(2, '0')}.${(iosTime.millisecond ~/ 10).toString().padLeft(2, '0')}';
@@ -1691,6 +1818,7 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                       senderName: senderName,
                       messageContent: displayContent,
                       matchId: matchId,
+                      messageId: messageId,
                     );
                   }
                   _notifiedMessageIds.add(messageId);
@@ -1711,118 +1839,115 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
   // The 200ms delay is sufficient to let ChatKeyProvider complete without
   // causing noticeable message delays.
   Future<void> subscribeChatMessagesChannel() async {
-      final initialDelay = await (() async {
-        try {
-          return await appConfigService.getDuration(
-            'ui.home_initial_delay_ms',
-            defaultValue: const Duration(milliseconds: 200),
-          );
-        } catch (e) {
-          return const Duration(milliseconds: 200);
-        }
-      })();
-      Future<void>.delayed(initialDelay, () {
-        if (!ref.mounted) return;
-        chatUpdateChannel!.subscribe((status, err) {
-          if (status == RealtimeSubscribeStatus.subscribed) {
-            debugPrint('✅ Chat messages subscription active');
-            chatMessagesReconnectAttempts =
-                0; // Reset counter on successful connection
-            _lastChannelSubscribedAt['chat_messages_$userId'] = DateTime.now();
-          } else if (status == RealtimeSubscribeStatus.closed ||
-              status == RealtimeSubscribeStatus.channelError ||
-              status == RealtimeSubscribeStatus.timedOut) {
-            if (err != null && !isExpectedOfflineFailure(err)) {
-              debugPrint(
-                '⚠️ Chat messages subscription disconnected - status: $status, error: $err',
-              );
-            }
-
-
-            // Prevent reconnect loop if app is in background
-            if (WidgetsBinding.instance.lifecycleState ==
-                    AppLifecycleState.paused ||
-                WidgetsBinding.instance.lifecycleState ==
-                    AppLifecycleState.detached) {
-              debugPrint('⏸️ App in background, skipping auto-reconnect');
-              return;
-            }
-
-            // Skip reconnection if Supabase communication is paused (offline mode)
-            // Use debugPrint to suppress repeated log spam during rebuilds
-            if (shouldSkipSupabaseCalls()) {
-              debugPrint(
-                '⏸️ Supabase communication paused, skipping chat messages reconnection',
-              );
-              return;
-            }
-
-            // Limit reconnection attempts to prevent infinite loops
-            if (chatMessagesReconnectAttempts >= maxReconnectAttempts) {
-              debugPrint(
-                '🔄 Chat messages reconnection attempts exhausted ($maxReconnectAttempts), stopping auto-reconnect',
-              );
-              return;
-            }
-
-            // Cold-start guard: if this channel was subscribed less than 30s ago,
-            // the close is likely a WebSocket reconnect cycle (cold-start
-            // close-storm), not a real disconnect. Skip recovery to avoid
-            // redundant syncChatsNow calls during startup. On web the close-storm
-            // can last 5-10s; on Android it can be faster but repeat. 30s covers
-            // both platforms.
-            final lastSubscribed =
-                _lastChannelSubscribedAt['chat_messages_$userId'];
-            if (lastSubscribed != null &&
-                DateTime.now().difference(lastSubscribed) <
-                    const Duration(seconds: 30)) {
-              debugPrint(
-                '⏸️ Chat messages reconnection skipped: cold-start close-storm (subscribed ${DateTime.now().difference(lastSubscribed).inMilliseconds}ms ago)',
-              );
-              return;
-            }
-
-            // Coalesce close-storms: the realtime websocket commonly cycles
-            // through 2-3 close/subscribed transitions in the first few
-            // seconds of a cold start (one per table we subscribe to). Without
-            // this, each transition would schedule its own syncChatsNow and
-            // the UI would see three redundant round-trips. We keep the
-            // log + counter increment so the operator still sees that a
-            // close happened, but only fire the heavy recovery RPC once
-            // per 8 s window.
-            final recoveryWindow = _lastRealtimeRecoveryAt[userId];
-            if (recoveryWindow != null &&
-                DateTime.now().difference(recoveryWindow) <
-                    const Duration(seconds: 8)) {
-              debugPrint(
-                '⏸️ Chat messages reconnection skipped: recovery already in flight',
-              );
-              return;
-            }
-            _lastRealtimeRecoveryAt[userId] = DateTime.now();
-
-            // Skip if provider was disposed during the close event processing
-            if (!ref.mounted) return;
-
-            chatMessagesReconnectAttempts++;
-            final delay = _jitteredBackoff(chatMessagesReconnectAttempts);
+    final initialDelay = await (() async {
+      try {
+        return await appConfigService.getDuration(
+          'ui.home_initial_delay_ms',
+          defaultValue: const Duration(milliseconds: 200),
+        );
+      } catch (e) {
+        return const Duration(milliseconds: 200);
+      }
+    })();
+    Future<void>.delayed(initialDelay, () {
+      if (!ref.mounted) return;
+      chatUpdateChannel!.subscribe((status, err) {
+        if (status == RealtimeSubscribeStatus.subscribed) {
+          debugPrint('✅ Chat messages subscription active');
+          chatMessagesReconnectAttempts =
+              0; // Reset counter on successful connection
+          _lastChannelSubscribedAt['chat_messages_$userId'] = DateTime.now();
+        } else if (status == RealtimeSubscribeStatus.closed ||
+            status == RealtimeSubscribeStatus.channelError ||
+            status == RealtimeSubscribeStatus.timedOut) {
+          if (err != null && !isExpectedOfflineFailure(err)) {
             debugPrint(
-              '🔄 Attempting to reconnect chat messages subscription (attempt $chatMessagesReconnectAttempts/$maxReconnectAttempts, delay=${delay.inMilliseconds}ms)...',
+              '⚠️ Chat messages subscription disconnected - status: $status, error: $err',
             );
-
-            Future.delayed(delay, () async {
-              if (!ref.mounted) return;
-              try {
-                await syncService.syncChatsNow(userId);
-              } catch (e) {
-                debugPrint(
-                  '🔄 Reconnect recovery for chat messages failed: $e',
-                );
-              }
-            });
           }
-        });
+
+          // Prevent reconnect loop if app is in background
+          if (WidgetsBinding.instance.lifecycleState ==
+                  AppLifecycleState.paused ||
+              WidgetsBinding.instance.lifecycleState ==
+                  AppLifecycleState.detached) {
+            debugPrint('⏸️ App in background, skipping auto-reconnect');
+            return;
+          }
+
+          // Skip reconnection if Supabase communication is paused (offline mode)
+          // Use debugPrint to suppress repeated log spam during rebuilds
+          if (shouldSkipSupabaseCalls()) {
+            debugPrint(
+              '⏸️ Supabase communication paused, skipping chat messages reconnection',
+            );
+            return;
+          }
+
+          // Limit reconnection attempts to prevent infinite loops
+          if (chatMessagesReconnectAttempts >= maxReconnectAttempts) {
+            debugPrint(
+              '🔄 Chat messages reconnection attempts exhausted ($maxReconnectAttempts), stopping auto-reconnect',
+            );
+            return;
+          }
+
+          // Cold-start guard: if this channel was subscribed less than 30s ago,
+          // the close is likely a WebSocket reconnect cycle (cold-start
+          // close-storm), not a real disconnect. Skip recovery to avoid
+          // redundant syncChatsNow calls during startup. On web the close-storm
+          // can last 5-10s; on Android it can be faster but repeat. 30s covers
+          // both platforms.
+          final lastSubscribed =
+              _lastChannelSubscribedAt['chat_messages_$userId'];
+          if (lastSubscribed != null &&
+              DateTime.now().difference(lastSubscribed) <
+                  const Duration(seconds: 30)) {
+            debugPrint(
+              '⏸️ Chat messages reconnection skipped: cold-start close-storm (subscribed ${DateTime.now().difference(lastSubscribed).inMilliseconds}ms ago)',
+            );
+            return;
+          }
+
+          // Coalesce close-storms: the realtime websocket commonly cycles
+          // through 2-3 close/subscribed transitions in the first few
+          // seconds of a cold start (one per table we subscribe to). Without
+          // this, each transition would schedule its own syncChatsNow and
+          // the UI would see three redundant round-trips. We keep the
+          // log + counter increment so the operator still sees that a
+          // close happened, but only fire the heavy recovery RPC once
+          // per 8 s window.
+          final recoveryWindow = _lastRealtimeRecoveryAt[userId];
+          if (recoveryWindow != null &&
+              DateTime.now().difference(recoveryWindow) <
+                  const Duration(seconds: 8)) {
+            debugPrint(
+              '⏸️ Chat messages reconnection skipped: recovery already in flight',
+            );
+            return;
+          }
+          _lastRealtimeRecoveryAt[userId] = DateTime.now();
+
+          // Skip if provider was disposed during the close event processing
+          if (!ref.mounted) return;
+
+          chatMessagesReconnectAttempts++;
+          final delay = _jitteredBackoff(chatMessagesReconnectAttempts);
+          debugPrint(
+            '🔄 Attempting to reconnect chat messages subscription (attempt $chatMessagesReconnectAttempts/$maxReconnectAttempts, delay=${delay.inMilliseconds}ms)...',
+          );
+
+          Future.delayed(delay, () async {
+            if (!ref.mounted) return;
+            try {
+              await syncService.syncChatsNow(userId);
+            } catch (e) {
+              debugPrint('🔄 Reconnect recovery for chat messages failed: $e');
+            }
+          });
+        }
       });
+    });
   }
 
   if (!isOffline) {
@@ -1871,104 +1996,103 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
 
   // Defer subscribe to past first frame (reduced to 200ms for near-instant updates)
   Future<void> subscribeMatchesChannel() async {
-      final initialDelay = await (() async {
-        try {
-          return await appConfigService.getDuration(
-            'ui.home_initial_delay_ms',
-            defaultValue: const Duration(milliseconds: 200),
-          );
-        } catch (e) {
-          return const Duration(milliseconds: 200);
-        }
-      })();
-      Future<void>.delayed(initialDelay, () {
-        if (!ref.mounted) return;
-        matchUpdateChannel!.subscribe((status, err) {
-          if (status == RealtimeSubscribeStatus.subscribed) {
-            debugPrint('✅ Matches subscription active');
-            matchesReconnectAttempts =
-                0; // Reset counter on successful connection
-            _lastChannelSubscribedAt['matches_$userId'] = DateTime.now();
-          } else if (status == RealtimeSubscribeStatus.closed ||
-              status == RealtimeSubscribeStatus.channelError ||
-              status == RealtimeSubscribeStatus.timedOut) {
-            if (err != null && !isExpectedOfflineFailure(err)) {
-              debugPrint(
-                '⚠️ Matches subscription disconnected - status: $status, error: $err',
-              );
-            }
-
-
-            // Prevent reconnect loop if app is in background
-            if (WidgetsBinding.instance.lifecycleState ==
-                    AppLifecycleState.paused ||
-                WidgetsBinding.instance.lifecycleState ==
-                    AppLifecycleState.detached) {
-              debugPrint('⏸️ App in background, skipping auto-reconnect');
-              return;
-            }
-
-            // Skip reconnection if Supabase communication is paused (offline mode)
-            // Use debugPrint to suppress repeated log spam during rebuilds
-            if (shouldSkipSupabaseCalls()) {
-              debugPrint(
-                '⏸️ Supabase communication paused, skipping matches reconnection',
-              );
-              return;
-            }
-
-            // Limit reconnection attempts to prevent infinite loops
-            if (matchesReconnectAttempts >= maxReconnectAttempts) {
-              debugPrint(
-                '🔄 Matches reconnection attempts exhausted ($maxReconnectAttempts), stopping auto-reconnect',
-              );
-              return;
-            }
-
-            // Cold-start guard: see comment in chat-messages handler (30s window).
-            final lastSubscribed = _lastChannelSubscribedAt['matches_$userId'];
-            if (lastSubscribed != null &&
-                DateTime.now().difference(lastSubscribed) <
-                    const Duration(seconds: 30)) {
-              debugPrint(
-                '⏸️ Matches reconnection skipped: cold-start close-storm (subscribed ${DateTime.now().difference(lastSubscribed).inMilliseconds}ms ago)',
-              );
-              return;
-            }
-
-            // Coalesce close-storms: see comment in chat-messages handler.
-            final recoveryWindow = _lastRealtimeRecoveryAt[userId];
-            if (recoveryWindow != null &&
-                DateTime.now().difference(recoveryWindow) <
-                    const Duration(seconds: 8)) {
-              debugPrint(
-                '⏸️ Matches reconnection skipped: recovery already in flight',
-              );
-              return;
-            }
-            _lastRealtimeRecoveryAt[userId] = DateTime.now();
-
-            // Skip if provider was disposed during the close event processing
-            if (!ref.mounted) return;
-
-            matchesReconnectAttempts++;
-            final delay = _jitteredBackoff(matchesReconnectAttempts);
+    final initialDelay = await (() async {
+      try {
+        return await appConfigService.getDuration(
+          'ui.home_initial_delay_ms',
+          defaultValue: const Duration(milliseconds: 200),
+        );
+      } catch (e) {
+        return const Duration(milliseconds: 200);
+      }
+    })();
+    Future<void>.delayed(initialDelay, () {
+      if (!ref.mounted) return;
+      matchUpdateChannel!.subscribe((status, err) {
+        if (status == RealtimeSubscribeStatus.subscribed) {
+          debugPrint('✅ Matches subscription active');
+          matchesReconnectAttempts =
+              0; // Reset counter on successful connection
+          _lastChannelSubscribedAt['matches_$userId'] = DateTime.now();
+        } else if (status == RealtimeSubscribeStatus.closed ||
+            status == RealtimeSubscribeStatus.channelError ||
+            status == RealtimeSubscribeStatus.timedOut) {
+          if (err != null && !isExpectedOfflineFailure(err)) {
             debugPrint(
-              '🔄 Attempting to reconnect matches subscription (attempt $matchesReconnectAttempts/$maxReconnectAttempts, delay=${delay.inMilliseconds}ms)...',
+              '⚠️ Matches subscription disconnected - status: $status, error: $err',
             );
-
-            Future.delayed(delay, () async {
-              if (!ref.mounted) return;
-              try {
-                await syncService.syncChatsNow(userId);
-                await syncService.syncMatchesNow(userId);
-              } catch (e) {
-                debugPrint('🔄 Reconnect recovery for matches failed: $e');
-              }
-            });
           }
-        });
+
+          // Prevent reconnect loop if app is in background
+          if (WidgetsBinding.instance.lifecycleState ==
+                  AppLifecycleState.paused ||
+              WidgetsBinding.instance.lifecycleState ==
+                  AppLifecycleState.detached) {
+            debugPrint('⏸️ App in background, skipping auto-reconnect');
+            return;
+          }
+
+          // Skip reconnection if Supabase communication is paused (offline mode)
+          // Use debugPrint to suppress repeated log spam during rebuilds
+          if (shouldSkipSupabaseCalls()) {
+            debugPrint(
+              '⏸️ Supabase communication paused, skipping matches reconnection',
+            );
+            return;
+          }
+
+          // Limit reconnection attempts to prevent infinite loops
+          if (matchesReconnectAttempts >= maxReconnectAttempts) {
+            debugPrint(
+              '🔄 Matches reconnection attempts exhausted ($maxReconnectAttempts), stopping auto-reconnect',
+            );
+            return;
+          }
+
+          // Cold-start guard: see comment in chat-messages handler (30s window).
+          final lastSubscribed = _lastChannelSubscribedAt['matches_$userId'];
+          if (lastSubscribed != null &&
+              DateTime.now().difference(lastSubscribed) <
+                  const Duration(seconds: 30)) {
+            debugPrint(
+              '⏸️ Matches reconnection skipped: cold-start close-storm (subscribed ${DateTime.now().difference(lastSubscribed).inMilliseconds}ms ago)',
+            );
+            return;
+          }
+
+          // Coalesce close-storms: see comment in chat-messages handler.
+          final recoveryWindow = _lastRealtimeRecoveryAt[userId];
+          if (recoveryWindow != null &&
+              DateTime.now().difference(recoveryWindow) <
+                  const Duration(seconds: 8)) {
+            debugPrint(
+              '⏸️ Matches reconnection skipped: recovery already in flight',
+            );
+            return;
+          }
+          _lastRealtimeRecoveryAt[userId] = DateTime.now();
+
+          // Skip if provider was disposed during the close event processing
+          if (!ref.mounted) return;
+
+          matchesReconnectAttempts++;
+          final delay = _jitteredBackoff(matchesReconnectAttempts);
+          debugPrint(
+            '🔄 Attempting to reconnect matches subscription (attempt $matchesReconnectAttempts/$maxReconnectAttempts, delay=${delay.inMilliseconds}ms)...',
+          );
+
+          Future.delayed(delay, () async {
+            if (!ref.mounted) return;
+            try {
+              await syncService.syncChatsNow(userId);
+              await syncService.syncMatchesNow(userId);
+            } catch (e) {
+              debugPrint('🔄 Reconnect recovery for matches failed: $e');
+            }
+          });
+        }
       });
+    });
   }
 
   if (!isOffline) {
@@ -2059,15 +2183,20 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
             // already matches, so the echo of this device's own archive
             // write is skipped.
             final archivedRaw = newRecord['archived_at'];
-            final remoteArchived = archivedRaw != null &&
+            final remoteArchived =
+                archivedRaw != null &&
                 archivedRaw.toString().isNotEmpty &&
                 archivedRaw.toString() != 'null';
             try {
               final localDb = ref.read(localDbProvider);
-              final cachedArchived =
-                  await localDb.isChatCachedArchived(userId, matchId);
+              final cachedArchived = await localDb.isChatCachedArchived(
+                userId,
+                matchId,
+              );
               if (cachedArchived != remoteArchived) {
-                await localDb.setChatsArchived(userId, {matchId}, remoteArchived);
+                await localDb.setChatsArchived(userId, {
+                  matchId,
+                }, remoteArchived);
               }
             } catch (e) {
               debugPrint('Error syncing chat archive update from realtime: $e');
@@ -2080,20 +2209,24 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
 
             final newEnabled = newRecord['translation_enabled'] == true;
             final newLanguage = newRecord['translation_language'] as String?;
-            // Compare the incoming state with the current in-memory state
-            // (not with payload.oldRecord). REPLICA IDENTITY on public.chats
-            // may be DEFAULT on some installations, in which case oldRecord
-            // only contains the composite PK and a column-by-column old/new
-            // comparison would silently no-op the "disable translation" case
-            // (new=(false, null) vs old=(false, null)). The server is the
-            // source of truth, so the new value is always correct; comparing
-            // to local state is enough to skip the echo of our own write.
+            // The incoming target is compared against the in-memory state
+            // inside `applyRemoteTranslationUpdate` (not against
+            // payload.oldRecord, which only contains the composite PK when
+            // REPLICA IDENTITY is DEFAULT and would silently no-op the
+            // "disable translation" case). That comparison also drops events
+            // older than one already processed; the raw payload used to be
+            // treated as unconditionally authoritative, which let a delayed
+            // echo revert a newer local toggle.
             final newTarget = (newEnabled && newLanguage != null)
                 ? newLanguage
                 : null;
-            final currentState = ref.read(translationProvider);
-            if (currentState[matchId] == newTarget) {
-              return;
+            // Keep feeding matching echoes to the notifier: the equality
+            // check there advances the per-match event watermark, so a
+            // delayed older event that arrives afterwards is ignored.
+            DateTime? remoteUpdatedAt;
+            final updatedRaw = newRecord['updated_at'];
+            if (updatedRaw != null) {
+              remoteUpdatedAt = DateTime.tryParse(updatedRaw.toString());
             }
 
             try {
@@ -2119,7 +2252,11 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
               //    update until the chat was exited and re-entered.
               await ref
                   .read(translationProvider.notifier)
-                  .applyRemoteTranslationUpdate(matchId, newTarget);
+                  .applyRemoteTranslationUpdate(
+                    matchId,
+                    newTarget,
+                    updatedAt: remoteUpdatedAt,
+                  );
             } catch (e) {
               debugPrint(
                 'Error syncing chat translation update from realtime: $e',
@@ -2131,131 +2268,129 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
 
   // Defer subscribe to past first frame (reduced to 200ms for near-instant updates)
   Future<void> subscribeChatsChannel() async {
-      final initialDelay = await (() async {
-        try {
-          return await appConfigService.getDuration(
-            'ui.home_initial_delay_ms',
-            defaultValue: const Duration(milliseconds: 200),
-          );
-        } catch (e) {
-          return const Duration(milliseconds: 200);
-        }
-      })();
-      Future<void>.delayed(initialDelay, () {
-        if (!ref.mounted) return;
-        chatsUpdateChannel!.subscribe((status, err) {
-          if (status == RealtimeSubscribeStatus.subscribed) {
-            debugPrint('✅ Chats subscription active');
-            chatsReconnectAttempts =
-                0; // Reset counter on successful connection
-            final now = DateTime.now();
-            final prevSubscribed = _lastChannelSubscribedAt['chats_$userId'];
-            _lastChannelSubscribedAt['chats_$userId'] = now;
-            // Cold-start guard: if this channel was subscribed very recently,
-            // we're in a close-storm reconnection cycle. The initial sync
-            // (_initialSyncKickedAt) already handles startup data sync, so
-            // skip redundant syncChatsNow calls from re-subscriptions.
-            // Uses 30s window to cover both web (5-10s close-storm) and
-            // Android (faster reconnection cycles).
-            if (prevSubscribed != null &&
-                now.difference(prevSubscribed) < const Duration(seconds: 30)) {
-              debugPrint(
-                '⏸️ Chats re-subscribed during cold start (${now.difference(prevSubscribed).inMilliseconds}ms since last), skipping sync',
-              );
-            } else if (_lastRealtimeRecoveryAt[userId] != null &&
-                now.difference(_lastRealtimeRecoveryAt[userId]!) <
-                    const Duration(seconds: 8)) {
-              // Another channel's recovery handler already triggered syncChatsNow
-              // during this recovery window — skip to avoid redundant round-trips.
-              debugPrint(
-                '⏸️ Chats subscribe: recovery sync already in flight, skipping',
-              );
-            } else {
-              // Sync on subscribe to catch any missed deletions and ensure
-              // local storage is aligned with the server state. Use non-force
-              // so the debounce/cooldown can merge this with other pending syncs
-              // (e.g. the initial sync kicked off by _initialSyncKickedAt).
-              unawaited(syncService.syncChatsNow(userId));
-            }
-          } else if (status == RealtimeSubscribeStatus.closed ||
-              status == RealtimeSubscribeStatus.channelError ||
-              status == RealtimeSubscribeStatus.timedOut) {
-            if (err != null && !isExpectedOfflineFailure(err)) {
-              debugPrint(
-                '⚠️ Chats subscription disconnected - status: $status, error: $err',
-              );
-            }
-
-
-            // Prevent reconnect loop if app is in background
-            if (WidgetsBinding.instance.lifecycleState ==
-                    AppLifecycleState.paused ||
-                WidgetsBinding.instance.lifecycleState ==
-                    AppLifecycleState.detached) {
-              debugPrint('⏸️ App in background, skipping auto-reconnect');
-              return;
-            }
-
-            // Skip reconnection if Supabase communication is paused (offline mode)
-            // Use debugPrint to suppress repeated log spam during rebuilds
-            if (shouldSkipSupabaseCalls()) {
-              debugPrint(
-                '⏸️ Supabase communication paused, skipping chats reconnection',
-              );
-              return;
-            }
-
-            // Limit reconnection attempts to prevent infinite loops
-            if (chatsReconnectAttempts >= maxReconnectAttempts) {
-              debugPrint(
-                '🔄 Chats reconnection attempts exhausted ($maxReconnectAttempts), stopping auto-reconnect',
-              );
-              return;
-            }
-
-            // Cold-start guard: see comment in chat-messages handler (30s window).
-            final lastSubscribed = _lastChannelSubscribedAt['chats_$userId'];
-            if (lastSubscribed != null &&
-                DateTime.now().difference(lastSubscribed) <
-                    const Duration(seconds: 30)) {
-              debugPrint(
-                '⏸️ Chats reconnection skipped: cold-start close-storm (subscribed ${DateTime.now().difference(lastSubscribed).inMilliseconds}ms ago)',
-              );
-              return;
-            }
-
-            // Coalesce close-storms: see comment in chat-messages handler.
-            final recoveryWindow = _lastRealtimeRecoveryAt[userId];
-            if (recoveryWindow != null &&
-                DateTime.now().difference(recoveryWindow) <
-                    const Duration(seconds: 8)) {
-              debugPrint(
-                '⏸️ Chats reconnection skipped: recovery already in flight',
-              );
-              return;
-            }
-            _lastRealtimeRecoveryAt[userId] = DateTime.now();
-
-            // Skip if provider was disposed during the close event processing
-            if (!ref.mounted) return;
-
-            chatsReconnectAttempts++;
-            final delay = _jitteredBackoff(chatsReconnectAttempts);
+    final initialDelay = await (() async {
+      try {
+        return await appConfigService.getDuration(
+          'ui.home_initial_delay_ms',
+          defaultValue: const Duration(milliseconds: 200),
+        );
+      } catch (e) {
+        return const Duration(milliseconds: 200);
+      }
+    })();
+    Future<void>.delayed(initialDelay, () {
+      if (!ref.mounted) return;
+      chatsUpdateChannel!.subscribe((status, err) {
+        if (status == RealtimeSubscribeStatus.subscribed) {
+          debugPrint('✅ Chats subscription active');
+          chatsReconnectAttempts = 0; // Reset counter on successful connection
+          final now = DateTime.now();
+          final prevSubscribed = _lastChannelSubscribedAt['chats_$userId'];
+          _lastChannelSubscribedAt['chats_$userId'] = now;
+          // Cold-start guard: if this channel was subscribed very recently,
+          // we're in a close-storm reconnection cycle. The initial sync
+          // (_initialSyncKickedAt) already handles startup data sync, so
+          // skip redundant syncChatsNow calls from re-subscriptions.
+          // Uses 30s window to cover both web (5-10s close-storm) and
+          // Android (faster reconnection cycles).
+          if (prevSubscribed != null &&
+              now.difference(prevSubscribed) < const Duration(seconds: 30)) {
             debugPrint(
-              '🔄 Attempting to reconnect chats subscription (attempt $chatsReconnectAttempts/$maxReconnectAttempts, delay=${delay.inMilliseconds}ms)...',
+              '⏸️ Chats re-subscribed during cold start (${now.difference(prevSubscribed).inMilliseconds}ms since last), skipping sync',
             );
-
-            Future.delayed(delay, () async {
-              if (!ref.mounted) return;
-              try {
-                await syncService.syncChatsNow(userId);
-              } catch (e) {
-                debugPrint('🔄 Reconnect recovery for chats failed: $e');
-              }
-            });
+          } else if (_lastRealtimeRecoveryAt[userId] != null &&
+              now.difference(_lastRealtimeRecoveryAt[userId]!) <
+                  const Duration(seconds: 8)) {
+            // Another channel's recovery handler already triggered syncChatsNow
+            // during this recovery window — skip to avoid redundant round-trips.
+            debugPrint(
+              '⏸️ Chats subscribe: recovery sync already in flight, skipping',
+            );
+          } else {
+            // Sync on subscribe to catch any missed deletions and ensure
+            // local storage is aligned with the server state. Use non-force
+            // so the debounce/cooldown can merge this with other pending syncs
+            // (e.g. the initial sync kicked off by _initialSyncKickedAt).
+            unawaited(syncService.syncChatsNow(userId));
           }
-        });
+        } else if (status == RealtimeSubscribeStatus.closed ||
+            status == RealtimeSubscribeStatus.channelError ||
+            status == RealtimeSubscribeStatus.timedOut) {
+          if (err != null && !isExpectedOfflineFailure(err)) {
+            debugPrint(
+              '⚠️ Chats subscription disconnected - status: $status, error: $err',
+            );
+          }
+
+          // Prevent reconnect loop if app is in background
+          if (WidgetsBinding.instance.lifecycleState ==
+                  AppLifecycleState.paused ||
+              WidgetsBinding.instance.lifecycleState ==
+                  AppLifecycleState.detached) {
+            debugPrint('⏸️ App in background, skipping auto-reconnect');
+            return;
+          }
+
+          // Skip reconnection if Supabase communication is paused (offline mode)
+          // Use debugPrint to suppress repeated log spam during rebuilds
+          if (shouldSkipSupabaseCalls()) {
+            debugPrint(
+              '⏸️ Supabase communication paused, skipping chats reconnection',
+            );
+            return;
+          }
+
+          // Limit reconnection attempts to prevent infinite loops
+          if (chatsReconnectAttempts >= maxReconnectAttempts) {
+            debugPrint(
+              '🔄 Chats reconnection attempts exhausted ($maxReconnectAttempts), stopping auto-reconnect',
+            );
+            return;
+          }
+
+          // Cold-start guard: see comment in chat-messages handler (30s window).
+          final lastSubscribed = _lastChannelSubscribedAt['chats_$userId'];
+          if (lastSubscribed != null &&
+              DateTime.now().difference(lastSubscribed) <
+                  const Duration(seconds: 30)) {
+            debugPrint(
+              '⏸️ Chats reconnection skipped: cold-start close-storm (subscribed ${DateTime.now().difference(lastSubscribed).inMilliseconds}ms ago)',
+            );
+            return;
+          }
+
+          // Coalesce close-storms: see comment in chat-messages handler.
+          final recoveryWindow = _lastRealtimeRecoveryAt[userId];
+          if (recoveryWindow != null &&
+              DateTime.now().difference(recoveryWindow) <
+                  const Duration(seconds: 8)) {
+            debugPrint(
+              '⏸️ Chats reconnection skipped: recovery already in flight',
+            );
+            return;
+          }
+          _lastRealtimeRecoveryAt[userId] = DateTime.now();
+
+          // Skip if provider was disposed during the close event processing
+          if (!ref.mounted) return;
+
+          chatsReconnectAttempts++;
+          final delay = _jitteredBackoff(chatsReconnectAttempts);
+          debugPrint(
+            '🔄 Attempting to reconnect chats subscription (attempt $chatsReconnectAttempts/$maxReconnectAttempts, delay=${delay.inMilliseconds}ms)...',
+          );
+
+          Future.delayed(delay, () async {
+            if (!ref.mounted) return;
+            try {
+              await syncService.syncChatsNow(userId);
+            } catch (e) {
+              debugPrint('🔄 Reconnect recovery for chats failed: $e');
+            }
+          });
+        }
       });
+    });
   }
 
   if (!isOffline) {
@@ -2274,12 +2409,15 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
   }
 
   ref.onDispose(() {
-    SupabaseRealtimeManager.instance
-        .unregister('public:chat_messages:for_user_$userId');
-    SupabaseRealtimeManager.instance
-        .unregister('public:matches:for_user_$userId');
-    SupabaseRealtimeManager.instance
-        .unregister('public:chats:for_user_$userId');
+    SupabaseRealtimeManager.instance.unregister(
+      'public:chat_messages:for_user_$userId',
+    );
+    SupabaseRealtimeManager.instance.unregister(
+      'public:matches:for_user_$userId',
+    );
+    SupabaseRealtimeManager.instance.unregister(
+      'public:chats:for_user_$userId',
+    );
     final chatMessagesCh = chatUpdateChannel;
     if (chatMessagesCh != null) supabase.removeChannel(chatMessagesCh);
     final matchesCh = matchUpdateChannel;
@@ -2499,9 +2637,6 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                 }
               }
 
-              final hasAnyTranslation =
-                  hasEncryptedTranslation || decryptedTranslation != null;
-
               final isPendingTranslatedNotification =
                   lastMessageId != null &&
                   _pendingTranslatedNotificationMessageIds.contains(
@@ -2509,7 +2644,7 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                   );
               final shouldProcessNotification =
                   unreadCount > previousUnread ||
-                  (isPendingTranslatedNotification && hasAnyTranslation);
+                  isPendingTranslatedNotification;
 
               if (shouldProcessNotification) {
                 // Guard against phantom notifications for old, already-read
@@ -2604,23 +2739,32 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                     } catch (_) {}
                   }
 
-                  final shouldWaitForTranslation =
-                      translationEnabled &&
-                      !hasAnyTranslation &&
-                      (detectedSourceLang == null ||
-                          detectedSourceLang != uiLang);
-
-                  // Only suppress if the message is still in the pending set
-                  // (i.e., the translation timeout hasn't fired yet). If the
-                  // timeout has already removed it, show the notification with
-                  // whatever content is available.
-                  if (shouldWaitForTranslation &&
-                      lastMessageId != null &&
-                      lastMessageId.isNotEmpty &&
-                      _pendingTranslatedNotificationMessageIds.contains(
+                  final translatedText = encryptionScheme == 'v1'
+                      ? decryptedTranslation
+                      : (serverTranslatedContent ?? decryptedTranslation);
+                  final hasValidTranslation =
+                      translatedText != null &&
+                      translatedText.isNotEmpty &&
+                      translatedText != 'null' &&
+                      !looksLikeEncryptedBlob(translatedText);
+                  final sourceMatchesUi =
+                      detectedSourceLang != null &&
+                      detectedSourceLang == uiLang;
+                  final translationMarkerMatches = translationEditMarkersMatch(
+                    normalizeEditMarker(
+                      json['last_message_translated_source_edited_at'],
+                    ),
+                    normalizeEditMarker(json['last_message_edited_at']),
+                  );
+                  final translationReady =
+                      (hasValidTranslation && translationMarkerMatches) ||
+                      sourceMatchesUi;
+                  if (translationEnabled && !translationReady) {
+                    if (lastMessageId != null && lastMessageId.isNotEmpty) {
+                      _pendingTranslatedNotificationMessageIds.add(
                         lastMessageId,
-                      )) {
-                    _schedulePendingTranslationTimeout(lastMessageId);
+                      );
+                    }
                     debugPrint(
                       '🔄 [SYNC FALLBACK] Waiting for translation before notifying for message $lastMessageId',
                     );
@@ -2628,15 +2772,18 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                     return chat;
                   }
 
-                  final translatedText =
-                      serverTranslatedContent ?? decryptedTranslation;
-                  final bool hasValidTranslation =
-                      translatedText != null &&
-                      translatedText.isNotEmpty &&
-                      translatedText != 'null';
-
                   final String displayContent;
-                  if (translationEnabled &&
+                  final previewsEnabled = ref
+                      .read(userPreferencesProvider)
+                      .notifications
+                      .messagePreviews;
+                  if (!previewsEnabled) {
+                    // Message previews disabled: mask the tray body with a
+                    // generic string instead of suppressing the notification.
+                    displayContent = ref
+                        .read(localizationProvider)
+                        .getString('pushNewMessageBodyFallback');
+                  } else if (translationEnabled &&
                       detectedSourceLang != null &&
                       detectedSourceLang.isNotEmpty) {
                     if (detectedSourceLang == uiLang) {
@@ -2710,15 +2857,16 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                     debugPrint(
                       '🔄 [SYNC FALLBACK] Platform: Android - notification handled by background service',
                     );
-                  } else if (Platform.isIOS) {
+                  } else if (Platform.isIOS || Platform.isWindows) {
                     debugPrint(
-                      '🔄 [SYNC FALLBACK] Platform: iOS - showing local notification',
+                      '🔄 [SYNC FALLBACK] Platform: iOS/Windows - showing local notification',
                     );
                     await MobileLocalNotificationService.showMessageNotification(
                       chatId: matchId,
                       senderName: senderName,
                       messageContent: displayContent,
                       matchId: matchId,
+                      messageId: lastMessageId,
                     );
                   }
                   if (lastMessageId != null && lastMessageId.isNotEmpty) {
@@ -3038,6 +3186,8 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                 // Keep lastMessage as original, only update lastMessageTranslated
                 return chat.copyWith(
                   lastMessageTranslated: translatedPreview,
+                  lastMessageTranslatedTargetLanguage: uiLang,
+                  lastMessageTranslatedEditedAt: chat.lastMessageEditedAt,
                   lastMessageSourceLanguage: detectedSourceLang,
                 );
               }
@@ -3219,7 +3369,15 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                 // translation arrives (never the untranslated original).
                 // The translation triggered above fills both the message
                 // cache and the chat preview when it completes.
-                return chat.copyWith(lastMessageTranslated: translatedPreview);
+                return chat.copyWith(
+                  lastMessageTranslated: translatedPreview,
+                  lastMessageTranslatedTargetLanguage: translatedPreview == null
+                      ? null
+                      : uiLang,
+                  lastMessageTranslatedEditedAt: translatedPreview == null
+                      ? null
+                      : chat.lastMessageEditedAt,
+                );
               }
 
               if (isCaseBAfterServerCheck) {
@@ -3230,6 +3388,9 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                 // The chat.lastMessage already contains the correct content from the DB
                 // Include the source language so the UI knows to display the original message
                 return chat.copyWith(
+                  lastMessageTranslated: chat.lastMessage,
+                  lastMessageTranslatedTargetLanguage: uiLang,
+                  lastMessageTranslatedEditedAt: chat.lastMessageEditedAt,
                   lastMessageSourceLanguage: detectedSourceLang,
                 );
               }
@@ -3239,6 +3400,8 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                 // Keep lastMessage as original, only update lastMessageTranslated
                 return chat.copyWith(
                   lastMessageTranslated: translatedPreview,
+                  lastMessageTranslatedTargetLanguage: uiLang,
+                  lastMessageTranslatedEditedAt: chat.lastMessageEditedAt,
                   lastMessageSourceLanguage: detectedSourceLang,
                 );
               }
@@ -3250,6 +3413,12 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                 return chat.copyWith(
                   lastMessageSourceLanguage: detectedSourceLang,
                   lastMessageTranslated: translatedPreview,
+                  lastMessageTranslatedTargetLanguage:
+                      hasTranslatedPreviewAfterServerCheck ? uiLang : null,
+                  lastMessageTranslatedEditedAt:
+                      hasTranslatedPreviewAfterServerCheck
+                      ? chat.lastMessageEditedAt
+                      : null,
                 );
               }
 
@@ -3338,7 +3507,8 @@ _fetchLiveDashboardStats(
       ((await supabase.rpc(
             'get_nearby_users_count',
             params: {'p_user_id': userId, 'p_radius_km': userRadiusKm},
-          )) as int?) ??
+          ))
+          as int?) ??
       0;
 
   return (
@@ -3355,6 +3525,14 @@ _fetchLiveDashboardStats(
 /// creation never flashes a stale number.
 final Map<String, ({Map<String, int?> stats, DateTime at})>
 _warmDashboardStatsByUser = {};
+
+/// Shared cooldown for the dashboard's connectivity-restore refresh.
+///
+/// Lives at library scope on purpose: [dashboardStatsProvider] is autoDispose,
+/// so a provider rebuild (server-event churn, tab switches during startup)
+/// discards per-instance state and every duplicate resume event from the
+/// ConnectivityRestoreCoordinator fires its own forced fetch.
+DateTime? _lastDashboardResumeStatsRefreshAt;
 
 /// Pre-fetches live dashboard stats for [userId] right after an auth event
 /// (signedIn / cold-start initialSession), before the home screen builds, so
@@ -3606,19 +3784,19 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
   }
 
   // Register callback to refresh stats when connectivity is restored.
-  // Cooldown guards against duplicate fires from the ConnectivityRestoreCoordinator
-  // (8s min interval is not enough on cold start when the FCM registerSession's
-  // setSupabaseAvailability(true) also fires a restore ~10s after the first one).
-  DateTime? lastResumeStatsRefreshAt;
+  // The cooldown (library-scoped, so it survives autoDispose rebuilds) guards
+  // against duplicate fires from the ConnectivityRestoreCoordinator: the 8s
+  // min interval is not enough on cold start, when the FCM registerSession's
+  // setSupabaseAvailability(true) also fires a restore ~10s after the first.
   final disposeResumeListener = onSupabaseResume(() async {
     if (!ref.mounted || controller.isClosed) return;
     final now = DateTime.now();
-    if (lastResumeStatsRefreshAt != null &&
-        now.difference(lastResumeStatsRefreshAt!) <
+    if (_lastDashboardResumeStatsRefreshAt != null &&
+        now.difference(_lastDashboardResumeStatsRefreshAt!) <
             const Duration(seconds: 30)) {
       return;
     }
-    lastResumeStatsRefreshAt = now;
+    _lastDashboardResumeStatsRefreshAt = now;
     debugPrint('📊 Dashboard stats: Connectivity restored, forcing refresh');
     try {
       final fresh = await fetchStats(force: true);
@@ -3686,9 +3864,8 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
       final fresh = await fetchStats(force: true);
       logDashboardStatsDecision(
         phase: 'session-registration-refresh',
-        stats: fresh ??
-            lastEmittedStats ??
-            const {'nearby': null, 'online': null},
+        stats:
+            fresh ?? lastEmittedStats ?? const {'nearby': null, 'online': null},
         reason:
             'Session registration completed and the dashboard refreshed its online/nearby snapshot.',
         source: 'session_registered_callback',
@@ -4472,7 +4649,7 @@ class MatchChatStartExpiryWarningNotifier extends Notifier<Object?> {
           );
           final schedName = (cachedName == null || cachedName.trim().isEmpty)
               ? l10n.getString('generalUnknown')
-              : firstTokenName(cachedName);
+              : maskFullName(cachedName);
           unawaited(
             ExpiryLocalScheduleService.syncMatchExpiry(
               matchId: matchId,
@@ -4507,7 +4684,8 @@ class MatchChatStartExpiryWarningNotifier extends Notifier<Object?> {
         // threshold can fire again for the new expiry window.
         // This fixes the "no notification after extend" bug.
         // (expiresAt computed above for the OS-scheduled backup alarms.)
-        final expiryKey = expiresAt.millisecondsSinceEpoch.toString();
+        final expiryMs = expiresAt.millisecondsSinceEpoch;
+        final expiryKey = expiryMs.toString();
         const templateVersion = 'match_expiry_minutes_v2';
         final sessionKey =
             '$matchId:${thresholdToSend.inSeconds}:$expiryKey:$templateVersion';
@@ -4516,8 +4694,12 @@ class MatchChatStartExpiryWarningNotifier extends Notifier<Object?> {
         _checkInFlightMatchIds.add(matchId);
 
         try {
-          final prefsKey =
-              'match_chat_start_expiry_warned_${matchId}_${thresholdToSend.inSeconds}_${expiryKey}_$templateVersion';
+          final prefsKey = ExpiryLocalScheduleService.warnPrefsKey(
+            matchId: matchId,
+            thresholdSeconds: thresholdToSend.inSeconds,
+            expiryMs: expiryMs,
+            templateVersion: templateVersion,
+          );
           final alreadyNotified = prefs.getBool(prefsKey) ?? false;
           if (alreadyNotified) {
             _notifiedThisSession.add(sessionKey);
@@ -4527,6 +4709,41 @@ class MatchChatStartExpiryWarningNotifier extends Notifier<Object?> {
           await prefs.setBool(prefsKey, true);
           _notifiedThisSession.add(sessionKey);
 
+          if (!kIsWeb) {
+            // The OS-scheduled fallback alarm for this exact threshold is
+            // superseded by whichever path surfaced this warning; remove it
+            // (pending or already posted) so it cannot add a second card.
+            unawaited(
+              ExpiryLocalScheduleService.cancelThreshold(
+                matchId: matchId,
+                thresholdSeconds: thresholdToSend.inSeconds,
+                expiryMs: expiryMs,
+              ),
+            );
+          }
+
+          if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+            final lifecycle = WidgetsBinding.instance.lifecycleState;
+            final appVisibleNow =
+                lifecycle == null ||
+                lifecycle == AppLifecycleState.resumed ||
+                lifecycle == AppLifecycleState.inactive;
+            if (!appVisibleNow) {
+              // Not visible: the server FCM card is the notification for
+              // this event (the gate above stops any later re-post).
+              // Posting the local card here stacked a second tray entry
+              // for the same threshold.
+              continue;
+            }
+            // A server card for this event drawn while backgrounded would
+            // double the card posted below; drop it (no-op when absent).
+            unawaited(
+              BackgroundService.cancelServerCard(
+                'match_expiry_${matchId}_${thresholdToSend.inSeconds}',
+              ),
+            );
+          }
+
           final otherName = await _resolveOtherUserName(
             localDb,
             match.otherUserId,
@@ -4534,7 +4751,7 @@ class MatchChatStartExpiryWarningNotifier extends Notifier<Object?> {
           final minutesLeft = max(1, (remaining.inSeconds / 60).ceil());
           final otherUserName = (otherName == null || otherName.trim().isEmpty)
               ? l10n.getString('generalUnknown')
-              : firstTokenName(otherName);
+              : maskFullName(otherName);
 
           final title = l10n.getString(
             'matchExpiryTitle',
@@ -4548,11 +4765,21 @@ class MatchChatStartExpiryWarningNotifier extends Notifier<Object?> {
             },
           );
 
+          // Same identity the server push carries for this exact warning:
+          // lets the local card replace a delivered server banner (web) or
+          // stand down in its favor (iOS preflight in the service).
+          final expiryServerTag = ExpiryLocalScheduleService.serverCardTag(
+            kind: 'match_expiry',
+            key: matchId,
+            thresholdSeconds: thresholdToSend.inSeconds,
+          );
+
           if (kIsWeb) {
             await WebNotificationService.showMatchNotification(
               matchId: matchId,
               matchName: otherUserName,
               matchPhotoUrl: '',
+              tag: expiryServerTag,
             );
           } else {
             await MobileLocalNotificationService.showMatchExpiryNotification(
@@ -4561,6 +4788,7 @@ class MatchChatStartExpiryWarningNotifier extends Notifier<Object?> {
               body: body,
               notificationKey:
                   'chat_start_expiry_${thresholdToSend.inSeconds}_${expiryKey}_$templateVersion',
+              serverTag: expiryServerTag,
             );
           }
         } catch (_) {

@@ -183,11 +183,20 @@ class NotificationInboxService {
   /// non-null deletedAt. Hard DELETEs (server-side cleanups) go to [onDelete].
   /// Returns the channel; caller owns its lifecycle (see
   /// SupabaseRealtimeManager) and should remove it when the user signs out.
+  ///
+  /// Pass [onSubscribeStatus] to observe join/replication status. A
+  /// `postgres_changes` channel can report `subscribed` and still deliver
+  /// nothing when the server-side replication setup later fails; that verdict
+  /// ONLY reaches this callback (never the row callbacks), so callers that
+  /// need a live subscription must handle it and rebuild the channel on
+  /// `channelError` / `closed` / `timedOut`.
   RealtimeChannel subscribeInbox(
     String userId,
     void Function(NotificationInboxItem item) onInsert, {
     void Function(NotificationInboxItem item)? onUpdate,
     void Function(String id)? onDelete,
+    void Function(RealtimeSubscribeStatus status, Object? error)?
+        onSubscribeStatus,
   }) {
     final channelName = 'notification_inbox_$userId';
     final channel = _client.channel(channelName);
@@ -249,7 +258,7 @@ class NotificationInboxService {
         }
       },
     );
-    channel.subscribe();
+    channel.subscribe(onSubscribeStatus);
     return channel;
   }
 }

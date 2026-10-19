@@ -1,35 +1,29 @@
--- Query to check if the correct check_unread_notifications function is applied
--- This should show the updated function that counts chats instead of messages
+-- Verification queries for the check_unread_notifications fix
+-- (migration 20262126000000_fix_check_unread_notifications_encrypted.sql).
+-- Run these in the Supabase SQL editor after applying migrations.
 
--- 1. Check the function definition
-SELECT
-    proname as function_name,
-    pg_get_function_identity_arguments(oid) as arguments,
-    obj_description(oid, 'pg_proc') as description
+-- 1. Overloads present: expect exactly ONE row, args like "uuid, uuid DEFAULT NULL".
+SELECT proname, pg_get_function_identity_arguments(oid) AS args
 FROM pg_proc
 WHERE proname = 'check_unread_notifications';
 
--- 2. Check the actual function source code (look for key indicators)
-SELECT
-    proname as function_name,
-    pg_get_functiondef(oid) as function_definition
+-- 2. Broken plaintext references still installed: expect ZERO rows.
+--    (Any row here means an old definition still references removed columns
+--     and every call raises 42703 / HTTP 400.)
+SELECT proname
 FROM pg_proc
-WHERE proname = 'check_unread_notifications';
+WHERE proname = 'check_unread_notifications'
+  AND (
+    pg_get_functiondef(oid) LIKE '%content_translated%'
+    OR pg_get_functiondef(oid) LIKE '%content_original%'
+  );
 
--- 3. Quick test: Check if the function returns the expected structure
--- This should return the column names from the function
-SELECT
-    attname as column_name,
-    atttypid::regtype as data_type
-FROM pg_attribute
-WHERE attrelid = (
-    SELECT oid FROM pg_proc WHERE proname = 'check_unread_notifications'
-)::regclass
-AND attnum > 0
-ORDER BY attnum;
+-- 3. Grants: expect authenticated + service_role (and postgres), NOT anon/PUBLIC.
+SELECT grantee, privilege_type
+FROM information_schema.routine_privileges
+WHERE routine_name = 'check_unread_notifications';
 
--- 4. Test the function with a real user ID (replace with actual user ID)
--- Look for: unread_messages_count should be number of chats, not messages
--- SELECT * FROM check_unread_notifications('your-user-id-here');
-
-
+-- 4. Live smoke test (replace with a real user id; run as that user or with
+--    the service role). Expect: no error; when unread_messages_count > 0,
+--    latest_message_content = 'Sent a message' and the translation flags NULL.
+-- SELECT * FROM check_unread_notifications('<user-uuid>'::uuid);

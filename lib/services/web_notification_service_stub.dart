@@ -26,6 +26,8 @@ class WebNotificationService {
     required String senderName,
     required String messageContent,
     required String matchId,
+    bool alreadyAggregated = false,
+    bool? shouldAlertOverride,
   }) async {
     // No-op on non-web platforms
   }
@@ -34,6 +36,7 @@ class WebNotificationService {
     required String matchId,
     required String matchName,
     required String matchPhotoUrl,
+    String? tag,
   }) async {
     // No-op on non-web platforms
   }

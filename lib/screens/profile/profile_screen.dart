@@ -14,6 +14,7 @@ import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/unit_provider.dart';
 import 'package:matchme/screens/profile/profile_wizard_screen.dart';
 import 'package:matchme/screens/profile/verification_screen.dart';
+import 'package:matchme/theme/app_theme_tokens.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/providers/new_options_provider.dart';
 import 'package:matchme/providers/main_intents_provider.dart';
@@ -959,6 +960,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                     );
               },
               child: ListView(
+                primary: true,
                 padding: const EdgeInsets.symmetric(vertical: 16.0),
                 children: [
                   // First visit: offer the profile section tour once
@@ -1136,7 +1138,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                       elevation: 0,
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
-                        side: BorderSide(color: Colors.grey.shade200),
+                        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
                       ),
                       margin: const EdgeInsets.symmetric(
                         horizontal: 16,
@@ -1153,7 +1155,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                           children: [
                             Icon(
                               Icons.person_outline_rounded,
-                              color: Colors.grey[600],
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurfaceVariant,
                               size: 20,
                             ),
                             const SizedBox(width: 12),
@@ -1213,7 +1217,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                       child: Text(
                         _t(l10n, 'profileLastNameNotDisplayed'),
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Colors.grey.shade600,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                       ),
                     );
@@ -1348,7 +1352,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                             elevation: 0,
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(12),
-                              side: BorderSide(color: Colors.grey.shade200),
+                              side: BorderSide(color: Theme.of(
+                                  context,
+                                ).colorScheme.outlineVariant),
                             ),
                             child: Padding(
                               padding: const EdgeInsets.all(12.0),
@@ -1585,7 +1591,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                             padding: const EdgeInsets.only(left: 8.0),
                             child: Text(
                               l10n.getString('profileWizardNoIntents'),
-                              style: const TextStyle(color: Colors.grey),
+                              style: TextStyle(color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant),
                             ),
                           ),
                         allIntentsAsync.when(
@@ -1788,7 +1796,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                             padding: const EdgeInsets.only(left: 8.0),
                             child: Text(
                               _t(l10n, 'profileNoInterests'),
-                              style: const TextStyle(color: Colors.grey),
+                              style: TextStyle(color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant),
                             ),
                           ),
 
@@ -2074,7 +2084,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                               padding: const EdgeInsets.only(left: 8.0),
                               child: Text(
                                 l10n.getString('profileNoInterests'),
-                                style: const TextStyle(color: Colors.grey),
+                                style: TextStyle(color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant),
                               ),
                             );
                           }
@@ -2119,8 +2131,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                     padding: const EdgeInsets.only(left: 8.0),
                                     child: Text(
                                       l10n.getString('profileNotSet'),
-                                      style: const TextStyle(
-                                        color: Colors.grey,
+                                      style: TextStyle(
+                                        color: Theme.of(
+                                          ctx,
+                                        ).colorScheme.onSurfaceVariant,
                                       ),
                                     ),
                                   );
@@ -2140,8 +2154,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                     padding: const EdgeInsets.only(left: 8.0),
                                     child: Text(
                                       l10n.getString('profileNotSet'),
-                                      style: const TextStyle(
-                                        color: Colors.grey,
+                                      style: TextStyle(
+                                        color: Theme.of(
+                                          ctx,
+                                        ).colorScheme.onSurfaceVariant,
                                       ),
                                     ),
                                   );
@@ -2169,7 +2185,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                       shape: RoundedRectangleBorder(
                                         borderRadius: BorderRadius.circular(12),
                                         side: BorderSide(
-                                          color: Colors.grey.shade200,
+                                          color: Theme.of(
+                                            ctx,
+                                          ).colorScheme.outlineVariant,
                                         ),
                                       ),
                                       margin: const EdgeInsets.only(bottom: 8),
@@ -2182,7 +2200,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                           children: [
                                             Icon(
                                               Icons.language_outlined,
-                                              color: Colors.grey[600],
+                                              color: Theme.of(
+                                                ctx,
+                                              ).colorScheme.onSurfaceVariant,
                                               size: 20,
                                             ),
                                             const SizedBox(width: 12),
@@ -2461,14 +2481,14 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
         elevation: 0,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
-          side: BorderSide(color: Colors.grey.shade200),
+          side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
         ),
         margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           child: Row(
             children: [
-              Icon(icon, color: Colors.grey[600], size: 20),
+              Icon(icon, color: Theme.of(context).colorScheme.onSurfaceVariant, size: 20),
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
@@ -2590,13 +2610,16 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade200),
+        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
       ),
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
         leading: CircleAvatar(
-          backgroundColor: iconColor.withValues(alpha: 0.1),
-          child: Icon(icon, color: iconColor),
+          backgroundColor: AppThemeTokens.accentSurface( iconColor,
+            Theme.of(context).brightness),
+          child: Icon(icon, color: AppThemeTokens.accentInk( iconColor,
+              Theme.of(context).brightness,
+            )),
         ),
         title: Text(
           label,
@@ -2604,7 +2627,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
         ),
         subtitle: Text(
           url,
-          style: TextStyle(color: Colors.blue.shade700, fontSize: 13),
+          style: TextStyle(color: AppThemeTokens.accentInk( Colors.blue.shade700,
+              Theme.of(context).brightness,
+            ), fontSize: 13),
           textDirection: ui.TextDirection.ltr,
         ),
         trailing: const Icon(Icons.open_in_new, size: 18),

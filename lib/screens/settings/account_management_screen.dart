@@ -55,7 +55,10 @@ class _AccountManagementScreenState
     required String label,
   }) {
     final theme = Theme.of(context);
-    final color = met ? Colors.green.shade700 : Colors.grey.shade600;
+    final isDarkTheme = Theme.of(context).brightness == Brightness.dark;
+    final color = met
+        ? (isDarkTheme ? Colors.green.shade300 : Colors.green.shade700)
+        : Theme.of(context).colorScheme.onSurfaceVariant;
     return Row(
       children: [
         Icon(
@@ -600,8 +603,8 @@ class _AccountManagementScreenState
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
                 ),
-                backgroundColor: Colors.red,
-                foregroundColor: Colors.white,
+                backgroundColor: Theme.of(context).colorScheme.error,
+                foregroundColor: Theme.of(context).colorScheme.onError,
               ),
               onPressed: () async {
                 final currentContext = context;

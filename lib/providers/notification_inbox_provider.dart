@@ -6,6 +6,7 @@
 // load, cleanup on sign-out, and optimistic read/delete updates.
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -58,10 +59,32 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
   bool _isSettingUpChannel = false;
   void Function()? _resumeDispose;
 
+  // Reconnect state for a dead channel (mirrors match_notification_provider).
+  // A postgres_changes channel can report `subscribed` yet deliver nothing
+  // when the server-side replication setup fails, and that verdict only
+  // reaches the subscribe status callback. Without this, the channel stays
+  // "active" in the manager forever and the inbox silently stops updating.
+  static const int _maxReconnectAttempts = 5;
+  int _reconnectAttempts = 0;
+  DateTime? _lastReconnectAt;
+  Timer? _reconnectTimer;
+
+  // Rows that arrived over realtime while a fetch was in flight. The fetch
+  // snapshot predates them, so they are merged back in after the fetch
+  // instead of being clobbered until the next manual refresh.
+  int _realtimeInsertSeq = 0;
+  final Map<String, int> _realtimeInsertedAt = <String, int>{};
+
   NotificationInboxService get _service => NotificationInboxService.instance;
 
   int _countUnread(List<NotificationInboxItem> items) =>
       items.where((n) => n.isUnread).length;
+
+  Duration _jitteredBackoff(int attempt) {
+    final base = Duration(milliseconds: (1000 * math.pow(2, attempt)).round());
+    final jitter = Duration(milliseconds: math.Random().nextInt(1000));
+    return base + jitter;
+  }
 
   Future<void> _cacheItems(List<NotificationInboxItem> items) async {
     try {
@@ -73,6 +96,8 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
 
   @override
   NotificationInboxState build() {
+    _reconnectAttempts = 0;
+    _lastReconnectAt = null;
     ref.onDispose(() {
       _resumeDispose?.call();
       _resumeDispose = null;
@@ -91,6 +116,7 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
       final authState = next.asData?.value;
       if (authState == null) return;
       if (authState.event == AuthChangeEvent.signedOut) {
+        _reconnectAttempts = 0;
         _teardownChannel();
         _userId = '';
         state = const NotificationInboxState();
@@ -144,7 +170,7 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
         return;
       }
 
-      final items = await _service.fetchNotifications();
+      final items = await _fetchLatestPage();
       if (!ref.mounted) return;
       if (supabase.auth.currentUser?.id != _userId) return;
       await _cacheItems(items);
@@ -158,6 +184,26 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
       debugPrint('NotificationInbox: initial load failed: $e');
       if (ref.mounted) state = state.copyWith(isLoading: false);
     }
+  }
+
+  /// Fetches the newest page and reconciles it with rows that arrived over
+  /// realtime while the request was in flight. Those rows are newer than the
+  /// query snapshot, so the server's page cannot contain them yet; without
+  /// the merge they would vanish from the list until the next refresh.
+  Future<List<NotificationInboxItem>> _fetchLatestPage() async {
+    final seqAtStart = _realtimeInsertSeq;
+    final page = await _service.fetchNotifications();
+    if (!ref.mounted || _realtimeInsertedAt.isEmpty) return page;
+    final fetchedIds = page.map((n) => n.id).toSet();
+    final carried = state.items
+        .where(
+          (n) =>
+              !fetchedIds.contains(n.id) &&
+              (_realtimeInsertedAt[n.id] ?? 0) > seqAtStart,
+        )
+        .toList(growable: false);
+    if (carried.isEmpty) return page;
+    return [...carried, ...page];
   }
 
   Future<void> _setupRealtime() async {
@@ -183,6 +229,7 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
           _handleInsert,
           onUpdate: _handleUpdate,
           onDelete: _handleDelete,
+          onSubscribeStatus: _handleSubscribeStatus,
         );
       });
       _channel = SupabaseRealtimeManager.instance.getChannel(channelName);
@@ -194,11 +241,83 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
   }
 
   void _teardownChannel() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
     if (_channelName.isNotEmpty) {
       SupabaseRealtimeManager.instance.unregister(_channelName);
     }
     _channel = null;
     _channelName = '';
+  }
+
+  /// Realtime channel lifecycle. On `subscribed`, run a catch-up refresh: the
+  /// server reports the join before postgres_changes replication is actually
+  /// live, so rows inserted around that handshake are never delivered. On
+  /// `channelError`/`closed`/`timedOut` the channel is dead (or can never
+  /// deliver): unregister it so the manager stops treating it as active, and
+  /// re-subscribe with backoff.
+  void _handleSubscribeStatus(RealtimeSubscribeStatus status, Object? error) {
+    if (!ref.mounted) return;
+    if (supabase.auth.currentUser?.id != _userId) return;
+
+    if (status == RealtimeSubscribeStatus.subscribed) {
+      _reconnectAttempts = 0;
+      // Catch anything inserted while the join was in flight or while the
+      // channel was down.
+      unawaited(refresh());
+      return;
+    }
+    if (status != RealtimeSubscribeStatus.channelError &&
+        status != RealtimeSubscribeStatus.closed &&
+        status != RealtimeSubscribeStatus.timedOut) {
+      return;
+    }
+
+    if (handleExpectedSupabaseOfflineFailure(error)) return;
+    if (SupabaseRealtimeManager.instance.isPaused) return;
+    // Dead refresh token / RLS rejection: hot-retrying just hammers the
+    // backend. Session refresh + the onSupabaseResume path re-subscribe.
+    if (error != null && isAuthRateLimitFailure(error)) return;
+    // Intentional teardown (sign-out, provider dispose, user switch) already
+    // removed the channel from the manager — nothing to recover.
+    if (!SupabaseRealtimeManager.instance.isActive(_channelName)) return;
+
+    debugPrint(
+      'NotificationInbox: realtime status=$status error=$error — rebuilding channel',
+    );
+    _teardownChannel();
+    _scheduleReconnect();
+  }
+
+  void _scheduleReconnect() {
+    if (!ref.mounted) return;
+    if (shouldSkipSupabaseCalls()) return;
+    if (_reconnectAttempts >= _maxReconnectAttempts) {
+      debugPrint(
+        'NotificationInbox: reconnect attempts exhausted ($_maxReconnectAttempts)',
+      );
+      return;
+    }
+    final now = DateTime.now();
+    // Coalesce bursts of status events (error + closed often arrive together).
+    if (_lastReconnectAt != null &&
+        now.difference(_lastReconnectAt!) < const Duration(seconds: 8)) {
+      return;
+    }
+    _lastReconnectAt = now;
+    _reconnectAttempts++;
+    final delay = _jitteredBackoff(_reconnectAttempts);
+    debugPrint(
+      'NotificationInbox: scheduling reconnect (attempt $_reconnectAttempts/$_maxReconnectAttempts, delay=${delay.inMilliseconds}ms)',
+    );
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(delay, () {
+      _reconnectTimer = null;
+      if (!ref.mounted) return;
+      if (supabase.auth.currentUser?.id != _userId) return;
+      if (shouldSkipSupabaseCalls()) return;
+      unawaited(_setupRealtime());
+    });
   }
 
   void _handleInsert(NotificationInboxItem item) {
@@ -211,6 +330,11 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
       unreadCount: _countUnread(items),
     );
     unawaited(_cacheItems(items));
+    _realtimeInsertedAt[item.id] = ++_realtimeInsertSeq;
+    if (_realtimeInsertedAt.length > 200) {
+      final cutoff = _realtimeInsertSeq - 100;
+      _realtimeInsertedAt.removeWhere((_, seq) => seq <= cutoff);
+    }
   }
 
   /// Cross-device reconciliation for read_at / deleted_at changes: replaces
@@ -249,7 +373,7 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
   Future<void> refresh() async {
     if (shouldSkipSupabaseCalls()) return;
     try {
-      final items = await _service.fetchNotifications();
+      final items = await _fetchLatestPage();
       if (!ref.mounted) return;
       if (supabase.auth.currentUser?.id != _userId) return;
       await _cacheItems(items);

@@ -221,14 +221,25 @@ void main() {
   });
 
   test('dark ThemeData wires text and component themes coherently', () {
+    // main.dart builds its text theme from ThemeData.light() and hands the
+    // same theme to light and dark; the dark theme must override every color.
     final theme = AppThemeTokens.darkThemeData(
-      textTheme: ThemeData.dark().textTheme,
+      textTheme: ThemeData.light().textTheme,
     );
 
-    // Body text must follow the scheme, never a hardcoded white.
+    // Body text must follow the scheme, never a hardcoded white/black.
     expect(theme.textTheme.bodyMedium?.color, AppThemeTokens.darkOnSurface);
     expect(theme.textTheme.displayLarge?.color, AppThemeTokens.darkOnSurface);
     expect(theme.scaffoldBackgroundColor, AppThemeTokens.darkSurface);
+
+    // TextField renders typed input with bodyLarge: it must not inherit the
+    // light theme's near-black text (invisible on the dark field fill).
+    expect(theme.textTheme.bodyLarge?.color, AppThemeTokens.darkOnSurface);
+    expect(theme.textTheme.titleLarge?.color, AppThemeTokens.darkOnSurface);
+    expect(theme.textTheme.headlineMedium?.color,
+        AppThemeTokens.darkOnSurface);
+    expect(theme.textTheme.headlineLarge?.color,
+        AppThemeTokens.darkOnSurface);
 
     // Component themes must exist in dark mode (they used to be light-only).
     expect(theme.cardTheme.color, AppThemeTokens.darkSurfaceContainerLow);
@@ -328,5 +339,37 @@ void main() {
     expect(theme.inputDecorationTheme.fillColor,
         AppThemeTokens.amoledSurfaceContainerLow);
     expect(theme.textTheme.bodyMedium?.color, AppThemeTokens.darkOnSurface);
+  });
+
+  testWidgets('search field input text is readable on dark input fills', (
+    tester,
+  ) async {
+    // Regression: the app passes one light-derived text theme to both themes,
+    // which made typed search text near-black on the dark field fill.
+    final themes = <ThemeData>[
+      AppThemeTokens.darkThemeData(textTheme: ThemeData.light().textTheme),
+      AppThemeTokens.amoledDarkThemeData(
+        textTheme: ThemeData.light().textTheme,
+      ),
+    ];
+
+    for (final theme in themes) {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: theme,
+          home: const Scaffold(
+            body: TextField(decoration: InputDecoration(hintText: 'Search')),
+          ),
+        ),
+      );
+
+      final editable = tester.widget<EditableText>(find.byType(EditableText));
+      expect(editable.style.color, AppThemeTokens.darkOnSurface);
+      _expectNormalTextContrast(
+        'typed search text on the input fill',
+        editable.style.color!,
+        theme.colorScheme.surfaceContainerLow,
+      );
+    }
   });
 }

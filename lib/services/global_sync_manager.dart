@@ -170,10 +170,13 @@ class GlobalHomeSyncManager {
         // caused the refresh_token_already_used storm to flap availability
         // true->false and spam every provider. Supabase reachability is the
         // only signal, so "offline" status is the whole verdict.
+        // AsyncLoading (h == null) is not evidence of an outage: this listener
+        // fires immediately on subscription, while the monitor is still
+        // probing on cold start. Treating "no verdict yet" as offline consumed
+        // one of the monitor's offline signals before it had even sampled.
+        // Only a real offline verdict may flip availability.
         final h = next.value;
-        final realOffline =
-            h == null || h.status == ConnectivityHealthStatus.offline;
-        if (realOffline) {
+        if (h?.status == ConnectivityHealthStatus.offline) {
           offlineCacheManager.setSupabaseAvailability(false);
         }
       }

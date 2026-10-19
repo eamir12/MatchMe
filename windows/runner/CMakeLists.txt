@@ -1,6 +1,39 @@
 cmake_minimum_required(VERSION 3.14)
 project(runner LANGUAGES CXX)
 
+# CppWinRT for the custom location channel (WinRT Geolocator with native timeout).
+set(CPPWINRT_VERSION "2.0.220418.1")
+include(FetchContent)
+
+find_program(NUGET nuget)
+if (NOT NUGET)
+    message("Nuget.exe not found, trying to download or use cached version.")
+    FetchContent_Declare(nuget
+      URL "https://dist.nuget.org/win-x86-commandline/v6.0.0/nuget.exe"
+      URL_HASH SHA256=04eb6c4fe4213907e2773e1be1bbbd730e9a655a3c9c58387ce8d4a714a5b9e1
+      DOWNLOAD_NO_EXTRACT true
+    )
+    FetchContent_MakeAvailable(nuget)
+    set(NUGET ${nuget_SOURCE_DIR}/nuget.exe)
+endif()
+
+execute_process(COMMAND
+    ${NUGET} install Microsoft.Windows.CppWinRT -Version ${CPPWINRT_VERSION} -OutputDirectory packages
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    RESULT_VARIABLE ret)
+if (NOT ret EQUAL 0)
+    message(FATAL_ERROR "Failed to install nuget package Microsoft.Windows.CppWinRT.${CPPWINRT_VERSION}")
+endif()
+
+set(CPPWINRT ${CMAKE_BINARY_DIR}/packages/Microsoft.Windows.CppWinRT.${CPPWINRT_VERSION}/bin/cppwinrt.exe)
+execute_process(COMMAND
+    ${CPPWINRT} -input sdk -output include
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    RESULT_VARIABLE ret)
+if (NOT ret EQUAL 0)
+    message(FATAL_ERROR "Failed to run cppwinrt.exe")
+endif()
+
 # Define the application target. To change its name, change BINARY_NAME in the
 # top-level CMakeLists.txt, not the value here, or `flutter run` will no longer
 # work.
@@ -11,6 +44,10 @@ add_executable(${BINARY_NAME} WIN32
   "main.cpp"
   "utils.cpp"
   "win32_window.cpp"
+  "location_channel.cpp"
+  "location_channel.h"
+  "push_channel.cpp"
+  "push_channel.h"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
   "Runner.rc"
   "runner.exe.manifest"
@@ -19,6 +56,11 @@ add_executable(${BINARY_NAME} WIN32
 # Apply the standard set of build settings. This can be removed for applications
 # that need different build settings.
 apply_standard_settings(${BINARY_NAME})
+
+# C++20 and coroutine support for WinRT (location_channel.cpp).
+target_compile_features(${BINARY_NAME} PRIVATE cxx_std_20)
+target_compile_options(${BINARY_NAME} PRIVATE /await:strict)
+target_include_directories(${BINARY_NAME} PRIVATE ${CMAKE_BINARY_DIR}/include)
 
 # Add preprocessor definitions for the build version.
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION=\"${FLUTTER_VERSION}\"")
@@ -34,7 +76,11 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 # dependencies here.
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
 target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
+target_link_libraries(${BINARY_NAME} PRIVATE windowsapp)
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
+
+# The prebuilt Firebase desktop SDK ships without PDBs (LNK4099); suppress the noise.
+target_link_options(${BINARY_NAME} PRIVATE "/ignore:4099")
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)

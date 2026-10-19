@@ -1054,6 +1054,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         children: [
           Expanded(
             child: ListView(
+              primary: true,
               physics: const AlwaysScrollableScrollPhysics(),
               children: [
           Padding(

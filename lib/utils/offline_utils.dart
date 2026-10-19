@@ -230,12 +230,23 @@ void showOfflineToast(BuildContext context, String message, {WidgetRef? ref}) {
     SnackBar(
       content: Row(
         children: [
-          const Icon(Icons.cloud_off_rounded, color: Colors.white, size: 20),
+          Icon(
+            Icons.cloud_off_rounded,
+            color: Theme.of(context).colorScheme.onTertiary,
+            size: 20,
+          ),
           const SizedBox(width: 12),
-          Expanded(child: Text(toastMessage)),
+          Expanded(
+            child: Text(
+              toastMessage,
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onTertiary,
+              ),
+            ),
+          ),
         ],
       ),
-      backgroundColor: Colors.orange.shade700,
+      backgroundColor: Theme.of(context).colorScheme.tertiary,
       duration: const Duration(seconds: 3),
     ),
   );
@@ -264,7 +275,13 @@ Future<void> showApprovalRequiredFieldsBlockedDialog(
   await showDialog<void>(
     context: context,
     builder: (BuildContext context) => AlertDialog(
-      icon: const Icon(Icons.lock_rounded, size: 32, color: Colors.orange),
+      icon: Icon(
+        Icons.lock_rounded,
+        size: 32,
+        color: Theme.of(context).brightness == Brightness.dark
+            ? Colors.amber.shade400
+            : Colors.orange.shade800,
+      ),
       title: Text(localization.getString('approvalRequiredEditBlocked')),
       content: SingleChildScrollView(
         child: Column(
@@ -282,10 +299,10 @@ Future<void> showApprovalRequiredFieldsBlockedDialog(
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(
+                    Icon(
                       Icons.info_outline,
                       size: 18,
-                      color: Colors.grey,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
                     const SizedBox(width: 12),
                     Expanded(

@@ -460,7 +460,15 @@ class StorageHelper {
     String? objectPath,
   }) {
     if (url.trim().isEmpty) return Future<Uint8List?>.value();
-    final pending = _imageFetches[url];
+    // Dedupe by cache key when available: the same object is routinely
+    // requested through *different* signed URLs (the startup warmer and
+    // SignedImage resolve their URLs at different moments, so the `exp`
+    // token differs), and a URL-only dedupe let both download the same
+    // avatar concurrently on a cold cache.
+    final inFlightKey = (cacheKey != null && cacheKey.isNotEmpty)
+        ? cacheKey
+        : url;
+    final pending = _imageFetches[inFlightKey];
     if (pending != null) return pending;
     final future = _fetchImageBytesImpl(
       url,
@@ -468,8 +476,8 @@ class StorageHelper {
       cacheKey: cacheKey,
       objectPath: objectPath,
     );
-    _imageFetches[url] = future;
-    return future.whenComplete(() => _imageFetches.remove(url));
+    _imageFetches[inFlightKey] = future;
+    return future.whenComplete(() => _imageFetches.remove(inFlightKey));
   }
 
   static Future<Uint8List?> _fetchImageBytesImpl(

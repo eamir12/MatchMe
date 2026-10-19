@@ -10,6 +10,7 @@ import android.content.SharedPreferences
 import android.location.Location
 import android.os.BatteryManager
 import android.os.Build
+import android.util.Base64
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -68,6 +69,21 @@ class LocationWorker(
         }
     }
 
+    // Same for chat pushes (tag "match_<matchId>"): when the server card is
+    // already in the tray (drawn while no client code ran), that card is the
+    // notification — record the message and skip, so the WorkManager fallback
+    // never buzzes a second time for the same message after a restart.
+    private fun isChatPushInTray(chatId: String): Boolean {
+        if (chatId.isBlank()) return false
+        return try {
+            val nm = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            val tag = "match_$chatId"
+            nm?.activeNotifications?.any { sbn -> sbn.tag == tag } ?: false
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     // Sensitive keys are read through SecurePrefsHelper (encrypted-first,
     // legacy plain fallback) so tokens never sit in plaintext at rest.
     private fun sensitiveRead(primaryKey: String, fallbackKey: String): String? {
@@ -79,6 +95,81 @@ class LocationWorker(
         if (!p.isNullOrBlank()) return p
         val f = getPrefs().getString(fallbackKey, null)
         return if (f.isNullOrBlank()) null else f
+    }
+
+    // Decoded JWT exp (seconds since epoch), or null when unparseable.
+    private fun jwtExpSeconds(token: String?): Long? {
+        if (token.isNullOrBlank()) return null
+        return try {
+            val parts = token.split('.')
+            if (parts.size < 2) return null
+            val payload = String(
+                Base64.decode(parts[1], Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+            )
+            val exp = JSONObject(payload).optLong("exp", 0L)
+            if (exp > 0L) exp else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    // Non-reversible fingerprint (SHA-256 hex) of a bearer token. Used to
+    // remember a token the server already rejected so the periodic worker
+    // stops re-sending it every run - the source of the recurring 401 storm
+    // after a session was revoked. Stores a hash, never the token itself.
+    private fun tokenFingerprint(token: String?): String? {
+        if (token.isNullOrBlank()) return null
+        return try {
+            java.security.MessageDigest.getInstance("SHA-256")
+                .digest(token.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    // Returns a bearer token that is safe to use right now: the current one
+    // when it still has >60s of life, otherwise a freshly refreshed one.
+    // WorkManager can run for days after Dart last refreshed, and an expired
+    // JWT silently 401'd every poll/upload until the app was reopened.
+    private fun ensureFreshToken(supabaseUrl: String, supabaseKey: String, current: String?): String? {
+        val nowSec = System.currentTimeMillis() / 1000L
+        val exp = jwtExpSeconds(current)
+        if (!current.isNullOrBlank() && exp != null && exp - nowSec > 60L) return current
+
+        val refreshTokenValue = sensitiveRead("flutter.refresh_token", "refresh_token")
+        if (refreshTokenValue.isNullOrBlank()) return current
+
+        return try {
+            val body = JSONObject().apply { put("refresh_token", refreshTokenValue) }
+                .toString().toRequestBody("application/json".toMediaType())
+            val request = Request.Builder()
+                .url("$supabaseUrl/auth/v1/token?grant_type=refresh_token")
+                .post(body)
+                .addHeader("apikey", supabaseKey)
+                .addHeader("Content-Type", "application/json")
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return current
+                val raw = response.body?.string() ?: return current
+                val json = try { JSONObject(raw) } catch (_: Exception) { return current }
+                val newAccess = json.optString("access_token", "")
+                if (newAccess.isBlank()) return current
+                val newRefresh = json.optString("refresh_token", "")
+                SecurePrefsHelper.putString(applicationContext, "flutter.user_token", newAccess)
+                if (newRefresh.isNotBlank()) {
+                    SecurePrefsHelper.putString(applicationContext, "flutter.refresh_token", newRefresh)
+                }
+                // A freshly minted token can't be the one a previous run
+                // marked dead - allow network calls again immediately.
+                try {
+                    getPrefs().edit().remove("flutter.worker_dead_token").apply()
+                } catch (_: Exception) {}
+                newAccess
+            }
+        } catch (_: Exception) {
+            current
+        }
     }
 
     override suspend fun doWork(): Result {
@@ -115,7 +206,7 @@ class LocationWorker(
         val userId = sensitiveRead("flutter.user_id", "user_id")
         val supabaseUrl = readString("flutter.supabase_url", "supabase_url")
         val supabaseKey = readString("flutter.supabase_key", "supabase_key")
-        val userToken = sensitiveRead("flutter.user_token", "user_token")
+        var userToken = sensitiveRead("flutter.user_token", "user_token")
         val backgroundMatchingMode = readBool("flutter.background_matching_mode", "high_accuracy_mode", true)
         val isVisible = readBool("flutter.manual_visibility", "manual_visibility", true)
         val isOnline = readBool("flutter.is_online", "is_online", true)
@@ -237,6 +328,15 @@ class LocationWorker(
             } else {
                 Result.failure()
             }
+        }
+
+        // Refresh the bearer if it expired since the last UI session: this
+        // worker (and the offline-trail uploader below) is the only network
+        // actor once the app is killed, and a stale JWT means silent 401s.
+        userToken = try {
+            ensureFreshToken(supabaseUrl, supabaseKey, userToken)
+        } catch (_: Exception) {
+            userToken
         }
 
         // Retro Matching: headlessly upload offline-trail points the
@@ -384,6 +484,20 @@ class LocationWorker(
         prefs: SharedPreferences,
     ) {
         try {
+            // Dead-token guard: if the server already rejected this exact
+            // token, skip the round trip - the periodic worker would
+            // otherwise re-send it (and log a 401) every single run until
+            // the session is renewed or the app is reopened.
+            val tokenFp = tokenFingerprint(userToken)
+            if (tokenFp != null) {
+                val deadFp = try {
+                    prefs.getString("flutter.worker_dead_token", null)
+                } catch (_: Exception) {
+                    null
+                }
+                if (deadFp == tokenFp) return
+            }
+
             val url = "$supabaseUrl/rest/v1/rpc/check_unread_notifications"
             val jsonBody = JSONObject().apply { put("p_user_id", userId) }
             val body = jsonBody.toString().toRequestBody("application/json".toMediaType())
@@ -395,6 +509,18 @@ class LocationWorker(
             if (userToken != null) reqBuilder.addHeader("Authorization", "Bearer $userToken")
             else reqBuilder.addHeader("Authorization", "Bearer $supabaseKey")
             val resp = httpClient.newCall(reqBuilder.build()).execute()
+            if (resp.code == 401 || resp.code == 403) {
+                // Server rejected this exact token (expired/revoked):
+                // remember it so the next run skips instead of repeating
+                // the doomed request. Cleared on a successful token refresh.
+                try { resp.close() } catch (_: Exception) {}
+                if (tokenFp != null) {
+                    try {
+                        prefs.edit().putString("flutter.worker_dead_token", tokenFp).apply()
+                    } catch (_: Exception) {}
+                }
+                return
+            }
             if (!resp.isSuccessful) { try { resp.close() } catch (_: Exception) {}; return }
             val raw = try { resp.body?.string() } catch (_: Exception) { null }
             try { resp.close() } catch (_: Exception) {}
@@ -475,16 +601,55 @@ class LocationWorker(
             }
 
             // unreadMessages > 0
-            val sender = data.optString("latest_message_sender", "Someone")
-            val content = data.optString("latest_message_content", "Sent a message")
+            // The RPC returns no message bodies anymore (E2E encryption; the
+            // server sends a generic placeholder). org.json's optString
+            // fallback only applies when the key is MISSING, so a JSON null
+            // would render as the literal text "null" - sanitize defensively.
+            val rawSender = data.optString("latest_message_sender", "Someone")
+            val sender = if (rawSender.isBlank() || rawSender == "null") "Someone" else rawSender
+            val rawContent = data.optString("latest_message_content", "Sent a message")
+            val content = if (rawContent.isBlank() || rawContent == "null") "Sent a message" else rawContent
             val messageId = data.optString("latest_message_id", "")
             val matchId = data.optString("latest_match_id", "")
+            // This polling path only has the encrypted-message placeholder.
+            // Prefer the real translated-message push whenever previews are
+            // enabled, and never publish anything while translation is pending.
+            val previewsEnabled = try {
+                prefs.getBoolean("flutter.notifications_message_previews_v1", true)
+            } catch (_: Exception) { true }
+            if (previewsEnabled || data.optBoolean("translation_enabled", false)) {
+                try {
+                    checkAdminFallback(userId, supabaseUrl, supabaseKey, userToken, prefs)
+                } catch (_: Exception) {}
+                return
+            }
             if (messageId.isBlank()) return
             val lastMsg = try { prefs.getString("flutter.worker_last_notified_key", null) } catch (_: Exception) { null }
-            if ("msg:$messageId" == lastMsg) return
+            // The foreground service mirrors the exact message id it buzzed;
+            // consult it too so a message it already alerted (or vice versa)
+            // is never buzzed twice across the two paths.
+            val lastMsgId = try { prefs.getString("flutter.last_notified_message_id", null) } catch (_: Exception) { null }
+            if ("msg:$messageId" == lastMsg || messageId == lastMsgId) return
             // Suppress only when the user is actively viewing THIS chat.
             if (matchId.isNotBlank() && viewingChat != null && viewingChat == matchId) return
-            try { prefs.edit().putString("flutter.worker_last_notified_key", "msg:$messageId").apply() } catch (_: Exception) {}
+            if (matchId.isNotBlank() && isChatPushInTray(matchId)) {
+                // The server FCM card already displays this message (drawn
+                // while no client code ran). Share the dedup keys so no other
+                // path re-buzzes it, and leave the card in place.
+                try {
+                    prefs.edit()
+                        .putString("flutter.worker_last_notified_key", "msg:$messageId")
+                        .putString("flutter.last_notified_message_id", messageId)
+                        .apply()
+                } catch (_: Exception) {}
+                return
+            }
+            try {
+                prefs.edit()
+                    .putString("flutter.worker_last_notified_key", "msg:$messageId")
+                    .putString("flutter.last_notified_message_id", messageId)
+                    .apply()
+            } catch (_: Exception) {}
             showFallbackNotification(
                 title = sender.ifBlank { "New message" },
                 content = content.ifBlank { "Sent a message" },

@@ -36,6 +36,7 @@ class StartupCacheWarmer {
       // Open the encrypted image-byte box early so SignedImage's first read
       // doesn't pay box-open latency during the first Home frame.
       await OfflineImageCache.instance.warmup();
+      final boxOpenMs = sw.elapsedMilliseconds;
       final localDb = await LocalDbService.instance;
       // Priority order matches the Home render path: profile header first,
       // then the two list streams, then reference options, then events.
@@ -46,7 +47,8 @@ class StartupCacheWarmer {
       await localDb.getCachedAppInterests();
       await localDb.getCachedUserEvents(userId);
       debugPrint(
-        '[CACHE_WARM] Home caches warmed for $userId in ${sw.elapsedMilliseconds}ms',
+        '[CACHE_WARM] Home caches warmed for $userId in ${sw.elapsedMilliseconds}ms '
+        '(box-open ${boxOpenMs}ms, local reads ${sw.elapsedMilliseconds - boxOpenMs}ms)',
       );
       await _warmVisibleAvatars(localDb, userId, matches, chats, sw);
     } catch (e) {
@@ -73,6 +75,7 @@ class StartupCacheWarmer {
       // (GlobalHomeSyncManager fireImmediately on wake) can land during the
       // wait and would otherwise skip the warm even though the app is online.
       if (offlineCacheManager.shouldUseCachedData()) return;
+      final collectStartMs = sw.elapsedMilliseconds;
       await Future.delayed(const Duration(milliseconds: 300));
       if (offlineCacheManager.shouldUseCachedData()) return;
 
@@ -101,12 +104,15 @@ class StartupCacheWarmer {
         }
       }
       if (sources.isEmpty) return;
+      final fetchStartMs = sw.elapsedMilliseconds;
       // Downloads each avatar once (deduped against in-flight widget
       // fetches) and persists the bytes into OfflineImageCache — the layer
       // SignedImage paints from, on every platform.
       await StorageHelper.prefetchImageSources(sources);
       debugPrint(
-        '[CACHE_WARM] Warmed ${sources.length} home avatars in ${sw.elapsedMilliseconds}ms',
+        '[CACHE_WARM] Warmed ${sources.length} home avatars in ${sw.elapsedMilliseconds}ms '
+        '(collect ${fetchStartMs - collectStartMs}ms incl. 300ms delay, '
+        'fetch ${sw.elapsedMilliseconds - fetchStartMs}ms)',
       );
     } catch (e) {
       debugPrint('[CACHE_WARM] Avatar warm failed (non-fatal): $e');

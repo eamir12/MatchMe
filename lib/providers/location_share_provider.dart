@@ -12,6 +12,7 @@ import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/system_notification_provider.dart';
+import 'package:matchme/services/windows_location_channel.dart';
 import 'package:matchme/utils/location_deduplicator.dart';
 import 'package:matchme/utils/location_share_countdown.dart';
 import 'package:matchme/services/app_config_service.dart';
@@ -394,7 +395,7 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
       return true;
     }
     try {
-      final current = await Geolocator.checkPermission();
+      final current = await WindowsLocationChannel.checkPermission();
       if (current == LocationPermission.always) return true;
       if (current == LocationPermission.deniedForever) {
         await BackgroundService.setNativePermissionIssueCode('location_always');
@@ -404,7 +405,7 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
       // On Android 11+ this may open Settings; on iOS it upgrades WhenInUse.
       final status = await perm.Permission.locationAlways.request();
       if (status.isGranted) return true;
-      final rechecked = await Geolocator.checkPermission();
+      final rechecked = await WindowsLocationChannel.checkPermission();
       if (rechecked == LocationPermission.always) return true;
       await BackgroundService.setNativePermissionIssueCode('location_always');
       return false;
@@ -1565,9 +1566,9 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
     // Check location permission before attempting GPS
     try {
       if (!kIsWeb) {
-        final permission = await Geolocator.checkPermission();
+        final permission = await WindowsLocationChannel.checkPermission();
         if (permission == LocationPermission.denied) {
-          final requested = await Geolocator.requestPermission();
+          final requested = await WindowsLocationChannel.requestPermission();
           if (requested == LocationPermission.denied ||
               requested == LocationPermission.deniedForever) {
             print('LocationShare: Location permission denied, stopping share');
@@ -1632,7 +1633,7 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
     final current = state;
     if (current == null || current.myStatus != ShareStatus.sharing) return;
     try {
-      final last = await Geolocator.getLastKnownPosition();
+      final last = await WindowsLocationChannel.getLastKnownPosition();
       if (last != null) _onPositionUpdate(last);
     } catch (_) {
       // No cached fix — the high-accuracy request below covers it.
@@ -1660,7 +1661,7 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
 
     // Check if location services are enabled before attempting GPS
     try {
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      final serviceEnabled = await WindowsLocationChannel.isLocationServiceEnabled();
       if (!serviceEnabled) return;
     } catch (_) {
       return;
@@ -1673,19 +1674,15 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
       final position = await LocationDeduplicator.getPosition(
         label: 'locationShare',
         fetcher: () async {
+          final pos = await WindowsLocationChannel.getPosition(
+            accuracy: LocationAccuracy.high,
+            timeLimit: const Duration(seconds: 10),
+          );
+          if (pos != null) return pos;
           try {
-            return await Geolocator.getCurrentPosition(
-              locationSettings: const LocationSettings(
-                accuracy: LocationAccuracy.high,
-                timeLimit: Duration(seconds: 10),
-              ),
-            );
+            return await WindowsLocationChannel.getLastKnownPosition();
           } catch (_) {
-            try {
-              return await Geolocator.getLastKnownPosition();
-            } catch (_) {
-              return null;
-            }
+            return null;
           }
         },
       );
