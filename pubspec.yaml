@@ -186,6 +186,11 @@ dependency_overrides:
     path: third_party/emoji_picker_flutter
   firebase_core:
     path: third_party/firebase_core
+  # MatchMe fork: raise the GoogleSignIn-iOS pin to 10.x. GoogleSignIn 10
+  # allows GTMSessionFetcher 4.x/5.x, which firebase-ios-sdk 13 requires
+  # under SPM; upstream 6.3.8 still pins 9.x (GTMSessionFetcher <4.0).
+  google_sign_in_ios:
+    path: third_party/google_sign_in_ios
   # MatchMe fork: remove the textually-declared kotlin-android (KGP warning).
   # Keep its version equal to purchases_flutter: both plugins pin the same
   # purchases-hybrid-common, and mismatched pins break iOS SPM resolution.

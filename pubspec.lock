@@ -1033,12 +1033,11 @@ packages:
     source: hosted
     version: "7.2.18"
   google_sign_in_ios:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      name: google_sign_in_ios
-      sha256: b8efb315c778390f1b1c4fc14d74c42784dd9ee0c1d0c26b13f30b46826319ad
-      url: "https://pub.dev"
-    source: hosted
+      path: "third_party/google_sign_in_ios"
+      relative: true
+    source: path
     version: "6.3.8"
   google_sign_in_platform_interface:
     dependency: transitive
