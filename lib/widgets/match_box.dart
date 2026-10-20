@@ -643,31 +643,27 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
         ),
         if (metaParts.isNotEmpty || isVerified || isComplete) ...[
           const SizedBox(height: 1),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
+          Wrap(
+            textDirection: textDir,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 6,
+            runSpacing: 2,
             children: [
               if (metaParts.isNotEmpty)
-                Flexible(
-                  child: SafeText(
-                    metaParts.join('  ·  '),
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w400,
-                      color: Theme.of(context).colorScheme.onSurface.withValues(
-                        alpha: 0.55,
-                      ),
+                SafeText(
+                  metaParts.join('  ·  '),
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w400,
+                    color: Theme.of(context).colorScheme.onSurface.withValues(
+                      alpha: 0.55,
                     ),
-                    textAlign: TextAlign.start,
                   ),
+                  textAlign: TextAlign.start,
                 ),
-              if (isVerified) ...[
-                if (metaParts.isNotEmpty) const SizedBox(width: 6),
-                _buildVerifiedPill(context, l10n, profile!),
-              ],
-              if (isComplete) ...[
-                if (metaParts.isNotEmpty || isVerified) const SizedBox(width: 6),
+              if (isVerified) _buildVerifiedPill(context, l10n, profile!),
+              if (isComplete)
                 ProfileCompletePill(l10n: l10n, compact: true),
-              ],
             ],
           ),
         ],

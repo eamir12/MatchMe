@@ -28,6 +28,7 @@ import 'package:matchme_admin/services/admin_realtime_refresher.dart';
 import 'package:matchme_admin/services/admin_session_service.dart';
 import 'package:matchme_admin/services/admin_sync_manager.dart';
 import 'package:matchme_admin/services/public_reference_data_service.dart';
+import 'package:matchme_admin/services/system_health_monitor.dart';
 import 'package:matchme_admin/widgets/admin_offline_indicator.dart';
 import 'package:matchme_admin/widgets/system_health_pill.dart';
 import 'package:matchme_admin/utils/open_attachment.dart';
@@ -2353,6 +2354,7 @@ class _LazyIndexedStackState extends State<_LazyIndexedStack> {
   late final List<bool> _built = List<bool>.filled(
     widget.children.length,
     false,
+    growable: true,
   );
 
   @override
@@ -2445,7 +2447,10 @@ class _AdminShellState extends ConsumerState<_AdminShell>
     } catch (_) {}
   }
 
-  List<NavigationRailDestination> _railDestinations(LocalizationState l10n) {
+  List<NavigationRailDestination> _railDestinations(
+    LocalizationState l10n,
+    bool includeSystemHealth,
+  ) {
     final destinations = <_AdminSection, NavigationRailDestination>{
       _AdminSection.dashboard: NavigationRailDestination(
         icon: const Icon(Icons.dashboard_outlined),
@@ -2512,21 +2517,24 @@ class _AdminShellState extends ConsumerState<_AdminShell>
         selectedIcon: const Icon(Icons.person_remove),
         label: Text(l10n.getString('adminNavUserMatchManagement')),
       ),
-      _AdminSection.systemHealth: NavigationRailDestination(
-        icon: const Icon(Icons.monitor_heart_outlined),
-        selectedIcon: const Icon(Icons.monitor_heart),
-        label: Text(l10n.getString('adminNavSystemHealth')),
-      ),
+      if (includeSystemHealth)
+        _AdminSection.systemHealth: NavigationRailDestination(
+          icon: const Icon(Icons.monitor_heart_outlined),
+          selectedIcon: const Icon(Icons.monitor_heart),
+          label: Text(l10n.getString('adminNavSystemHealth')),
+        ),
     };
 
-    return _AdminSection.values
-        .map((s) => destinations[s]!)
-        .toList(growable: false);
+    return [
+      for (final section in _AdminSection.values)
+        if (destinations[section] != null) destinations[section]!,
+    ];
   }
 
   List<NavigationDrawerDestination> _drawerDestinations(
-    LocalizationState l10n,
-  ) {
+    LocalizationState l10n, {
+    required bool includeSystemHealth,
+  }) {
     return [
       NavigationDrawerDestination(
         icon: const Icon(Icons.dashboard_outlined),
@@ -2593,11 +2601,12 @@ class _AdminShellState extends ConsumerState<_AdminShell>
         selectedIcon: const Icon(Icons.person_remove),
         label: Text(l10n.getString('adminNavUserMatchManagement')),
       ),
-      NavigationDrawerDestination(
-        icon: const Icon(Icons.monitor_heart_outlined),
-        selectedIcon: const Icon(Icons.monitor_heart),
-        label: Text(l10n.getString('adminNavSystemHealth')),
-      ),
+      if (includeSystemHealth)
+        NavigationDrawerDestination(
+          icon: const Icon(Icons.monitor_heart_outlined),
+          selectedIcon: const Icon(Icons.monitor_heart),
+          label: Text(l10n.getString('adminNavSystemHealth')),
+        ),
     ];
   }
 
@@ -2720,12 +2729,30 @@ class _AdminShellState extends ConsumerState<_AdminShell>
   @override
   Widget build(BuildContext context) {
     final l10n = ref.watch(localizationProvider);
+    final monitoringEnabled =
+        ref.watch(supabaseMonitoringEnabledProvider).value ?? false;
+    final sections = [
+      for (final section in _AdminSection.values)
+        if (section != _AdminSection.systemHealth || monitoringEnabled) section,
+    ];
+
+    if (!monitoringEnabled && _selected == _AdminSection.systemHealth) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _selected == _AdminSection.systemHealth) {
+          setState(() => _selected = _AdminSection.dashboard);
+        }
+      });
+    }
+
+    final selected = sections.contains(_selected)
+        ? _selected
+        : _AdminSection.dashboard;
+    final selectedIndex = sections.indexOf(selected);
 
     return Directionality(
       textDirection: l10n.textDirection,
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final selectedIndex = _AdminSection.values.indexOf(_selected);
           final content = _LazyIndexedStack(
             index: selectedIndex,
             children: [
@@ -2745,12 +2772,12 @@ class _AdminShellState extends ConsumerState<_AdminShell>
               const _PromoCodesScreen(),
               const _MatchInspectorScreen(),
               const _UserMatchManagementScreen(),
-              const _SystemHealthScreen(),
+              if (monitoringEnabled) const _SystemHealthScreen(),
             ],
           );
           final useDrawerLayout =
               constraints.maxWidth < 720 || constraints.maxHeight < 520;
-          final titleText = _sectionTitle(l10n, _selected);
+          final titleText = _sectionTitle(l10n, selected);
           if (useDrawerLayout) {
             return Scaffold(
               appBar: AppBar(
@@ -2761,7 +2788,7 @@ class _AdminShellState extends ConsumerState<_AdminShell>
                 selectedIndex: selectedIndex,
                 onDestinationSelected: (index) {
                   setState(() {
-                    _selected = _AdminSection.values[index];
+                    _selected = sections[index];
                   });
                   Navigator.of(context).pop();
                 },
@@ -2774,7 +2801,10 @@ class _AdminShellState extends ConsumerState<_AdminShell>
                     ),
                   ),
                   const Divider(height: 1),
-                  ..._drawerDestinations(l10n),
+                  ..._drawerDestinations(
+                    l10n,
+                    includeSystemHealth: monitoringEnabled,
+                  ),
                 ],
               ),
               body: SafeArea(
@@ -2795,10 +2825,10 @@ class _AdminShellState extends ConsumerState<_AdminShell>
             selectedIndex: selectedIndex,
             onDestinationSelected: (index) {
               setState(() {
-                _selected = _AdminSection.values[index];
+                _selected = sections[index];
               });
             },
-            destinations: _railDestinations(l10n),
+            destinations: _railDestinations(l10n, monitoringEnabled),
             extended: isWide,
           );
 
@@ -3782,6 +3812,8 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
   @override
   Widget build(BuildContext context) {
     final l10n = ref.watch(localizationProvider);
+    final monitoringEnabled =
+        ref.watch(supabaseMonitoringEnabledProvider).value ?? false;
 
     if (_isLoading) {
       return _MessageScaffold(
@@ -4210,19 +4242,20 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
                                   ),
                             ),
                             const Spacer(),
-                            SystemHealthPill(
-                              t: (key, {params}) {
-                                var value = l10n.getString(key);
-                                params?.forEach((paramKey, paramValue) {
-                                  value = value.replaceAll(
-                                    '{$paramKey}',
-                                    paramValue,
-                                  );
-                                });
-                                return value;
-                              },
-                              onTap: widget.onOpenSystemHealth,
-                            ),
+                            if (monitoringEnabled)
+                              SystemHealthPill(
+                                t: (key, {params}) {
+                                  var value = l10n.getString(key);
+                                  params?.forEach((paramKey, paramValue) {
+                                    value = value.replaceAll(
+                                      '{$paramKey}',
+                                      paramValue,
+                                    );
+                                  });
+                                  return value;
+                                },
+                                onTap: widget.onOpenSystemHealth,
+                              ),
                           ],
                         ),
                         const SizedBox(height: 8),

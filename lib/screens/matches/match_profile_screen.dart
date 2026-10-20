@@ -452,6 +452,26 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
     return _tryGetString(l10n, key) ?? _humanizeKey(value);
   }
 
+  String _localizedReligiosityValue(LocalizationState l10n, String value) {
+    final opts =
+        ref
+            .watch(
+              fieldOptionsProvider((
+                fieldKey: 'religiosity',
+                context: 'profile',
+              )),
+            )
+            .asData
+            ?.value ??
+        [];
+    final match = opts.where((o) => o.profileValue == value).firstOrNull;
+    if (match != null && match.profileDisplayKey.isNotEmpty) {
+      final localized = _tryGetString(l10n, match.profileDisplayKey);
+      if (localized != null) return localized;
+    }
+    return _humanizeKey(value);
+  }
+
   String _localizedEducationValue(LocalizationState l10n, String value) {
     final opts =
         ref
@@ -2398,16 +2418,35 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
             if (otherProfile != null &&
                 _shouldShowFieldForIntent(widget.matchedIntent, 'religion') &&
                 otherProfile.religion != null &&
-                otherProfile.religion!['religion'] != null &&
-                (otherProfile.religion!['religion'] as String)
-                    .trim()
-                    .isNotEmpty) ...[
+                ((otherProfile.religion!['religion'] != null &&
+                        (otherProfile.religion!['religion'] as String)
+                            .trim()
+                            .isNotEmpty) ||
+                    (otherProfile.religion!['religiosity'] != null &&
+                        otherProfile.religion!['religiosity']
+                            .toString()
+                            .trim()
+                            .isNotEmpty))) ...[
               _buildSectionHeader(context, l10n.getString('profileReligion')),
-              _buildMatchProfileItem(
-                context,
-                Icons.self_improvement_outlined,
-                '${l10n.getString('profileReligion')}: ${_localizedReligionValue(l10n, otherProfile.religion!['religion'] as String)}',
-              ),
+              if (otherProfile.religion!['religion'] != null &&
+                  (otherProfile.religion!['religion'] as String)
+                      .trim()
+                      .isNotEmpty)
+                _buildMatchProfileItem(
+                  context,
+                  Icons.self_improvement_outlined,
+                  '${l10n.getString('profileReligion')}: ${_localizedReligionValue(l10n, otherProfile.religion!['religion'] as String)}',
+                ),
+              if (otherProfile.religion!['religiosity'] != null &&
+                  otherProfile.religion!['religiosity']
+                      .toString()
+                      .trim()
+                      .isNotEmpty)
+                _buildMatchProfileItem(
+                  context,
+                  Icons.auto_awesome_outlined,
+                  '${l10n.getString('profileReligiosity')}: ${_localizedReligiosityValue(l10n, otherProfile.religion!['religiosity'].toString())}',
+                ),
               const Divider(height: 20),
             ],
 

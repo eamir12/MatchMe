@@ -270,15 +270,26 @@ void main() {
     expect(retried, isTrue);
   });
 
-  test(
-    'Profile verification action copy has built-in localization fallbacks',
-    () {
-      final l10n = LocalizationState.loading();
-      expect(l10n.getString('notVerified'), 'Not Verified');
-      expect(l10n.getString('verificationReview'), 'Verification Review');
-      expect(l10n.getString('verifyNow'), 'Verify Now');
-    },
-  );
+  test('Profile verification action copy has built-in localization fallbacks', () {
+    final l10n = LocalizationState.loading();
+    expect(l10n.getString('notVerified'), 'Not Verified');
+    expect(l10n.getString('verificationReview'), 'Verification Review');
+    expect(l10n.getString('verifyNow'), 'Verify Now');
+    expect(
+      l10n.getString(
+        'verificationTakePhotoHint',
+        params: {'button': l10n.getString('takePhoto')},
+      ),
+      'Review the requirements, then tap Take Photo at the bottom of the screen to start.',
+    );
+    expect(
+      l10n.getString(
+        'voiceGuidanceVerificationTakePhotoHint',
+        params: {'button': l10n.getString('takePhoto')},
+      ),
+      'When you are ready, tap Take Photo at the bottom of the screen to start.',
+    );
+  });
 
   test('Profile wizard recovery copy has built-in localization fallbacks', () {
     final l10n = LocalizationState.loading();

@@ -16,6 +16,7 @@
 
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart' show DateFormat;
 import 'package:matchme_admin/services/system_health_monitor.dart';
 import 'package:matchme_admin/widgets/system_health_cards.dart';
@@ -28,7 +29,7 @@ class _SeriesSample {
   final Map<String, dynamic> payload;
 }
 
-class SystemHealthHistoryScreen extends StatefulWidget {
+class SystemHealthHistoryScreen extends ConsumerStatefulWidget {
   const SystemHealthHistoryScreen({
     super.key,
     required this.t,
@@ -41,11 +42,12 @@ class SystemHealthHistoryScreen extends StatefulWidget {
   final TextDirection textDirection;
 
   @override
-  State<SystemHealthHistoryScreen> createState() =>
+  ConsumerState<SystemHealthHistoryScreen> createState() =>
       _SystemHealthHistoryScreenState();
 }
 
-class _SystemHealthHistoryScreenState extends State<SystemHealthHistoryScreen> {
+class _SystemHealthHistoryScreenState
+    extends ConsumerState<SystemHealthHistoryScreen> {
   late DateTime _from;
   late DateTime _to;
 
@@ -913,6 +915,17 @@ class _SystemHealthHistoryScreenState extends State<SystemHealthHistoryScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final monitoringEnabled =
+        ref.watch(supabaseMonitoringEnabledProvider).value ?? false;
+    if (!monitoringEnabled) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && Navigator.of(context).canPop()) {
+          Navigator.of(context).pop();
+        }
+      });
+      return const SizedBox.shrink();
+    }
+
     final theme = Theme.of(context);
 
     final Widget body;

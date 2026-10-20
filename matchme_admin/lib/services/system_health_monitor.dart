@@ -33,10 +33,40 @@ import 'dart:convert';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
+import 'package:matchme_admin/services/admin_local_db_service.dart';
 import 'package:matchme_admin/services/admin_offline_cache_manager.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 enum SystemHealthStatus { checking, healthy, degraded, down }
+
+/// Master switch for the whole Supabase monitoring feature. Stored in
+/// `app_config`; true (or a missing row) keeps the feature enabled.
+const String kSupabaseMonitoringEnabledConfigKey =
+    'admin.supabase_monitoring.enabled';
+
+bool parseSupabaseMonitoringEnabled(Object? raw, {bool fallback = true}) {
+  if (raw == null) return fallback;
+  if (raw is bool) return raw;
+  if (raw is num) return raw != 0;
+  var text = raw.toString().trim();
+  if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) {
+    text = text.substring(1, text.length - 1).trim();
+  }
+  switch (text.toLowerCase()) {
+    case 'true':
+    case '1':
+    case 'yes':
+    case 'on':
+      return true;
+    case 'false':
+    case '0':
+    case 'no':
+    case 'off':
+      return false;
+    default:
+      return fallback;
+  }
+}
 
 // Failure-count thresholds above which the project counts as degraded.
 // Tunable constants — revisit if app_error_log proves noisy (background
@@ -1237,12 +1267,93 @@ String systemHealthAgeLabel(Duration d) {
   return '${d.inDays}d';
 }
 
-/// Riverpod stream provider mirroring the monitor. Starts probing on first
-/// watch; because it is keep-alive, once created it monitors for the rest
-/// of the app session (the admin app wants constant health updates).
-/// Consumers should render [SystemHealthMonitor.current] as an immediate
-/// value while waiting for the first stream event.
+/// Watches the `app_config` master switch, seeded from the local cache for
+/// an instant (and offline-safe) value, then kept current by a Realtime
+/// subscription on `app_config`. Falls back to the last cached/enabled value
+/// when a read fails so a transient network error never disables monitoring.
+/// No periodic polling: changes arrive through Realtime, and a restart/resume
+/// re-reads the row.
+final supabaseMonitoringEnabledProvider = StreamProvider<bool>((ref) {
+  final controller = StreamController<bool>();
+  RealtimeChannel? channel;
+  bool disposed = false;
+
+  void emit(bool enabled) {
+    if (disposed || controller.isClosed) return;
+    controller.add(enabled);
+  }
+
+  Future<bool?> readCached() async {
+    try {
+      final config = await AdminLocalDbService.shared.loadAppConfig();
+      final raw = config?[kSupabaseMonitoringEnabledConfigKey];
+      if (raw != null) return parseSupabaseMonitoringEnabled(raw);
+    } catch (_) {
+      // Cache is best-effort.
+    }
+    return null;
+  }
+
+  Future<void> refresh() async {
+    try {
+      final row = await Supabase.instance.client
+          .from('app_config')
+          .select('config_value')
+          .eq('config_key', kSupabaseMonitoringEnabledConfigKey)
+          .maybeSingle()
+          .timeout(const Duration(seconds: 8));
+      emit(parseSupabaseMonitoringEnabled(row?['config_value']));
+    } catch (_) {
+      final cached = await readCached();
+      emit(cached ?? true);
+    }
+  }
+
+  unawaited(() async {
+    final cached = await readCached();
+    if (cached != null) emit(cached);
+    await refresh();
+  }());
+
+  try {
+    channel = Supabase.instance.client
+        .channel('admin_supabase_monitoring_enabled')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'app_config',
+          callback: (_) => unawaited(refresh()),
+        )
+        .subscribe();
+  } catch (_) {
+    channel = null;
+  }
+
+  ref.onDispose(() {
+    disposed = true;
+    final ch = channel;
+    channel = null;
+    if (ch != null) {
+      try {
+        Supabase.instance.client.removeChannel(ch);
+      } catch (_) {}
+    }
+    controller.close();
+  });
+
+  return controller.stream;
+});
+
+/// Riverpod stream provider mirroring the monitor. Starts probing only while
+/// the `app_config` master switch is enabled; because it is keep-alive, once
+/// created it monitors for the rest of the app session. Disabling the flag
+/// disposes this provider, which stops every probe, timer, Realtime channel
+/// and socket-history insert. Consumers should render
+/// [SystemHealthMonitor.current] as an immediate value while waiting for the
+/// first stream event.
 final systemHealthProvider = StreamProvider<SystemHealthSnapshot>((ref) {
+  final enabled = ref.watch(supabaseMonitoringEnabledProvider).value ?? false;
+  if (!enabled) return const Stream<SystemHealthSnapshot>.empty();
   systemHealthMonitor.acquire();
   ref.onDispose(systemHealthMonitor.release);
   return systemHealthMonitor.stream;

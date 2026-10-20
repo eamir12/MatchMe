@@ -422,6 +422,26 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     return _tryGetString(l10n, key) ?? _humanizeKey(value);
   }
 
+  String _localizedReligiosityValue(LocalizationState l10n, String value) {
+    final opts =
+        ref
+            .watch(
+              fieldOptionsProvider((
+                fieldKey: 'religiosity',
+                context: 'profile',
+              )),
+            )
+            .asData
+            ?.value ??
+        [];
+    final match = opts.where((o) => o.profileValue == value).firstOrNull;
+    if (match != null && match.profileDisplayKey.isNotEmpty) {
+      final localized = _tryGetString(l10n, match.profileDisplayKey);
+      if (localized != null) return localized;
+    }
+    return _humanizeKey(value);
+  }
+
   String _localizedEducationValue(LocalizationState l10n, String value) {
     final opts =
         ref
@@ -1543,10 +1563,15 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
                   // Religion section
                   if (profile.religion != null &&
-                      (profile.religion!['religion'] != null &&
-                          (profile.religion!['religion'] as String)
-                              .trim()
-                              .isNotEmpty)) ...[
+                      ((profile.religion!['religion'] != null &&
+                              (profile.religion!['religion'] as String)
+                                  .trim()
+                                  .isNotEmpty) ||
+                          (profile.religion!['religiosity'] != null &&
+                              profile.religion!['religiosity']
+                                  .toString()
+                                  .trim()
+                                  .isNotEmpty))) ...[
                     const SizedBox(height: 20),
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -1555,18 +1580,39 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
                     ),
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: _buildProfileItem(
-                        context,
-                        Icons.self_improvement_outlined,
-                        _t(l10n, 'settingsReligion'),
-                        _localizedReligionValue(
-                          l10n,
-                          profile.religion!['religion'] as String,
+                    if (profile.religion!['religion'] != null &&
+                        (profile.religion!['religion'] as String)
+                            .trim()
+                            .isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: _buildProfileItem(
+                          context,
+                          Icons.self_improvement_outlined,
+                          _t(l10n, 'settingsReligion'),
+                          _localizedReligionValue(
+                            l10n,
+                            profile.religion!['religion'] as String,
+                          ),
                         ),
                       ),
-                    ),
+                    if (profile.religion!['religiosity'] != null &&
+                        profile.religion!['religiosity']
+                            .toString()
+                            .trim()
+                            .isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: _buildProfileItem(
+                          context,
+                          Icons.auto_awesome_outlined,
+                          _t(l10n, 'profileReligiosity'),
+                          _localizedReligiosityValue(
+                            l10n,
+                            profile.religion!['religiosity'].toString(),
+                          ),
+                        ),
+                      ),
                   ],
 
                   const Divider(height: 30),

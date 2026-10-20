@@ -293,6 +293,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
   bool _isSubmitting = false;
   bool _isRequestingManualReview = false;
   bool _didSpeakIntro = false;
+  bool _didSpeakTakePhotoHint = false;
 
   // Accessibility: content on this screen is also spoken, in visual order.
   // Announcements are serialized on one queue so two sources scheduled in the
@@ -524,7 +525,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
               'voiceGuidanceVerificationCaptured',
             ),
           );
-          _scrollToActionButtons();
+          _scrollToCapturedPhoto();
         } else {
           print('VERIFICATION SCREEN: No bytes received or not mounted');
         }
@@ -1440,7 +1441,10 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
     );
   }
 
-  Widget _buildVerificationInstructions(LocalizationState l10n) {
+  Widget _buildVerificationInstructions(
+    LocalizationState l10n, {
+    required bool showTakePhotoHint,
+  }) {
     // Accessibility: speak the requirements card content (each item title +
     // description + gesture instruction) once per gesture/locale shown —
     // the card header is a title and is not spoken.
@@ -1478,6 +1482,10 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
                 context,
               ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
             ),
+            if (showTakePhotoHint && _selectedImage == null) ...[
+              const SizedBox(height: 12),
+              _buildTakePhotoHint(l10n),
+            ],
             const SizedBox(height: 16),
             _buildInstructionItem(
               Icons.face,
@@ -1508,6 +1516,100 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
               _buildGestureReferencePreview(_currentGesture!),
             if (_currentGesture != null) const SizedBox(height: 12),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTakePhotoHint(LocalizationState l10n) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final hint = l10n.getString(
+      'verificationTakePhotoHint',
+      params: {'button': l10n.getString('takePhoto')},
+    );
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: colorScheme.primary.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colorScheme.primary.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.touch_app_outlined, size: 20, color: colorScheme.primary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              hint,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurface,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Icon(
+            Icons.arrow_downward_rounded,
+            size: 20,
+            color: colorScheme.primary,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPinnedActionBar(
+    LocalizationState l10n,
+    bool canSubmit,
+    SemanticColors semantic,
+  ) {
+    return Material(
+      elevation: 8,
+      color: Theme.of(context).colorScheme.surface,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          child: Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: _pickImage,
+                  icon: const Icon(Icons.camera_alt),
+                  label: Text(
+                    _selectedImage == null
+                        ? l10n.getString('takePhoto')
+                        : l10n.getString('retakePhoto'),
+                  ),
+                ),
+              ),
+              if (_selectedImage != null) ...[
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: canSubmit ? _submitVerification : null,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: semantic.success,
+                      foregroundColor: semantic.onSuccess,
+                    ),
+                    child: _isSubmitting
+                        ? SizedBox(
+                            height: 20,
+                            width: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                semantic.onSuccess,
+                              ),
+                            ),
+                          )
+                        : Text(l10n.getString('submitForReview')),
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );
@@ -1585,7 +1687,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
     );
   }
 
-  void _scrollToActionButtons() {
+  void _scrollToCapturedPhoto() {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted || !_scrollController.hasClients) {
         return;
@@ -1705,6 +1807,20 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
           final shouldShowSubmissionSection =
               effectiveVerificationStatus == 'unverified' ||
               effectiveVerificationStatus == 'rejected';
+          // Voice guidance: tell the user where the action lives, right after
+          // the intro. The button is pinned to the bottom of the screen, so
+          // this cue can no longer be invalidated by scrolling.
+          if (shouldShowSubmissionSection && !_didSpeakTakePhotoHint) {
+            _didSpeakTakePhotoHint = true;
+            _enqueueSpoken('takePhotoHint', () {
+              final l = ref.read(localizationProvider);
+              final hint = l.getString(
+                'voiceGuidanceVerificationTakePhotoHint',
+                params: {'button': l.getString('takePhoto')},
+              );
+              return Future.value(hint.startsWith('[') ? '' : hint);
+            });
+          }
           // NOTE: canSubmit intentionally uses the fresh server status
           // (effectiveVerificationStatus), not the cached profile, so an admin
           // reset to `unverified` immediately re-enables resubmission even if
@@ -1747,159 +1863,134 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
             );
           }
 
-          return SingleChildScrollView(
-            controller: _scrollController,
-            child: Column(
-              children: [
-                if (userId != null)
-                  _buildStatusCard(
-                    statusData: statusData,
-                    fallbackStatus: cachedVerificationStatus,
-                  ),
-                if (shouldShowVerificationInstructions)
-                  _buildVerificationInstructions(l10n),
-
-                if (shouldShowSubmissionSection) ...[
-                  // Accessibility: speak the submission section's privacy
-                  // notice once per locale — the section header and action
-                  // buttons are titles/labels and are not spoken.
-                  Builder(
-                    builder: (context) {
-                      final submissionSpokenSig =
-                          'submission|${l10n.currentLocale.languageCode}';
-                      if (_lastSubmissionSpokenSig != submissionSpokenSig) {
-                        _lastSubmissionSpokenSig = submissionSpokenSig;
-                        _enqueueSpoken('submission', () async {
-                          final l = ref.read(localizationProvider);
-                          String? privacy;
-                          try {
-                            privacy = await _verificationService
-                                .getPrivacyNotice(l.currentLocale.languageCode)
-                                .timeout(const Duration(seconds: 6));
-                          } catch (_) {
-                            privacy = null;
-                          }
-                          if (privacy != null && privacy.trim().isNotEmpty) {
-                            return privacy.trim();
-                          }
-                          return l.getString('verificationPrivacyNotice');
-                        });
-                      }
-                      return const SizedBox.shrink();
-                    },
-                  ),
-                  const SizedBox(height: 24),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: Column(
-                      children: [
-                        Text(
-                          l10n.getString('submitVerificationPhoto'),
-                          style: Theme.of(context).textTheme.titleMedium
-                              ?.copyWith(fontWeight: FontWeight.bold),
+          return Column(
+            children: [
+              Expanded(
+                child: SingleChildScrollView(
+                  controller: _scrollController,
+                  child: Column(
+                    children: [
+                      if (userId != null)
+                        _buildStatusCard(
+                          statusData: statusData,
+                          fallbackStatus: cachedVerificationStatus,
                         ),
-                        const SizedBox(height: 12),
+                      if (shouldShowVerificationInstructions)
+                        _buildVerificationInstructions(
+                          l10n,
+                          showTakePhotoHint: shouldShowSubmissionSection,
+                        ),
 
-                        // Privacy notice - prefer Supabase-provided copy with fallback to local copy
-                        FutureBuilder<String?>(
-                          future: _verificationService.getPrivacyNotice(
-                            l10n.currentLocale.languageCode,
-                          ),
-                          builder: (context, snapshot) {
-                            final text =
-                                snapshot.data ??
-                                l10n.getString('verificationPrivacyNotice');
-                            return Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 4.0,
-                                vertical: 8,
-                              ),
-                              child: Text(
-                                text,
-                                textAlign: TextAlign.center,
-                                style: Theme.of(context).textTheme.bodySmall
-                                    ?.copyWith(
-                                      color: Theme.of(context)
-                                          .textTheme
-                                          .bodySmall
-                                          ?.color
-                                          ?.withValues(alpha: 0.8),
-                                    ),
-                              ),
-                            );
+                      if (shouldShowSubmissionSection) ...[
+                        // Accessibility: speak the submission section's privacy
+                        // notice once per locale — the section header and action
+                        // buttons are titles/labels and are not spoken.
+                        Builder(
+                          builder: (context) {
+                            final submissionSpokenSig =
+                                'submission|${l10n.currentLocale.languageCode}';
+                            if (_lastSubmissionSpokenSig !=
+                                submissionSpokenSig) {
+                              _lastSubmissionSpokenSig = submissionSpokenSig;
+                              _enqueueSpoken('submission', () async {
+                                final l = ref.read(localizationProvider);
+                                String? privacy;
+                                try {
+                                  privacy = await _verificationService
+                                      .getPrivacyNotice(
+                                        l.currentLocale.languageCode,
+                                      )
+                                      .timeout(const Duration(seconds: 6));
+                                } catch (_) {
+                                  privacy = null;
+                                }
+                                if (privacy != null &&
+                                    privacy.trim().isNotEmpty) {
+                                  return privacy.trim();
+                                }
+                                return l.getString('verificationPrivacyNotice');
+                              });
+                            }
+                            return const SizedBox.shrink();
                           },
                         ),
-
-                        const SizedBox(height: 8),
-
-                        if (_selectedImage != null) ...[
-                          GestureDetector(
-                            onTap: _openSelectedImagePreview,
-                            child: Container(
-                              height: 300,
-                              width: double.infinity,
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(12),
-                                image: DecorationImage(
-                                  image: MemoryImage(_selectedImage!),
-                                  fit: BoxFit.cover,
-                                ),
+                        const SizedBox(height: 24),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          child: Column(
+                            children: [
+                              Text(
+                                l10n.getString('submitVerificationPhoto'),
+                                style: Theme.of(context).textTheme.titleMedium
+                                    ?.copyWith(fontWeight: FontWeight.bold),
                               ),
-                            ),
-                          ),
-                        ],
+                              const SizedBox(height: 12),
 
-                        const SizedBox(height: 16),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                onPressed: _pickImage,
-                                icon: const Icon(Icons.camera),
-                                label: Text(
-                                  _selectedImage == null
-                                      ? l10n.getString('takePhoto')
-                                      : l10n.getString('retakePhoto'),
+                              // Privacy notice - prefer Supabase-provided copy with fallback to local copy
+                              FutureBuilder<String?>(
+                                future: _verificationService.getPrivacyNotice(
+                                  l10n.currentLocale.languageCode,
                                 ),
-                              ),
-                            ),
-                            if (_selectedImage != null) ...[
-                              const SizedBox(width: 16),
-                              Expanded(
-                                child: ElevatedButton(
-                                  onPressed: canSubmit
-                                      ? _submitVerification
-                                      : null,
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: semantic.success,
-                                    foregroundColor: semantic.onSuccess,
-                                  ),
-                                  child: _isSubmitting
-                                      ? SizedBox(
-                                          height: 20,
-                                          width: 20,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                            valueColor:
-                                                AlwaysStoppedAnimation<Color>(
-                                                  semantic.onSuccess,
-                                                ),
+                                builder: (context, snapshot) {
+                                  final text =
+                                      snapshot.data ??
+                                      l10n.getString(
+                                        'verificationPrivacyNotice',
+                                      );
+                                  return Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 4.0,
+                                      vertical: 8,
+                                    ),
+                                    child: Text(
+                                      text,
+                                      textAlign: TextAlign.center,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(
+                                            color: Theme.of(context)
+                                                .textTheme
+                                                .bodySmall
+                                                ?.color
+                                                ?.withValues(alpha: 0.8),
                                           ),
-                                        )
-                                      : Text(l10n.getString('submitForReview')),
-                                ),
+                                    ),
+                                  );
+                                },
                               ),
+
+                              const SizedBox(height: 8),
+
+                              if (_selectedImage != null) ...[
+                                GestureDetector(
+                                  onTap: _openSelectedImagePreview,
+                                  child: Container(
+                                    height: 300,
+                                    width: double.infinity,
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(12),
+                                      image: DecorationImage(
+                                        image: MemoryImage(_selectedImage!),
+                                        fit: BoxFit.cover,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ],
-                          ],
+                          ),
                         ),
                       ],
-                    ),
-                  ),
-                ],
 
-                const SizedBox(height: 32),
-              ],
-            ),
+                      const SizedBox(height: 32),
+                    ],
+                  ),
+                ),
+              ),
+              if (shouldShowSubmissionSection)
+                _buildPinnedActionBar(l10n, canSubmit, semantic),
+            ],
           );
         },
       ),

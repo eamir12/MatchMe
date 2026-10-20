@@ -2429,9 +2429,11 @@ class LocalizationState {
     'profileLifestyle': 'Lifestyle',
     'profileFamily': 'Family',
     'profileReligion': 'Religion',
+    'profileReligiosity': 'Religiousness',
     'profileWizardReligionTitle': 'Your Religion',
     'profileWizardReligionSubtitle':
-        'Share your religious affiliation, or skip if you prefer not to say.',
+        'Share your religious affiliation and how religious or spiritual you are, or skip if you prefer not to say.',
+    'profileWizardReligiosityQuestion': 'How religious or spiritual are you?',
 
     // Lifestyle option values
     'lifestyleSmokingNever': 'Never',
@@ -2462,6 +2464,12 @@ class LocalizationState {
     'religionBuddhism': 'Buddhism',
     'religionJudaism': 'Judaism',
     'religionOther': 'Other',
+    'religiosityNotSpecified': 'Not specified',
+    'religiosityVeryReligious': 'Very religious',
+    'religiosityModeratelyReligious': 'Moderately religious',
+    'religiositySpiritualNotReligious': 'Spiritual but not religious',
+    'religiosityNotReligious': 'Not religious',
+    'religiosityPreferNotToSay': 'Prefer not to say',
     'profileYes': 'Yes',
     'profileNo': 'No',
     'profileHasChildren': 'Has children',
@@ -3335,6 +3343,8 @@ class LocalizationState {
     'settingsBeliefs': 'Beliefs',
     'settingsReligion': 'Religion',
     'settingsReligionAny': 'Any',
+    'settingsReligiosity': 'Religiousness',
+    'settingsReligiosityAny': 'Any',
     'settingsSameReligionOnly': 'Same religion only',
     'settingsPremiumActive': 'Premium Active',
     'settingsPremiumThanks': 'Thanks for your support!',
@@ -3692,6 +3702,8 @@ class LocalizationState {
     'verificationSubmittedPrefix': 'Submitted',
     'verificationSubmittedSuccess':
         'Verification photo submitted successfully! We will review it shortly.',
+    'verificationTakePhotoHint':
+        'Review the requirements, then tap {button} at the bottom of the screen to start.',
     'verificationUnderReview': 'Verification under review',
     'verificationUnknownUser': 'Unknown user',
     'verified': 'Verified',
@@ -3959,7 +3971,7 @@ class LocalizationState {
         'Choose your lifestyle options, then tap Next.',
     'voiceGuidanceStepFamily': 'Share your family plans, then tap Next.',
     'voiceGuidanceStepReligion':
-        'Choose your religious background, then tap Next.',
+        'Choose your religious background and how religious or spiritual you are, then tap Next.',
     'voiceGuidanceStepMatchPrefs':
         'Set what you are looking for in a match, then tap Next.',
     'voiceGuidanceStepSocial':
@@ -3975,6 +3987,8 @@ class LocalizationState {
     'voiceGuidancePrimaryPhotoOk': 'Your main photo looks great.',
     'voiceGuidanceVerificationIntro':
         'Welcome to photo verification… Your face must be clearly visible, in good lighting, with no filters or edits… I will guide you.',
+    'voiceGuidanceVerificationTakePhotoHint':
+        'When you are ready, tap {button} at the bottom of the screen to start.',
     'voiceGuidanceVerificationGesture': '{gesture}. {description}',
     'voiceGuidanceVerificationCaptured':
         'Photo captured… If it looks good, tap Submit for review.',

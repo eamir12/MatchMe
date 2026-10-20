@@ -476,7 +476,7 @@ class UserProfile {
   final Map<String, dynamic>?
   lifestyle; // { smoking, drinking, exercise, diet }
   final Map<String, dynamic>? family; // { has_children, wants_children }
-  final Map<String, dynamic>? religion; // { religion, importance }
+  final Map<String, dynamic>? religion; // { religion, religiosity }
 
   // Per-intent filter preferences (combined value + strict)
   final Map<String, Map<String, dynamic>>
@@ -1290,6 +1290,19 @@ class UserProfile {
         final otherR = other.religion?['religion'] as String?;
         if (otherR == null ||
             !anyFilterMatches(optionMapping, 'religion', list, otherR)) {
+          return false;
+        }
+      }
+      final religiosityList = _extractList(rf, 'religiosity', 'religiosity');
+      if (religiosityList.isNotEmpty && !religiosityList.contains('any')) {
+        final otherReligiosity = other.religion?['religiosity'] as String?;
+        if (otherReligiosity == null ||
+            !anyFilterMatches(
+              optionMapping,
+              'religiosity',
+              religiosityList,
+              otherReligiosity,
+            )) {
           return false;
         }
       }

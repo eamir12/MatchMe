@@ -166,14 +166,24 @@ class _MatchPreferencesScreenState
       _familyFilters[intentKey] = ff;
     }
     final r = profile.religion;
-    if (r != null && r['religion'] != null) {
+    if (r != null) {
       final rf = Map<String, dynamic>.from(_religionFilters[intentKey] ?? {});
-      final fv = profileToFilter(
-        allOptions,
-        'religion',
-        r['religion'] as String,
-      );
-      if (fv != null) rf['religions'] = [fv];
+      if (r['religion'] != null) {
+        final fv = profileToFilter(
+          allOptions,
+          'religion',
+          r['religion'] as String,
+        );
+        if (fv != null) rf['religions'] = [fv];
+      }
+      if (r['religiosity'] != null) {
+        final fv = profileToFilter(
+          allOptions,
+          'religiosity',
+          r['religiosity'].toString(),
+        );
+        if (fv != null) rf['religiosity'] = [fv];
+      }
       _religionFilters[intentKey] = rf;
     }
     if (profile.height != null) {
@@ -872,6 +882,22 @@ class _MatchPreferencesScreenState
                             _religionFilters[ik] ?? {},
                           );
                           m['religions'] = v;
+                          _religionFilters[ik] = m;
+                          _markChanged();
+                          setState(() {});
+                        },
+                        l10n,
+                      ),
+                      const SizedBox(height: 10),
+                      _buildMultiFilterRow(
+                        l10n.getString('settingsReligiosity'),
+                        _filterOptionList(l10n, 'religiosity'),
+                        _getListField(rf, 'religiosity', 'religiosity'),
+                        (v) {
+                          final m = Map<String, dynamic>.from(
+                            _religionFilters[ik] ?? {},
+                          );
+                          m['religiosity'] = v;
                           _religionFilters[ik] = m;
                           _markChanged();
                           setState(() {});

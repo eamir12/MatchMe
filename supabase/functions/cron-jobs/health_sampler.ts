@@ -27,6 +27,10 @@ import {
 } from "../_shared/project_logs_health.ts";
 
 const SAMPLE_INTERVAL_MS = 29.5 * 60 * 1000;
+// Master switch shared with the admin app (`app_config`). When false the
+// entire feature is off: the app stops its live probes and this sampler
+// stops collecting/writing snapshots.
+const MONITORING_ENABLED_CONFIG_KEY = "admin.supabase_monitoring.enabled";
 
 type SnapshotRow = {
   source: "db" | "queue" | "statuspage" | "usage" | "auth" | "errors";
@@ -38,6 +42,43 @@ function log(msg: string, extra?: Record<string, unknown>) {
   console.log(
     `[health-sampler] ${msg}${extra ? ` ${JSON.stringify(extra)}` : ""}`,
   );
+}
+
+function configBoolean(value: unknown, fallback: boolean): boolean {
+  if (value == null) return fallback;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  const normalized = String(value)
+    .trim()
+    .replace(/^"|"$/g, "")
+    .toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+async function isMonitoringEnabled(
+  supabase: SupabaseClient,
+): Promise<boolean> {
+  try {
+    const { data, error } = await supabase
+      .from("app_config")
+      .select("config_value")
+      .eq("config_key", MONITORING_ENABLED_CONFIG_KEY)
+      .maybeSingle();
+    if (error) {
+      log("monitoring flag read failed; assuming enabled", {
+        error: error.message,
+      });
+      return true;
+    }
+    return configBoolean(data?.config_value, true);
+  } catch (e) {
+    log("monitoring flag read failed; assuming enabled", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return true;
+  }
 }
 
 async function shouldSkip(supabase: SupabaseClient): Promise<boolean> {
@@ -187,6 +228,11 @@ export async function handleHealthSampler(): Promise<void> {
   const supabase: SupabaseClient = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false },
   });
+
+  if (!(await isMonitoringEnabled(supabase))) {
+    log("sampling skipped; system health monitoring disabled in app_config");
+    return;
+  }
 
   if (await shouldSkip(supabase)) return;
 

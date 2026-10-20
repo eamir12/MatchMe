@@ -2863,6 +2863,10 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             r['religion'].toString().trim().isNotEmpty) {
           return true;
         }
+        if (r['religiosity'] != null &&
+            r['religiosity'].toString().trim().isNotEmpty) {
+          return true;
+        }
         break;
       case ProfileWizardSection.socialLinks:
         if ((p.instagramUrl ?? '').trim().isNotEmpty) return true;
@@ -3634,6 +3638,26 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     }
     final key = 'religion$value';
     return _tryGetString(l10n, key) ?? _humanizeKey(value);
+  }
+
+  String _localizedReligiosityValue(LocalizationState l10n, String value) {
+    final opts =
+        ref
+            .watch(
+              fieldOptionsProvider((
+                fieldKey: 'religiosity',
+                context: 'profile',
+              )),
+            )
+            .asData
+            ?.value ??
+        [];
+    final match = opts.where((o) => o.profileValue == value).firstOrNull;
+    if (match != null && match.profileDisplayKey.isNotEmpty) {
+      final localized = _tryGetString(l10n, match.profileDisplayKey);
+      if (localized != null) return localized;
+    }
+    return _humanizeKey(value);
   }
 
   String _localizedFamilyWantsChildrenValue(
@@ -9542,6 +9566,17 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             ),
           );
         }
+        if (toVal['religiosity'] != null &&
+            (toVal['religiosity'] as String).trim().isNotEmpty) {
+          items.add(
+            Padding(
+              padding: const EdgeInsets.only(left: 16, bottom: 4),
+              child: Text(
+                '${l10n.getString('profileReligiosity')}: ${_localizedReligiosityValue(l10n, toVal['religiosity'] as String)}',
+              ),
+            ),
+          );
+        }
         detailChanges.add(
           ListTile(
             leading: editIcon,
@@ -9770,6 +9805,11 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         if (const DeepCollectionEquality().equals(f, t)) continue;
         appendIntentFilters(f, t, ik, [
           ('religions', l10n.getString('settingsReligion'), 'religion'),
+          (
+            'religiosity',
+            l10n.getString('settingsReligiosity'),
+            'religiosity',
+          ),
         ]);
       }
     }
@@ -11223,6 +11263,7 @@ class ReligionWizardPage extends ConsumerStatefulWidget {
 
 class _ReligionWizardPageState extends ConsumerState<ReligionWizardPage> {
   String? _religion;
+  String? _religiosity;
   bool _initializedDefaults = false;
 
   @override
@@ -11243,22 +11284,32 @@ class _ReligionWizardPageState extends ConsumerState<ReligionWizardPage> {
     final religion = profile.religion;
     if (religion != null) {
       _religion = religion['religion'] as String?;
+      _religiosity = religion['religiosity'] as String?;
     }
   }
 
   void _updateParent() {
     final data = <String, dynamic>{};
     if (_religion != null) data['religion'] = _religion;
+    if (_religiosity != null) data['religiosity'] = _religiosity;
     ref
         .read(profileEditProvider(widget.profile.id).notifier)
         .updateReligion(data.isEmpty ? null : data);
   }
 
   List<_OptionDef> _religionOptions(LocalizationState l10n) {
+    return _fieldOptions(l10n, 'religion');
+  }
+
+  List<_OptionDef> _religiosityOptions(LocalizationState l10n) {
+    return _fieldOptions(l10n, 'religiosity');
+  }
+
+  List<_OptionDef> _fieldOptions(LocalizationState l10n, String fieldKey) {
     final opts =
         ref
             .watch(
-              fieldOptionsProvider((fieldKey: 'religion', context: 'profile')),
+              fieldOptionsProvider((fieldKey: fieldKey, context: 'profile')),
             )
             .asData
             ?.value ??
@@ -11285,6 +11336,7 @@ class _ReligionWizardPageState extends ConsumerState<ReligionWizardPage> {
           if (religion != null) {
             setState(() {
               _religion = religion['religion'] as String?;
+              _religiosity = religion['religiosity'] as String?;
             });
           }
         }
@@ -11330,6 +11382,11 @@ class _ReligionWizardPageState extends ConsumerState<ReligionWizardPage> {
 
           // Religion choice chips
           _buildReligionChips(l10n),
+
+          const SizedBox(height: 24),
+
+          // Degree religious / spiritual chips
+          _buildReligiosityChips(l10n),
 
           const SizedBox(height: 60),
         ],
@@ -11379,6 +11436,71 @@ class _ReligionWizardPageState extends ConsumerState<ReligionWizardPage> {
                 selected: isSelected,
                 onSelected: (_) {
                   setState(() => _religion = isSelected ? null : opt.value);
+                  _updateParent();
+                },
+                selectedColor: Theme.of(
+                  context,
+                ).colorScheme.primary.withValues(alpha: 0.15),
+                backgroundColor: Theme.of(
+                  context,
+                ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+                shape: StadiumBorder(
+                  side: BorderSide(
+                    color: isSelected
+                        ? Theme.of(context).colorScheme.primary
+                        : Theme.of(context).dividerColor,
+                  ),
+                ),
+              );
+            }),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildReligiosityChips(LocalizationState l10n) {
+    final religiosityOptions = _religiosityOptions(l10n);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          _optionalFieldLabel(l10n, 'profileWizardReligiosityQuestion'),
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            ChoiceChip(
+              label: Text(l10n.getString('religiosityNotSpecified')),
+              selected: _religiosity == null,
+              onSelected: (_) {
+                setState(() => _religiosity = null);
+                _updateParent();
+              },
+              selectedColor: Theme.of(
+                context,
+              ).colorScheme.primary.withValues(alpha: 0.15),
+              backgroundColor: Theme.of(
+                context,
+              ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+              shape: StadiumBorder(
+                side: BorderSide(
+                  color: _religiosity == null
+                      ? Theme.of(context).colorScheme.primary
+                      : Theme.of(context).dividerColor,
+                ),
+              ),
+            ),
+            ...religiosityOptions.map((opt) {
+              final isSelected = _religiosity == opt.value;
+              return ChoiceChip(
+                label: Text(opt.label),
+                selected: isSelected,
+                onSelected: (_) {
+                  setState(() => _religiosity = isSelected ? null : opt.value);
                   _updateParent();
                 },
                 selectedColor: Theme.of(
@@ -11513,6 +11635,7 @@ class _UnifiedMatchPreferencesWizardPageState
       if (_intentReligion(ik) && !_religionFilters.containsKey(ik)) {
         _religionFilters[ik] = {
           'religions': ['any'],
+          'religiosity': ['any'],
         };
         changed = true;
       }
@@ -11990,6 +12113,26 @@ class _UnifiedMatchPreferencesWizardPageState
                       _religionFilters[ik] ?? {},
                     );
                     m['religions'] = v;
+                    _religionFilters[ik] = m;
+                    _updateParent();
+                    setState(() {});
+                  },
+                  l10n,
+                ),
+                const SizedBox(height: 12),
+                _buildMultiFilterRow(
+                  l10n.getString('settingsReligiosity'),
+                  _filterOptions(l10n, 'religiosity'),
+                  _getListField(
+                    intentReligion,
+                    'religiosity',
+                    'religiosity',
+                  ),
+                  (v) {
+                    final m = Map<String, dynamic>.from(
+                      _religionFilters[ik] ?? {},
+                    );
+                    m['religiosity'] = v;
                     _religionFilters[ik] = m;
                     _updateParent();
                     setState(() {});

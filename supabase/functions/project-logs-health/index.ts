@@ -26,6 +26,8 @@ const managementToken = (Deno.env.get("MANAGEMENT_API_TOKEN") ?? "").trim();
 // fresh numbers on demand.
 const SNAPSHOT_CACHE_TTL_MS = 40 * 60 * 1000;
 
+const MONITORING_ENABLED_CONFIG_KEY = "admin.supabase_monitoring.enabled";
+
 const svc =
   supabaseUrl && serviceRoleKey
     ? createClient(supabaseUrl, serviceRoleKey, {
@@ -44,6 +46,37 @@ function jsonResponse(body: Record<string, unknown>, status = 200) {
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
+}
+
+function configBoolean(value: unknown, fallback: boolean): boolean {
+  if (value == null) return fallback;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  const normalized = String(value)
+    .trim()
+    .replace(/^"|"$/g, "")
+    .toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+/// Refuse to spend Management API / ClickHouse queries when the admin app's
+/// System Health feature is disabled. Older admin clients may still poll this
+/// endpoint, so the switch is enforced server-side as well.
+async function isMonitoringEnabled(): Promise<boolean> {
+  if (!svc) return true;
+  try {
+    const { data, error } = await svc
+      .from("app_config")
+      .select("config_value")
+      .eq("config_key", MONITORING_ENABLED_CONFIG_KEY)
+      .maybeSingle();
+    if (error) return true;
+    return configBoolean(data?.config_value, true);
+  } catch (_) {
+    return true;
+  }
 }
 
 function isFresh(capturedAt: string): boolean {
@@ -142,6 +175,15 @@ serve(withInvocationLogging("project-logs-health", async (req) => {
   const allowed = await authorize(req);
   if (!allowed) {
     return jsonResponse({ error: "forbidden" }, 403);
+  }
+
+  if (!(await isMonitoringEnabled())) {
+    return jsonResponse({
+      disabled: true,
+      configured: false,
+      checked_at: new Date().toISOString(),
+      warnings: ["Supabase monitoring is disabled in app_config."],
+    });
   }
 
   const force = await readForceFlag(req);

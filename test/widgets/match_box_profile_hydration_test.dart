@@ -287,26 +287,125 @@ void main() {
       );
       expect(ageFinder, findsOneWidget, reason: 'expected an age on the card');
 
-      Row? metaRow;
+      Wrap? metaWrap;
       tester.element(ageFinder).visitAncestorElements((ancestor) {
-        if (ancestor.widget is Row) {
-          metaRow = ancestor.widget as Row;
+        if (ancestor.widget is Wrap) {
+          metaWrap = ancestor.widget as Wrap;
           return false;
         }
         return true;
       });
-      expect(metaRow, isNotNull, reason: 'the age sits inside a row');
+      expect(metaWrap, isNotNull, reason: 'the age sits inside a wrap');
       expect(
         find.descendant(
-          of: find.byWidget(metaRow!),
+          of: find.byWidget(metaWrap!),
           matching: find.text('Verified'),
         ),
         findsOneWidget,
-        reason: 'Verified must share the age/gender row',
+        reason: 'Verified must share the age/gender line',
       );
 
       final verifiedText = tester.widget<Text>(find.text('Verified'));
       expect(verifiedText.style?.fontSize, greaterThanOrEqualTo(12));
+      expect(tester.takeException(), isNull);
+
+      await tester.pump(const Duration(seconds: 11));
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump(const Duration(seconds: 51));
+    },
+  );
+
+  testWidgets(
+    'match card keeps age and gender readable on a narrow phone with badges',
+    (tester) async {
+      tester.view.physicalSize = const Size(393, 852);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final now = DateTime.now();
+      final match = MatchModel(
+        id: 'narrow-match',
+        userAId: _currentUserId,
+        userBId: _otherUserId,
+        otherUserId: _otherUserId,
+        matchedIntent: 'friendship',
+        matchType: 'manual_test',
+        createdAt: now,
+      );
+      final l10n = LocalizationState(
+        currentLocale: const Locale('en'),
+        textDirection: TextDirection.ltr,
+        strings: const {'gender_male': 'Male'},
+        supportedLanguages: const [],
+      );
+      final fullProfile = UserProfile.fromMap({
+        'id': _otherUserId,
+        'name': 'Eran Example',
+        'photos': const ['https://example.com/avatar.jpg?token=valid'],
+        'is_verified': true,
+        'date_of_birth': '1979-01-01',
+        'gender': 'male',
+        'profile_completeness': 100,
+      });
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            localizationProvider.overrideWith(() => _TestLocalization(l10n)),
+            otherUserProfileProvider(
+              _otherUserId,
+            ).overrideWith((ref) => Future.value(fullProfile)),
+            userProfileProvider(_currentUserId).overrideWith(
+              (ref) => Stream.value(_profile(_currentUserId, 'Viewer Example')),
+            ),
+            userChatIdsProvider(
+              _currentUserId,
+            ).overrideWith((ref) => Stream.value(<String>{})),
+            recentChatsProvider(_currentUserId).overrideWith(
+              (ref) => Stream.value([
+                ChatModel.fromJsonRpc({
+                  'match_id': 'narrow-match',
+                  'other_user_id': _otherUserId,
+                  'other_user_name': 'Eran Example',
+                  'other_user_photos': const <String>[],
+                  'last_message_at': now.toIso8601String(),
+                }),
+              ]),
+            ),
+            matchExpiryNowProvider.overrideWith(
+              (ref) => Stream.value(now),
+            ),
+            userRatingSummaryProvider(_otherUserId).overrideWith(
+              (ref) async => const UserRatingSummary(
+                ratedByCount: 3,
+                q1Avg: 3.8,
+                q2Avg: 3.8,
+                q3Avg: 3.8,
+                q4Avg: 3.8,
+                q5Avg: 3.8,
+                overallAvg: 3.8,
+              ),
+            ),
+          ],
+          child: MaterialApp(
+            home: Scaffold(body: MatchBox(match: match)),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      final metaFinder = find.text('47  ·  Male');
+      expect(metaFinder, findsOneWidget);
+      expect(
+        tester.getSize(metaFinder).height,
+        lessThan(40),
+        reason: 'badges must wrap below the age/gender text, not squeeze it '
+            'into a one-character-wide column',
+      );
+      expect(find.text('Verified'), findsOneWidget);
+      expect(find.text('Complete'), findsOneWidget);
       expect(tester.takeException(), isNull);
 
       await tester.pump(const Duration(seconds: 11));
