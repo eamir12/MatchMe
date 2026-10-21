@@ -137,6 +137,13 @@ dev_dependencies:
   mockito: ^5.3.0
   mocktail: ^1.0.0
 
+  # The vendored realtime client the app talks to. Imported directly by the
+  # realtime regression tests (they drive a real Phoenix socket against a
+  # local fake server). Must stay in sync with the dependency_overrides entry
+  # below.
+  realtime_client:
+    path: third_party/realtime_client
+
 
   # Riverpod annotations used by generators
   # riverpod_annotation: ^3.0.3

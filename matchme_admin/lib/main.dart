@@ -26,6 +26,7 @@ import 'package:matchme_admin/services/admin_local_db_service.dart';
 import 'package:matchme_admin/services/admin_offline_cache_manager.dart';
 import 'package:matchme_admin/services/admin_realtime_refresher.dart';
 import 'package:matchme_admin/services/admin_session_service.dart';
+import 'package:matchme_admin/utils/plural_rules.dart';
 import 'package:matchme_admin/services/admin_sync_manager.dart';
 import 'package:matchme_admin/services/public_reference_data_service.dart';
 import 'package:matchme_admin/services/system_health_monitor.dart';
@@ -732,12 +733,83 @@ class LocalizationState {
     );
   }
 
-  String getString(String key) {
-    final translation = strings[key];
-    if (translation != null && translation.isNotEmpty) return translation;
-    final fallback = _defaultTranslations[key];
-    if (fallback != null && fallback.isNotEmpty) return fallback;
+  /// The parameter that carries the quantity of a countable noun unless the
+  /// caller says otherwise.
+  static const String kDefaultPluralParam = 'count';
+
+  /// Returns the translation stored under [key].
+  ///
+  /// [params] are substituted into `{name}` placeholders.
+  ///
+  /// When [params] carries a number for the plural parameter ([pluralParam],
+  /// `count` by default) the lookup prefers a plural specific variant of
+  /// [key] — `<key>_one`, `<key>_two`, … — over the base key, so "1 user"
+  /// and "2 users" can use different templates.
+  String getString(
+    String key, {
+    Map<String, String>? params,
+    String? pluralParam,
+  }) {
+    final resolvedKey = _resolvePluralKey(key, params, pluralParam);
+
+    final translation = strings[resolvedKey];
+    if (translation != null && translation.isNotEmpty) {
+      return _applyParams(translation, params);
+    }
+    final fallback = _defaultTranslations[resolvedKey];
+    if (fallback != null && fallback.isNotEmpty) {
+      return _applyParams(fallback, params);
+    }
+
+    // The base key may still hold a value even when the plural variant does
+    // not (a locale that never got the `_one` row).
+    final baseTranslation = strings[key];
+    if (baseTranslation != null && baseTranslation.isNotEmpty) {
+      return _applyParams(baseTranslation, params);
+    }
+    final baseFallback = _defaultTranslations[key];
+    if (baseFallback != null && baseFallback.isNotEmpty) {
+      return _applyParams(baseFallback, params);
+    }
+
     return '$key...';
+  }
+
+  /// Picks the key that carries the right plural form for [key].
+  ///
+  /// The base key holds the plural ("other") form; the singular and — for
+  /// Hebrew — the dual live under `<key>_one` and `<key>_two`.
+  String _resolvePluralKey(
+    String key,
+    Map<String, String>? params,
+    String? pluralParam,
+  ) {
+    if (params == null || params.isEmpty) return key;
+    final raw = params[pluralParam ?? kDefaultPluralParam];
+    if (raw == null) return key;
+    final count = num.tryParse(raw.trim());
+    if (count == null) return key;
+
+    final category = pluralCategoryFor(
+      languageCode: locale.languageCode,
+      count: count,
+    );
+    if (category == PluralCategory.other) return key;
+
+    final pluralKey = '${key}_${category.keySuffix}';
+    final variant = strings[pluralKey] ?? _defaultTranslations[pluralKey];
+    if (variant != null && variant.isNotEmpty) return pluralKey;
+    return key;
+  }
+
+  /// Simple parameter substitution: replaces {key} tokens with the values.
+  static String _applyParams(String s, Map<String, String>? params) {
+    if (params == null || params.isEmpty) return s;
+    var out = s;
+    params.forEach((k, v) {
+      out = out.replaceAll('{$k}', v);
+    });
+    return out;
   }
 }
 
@@ -2231,13 +2303,8 @@ class _SystemHealthScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final l10n = ref.watch(localizationProvider);
     return AdminSystemHealthDashboard(
-      t: (key, {params}) {
-        var value = l10n.getString(key);
-        params?.forEach((paramKey, paramValue) {
-          value = value.replaceAll('{$paramKey}', paramValue);
-        });
-        return value;
-      },
+      t: (key, {params, pluralParam}) =>
+          l10n.getString(key, params: params, pluralParam: pluralParam),
       localeCode: l10n.locale.languageCode,
       textDirection: l10n.textDirection,
     );
@@ -2252,13 +2319,8 @@ class _EventImportFeedbackScreen extends ConsumerWidget {
     final l10n = ref.watch(localizationProvider);
     return AdminEventImportFeedbackDashboard(
       localeCode: l10n.locale.languageCode,
-      t: (key, {params}) {
-        var value = l10n.getString(key);
-        params?.forEach((paramKey, paramValue) {
-          value = value.replaceAll('{$paramKey}', paramValue);
-        });
-        return value;
-      },
+      t: (key, {params, pluralParam}) =>
+          l10n.getString(key, params: params, pluralParam: pluralParam),
     );
   }
 }
@@ -2271,13 +2333,8 @@ class _PromoCodesScreen extends ConsumerWidget {
     final l10n = ref.watch(localizationProvider);
     return AdminPromoCodeDashboard(
       localeCode: l10n.locale.languageCode,
-      t: (key, {params}) {
-        var value = l10n.getString(key);
-        params?.forEach((paramKey, paramValue) {
-          value = value.replaceAll('{$paramKey}', paramValue);
-        });
-        return value;
-      },
+      t: (key, {params, pluralParam}) =>
+          l10n.getString(key, params: params, pluralParam: pluralParam),
     );
   }
 }
@@ -2290,13 +2347,8 @@ class _MatchInspectorScreen extends ConsumerWidget {
     final l10n = ref.watch(localizationProvider);
     return AdminMatchComparisonDashboard(
       localeCode: l10n.locale.languageCode,
-      t: (key, {params}) {
-        var value = l10n.getString(key);
-        params?.forEach((paramKey, paramValue) {
-          value = value.replaceAll('{$paramKey}', paramValue);
-        });
-        return value;
-      },
+      t: (key, {params, pluralParam}) =>
+          l10n.getString(key, params: params, pluralParam: pluralParam),
     );
   }
 }
@@ -2309,13 +2361,8 @@ class _UserMatchManagementScreen extends ConsumerWidget {
     final l10n = ref.watch(localizationProvider);
     return AdminUserMatchManagementDashboard(
       localeCode: l10n.locale.languageCode,
-      t: (key, {params}) {
-        var value = l10n.getString(key);
-        params?.forEach((paramKey, paramValue) {
-          value = value.replaceAll('{$paramKey}', paramValue);
-        });
-        return value;
-      },
+      t: (key, {params, pluralParam}) =>
+          l10n.getString(key, params: params, pluralParam: pluralParam),
     );
   }
 }
@@ -2327,13 +2374,8 @@ class _SponsoredAdsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final l10n = ref.watch(localizationProvider);
     return IntegratedAdDashboard(
-      t: (key, {params}) {
-        var value = l10n.getString(key);
-        params?.forEach((paramKey, paramValue) {
-          value = value.replaceAll('{$paramKey}', paramValue);
-        });
-        return value;
-      },
+      t: (key, {params, pluralParam}) =>
+          l10n.getString(key, params: params, pluralParam: pluralParam),
       localeCode: l10n.locale.languageCode,
       textDirection: l10n.textDirection,
     );
@@ -2811,7 +2853,8 @@ class _AdminShellState extends ConsumerState<_AdminShell>
                 child: Column(
                   children: [
                     AdminOfflineIndicator(
-                      t: (key, {params}) => l10n.getString(key),
+                      t: (key, {params, pluralParam}) =>
+                          l10n.getString(key, params: params, pluralParam: pluralParam),
                     ),
                     Expanded(child: content),
                   ],
@@ -2841,7 +2884,8 @@ class _AdminShellState extends ConsumerState<_AdminShell>
               child: Column(
                 children: [
                   AdminOfflineIndicator(
-                    t: (key, {params}) => l10n.getString(key),
+                    t: (key, {params, pluralParam}) =>
+                          l10n.getString(key, params: params, pluralParam: pluralParam),
                   ),
                   Expanded(
                     child: Row(
@@ -4244,16 +4288,12 @@ class _DashboardScreenState extends ConsumerState<_DashboardScreen>
                             const Spacer(),
                             if (monitoringEnabled)
                               SystemHealthPill(
-                                t: (key, {params}) {
-                                  var value = l10n.getString(key);
-                                  params?.forEach((paramKey, paramValue) {
-                                    value = value.replaceAll(
-                                      '{$paramKey}',
-                                      paramValue,
-                                    );
-                                  });
-                                  return value;
-                                },
+                                t: (key, {params, pluralParam}) =>
+                                    l10n.getString(
+                                      key,
+                                      params: params,
+                                      pluralParam: pluralParam,
+                                    ),
                                 onTap: widget.onOpenSystemHealth,
                               ),
                           ],
@@ -6733,11 +6773,16 @@ class _AdminUserMapScreenState extends ConsumerState<_AdminUserMapScreen>
   String _badgeText(LocalizationState l10n) {
     final shown = _displayUsers.length;
     final total = _totalCount;
-    final template = l10n.getString('adminMapUsersCount');
     if (!_hasFocusFilter && total != null && total > shown) {
-      return template.replaceAll('{count}', '$shown of $total');
+      return l10n.getString(
+        'adminMapUsersCount',
+        params: {'count': '$shown of $total'},
+      );
     }
-    return template.replaceAll('{count}', '$shown');
+    return l10n.getString(
+      'adminMapUsersCount',
+      params: {'count': '$shown'},
+    );
   }
 
   /// True when the banner explaining unpinnable users should be shown.
@@ -7022,9 +7067,10 @@ class _AdminUserMapScreenState extends ConsumerState<_AdminUserMapScreen>
                         const SizedBox(width: 6),
                         Flexible(
                           child: Text(
-                            l10n
-                                .getString('adminMapWithoutLocation')
-                                .replaceAll('{count}', '$_withoutLocation'),
+                            l10n.getString(
+                              'adminMapWithoutLocation',
+                              params: {'count': '$_withoutLocation'},
+                            ),
                             style: const TextStyle(fontSize: 12),
                           ),
                         ),
@@ -11681,9 +11727,11 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
                       ...lastActiveOptions.map(
                         (d) => DropdownMenuEntry(
                           value: d,
-                          label: l10n
-                              .getString('adminBroadcastsLastActiveValue')
-                              .replaceAll('{days}', d.toString()),
+                          label: l10n.getString(
+                            'adminBroadcastsLastActiveValue',
+                            params: {'days': d.toString()},
+                            pluralParam: 'days',
+                          ),
                         ),
                       ),
                     ],
@@ -12135,9 +12183,10 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
               chips.add(
                 InputChip(
                   label: Text(
-                    l10n
-                        .getString('adminBroadcastsRecipientsChip')
-                        .replaceAll('{count}', userIds.length.toString()),
+                    l10n.getString(
+                      'adminBroadcastsRecipientsChip',
+                      params: {'count': userIds.length.toString()},
+                    ),
                   ),
                   onDeleted: () => removeCriteriaKey('user_ids'),
                 ),
@@ -12251,7 +12300,7 @@ class _BroadcastsScreenState extends ConsumerState<_BroadcastsScreen> {
               chips.add(
                 InputChip(
                   label: Text(
-                    '${criteriaLabel('last_active_days')}: ${l10n.getString('adminBroadcastsLastActiveValue').replaceAll('{days}', lastActive.toString())}',
+                    '${criteriaLabel('last_active_days')}: ${l10n.getString('adminBroadcastsLastActiveValue', params: {'days': lastActive.toString()}, pluralParam: 'days')}',
                   ),
                   onDeleted: () => removeCriteriaKey('last_active_days'),
                 ),
@@ -15074,9 +15123,10 @@ class _TranslationsScreenState extends ConsumerState<_TranslationsScreen> {
                     ),
                     const SizedBox(height: 12),
                     Text(
-                      l10n
-                          .getString('adminTranslationsBulkImportParsedCount')
-                          .replaceAll('{count}', parsedCount.toString()),
+                      l10n.getString(
+                        'adminTranslationsBulkImportParsedCount',
+                        params: {'count': parsedCount.toString()},
+                      ),
                       style: Theme.of(ctx).textTheme.labelLarge,
                     ),
                   ],
@@ -15176,9 +15226,10 @@ class _TranslationsScreenState extends ConsumerState<_TranslationsScreen> {
                   crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     Text(
-                      l10n
-                          .getString('adminTranslationsCount')
-                          .replaceAll('{count}', filtered.length.toString()),
+                      l10n.getString(
+                        'adminTranslationsCount',
+                        params: {'count': filtered.length.toString()},
+                      ),
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     OutlinedButton.icon(
@@ -16081,9 +16132,10 @@ class _AppConfigScreenState extends ConsumerState<_AppConfigScreen> {
                 child: Text(l10n.getString('adminAppConfigClearFilters')),
               ),
               Text(
-                l10n
-                    .getString('adminAppConfigCount')
-                    .replaceAll('{count}', filtered.length.toString()),
+                l10n.getString(
+                  'adminAppConfigCount',
+                  params: {'count': filtered.length.toString()},
+                ),
               ),
             ],
           ),
@@ -19522,9 +19574,10 @@ class _UserVerificationScreenState
                 ),
               ),
               Text(
-                l10n
-                    .getString('adminVerificationCount')
-                    .replaceAll('{count}', filtered.length.toString()),
+                l10n.getString(
+                  'adminVerificationCount',
+                  params: {'count': filtered.length.toString()},
+                ),
               ),
             ],
           ),
@@ -21415,9 +21468,10 @@ class _ProfileEditRequestsScreenState
                 ),
               ),
               Text(
-                l10n
-                    .getString('adminProfileEditsCount')
-                    .replaceAll('{count}', filtered.length.toString()),
+                l10n.getString(
+                  'adminProfileEditsCount',
+                  params: {'count': filtered.length.toString()},
+                ),
               ),
             ],
           ),
@@ -21807,8 +21861,12 @@ const Map<String, String> _defaultTranslations = {
   'adminAiProviderDeepL': 'DeepL',
   'adminAiProviderGemini': 'Gemini',
   'adminAiQuotaAlertBody':
-      '{provider}: {used}/{limit} {unit} used ({percent}%)',
-  'adminAiQuotaAlertBodyNoLimit': '{provider}: {used} {unit} used',
+      '{provider}: {used}/{limit} {unit} ({percent}%)',
+  'adminAiQuotaAlertBodyNoLimit': '{provider}: {used} {unit}',
+  'adminAiQuotaUnitChars': 'characters used',
+  'adminAiQuotaUnitChars_one': 'character used',
+  'adminAiQuotaUnitRequests': 'requests used',
+  'adminAiQuotaUnitRequests_one': 'request used',
   'adminAiQuotaCriticalTitle': 'AI quota critical',
   'adminAiQuotaStatusCritical': 'Critical',
   'adminAiQuotaStatusOk': 'OK',
@@ -22703,7 +22761,11 @@ const Map<String, String> _defaultTranslations = {
   'adminSponsoredAdsPlatformWindows': 'Windows',
   'adminSponsoredAdsRemoveImage': 'Remove',
   'adminSponsoredAdsReportDetailsFallback': 'No additional details provided.',
-  'adminSponsoredAdsReportDialogSubtitle': '{count} reports from {users} users',
+  'adminSponsoredAdsReportDialogSubtitle': '{reports} from {users}',
+  'adminSponsoredAdsReportCount': '{count} reports',
+  'adminSponsoredAdsReportCount_one': '{count} report',
+  'adminSponsoredAdsReportUsers': '{count} users',
+  'adminSponsoredAdsReportUsers_one': '{count} user',
   'adminSponsoredAdsReportDialogTitle': 'Report details',
   'adminSponsoredAdsReportLastDialogTitle': 'Last report',
   'adminSponsoredAdsReportReasonUserReported': 'Reported by user',
@@ -23311,8 +23373,9 @@ const Map<String, String> _defaultTranslations = {
   'calendarSyncConnectMessage': 'Connect your calendar to sync events',
   'calendarSyncConnectOutlook': 'Connect Outlook Calendar',
   'calendarSyncDeselectAll': 'Deselect all',
-  'calendarSyncDeviceSummaryBody':
-      '{accounts} accounts found · {events} events found · {selected} selected',
+  'calendarSyncDeviceSummaryAccounts': '{count} accounts found',
+  'calendarSyncDeviceSummaryEvents': '{count} events found',
+  'calendarSyncDeviceSummarySelected': '{count} selected',
   'calendarSyncDeviceSummaryTitle': 'Device calendars',
   'calendarSyncDeviceUnknownAccount': 'Unknown account',
   'calendarSyncDuplicateBadge': 'Duplicate',
@@ -23570,13 +23633,10 @@ const Map<String, String> _defaultTranslations = {
   'dayWednesday': 'Wednesday',
   'dinner': 'Dinner',
   'done': 'Done',
-  'durationDay': '{count} day',
   'durationDays': '{count} days',
-  'durationHour': '{count} hour',
   'durationHours': '{count} hours',
   'durationLessThanMinute': 'Less than a minute',
   'durationLessThanOneMinute': 'less than 1 minute',
-  'durationMinute': '{count} minute',
   'durationMinutes': '{count} minutes',
   'editEventTitle': 'Edit Event',
   'editPhoto': 'Edit photo',
@@ -24250,8 +24310,7 @@ const Map<String, String> _defaultTranslations = {
   'offlineOkButton': 'OK',
   'offlinePendingChanges': 'Pending Changes',
   'offlinePendingChangesDescription':
-      'You have {count} pending change{plural} waiting to sync. These will be sent to the server when your connection is restored.\\n\\nActions in MatchMe will be unavailable until these sync.',
-  'offlinePendingChangesPlural': 's',
+      'You have {count} pending changes waiting to sync. These will be sent to the server when your connection is restored.\\n\\nActions in MatchMe will be unavailable until these sync.',
   'offlineReactToMessageBody':
       'Your reaction has been saved locally and will be added when you\'re back online.',
   'offlineReactToMessageTitle': 'Cannot add reaction while offline',
@@ -24269,8 +24328,7 @@ const Map<String, String> _defaultTranslations = {
   'offlineSensitiveActionsRequireInternet':
       'These features require an active internet connection.',
   'offlineSnackbarMessage': 'MatchMe is offline - using cached data',
-  'offlineSyncingChanges': 'Syncing {count} change{plural}',
-  'offlineSyncingChangesPlural': 's',
+  'offlineSyncingChanges': 'Syncing {count} changes',
   'offlineToggleSharedEventBody':
       'Your preference change has been saved locally and will update when you\'re back online.',
   'offlineToggleSharedEventTitle':
@@ -24320,8 +24378,6 @@ const Map<String, String> _defaultTranslations = {
   'onlineProvidersAvailableAccount': 'Available account',
   'onlineProvidersChooseGoogleAccount': 'Choose a Google account',
   'onlineProvidersChooseOutlookAccount': 'Choose an Outlook account',
-  'onlineProvidersEvents': 'events',
-  'onlineProvidersEventSingular': 'event',
   'onlineProvidersImportSelected': 'Import Selected ({count})',
   'onlineProvidersNoAccounts': 'No accounts connected',
   'onlineProvidersNoEvents': 'No events found',
@@ -24333,8 +24389,9 @@ const Map<String, String> _defaultTranslations = {
   'onlineProvidersRemoveAccountConfirm':
       'Are you sure you want to remove {account}?',
   'onlineProvidersSelectionSummary': '{selected} of {available} selected',
-  'onlineProvidersSummaryBody':
-      '{accounts} accounts connected · {events} events found · {selected} selected',
+  'onlineProvidersSummaryAccounts': '{count} accounts connected',
+  'onlineProvidersSummaryEvents': '{count} events found',
+  'onlineProvidersSummarySelected': '{count} selected',
   'onlineProvidersSummaryTitle': 'Online calendars',
   'onlineProvidersUseAnotherAccount': 'Use another {provider} account',
   'outdoors': 'Outdoors',
@@ -24511,9 +24568,9 @@ const Map<String, String> _defaultTranslations = {
   'profileUnknownIntent': 'Unknown Intent',
   'profileVerification': 'Profile Verification',
   'profileVerified': 'Your profile is verified',
-  'profileVerifiedBadge': 'Verified',
-  'profileVerifiedBadgeFemale': 'Verified',
-  'profileVerifiedBadgeNeutral': 'Verified',
+  'profileVerifiedBadge': 'Primary Photo Verified',
+  'profileVerifiedBadgeFemale': 'Primary Photo Verified',
+  'profileVerifiedBadgeNeutral': 'Primary Photo Verified',
   'profileWizardAddPhotoFromCamera': 'Take photo with camera',
   'profileWizardAddPhotoFromGallery': 'Add photo from gallery',
   'profileWizardAddPhotoTooltip': 'Add a photo',
@@ -24561,7 +24618,6 @@ const Map<String, String> _defaultTranslations = {
   'promoCodeExpired': 'This promo code has expired',
   'promoCodeExpiresIn': 'Expires in {days} days',
   'promoCodeExpiresInHours': 'Expires in {hours} hours',
-  'promoCodeExpiresInSingular': 'Expires in {days} day',
   'promoCodeExpiresToday': 'Expires today',
   'promoCodeGlobalLimitReached': 'This promo code has reached its usage limit',
   'promoCodeInvalid': 'Invalid or expired promo code',
@@ -24589,8 +24645,7 @@ const Map<String, String> _defaultTranslations = {
   'promoCodeValidationError': 'Error validating code: {error}',
   'promoCodeYouPay': 'You Pay',
   'promoDiscountFixedFormat': '{amount} Off',
-  'promoDiscountFreeDaysManyFormat': '{days} days Free',
-  'promoDiscountFreeDaysOneFormat': '{days} day Free',
+  'promoDiscountFreeDaysFormat': '{days} days Free',
   'promoDiscountPercentageFormat': '{amount}% Off',
   'promoDiscountSpecialOffer': 'Special Offer',
   'promoDiscountTierUpgradeFormat': 'Upgrade to {tier}',
@@ -25594,4 +25649,27 @@ const Map<String, String> _defaultTranslations = {
   'matchInspectorBusinessInterests': 'Business interests',
   'personalInterests': 'Personal interests',
   'businessInterests': 'Business interests',
+
+  // --- Plural forms ------------------------------------------------------
+  // The base key of a countable string holds the plural form; the singular
+  // lives under `<key>_one` and Hebrew's dual under `<key>_two`. getString
+  // picks the right one from the quantity it is handed, so "1 user" and
+  // "2 users" read correctly in every language.
+  // See lib/utils/plural_rules.dart for the rules.
+  'adminAppConfigCount_one': '{count} config',
+  'adminBroadcastsLastActiveValue_one': '{days} day',
+  'adminHealthAuthAlertDetail_one': '{count} auth failure in the last 15 minutes',
+  'adminHealthRegionsAllOk_one': 'All {total} region operational',
+  'adminHealthRegionsMore_one': '+{count} more region',
+  'adminMapUsersCount_one': '{count} user',
+  'adminProfileEditsCount_one': '{count} request',
+  'adminPromoCodesDateDays_one': '{count} day',
+  'adminPromoCodesDateWeeks_one': '{count} week',
+  'adminPromoCodesShowingCount_one': 'Showing {shown} of {total} code',
+  'adminPromoCodesUsesCount_one': '{count} use',
+  'adminTranslationsBulkImportParsedCount_one': '{count} row ready',
+  'adminTranslationsCount_one': '{count} key',
+  'adminVerificationCount_one': '{count} user',
+  'matchInspectorOpportunitiesExhausted_one':
+      'No chat after {count} match opportunity; will not match again',
 };

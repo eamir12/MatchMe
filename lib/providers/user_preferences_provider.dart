@@ -13,7 +13,8 @@ import 'package:matchme/services/secure_storage_service.dart';
 import 'package:matchme/utils/permission_coordinator.dart';
 import 'package:matchme/utils/resume_diagnostics.dart';
 import 'package:matchme/utils/offline_utils.dart';
-import 'package:matchme/services/supabase_realtime_manager.dart';
+import 'package:matchme/services/my_user_realtime_service.dart';
+import 'package:matchme/web_imports.dart' as html;
 
 enum UnitSystemPreference { system, metric, imperial }
 
@@ -226,6 +227,63 @@ class NotificationPreferencesState {
       messagePreviews: messagePreviews ?? this.messagePreviews,
     );
   }
+
+  /// Value equality.
+  ///
+  /// The `users` row is updated for many reasons (profile edits, location,
+  /// verification), and every one of those fires a realtime event. Without
+  /// value equality the merge would produce a "new" state each time and
+  /// rebuild the settings UI (and rewrite the local snapshot) for changes
+  /// that had nothing to do with the preferences.
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is NotificationPreferencesState &&
+        other.pausedUntilEpochMsUtc == pausedUntilEpochMsUtc &&
+        other.pausedDurationSeconds == pausedDurationSeconds &&
+        other.pausedIndefinitely == pausedIndefinitely &&
+        other.messagePreviews == messagePreviews &&
+        mapEquals(other.globalMethods, globalMethods) &&
+        _matrixEquals(other.matrix, matrix);
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    pausedUntilEpochMsUtc,
+    pausedDurationSeconds,
+    pausedIndefinitely,
+    messagePreviews,
+    Object.hashAll(
+      globalMethods.entries.map((e) => Object.hash(e.key, e.value)),
+    ),
+    Object.hashAll(
+      matrix.entries.map(
+        (e) => Object.hash(
+          e.key,
+          Object.hashAll(
+            e.value.entries.map((m) => Object.hash(m.key, m.value)),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  static bool _matrixEquals(
+    Map<NotificationType, Map<NotificationMethod, bool>> a,
+    Map<NotificationType, Map<NotificationMethod, bool>> b,
+  ) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (final entry in a.entries) {
+      final other = b[entry.key];
+      if (other == null) return false;
+      if (other.length != entry.value.length) return false;
+      for (final method in entry.value.entries) {
+        if (other[method.key] != method.value) return false;
+      }
+    }
+    return true;
+  }
 }
 
 class UserPreferencesState {
@@ -275,6 +333,29 @@ class UserPreferencesState {
       recentCurrencies: recentCurrencies ?? this.recentCurrencies,
     );
   }
+
+  /// Value equality - see [NotificationPreferencesState.==].
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is UserPreferencesState &&
+        other.unitSystem == unitSystem &&
+        other.timeFormat == timeFormat &&
+        other.backgroundMatchingMode == backgroundMatchingMode &&
+        other.notifications == notifications &&
+        other.preferredCurrency == preferredCurrency &&
+        listEquals(other.recentCurrencies, recentCurrencies);
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    unitSystem,
+    timeFormat,
+    backgroundMatchingMode,
+    notifications,
+    preferredCurrency,
+    Object.hashAll(recentCurrencies),
+  );
 }
 
 class UserPreferencesNotifier extends Notifier<UserPreferencesState>
@@ -325,10 +406,11 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
   /// Cached mirror of [_prefsBackgroundMatchingBackupKey]; refreshed whenever
   /// preferences are loaded. Read synchronously from [_mergeRealtimeUpdate].
   bool _backgroundMatchingTemporarilyDisabled = false;
-  RealtimeChannel? _settingsSubscription;
-  String? _settingsSubscriptionUserId;
+  StreamSubscription<MyUserUpdate>? _myUserSubscription;
+  StreamSubscription<void>? _preferencesResyncSubscription;
   StreamSubscription<AuthState>? _authStateSubscription;
   bool _lifecycleObserverAttached = false;
+  dynamic _webVisibilityListener;
   DateTime? _lastPausedAt;
   DateTime? _lastFullSyncAt;
   Future<void>? _loadSyncInFlight;
@@ -340,14 +422,20 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
       _notificationUnpauseTimer?.cancel();
       _notificationUnpauseTimer = null;
       _clearRealtimeSubscription();
+      _myUserSubscription?.cancel();
+      _myUserSubscription = null;
+      _preferencesResyncSubscription?.cancel();
+      _preferencesResyncSubscription = null;
       _authStateSubscription?.cancel();
       _authStateSubscription = null;
       _detachLifecycleObserver();
+      _detachWebVisibilityListener();
     });
     _listenAuthStateChanges();
     unawaited(_loadFromLocalAndSync());
     _ensureRealtimeSubscription();
     _attachLifecycleObserver();
+    _attachWebVisibilityListener();
     return UserPreferencesState.defaults();
   }
 
@@ -355,13 +443,22 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
     await _loadFromLocalAndSync();
   }
 
+  /// Pulls the authoritative settings from the server and applies them.
+  ///
+  /// This is the safety net behind the realtime path: it runs on a slow
+  /// cadence so that a change made on another device is picked up even if
+  /// the realtime event was missed (the socket was down, the app was
+  /// suspended, the server-side subscription was silently dropped).
+  ///
+  /// Unlike [refresh] it never applies the local snapshot first, so a stale
+  /// value is never shown while the pull is in flight.
+  Future<void> reconcileFromServer() async {
+    await _loadFromLocalAndSync(applyLocalFirst: false);
+  }
+
   void _clearRealtimeSubscription() {
-    final userId = _settingsSubscriptionUserId;
-    _settingsSubscription = null;
-    _settingsSubscriptionUserId = null;
-    if (userId != null) {
-      SupabaseRealtimeManager.instance.unregister('user_settings_$userId');
-    }
+    // The subscription is owned by MyUserRealtimeService; nothing to tear
+    // down here. The service drops the channel itself on sign-out.
   }
 
   void _listenAuthStateChanges() {
@@ -433,7 +530,7 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
     });
   }
 
-  Future<void> _loadFromLocalAndSync() async {
+  Future<void> _loadFromLocalAndSync({bool applyLocalFirst = true}) async {
     final inFlight = _loadSyncInFlight;
     if (inFlight != null) {
       await inFlight;
@@ -555,24 +652,30 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
       // Cache-first: apply the local snapshot IMMEDIATELY (memory + disk)
       // so UI renders instantly on startup, then refresh from Supabase in
       // background below.
-      try {
-        state = state.copyWith(
-          unitSystem: _parseUnitSystem(unitStr) ?? state.unitSystem,
-          timeFormat: _parseTimeFormat(timeStr) ?? state.timeFormat,
-          backgroundMatchingMode: highAccuracy,
-          notifications: NotificationPreferencesState(
-            matrix: localMatrix,
-            globalMethods: localGlobalMethods,
-            pausedUntilEpochMsUtc: pausedUntilMsUtc,
-            pausedDurationSeconds: pausedDurationSeconds,
-            pausedIndefinitely: pausedIndefinitely,
-            messagePreviews: localMessagePreviews,
-          ),
-          preferredCurrency: localPreferredCurrency,
-          recentCurrencies: localRecentCurrencies,
-        );
-        _syncNotificationMuteTimer();
-      } catch (_) {}
+      //
+      // The reconciliation path (a periodic pull that only wants to correct
+      // the state) skips this step: applying the local snapshot first would
+      // briefly show the stale value on every cycle.
+      if (applyLocalFirst) {
+        try {
+          state = state.copyWith(
+            unitSystem: _parseUnitSystem(unitStr) ?? state.unitSystem,
+            timeFormat: _parseTimeFormat(timeStr) ?? state.timeFormat,
+            backgroundMatchingMode: highAccuracy,
+            notifications: NotificationPreferencesState(
+              matrix: localMatrix,
+              globalMethods: localGlobalMethods,
+              pausedUntilEpochMsUtc: pausedUntilMsUtc,
+              pausedDurationSeconds: pausedDurationSeconds,
+              pausedIndefinitely: pausedIndefinitely,
+              messagePreviews: localMessagePreviews,
+            ),
+            preferredCurrency: localPreferredCurrency,
+            recentCurrencies: localRecentCurrencies,
+          );
+          _syncNotificationMuteTimer();
+        } catch (_) {}
+      }
 
       // Also try to load from Supabase if user is logged in
       final userId = supabase.auth.currentUser?.id;
@@ -713,7 +816,7 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
               }
             }
 
-            state = state.copyWith(
+            final updatedState = state.copyWith(
               unitSystem: _parseUnitSystem(remoteUnitStr) ?? state.unitSystem,
               timeFormat: _parseTimeFormat(remoteTimeStr) ?? state.timeFormat,
               backgroundMatchingMode:
@@ -734,9 +837,20 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
                   ? remoteRecentCurrencies
                   : localRecentCurrencies,
             );
+            // Only touch the state (and the local snapshot below) when the
+            // server values actually differ. The periodic reconciliation
+            // pulls on a timer, and rewriting the same values every minute
+            // would be pure churn.
+            final remoteChanged = updatedState != state;
+            state = updatedState;
             _syncNotificationMuteTimer();
 
             // Update local storage with remote values
+            if (!remoteChanged) {
+              _lastFullSyncAt = DateTime.now();
+              ResumeDiagnostics.log('User preferences: remote sync completed');
+              return;
+            }
             if (remoteUnitStr != null) {
               await prefs.setString(_prefsUnitSystemKey, remoteUnitStr);
             }
@@ -1303,93 +1417,92 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
       // Sync to Supabase if user is logged in
       final userId = supabase.auth.currentUser?.id;
       if (userId != null) {
+        final matrixJson = _matrixToJson(notifs.matrix);
+        final payload = <String, dynamic>{
+          'notification_preferences': {
+            'schema_version': 2,
+            'paused_until_ms_utc': notifs.pausedUntilEpochMsUtc,
+            'paused_duration_seconds': notifs.pausedDurationSeconds,
+            'paused_indefinitely': notifs.pausedIndefinitely,
+            'message_previews': notifs.messagePreviews,
+            'matrix': matrixJson,
+            'global_methods': {
+              'push': notifs.enablePushNotifications,
+              'in_app': notifs.enableInAppNotifications,
+              'sound': notifs.enableSound,
+              'vibrate': notifs.enableVibration,
+            },
+            'enable_chat_notifications': notifs.enableChatNotifications,
+            'enable_new_match_notifications':
+                notifs.enableNewMatchNotifications,
+            'enable_match_expiry_notifications':
+                notifs.enableMatchExpiryNotifications,
+            'enable_match_extended_notifications': notifs.isMethodEnabled(
+              NotificationType.matchExtended,
+              NotificationMethod.push,
+            ),
+            'enable_admin_notifications': notifs.enableAdminNotifications,
+            'enable_sound': notifs.enableSound,
+            'enable_vibration': notifs.enableVibration,
+            'enable_in_app_notifications': notifs.enableInAppNotifications,
+          },
+        };
         try {
-          final matrixJson = _matrixToJson(notifs.matrix);
-          await supabase
-              .from('users')
-              .update({
-                'notification_preferences': {
-                  'schema_version': 2,
-                  'paused_until_ms_utc': notifs.pausedUntilEpochMsUtc,
-                  'paused_duration_seconds': notifs.pausedDurationSeconds,
-                  'paused_indefinitely': notifs.pausedIndefinitely,
-                  'message_previews': notifs.messagePreviews,
-                  'matrix': matrixJson,
-                  'global_methods': {
-                    'push': notifs.enablePushNotifications,
-                    'in_app': notifs.enableInAppNotifications,
-                    'sound': notifs.enableSound,
-                    'vibrate': notifs.enableVibration,
-                  },
-                  'enable_chat_notifications': notifs.enableChatNotifications,
-                  'enable_new_match_notifications':
-                      notifs.enableNewMatchNotifications,
-                  'enable_match_expiry_notifications':
-                      notifs.enableMatchExpiryNotifications,
-                  'enable_match_extended_notifications':
-                      notifs.isMethodEnabled(
-                        NotificationType.matchExtended,
-                        NotificationMethod.push,
-                      ),
-                  'enable_admin_notifications': notifs.enableAdminNotifications,
-                  'enable_sound': notifs.enableSound,
-                  'enable_vibration': notifs.enableVibration,
-                  'enable_in_app_notifications':
-                      notifs.enableInAppNotifications,
-                },
-              })
-              .eq('id', userId);
+          if (!shouldSkipSupabaseCalls()) {
+            await supabase.from('users').update(payload).eq('id', userId);
+          } else {
+            throw Exception('Supabase is unavailable');
+          }
         } catch (e) {
-          // If sync fails, we've already updated local state
-          print('Failed to sync notification preferences: $e');
+          // Queue the update so it is replayed when the connection is back.
+          // Without this a notification-preference change made offline was
+          // lost server-side for good: this device showed the new value
+          // while every other device kept the old one - a permanent
+          // discrepancy that no amount of syncing could repair.
+          debugPrint('Failed to sync notification preferences: $e');
+          try {
+            final localDb = ref.read(localDbProvider);
+            await localDb.saveProfileUpdateToOutbox(userId, {
+              'userId': userId,
+              'updates': payload,
+            });
+          } catch (_) {}
         }
       }
     } catch (_) {}
   }
 
   void _ensureRealtimeSubscription() {
-    final userId = supabase.auth.currentUser?.id;
-    if (userId == null) {
-      _clearRealtimeSubscription();
-      return;
-    }
-    if (_settingsSubscription != null &&
-        _settingsSubscriptionUserId == userId) {
-      return;
-    }
-    _clearRealtimeSubscription();
+    _myUserSubscription?.cancel();
+    _myUserSubscription = MyUserRealtimeService.instance.updates.listen((
+      update,
+    ) {
+      // Only the columns that actually changed are merged in. Everything
+      // else keeps its local value, so an unrelated write to `users` (a
+      // profile edit, a location update) cannot roll the preferences back.
+      final changed = <String, dynamic>{
+        for (final key in update.changedKeys) key: update.row[key],
+      };
+      if (changed.isEmpty) return;
 
-    final channelName = 'user_settings_$userId';
-    SupabaseRealtimeManager.instance.register(channelName, () {
-      _settingsSubscription = supabase
-          .channel(channelName)
-          .onPostgresChanges(
-            event: PostgresChangeEvent.update,
-            schema: 'public',
-            table: 'users',
-            filter: PostgresChangeFilter(
-              type: PostgresChangeFilterType.eq,
-              column: 'id',
-              value: userId,
-            ),
-            callback: (payload) {
-              final newData = payload.newRecord as Map<String, dynamic>?;
-              if (newData == null) return;
-
-              final updatedState = _mergeRealtimeUpdate(newData);
-              if (updatedState != state) {
-                state = updatedState;
-              }
-            },
-          )
-          .subscribe();
-      _settingsSubscriptionUserId = userId;
-      return _settingsSubscription!;
+      final updatedState = _mergeRealtimeUpdate(changed);
+      if (updatedState == state) return;
+      state = updatedState;
+      // Write through to the local snapshot. It is what the app
+      // paints on the next cold start, so without this the disk kept
+      // the pre-merge value until the next full sync - which made a
+      // change made on another device look like it had been lost.
+      unawaited(_persistPreferencesToPrefs(updatedState));
+    });
+    _preferencesResyncSubscription =
+        MyUserRealtimeService.instance.resyncRequests.listen((_) {
+          // The events that were missed while the channel was down are not
+          // replayed, so pull the authoritative values.
+          unawaited(_loadFromLocalAndSync());
     });
   }
 
-  UserPreferencesState _mergeRealtimeUpdate(Map<String, dynamic> remoteData) {
-    final currentPrefs = state;
+  UserPreferencesState _mergeRealtimeUpdate(Map<String, dynamic> remoteData) {    final currentPrefs = state;
 
     // Extract settings from remote data
     final remoteUnitStr = remoteData['unit_system'] as String?;
@@ -1431,6 +1544,98 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
           ? remoteRecentCurrencies
           : currentPrefs.recentCurrencies,
     );
+  }
+
+  /// Writes [prefs] to the local snapshot (SharedPreferences).
+  ///
+  /// Used by the realtime merge so that a change made on another device is
+  /// reflected in the on-disk state as well. Without it the local snapshot
+  /// kept the old value and the next cold start painted the stale setting
+  /// until the next full sync corrected it.
+  Future<void> _persistPreferencesToPrefs(UserPreferencesState prefs) async {
+    try {
+      final shared = await SharedPreferences.getInstance();
+      await shared.setString(_prefsUnitSystemKey, prefs.unitSystem.name);
+      await shared.setString(_prefsTimeFormatKey, prefs.timeFormat.name);
+      if (!_backgroundMatchingTemporarilyDisabled) {
+        await shared.setBool(
+          _prefsBackgroundMatchingKey,
+          prefs.backgroundMatchingMode,
+        );
+      }
+      final currency = prefs.preferredCurrency;
+      if (currency != null && currency.isNotEmpty) {
+        await shared.setString(_prefsPreferredCurrencyKey, currency);
+      } else {
+        await shared.remove(_prefsPreferredCurrencyKey);
+      }
+      await shared.setStringList(
+        _prefsRecentCurrenciesKey,
+        prefs.recentCurrencies,
+      );
+
+      final notifs = prefs.notifications;
+      await shared.setBool(
+        _prefsChatNotificationsKey,
+        notifs.enableChatNotifications,
+      );
+      await shared.setBool(
+        _prefsNewMatchNotificationsKey,
+        notifs.enableNewMatchNotifications,
+      );
+      await shared.setBool(
+        _prefsMatchExpiryNotificationsKey,
+        notifs.enableMatchExpiryNotifications,
+      );
+      await shared.setBool(
+        _prefsAdminNotificationsKey,
+        notifs.enableAdminNotifications,
+      );
+      await shared.setBool(_prefsSoundKey, notifs.enableSound);
+      await shared.setBool(_prefsVibrationKey, notifs.enableVibration);
+      await shared.setBool(
+        _prefsInAppNotificationsKey,
+        notifs.enableInAppNotifications,
+      );
+      await shared.setBool(
+        _prefsGlobalPushKey,
+        notifs.enablePushNotifications,
+      );
+      await shared.setBool(
+        _prefsGlobalInAppKey,
+        notifs.enableInAppNotifications,
+      );
+      await shared.setBool(_prefsGlobalSoundKey, notifs.enableSound);
+      await shared.setBool(_prefsGlobalVibrationKey, notifs.enableVibration);
+      if (notifs.pausedUntilEpochMsUtc != null) {
+        await shared.setInt(
+          _prefsPausedUntilKey,
+          notifs.pausedUntilEpochMsUtc!,
+        );
+      } else {
+        await shared.remove(_prefsPausedUntilKey);
+      }
+      if (notifs.pausedDurationSeconds != null) {
+        await shared.setInt(
+          _prefsPausedDurationSecondsKey,
+          notifs.pausedDurationSeconds!,
+        );
+      } else {
+        await shared.remove(_prefsPausedDurationSecondsKey);
+      }
+      await shared.setBool(
+        _prefsPausedIndefinitelyKey,
+        notifs.pausedIndefinitely,
+      );
+      await shared.setBool(_prefsMessagePreviewsKey, notifs.messagePreviews);
+      await shared.setString(
+        _prefsMatrixKey,
+        jsonEncode(_matrixToJson(notifs.matrix)),
+      );
+    } catch (_) {
+      // The local snapshot is a cache: a failed write is recovered by the
+      // next full sync.
+    }
   }
 
   static String? _normalizeCurrencyCode(String? value) {
@@ -1657,8 +1862,48 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
     if (!_lifecycleObserverAttached) return;
     try {
       WidgetsBinding.instance.removeObserver(this);
+      _lifecycleObserverAttached = false;
     } catch (_) {}
-    _lifecycleObserverAttached = false;
+  }
+
+  /// Web only: the tab is hidden, the socket is disconnected and the server
+  /// stops sending changes. When the tab becomes visible again the realtime
+  /// channel is re-joined, but anything that changed on another device while
+  /// the tab was hidden was never delivered - so pull the authoritative
+  /// values as well.
+  ///
+  /// Without this, unit system, time format, currency and notification
+  /// preferences stayed stale on web for the rest of the session, while the
+  /// theme (which has its own listener) kept working.
+  void _attachWebVisibilityListener() {
+    if (!kIsWeb) return;
+    if (_webVisibilityListener != null) return;
+    try {
+      _webVisibilityListener = (_) {
+        try {
+          if (html.document.visibilityState == 'visible' &&
+              html.document.hidden != true) {
+            _ensureRealtimeSubscription();
+            unawaited(_loadFromLocalAndSync());
+          }
+        } catch (_) {}
+      };
+      html.document.addEventListener(
+        'visibilitychange',
+        _webVisibilityListener,
+      );
+    } catch (_) {}
+  }
+
+  void _detachWebVisibilityListener() {
+    if (!kIsWeb || _webVisibilityListener == null) return;
+    try {
+      html.document.removeEventListener(
+        'visibilitychange',
+        _webVisibilityListener,
+      );
+    } catch (_) {}
+    _webVisibilityListener = null;
   }
 
   @override
@@ -1713,3 +1958,4 @@ final userRecentCurrenciesProvider = Provider<List<String>>(
     userPreferencesProvider.select((state) => state.recentCurrencies),
   ),
 );
+

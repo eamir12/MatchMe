@@ -1,14 +1,21 @@
 // lib/services/verification_service.dart
 // Service for handling user verification via photo upload
 
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/public_reference_data_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/services/storage_helper.dart';
 
 class VerificationService {
   final SupabaseClient _supabase = Supabase.instance.client;
+
+  /// Prefix of the on-device cache key holding the last verification status
+  /// payload that was read from the server.
+  static const String _statusCachePrefix = 'verification_status_cache_';
 
   Future<String> submitVerificationPhoto(
     String userId,
@@ -169,10 +176,54 @@ class VerificationService {
           .eq('id', userId)
           .maybeSingle();
 
+      if (response != null) {
+        await cacheVerificationStatus(userId, response);
+      }
+
       return response;
     } catch (e) {
       print('Error getting verification status: $e');
       return null;
+    }
+  }
+
+  /// Returns the last verification status payload that was read from the
+  /// server, straight from the on-device cache.
+  ///
+  /// The verification screen paints from this cache the moment it opens, so a
+  /// rejection shows its AI analysis and the verification photo right away
+  /// instead of only after the network round-trip completes.
+  Future<Map<String, dynamic>?> getCachedVerificationStatus(
+    String userId,
+  ) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString('$_statusCachePrefix$userId');
+      if (raw == null || raw.isEmpty) return null;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return null;
+      return Map<String, dynamic>.from(decoded);
+    } catch (e) {
+      print('Error reading cached verification status: $e');
+      return null;
+    }
+  }
+
+  /// Persists the verification status payload so the next screen entry can
+  /// render it immediately.
+  Future<void> cacheVerificationStatus(
+    String userId,
+    Map<String, dynamic>? data,
+  ) async {
+    if (data == null || data.isEmpty) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        '$_statusCachePrefix$userId',
+        jsonEncode(data),
+      );
+    } catch (e) {
+      print('Error caching verification status: $e');
     }
   }
 

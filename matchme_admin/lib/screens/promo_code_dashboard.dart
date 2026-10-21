@@ -18,7 +18,7 @@ class AdminPromoCodeDashboard extends ConsumerStatefulWidget {
     required this.localeCode,
   });
 
-  final String Function(String key, {Map<String, String>? params}) t;
+  final String Function(String key, {Map<String, String>? params, String? pluralParam}) t;
   final String localeCode;
 
   @override
@@ -57,8 +57,8 @@ class _AdminPromoCodeDashboardState
   Future<List<Map<String, dynamic>>>? _codesFuture;
   Future<Map<String, dynamic>>? _analyticsFuture;
 
-  String t(String key, {Map<String, String>? params}) =>
-      widget.t(key, params: params);
+  String t(String key, {Map<String, String>? params, String? pluralParam}) =>
+      widget.t(key, params: params, pluralParam: pluralParam);
 
   String get _localeCode {
     final trimmed = widget.localeCode.trim().toLowerCase();
@@ -617,6 +617,7 @@ class _AdminPromoCodeDashboardState
                           'shown': filteredCodes.length.toString(),
                           'total': codes.length.toString(),
                         },
+                        pluralParam: 'total',
                       ),
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: Colors.grey.shade700,

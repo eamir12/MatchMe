@@ -2095,9 +2095,9 @@ profileTitle,Profile
 profileUnknownIntent,Unknown Intent
 profileVerification,Profile Verification
 profileVerified,Your profile is verified
-profileVerifiedBadge,Verified
-profileVerifiedBadgeFemale,Verified
-profileVerifiedBadgeNeutral,Verified
+profileVerifiedBadge,Primary Photo Verified
+profileVerifiedBadgeFemale,Primary Photo Verified
+profileVerifiedBadgeNeutral,Primary Photo Verified
 profileWizardAddPhotoFromCamera,Take photo with camera
 profileWizardAddPhotoFromGallery,Add photo from gallery
 profileWizardAddPhotoTooltip,Add a photo

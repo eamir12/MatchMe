@@ -8,8 +8,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:matchme/services/supabase_realtime_manager.dart';
+import 'package:matchme/services/my_user_realtime_service.dart';
 import 'package:matchme/utils/offline_utils.dart';
+import 'package:matchme/utils/plural_rules.dart';
 import 'package:matchme/utils/translation_edit_marker.dart';
 import 'package:matchme/utils/resume_diagnostics.dart';
 import 'package:matchme/services/chat_key_service.dart';
@@ -111,10 +112,86 @@ class AppLanguage {
       isRtlLanguageCode(code) ? TextDirection.rtl : TextDirection.ltr;
 }
 
+/// Normalises a language code for comparisons: trimmed and lower-cased.
+String normalizeContentLanguageCode(String? code) {
+  final trimmed = (code ?? '').trim().toLowerCase();
+  if (trimmed.isEmpty) return 'en';
+  final base = trimmed.split('-').first.split('_').first;
+  return base.isEmpty ? 'en' : base;
+}
+
+/// The language the loaded strings are actually in.
+///
+/// The loaded map is always "the bundled English defaults + the rows the
+/// server returned for the chosen locale". When those rows are missing — the
+/// device is offline, the fetch timed out, or the locale has no rows yet —
+/// every visible string is the English fallback, so the UI has to lay out
+/// left-to-right even though the member picked Hebrew. Laying English text
+/// out right-to-left (or Hebrew text out left-to-right) is the "impossible"
+/// state this mechanism exists to prevent.
+String resolveContentLanguageCode({
+  required String localeCode,
+  required bool hasLocalizedRows,
+}) {
+  if (!hasLocalizedRows) return 'en';
+  return normalizeContentLanguageCode(localeCode);
+}
+
+/// The key of the marker that records which language a cached translation
+/// blob is really in.
+String translationContentMarkerKey(String langCode) =>
+    'translations_${langCode}_content';
+
+/// True when a cached string map holds translated rows rather than only the
+/// bundled English defaults.
+///
+/// A cache written while the server was unreachable contains nothing but the
+/// English fallbacks; a genuinely translated cache has at least one value
+/// that differs from them. This is how a legacy cache (one written before
+/// the content marker existed) is told apart from a translated one.
+bool cachedStringsHoldLocalizedRows(Map<String, String> strings) {
+  final defaults = LocalizationState._defaultTranslations;
+  for (final entry in strings.entries) {
+    final fallback = defaults[entry.key];
+    if (fallback != null && fallback != entry.value) return true;
+  }
+  return false;
+}
+
+/// The language a cached translation blob is actually in.
+///
+/// The cache stores an explicit content marker next to the strings
+/// (`translations_<locale>_content`). Legacy caches have no marker, so the
+/// values are compared with the bundled English defaults to find out whether
+/// the blob holds translated rows at all.
+String resolveCachedContentLanguage({
+  required String langCode,
+  required Map<String, String> strings,
+  String? marker,
+}) {
+  if (marker != null && marker.trim().isNotEmpty) {
+    return normalizeContentLanguageCode(marker);
+  }
+  return resolveContentLanguageCode(
+    localeCode: langCode,
+    hasLocalizedRows: cachedStringsHoldLocalizedRows(strings),
+  );
+}
+
 // --- 2. Localization State Model ---
 class LocalizationState {
+  /// The language the member picked (or that the device resolved to).
   final Locale currentLocale;
   final TextDirection textDirection;
+
+  /// The language the loaded [strings] are actually in.
+  ///
+  /// Normally identical to [currentLocale]. It differs when the server copy of
+  /// the chosen language could not be loaded and the app fell back to the
+  /// bundled English defaults — in that case the direction follows the
+  /// content (LTR), so English text is never laid out as if it were Hebrew.
+  final String contentLanguageCode;
+
   final Map<String, String> strings;
   final List<AppLanguage> supportedLanguages;
   final bool isLoading;
@@ -125,21 +202,31 @@ class LocalizationState {
     required TextDirection textDirection,
     required this.strings,
     required this.supportedLanguages,
+    String? contentLanguageCode,
     this.isLoading = false,
     this.dbKeys = const <String>{},
-  }) : textDirection = _reconcileDirection(currentLocale, textDirection);
+  })  : contentLanguageCode = normalizeContentLanguageCode(
+          contentLanguageCode ?? currentLocale.languageCode,
+        ),
+        textDirection = _reconcileDirection(
+          normalizeContentLanguageCode(
+            contentLanguageCode ?? currentLocale.languageCode,
+          ),
+          textDirection,
+        );
 
-  /// Direction follows the language code, always.
+  /// Direction follows the language of the CONTENT, always.
   ///
-  /// [textDirection] is honoured only when it agrees with the code. A Hebrew or
-  /// Arabic locale can therefore never be paired with an LTR state — which
-  /// would otherwise lay out the entire UI, chevrons included, backwards — and
-  /// no call site has to remember to pass the right value.
+  /// [textDirection] is honoured only when it agrees with the content
+  /// language. A Hebrew or Arabic locale can therefore never be paired with
+  /// an LTR state — which would otherwise lay out the entire UI, chevrons
+  /// included, backwards — and, symmetrically, English fallback text under a
+  /// Hebrew locale is never laid out right-to-left.
   static TextDirection _reconcileDirection(
-    Locale locale,
+    String contentLanguageCode,
     TextDirection declared,
   ) {
-    final fromCode = isRtlLanguageCode(locale.languageCode)
+    final fromCode = isRtlLanguageCode(contentLanguageCode)
         ? TextDirection.rtl
         : TextDirection.ltr;
     return declared == fromCode ? declared : fromCode;
@@ -159,6 +246,7 @@ class LocalizationState {
   LocalizationState copyWith({
     Locale? currentLocale,
     TextDirection? textDirection,
+    String? contentLanguageCode,
     Map<String, String>? strings,
     List<AppLanguage>? supportedLanguages,
     bool? isLoading,
@@ -167,6 +255,7 @@ class LocalizationState {
     return LocalizationState(
       currentLocale: currentLocale ?? this.currentLocale,
       textDirection: textDirection ?? this.textDirection,
+      contentLanguageCode: contentLanguageCode ?? this.contentLanguageCode,
       strings: strings ?? this.strings,
       supportedLanguages: supportedLanguages ?? this.supportedLanguages,
       isLoading: isLoading ?? this.isLoading,
@@ -180,7 +269,47 @@ class LocalizationState {
   final Set<String> _missingTranslationWarned = <String>{};
   static int _missingKeysLimit = 20;
 
-  String getString(String key, {String? gender, Map<String, String>? params}) {
+  /// The parameter that carries the quantity of a countable noun unless the
+  /// caller says otherwise.
+  static const String kDefaultPluralParam = 'count';
+
+  /// Returns the translation stored under [key].
+  ///
+  /// [params] are substituted into `{name}` placeholders.
+  ///
+  /// When [params] carries a number for the plural parameter ([pluralParam],
+  /// `count` by default) the lookup prefers a plural specific variant of
+  /// [key] — `<key>_one`, `<key>_two`, … — over the base key, so that
+  /// "1 minute left" and "2 minutes left" can use different templates. The
+  /// variant is only used when a translation for it exists in the content
+  /// language; otherwise the base key is used unchanged.
+  String getString(
+    String key, {
+    String? gender,
+    Map<String, String>? params,
+    String? pluralParam,
+  }) {
+    final paramName = pluralParam ?? kDefaultPluralParam;
+    final raw = params?[paramName];
+    return _getString(
+      key,
+      gender: gender,
+      params: params,
+      pluralCount: raw == null ? null : num.tryParse(raw.trim()),
+    );
+  }
+
+  String _getString(
+    String key, {
+    String? gender,
+    Map<String, String>? params,
+    num? pluralCount,
+  }) {
+    // The plural variant of the key ("<key>_one" for a single item). Falls
+    // back to [key] when the quantity does not select a different form or
+    // when the content language has no translation for that form.
+    final pluralKey = _resolvePluralKey(key, pluralCount);
+
     // If gender provided, try gender-specific variant first. The DB uses suffixes like
     // '<key>_male', '<key>_female', '<key>_non_binary'. Accept either 'male'/'female'/'non_binary'
     // or 'gender_male' style values for convenience.
@@ -189,24 +318,29 @@ class LocalizationState {
     if (gender != null && gender.trim().isNotEmpty) {
       final suffix = _normalizeGenderSuffix(gender);
       if (suffix.isNotEmpty) {
-        final gKey = '${key}_$suffix';
-        final gTranslation = strings[gKey] ?? _defaultTranslations[gKey];
-        if (gTranslation != null) return _applyParams(gTranslation, params);
+        final genderedKeys = <String>[
+          '${pluralKey}_$suffix',
+          if (pluralKey != key) '${key}_$suffix',
+        ];
+        for (final gKey in genderedKeys) {
+          final gTranslation = strings[gKey] ?? _defaultTranslations[gKey];
+          if (gTranslation != null) return _applyParams(gTranslation, params);
+        }
       }
     }
 
     // Try direct lookup first
-    final translation = strings[key];
+    final translation = strings[pluralKey];
     if (translation != null) {
       // Diagnostics: if diagnostics enabled and this key was not provided by DB, log it
       try {
         // If the key is part of defaults and not in dbKeys, the app is using the default not DB value
         if (ResumeDiagnostics.enabled &&
-            _defaultTranslations.containsKey(key) &&
-            !dbKeys.contains(key)) {
+            _defaultTranslations.containsKey(pluralKey) &&
+            !dbKeys.contains(pluralKey)) {
           ResumeDiagnostics.logThrottled(
-            'DB missing translation for key: $key; using built-in default',
-            category: 'missing_db_key.$key',
+            'DB missing translation for key: $pluralKey; using built-in default',
+            category: 'missing_db_key.$pluralKey',
             minIntervalMs: 60000,
           );
         }
@@ -230,9 +364,21 @@ class LocalizationState {
     }
 
     // Fallback to default translations (prefer defaults over logging missing key)
-    final defaultTranslation = _defaultTranslations[key];
+    final defaultTranslation = _defaultTranslations[pluralKey];
     if (defaultTranslation != null) {
       return _applyParams(defaultTranslation, params);
+    }
+
+    // The base key may still hold a translated value even when the plural
+    // variant does not (a non-English locale that never got the `_one` row).
+    final baseTranslation = strings[key];
+    if (baseTranslation != null) {
+      return _applyParams(baseTranslation, params);
+    }
+
+    final baseDefault = _defaultTranslations[key];
+    if (baseDefault != null) {
+      return _applyParams(baseDefault, params);
     }
 
     // Only log the missing translation once per key to avoid spam
@@ -256,6 +402,85 @@ class LocalizationState {
     // A missing key renders as [key] in full so layout tests catch it
     // instead of users seeing a cut-off "key...".
     return '[$key]';
+  }
+
+  /// Returns the translation for [key] with the plural form that matches
+  /// [count] in the content language.
+  ///
+  /// [countParam] names the placeholder the number is written into
+  /// (`count` by default) and is also the parameter that selects the plural
+  /// form.
+  ///
+  /// [displayValue] replaces the number written into the template when it
+  /// differs from [count] — the compact formatter renders "1.5k" for 1500
+  /// while the plural form still follows the real quantity.
+  ///
+  /// ```dart
+  /// l10n.getPluralString('matchExpiryTitle', 1); // "1 minute left"
+  /// l10n.getPluralString('matchExpiryTitle', 5); // "5 minutes left"
+  /// ```
+  String getPluralString(
+    String key,
+    num count, {
+    Map<String, String>? params,
+    String? countParam,
+    String? displayValue,
+  }) {
+    final paramName = countParam ?? kDefaultPluralParam;
+    final merged = <String, String>{
+      ...?params,
+      paramName: displayValue ?? count.toString(),
+    };
+    return _getString(
+      key,
+      params: merged,
+      pluralCount: count,
+    );
+  }
+
+  /// Picks the key that carries the right plural form for [key].
+  ///
+  /// The base key holds the "other" (plural) form; the singular and — for
+  /// Hebrew — the dual form live under `<key>_one` and `<key>_two`. When the
+  /// content language has no translation for the selected form the base key
+  /// is returned, so a partially translated locale still renders a sentence.
+  String _resolvePluralKey(
+    String key,
+    num? count,
+  ) {
+    if (count == null) return key;
+
+    final category = pluralCategoryFor(
+      languageCode: contentLanguageCode,
+      count: count,
+    );
+    // "other" is the base key itself.
+    if (category == PluralCategory.other) return key;
+
+    final pluralKey = '${key}_${category.keySuffix}';
+    if (_hasContentTranslation(pluralKey)) return pluralKey;
+    return key;
+  }
+
+  /// True when [key] holds a translation for the content language.
+  ///
+  /// The string map holds the bundled English defaults merged with the rows
+  /// the server returned, so a key the server did not send still resolves —
+  /// to English. For a non-English content language that English value must
+  /// not be used, otherwise a Hebrew UI would show the English singular
+  /// ("1 minute") next to a Hebrew plural ("2 דקות").
+  bool _hasContentTranslation(String key) {
+    if (contentLanguageCode == 'en') {
+      // English content: the bundled defaults are the right values.
+      return strings.containsKey(key) || _defaultTranslations.containsKey(key);
+    }
+    final value = strings[key];
+    if (value == null) return false;
+    if (dbKeys.contains(key)) return true;
+    // Fallback for states built without the DB key set: a value that differs
+    // from the bundled English default is a translated one.
+    final fallback = _defaultTranslations[key];
+    return fallback != null && fallback != value;
   }
 
   /// Checks if a key exists in any available source (strings, defaults, or
@@ -766,8 +991,9 @@ class LocalizationState {
     'calendarSyncConnectMessage': 'Connect your calendar to sync events',
     'calendarSyncConnectOutlook': 'Connect Outlook Calendar',
     'calendarSyncDeselectAll': 'Deselect all',
-    'calendarSyncDeviceSummaryBody':
-        '{accounts} accounts found · {events} events found · {selected} selected',
+    'calendarSyncDeviceSummaryAccounts': '{count} accounts found',
+    'calendarSyncDeviceSummaryEvents': '{count} events found',
+    'calendarSyncDeviceSummarySelected': '{count} selected',
     'calendarSyncDeviceSummaryTitle': 'Device calendars',
     'calendarSyncDeviceUnknownAccount': 'Unknown account',
     'calendarSyncDuplicateBadge': 'Duplicate',
@@ -1073,14 +1299,12 @@ class LocalizationState {
     'dayWednesday': 'Wednesday',
     'dinner': 'Dinner',
     'done': 'Done',
-    'durationDay': '{count} day',
     'durationDays': '{count} days',
-    'durationHour': '{count} hour',
     'durationHours': '{count} hours',
     'durationLessThanMinute': 'Less than a minute',
     'durationLessThanOneMinute': 'less than 1 minute',
-    'durationMinute': '{count} minute',
     'durationMinutes': '{count} minutes',
+    'durationSeconds': '{count} seconds',
     'editEventTitle': 'Edit Event',
     'editPhoto': 'Edit photo',
     'emailChangeSuccess': 'Email changed successfully!',
@@ -1850,12 +2074,6 @@ class LocalizationState {
     'locationShareOtherStopped': '{name} stopped sharing their location',
     'locationShareOtherPaused': '{name} paused their location sharing',
     'locationShareTimerRemaining': 'Expires in {time}',
-    'locationShareCountdownMinutes':
-        'for another {minutes} minutes and {seconds} seconds',
-    'locationShareCountdownHours':
-        'for another {hours} hours and {minutes} minutes',
-    'locationShareCountdownHoursSeconds':
-        'for another {hours} hours, {minutes} minutes and {seconds} seconds',
     'locationShareNoLocation': 'Waiting for location...',
     'locationShareMapTitle': 'Live Location',
     'locationShareStale': 'Stale',
@@ -2063,8 +2281,7 @@ class LocalizationState {
     'offlineOkButton': 'OK',
     'offlinePendingChanges': 'Pending Changes',
     'offlinePendingChangesDescription':
-        'You have {count} pending change{plural} waiting to sync. These will be sent to the server when your connection is restored.\\n\\nActions in MatchMe will be unavailable until these sync.',
-    'offlinePendingChangesPlural': 's',
+        'You have {count} pending changes waiting to sync. These will be sent to the server when your connection is restored.\\n\\nActions in MatchMe will be unavailable until these sync.',
     'offlineReactToMessageBody':
         'Your reaction has been saved locally and will be added when you\'re back online.',
     'offlineMessageQueuedToast':
@@ -2084,8 +2301,7 @@ class LocalizationState {
     'offlineSensitiveActionsRequireInternet':
         'These features require an active internet connection.',
     'offlineSnackbarMessage': 'MatchMe is offline - using cached data',
-    'offlineSyncingChanges': 'Syncing {count} change{plural}',
-    'offlineSyncingChangesPlural': 's',
+    'offlineSyncingChanges': 'Syncing {count} changes',
     'offlineMutationId': 'Identifier: {id}',
     'offlineMutationRetries': 'Retries: {count}',
     'offlineMutationError': 'Error: {error}',
@@ -2138,8 +2354,7 @@ class LocalizationState {
     'onlineProvidersAvailableAccount': 'Available account',
     'onlineProvidersChooseGoogleAccount': 'Choose a Google account',
     'onlineProvidersChooseOutlookAccount': 'Choose an Outlook account',
-    'onlineProvidersEvents': 'events',
-    'onlineProvidersEventSingular': 'event',
+    'onlineProvidersEventCount': '{count} events',
     'onlineProvidersImportSelected': 'Import Selected ({count})',
     'onlineProvidersNoAccounts': 'No accounts connected',
     'onlineProvidersNoEvents': 'No events found',
@@ -2151,8 +2366,9 @@ class LocalizationState {
     'onlineProvidersRemoveAccountConfirm':
         'Are you sure you want to remove {account}?',
     'onlineProvidersSelectionSummary': '{selected} of {available} selected',
-    'onlineProvidersSummaryBody':
-        '{accounts} accounts connected · {events} events found · {selected} selected',
+    'onlineProvidersSummaryAccounts': '{count} accounts connected',
+    'onlineProvidersSummaryEvents': '{count} events found',
+    'onlineProvidersSummarySelected': '{count} selected',
     'onlineProvidersSummaryTitle': 'Online calendars',
     'onlineProvidersUseAnotherAccount': 'Use another {provider} account',
     'outdoors': 'Outdoors',
@@ -2328,6 +2544,8 @@ class LocalizationState {
     'profileWizardSkipConfirmTitle': 'Skip this step?',
     'profileWizardSkipConfirmBody':
         "You haven't filled in anything on this page. All of it is optional — you can complete it later in your profile. Would you like to skip it for now?",
+    'profileWizardSkipConfirmMatchingWarning':
+        'Some of the fields on this page are used in match filters. If you skip them, you may be excluded from potential matches that filter on them.',
     'profileWizardSkipConfirmFillNow': 'Fill in now',
     'profileWizardSkipConfirmSkip': 'Skip for now',
     'profileWizardPhotosRequiredNote':
@@ -2428,12 +2646,15 @@ class LocalizationState {
     'profileEducation': 'Education',
     'profileLifestyle': 'Lifestyle',
     'profileFamily': 'Family',
-    'profileReligion': 'Religion',
-    'profileReligiosity': 'Religiousness',
-    'profileWizardReligionTitle': 'Your Religion',
+    'profileReligion': 'Religion or belief',
+    'profileDenomination': 'Denomination or branch',
+    'profileReligiousPractice': 'Religious practice',
+    'profileWizardReligionTitle': 'Religion or Belief',
     'profileWizardReligionSubtitle':
-        'Share your religious affiliation and how religious or spiritual you are, or skip if you prefer not to say.',
-    'profileWizardReligiosityQuestion': 'How religious or spiritual are you?',
+        'Share your religion or belief, denomination, and practice. All fields are optional.',
+    'profileWizardDenominationQuestion': 'Which denomination or branch?',
+    'profileWizardPracticeQuestion':
+        'How often do you engage in religious or spiritual practices?',
 
     // Lifestyle option values
     'lifestyleSmokingNever': 'Never',
@@ -2457,19 +2678,253 @@ class LocalizationState {
     'familyOpenToIt': 'Open to it',
     'familyNotSure': 'Not sure',
 
-    // Religious affiliation options
+    // Religion or belief options
     'religionChristianity': 'Christianity',
     'religionIslam': 'Islam',
     'religionHinduism': 'Hinduism',
     'religionBuddhism': 'Buddhism',
     'religionJudaism': 'Judaism',
+    'religionSikhism': 'Sikhism',
+    'religionJainism': 'Jainism',
+    'religionZoroastrianism': 'Zoroastrianism',
+    'religionBahai': 'Bahá\'í',
+    'religionShinto': 'Shinto',
+    'religionTaoism': 'Taoism',
+    'religionIndigenousFolk': 'Indigenous or folk religion',
+    'religionPaganEarth': 'Pagan or Earth-based spirituality',
+    'religionSpiritualNotReligious': 'Spiritual but not religious',
+    'religionAtheist': 'Atheist',
+    'religionAgnostic': 'Agnostic',
+    'religionHumanist': 'Humanist',
+    'religionNoReligion': 'No religion',
     'religionOther': 'Other',
-    'religiosityNotSpecified': 'Not specified',
-    'religiosityVeryReligious': 'Very religious',
-    'religiosityModeratelyReligious': 'Moderately religious',
-    'religiositySpiritualNotReligious': 'Spiritual but not religious',
-    'religiosityNotReligious': 'Not religious',
-    'religiosityPreferNotToSay': 'Prefer not to say',
+
+    // Denominations and branches
+    'denominationChristianityCatholic': 'Catholic',
+    'denominationChristianityProtestant': 'Protestant',
+    'denominationChristianityAnglican': 'Anglican or Episcopal',
+    'denominationChristianityBaptist': 'Baptist',
+    'denominationChristianityLutheran': 'Lutheran',
+    'denominationChristianityMethodist': 'Methodist',
+    'denominationChristianityPresbyterianReformed': 'Presbyterian or Reformed',
+    'denominationChristianityPentecostalCharismatic':
+        'Pentecostal or Charismatic',
+    'denominationChristianityEvangelical': 'Evangelical',
+    'denominationChristianityEasternOrthodox': 'Eastern Orthodox',
+    'denominationChristianityOrientalOrthodox': 'Oriental Orthodox',
+    'denominationChristianityLatterDaySaints': 'Latter-day Saints',
+    'denominationChristianityJehovahsWitnesses': 'Jehovah\'s Witnesses',
+    'denominationChristianityOther': 'Other Christian',
+    'denominationIslamSunni': 'Sunni',
+    'denominationIslamShia': 'Shia',
+    'denominationIslamIbadi': 'Ibadi',
+    'denominationIslamAhmadiyya': 'Ahmadiyya',
+    'denominationIslamSufi': 'Sufi',
+    'denominationIslamOther': 'Other Muslim',
+    'denominationJudaismOrthodox': 'Orthodox',
+    'denominationJudaismConservative': 'Conservative or Masorti',
+    'denominationJudaismReform': 'Reform',
+    'denominationJudaismReconstructionist': 'Reconstructionist',
+    'denominationJudaismHasidic': 'Hasidic',
+    'denominationJudaismSecularCultural': 'Secular or cultural Jewish',
+    'denominationJudaismOther': 'Other Jewish',
+    'denominationHinduismVaishnavism': 'Vaishnavism',
+    'denominationHinduismShaivism': 'Shaivism',
+    'denominationHinduismShaktism': 'Shaktism',
+    'denominationHinduismSmartism': 'Smartism',
+    'denominationHinduismOther': 'Other Hindu',
+    'denominationBuddhismTheravada': 'Theravada',
+    'denominationBuddhismMahayana': 'Mahayana',
+    'denominationBuddhismZen': 'Zen',
+    'denominationBuddhismVajrayana': 'Vajrayana or Tibetan',
+    'denominationBuddhismPureLand': 'Pure Land',
+    'denominationBuddhismNichiren': 'Nichiren',
+    'denominationBuddhismOther': 'Other Buddhist',
+    'denominationSikhismKhalsa': 'Khalsa',
+    'denominationSikhismNanakpanthi': 'Nanakpanthi',
+    'denominationSikhismOther': 'Other Sikh',
+    'denominationJainismDigambara': 'Digambara',
+    'denominationJainismSvetambara': 'Śvētāmbara',
+    'denominationJainismOther': 'Other Jain',
+    'denominationZoroastrianismOrthodox': 'Orthodox',
+    'denominationZoroastrianismReformist': 'Reformist',
+    'denominationZoroastrianismOther': 'Other Zoroastrian',
+    'denominationShintoShrine': 'Shrine Shinto',
+    'denominationShintoSect': 'Sect Shinto',
+    'denominationShintoOther': 'Other Shinto',
+    'denominationTaoismQuanzhen': 'Quanzhen',
+    'denominationTaoismZhengyi': 'Zhengyi',
+    'denominationTaoismOther': 'Other Taoist',
+    'denominationPaganEarthWiccan': 'Wiccan',
+    'denominationPaganEarthDruid': 'Druid',
+    'denominationPaganEarthHeathen': 'Heathen',
+    'denominationPaganEarthOther': 'Other pagan or Earth-based',
+
+    // Religion option explanations
+    'religionOptionHelp': 'What do these mean?',
+    'religionChristianityDescription':
+        'A monotheistic faith centered on Jesus Christ and his teachings, with many traditions and denominations.',
+    'religionIslamDescription':
+        'A monotheistic faith founded on the Qur\'an and the teachings of the Prophet Muhammad.',
+    'religionHinduismDescription':
+        'A diverse family of Indian religious and philosophical traditions, including many gods, scriptures, and practices.',
+    'religionBuddhismDescription':
+        'A tradition based on the Buddha\'s teachings on suffering, ethics, meditation, and liberation.',
+    'religionJudaismDescription':
+        'The monotheistic faith and cultural tradition of the Jewish people, rooted in the Torah and Jewish law.',
+    'religionSikhismDescription':
+        'A monotheistic faith founded by Guru Nanak, emphasizing devotion, equality, service, and the Guru Granth Sahib.',
+    'religionJainismDescription':
+        'An ancient Indian tradition emphasizing non-violence, truthfulness, asceticism, and liberation of the soul.',
+    'religionZoroastrianismDescription':
+        'An ancient Persian faith centered on Ahura Mazda, good thoughts, good words, and good deeds.',
+    'religionBahaiDescription':
+        'A faith teaching the unity of God, the unity of religion, and the unity of humanity.',
+    'religionShintoDescription':
+        'A traditional Japanese spiritual path focused on kami, nature, purity, and community rituals.',
+    'religionTaoismDescription':
+        'A Chinese tradition centered on living in harmony with the Tao, or the natural way of the universe.',
+    'religionIndigenousFolkDescription':
+        'Local or ancestral traditions tied to a particular culture, land, or community.',
+    'religionPaganEarthDescription':
+        'Spiritual paths that honor nature, cycles, and earth-centered practices, often outside mainstream religions.',
+    'religionSpiritualNotReligiousDescription':
+        'A personal spiritual life that is not tied to an organized religion.',
+    'religionAtheistDescription':
+        'A person who does not believe in God or gods.',
+    'religionAgnosticDescription':
+        'A person who holds that the existence of God or gods is unknown or unknowable.',
+    'religionHumanistDescription':
+        'A non-religious worldview centered on human reason, ethics, and well-being without relying on the supernatural.',
+    'religionNoReligionDescription':
+        'No religious affiliation or organized religion, without specifying a belief about God.',
+    'religionOtherDescription':
+        'A religion, belief, or spiritual path not listed here.',
+
+    // Denomination option explanations
+    'denominationChristianityCatholicDescription':
+        'The largest Christian tradition, led by the Pope and emphasizing sacraments, tradition, and apostolic succession.',
+    'denominationChristianityProtestantDescription':
+        'A broad branch of Christianity that emerged from the Reformation, emphasizing Scripture and faith.',
+    'denominationChristianityAnglicanDescription':
+        'A Christian tradition rooted in the Church of England, combining Protestant and Catholic elements.',
+    'denominationChristianityBaptistDescription':
+        'A Protestant tradition emphasizing believer\'s baptism, congregational governance, and personal faith.',
+    'denominationChristianityLutheranDescription':
+        'A Protestant tradition rooted in Martin Luther\'s teachings, emphasizing grace and justification by faith.',
+    'denominationChristianityMethodistDescription':
+        'A Protestant tradition rooted in John Wesley\'s teachings, emphasizing personal holiness and social service.',
+    'denominationChristianityPresbyterianReformedDescription':
+        'Protestant traditions shaped by Calvinist theology, emphasizing God\'s sovereignty and representative church government.',
+    'denominationChristianityPentecostalCharismaticDescription':
+        'Christian movements emphasizing the Holy Spirit, spiritual gifts, and lively worship.',
+    'denominationChristianityEvangelicalDescription':
+        'A Christian movement emphasizing personal conversion, biblical authority, and sharing the faith.',
+    'denominationChristianityEasternOrthodoxDescription':
+        'A family of Orthodox churches rooted in early Christianity, with rich liturgy and tradition.',
+    'denominationChristianityOrientalOrthodoxDescription':
+        'Ancient Orthodox churches that recognize the first three ecumenical councils but not the later ones.',
+    'denominationChristianityLatterDaySaintsDescription':
+        'The Church of Jesus Christ of Latter-day Saints, founded by Joseph Smith and centered on the Book of Mormon.',
+    'denominationChristianityJehovahsWitnessesDescription':
+        'A Christian movement known for door-to-door witnessing and belief in God\'s Kingdom.',
+    'denominationChristianityOtherDescription':
+        'A Christian tradition or denomination not listed here.',
+    'denominationIslamSunniDescription':
+        'The largest branch of Islam, following the Qur\'an and the Sunnah and emphasizing community consensus.',
+    'denominationIslamShiaDescription':
+        'A major branch of Islam that emphasizes the leadership of Ali and his descendants.',
+    'denominationIslamIbadiDescription':
+        'A distinct branch of Islam found mainly in Oman, with its own legal and theological tradition.',
+    'denominationIslamAhmadiyyaDescription':
+        'A Muslim movement founded in the nineteenth century, not recognized as Muslim by many other Muslims.',
+    'denominationIslamSufiDescription':
+        'A mystical dimension of Islam focused on inner purification and closeness to God.',
+    'denominationIslamOtherDescription':
+        'A Muslim tradition or school not listed here.',
+    'denominationJudaismOrthodoxDescription':
+        'A Jewish tradition that strictly observes Jewish law and tradition.',
+    'denominationJudaismConservativeDescription':
+        'A Jewish movement that balances tradition and modern life while observing Jewish law.',
+    'denominationJudaismReformDescription':
+        'A Jewish movement that emphasizes ethical principles and adapts tradition to modern life.',
+    'denominationJudaismReconstructionistDescription':
+        'A Jewish movement that sees Judaism as an evolving civilization shaped by community.',
+    'denominationJudaismHasidicDescription':
+        'A Jewish movement known for joyful worship, mysticism, and close-knit communities.',
+    'denominationJudaismSecularCulturalDescription':
+        'Jewish identity based on culture, heritage, or community rather than religious observance.',
+    'denominationJudaismOtherDescription':
+        'A Jewish tradition or movement not listed here.',
+    'denominationHinduismVaishnavismDescription':
+        'A Hindu tradition centered on devotion to Vishnu and his avatars, especially Krishna and Rama.',
+    'denominationHinduismShaivismDescription':
+        'A Hindu tradition centered on devotion to Shiva as the supreme deity.',
+    'denominationHinduismShaktismDescription':
+        'A Hindu tradition centered on the divine feminine, especially the goddess Shakti.',
+    'denominationHinduismSmartismDescription':
+        'A Hindu tradition that worships several major deities as forms of one supreme reality.',
+    'denominationHinduismOtherDescription':
+        'A Hindu tradition or school not listed here.',
+    'denominationBuddhismTheravadaDescription':
+        'The oldest surviving Buddhist tradition, emphasizing the Pali scriptures and monastic practice.',
+    'denominationBuddhismMahayanaDescription':
+        'A major Buddhist branch emphasizing compassion, the bodhisattva path, and universal liberation.',
+    'denominationBuddhismZenDescription':
+        'A Mahayana tradition focused on meditation, direct experience, and simplicity.',
+    'denominationBuddhismVajrayanaDescription':
+        'A Buddhist tradition emphasizing tantric practice, ritual, and guidance from teachers.',
+    'denominationBuddhismPureLandDescription':
+        'A Mahayana tradition centered on faith in Amitabha Buddha and rebirth in the Pure Land.',
+    'denominationBuddhismNichirenDescription':
+        'A Japanese Buddhist tradition centered on the Lotus Sutra and chanting Nam-myoho-renge-kyo.',
+    'denominationBuddhismOtherDescription':
+        'A Buddhist tradition or school not listed here.',
+    'denominationSikhismKhalsaDescription':
+        'The initiated Sikh community established by Guru Gobind Singh, with a distinctive disciplined identity.',
+    'denominationSikhismNanakpanthiDescription':
+        'Sikhs who follow the teachings of Guru Nanak and often emphasize a more universal spiritual path.',
+    'denominationSikhismOtherDescription':
+        'A Sikh tradition or group not listed here.',
+    'denominationJainismDigambaraDescription':
+        'A Jain tradition whose monks traditionally practice nudity and emphasize strict asceticism.',
+    'denominationJainismSvetambaraDescription':
+        'A Jain tradition whose monks wear white robes and emphasize scholarship and ritual.',
+    'denominationJainismOtherDescription':
+        'A Jain tradition or group not listed here.',
+    'denominationZoroastrianismOrthodoxDescription':
+        'A Zoroastrian approach that preserves traditional rituals, calendar, and priestly authority.',
+    'denominationZoroastrianismReformistDescription':
+        'A Zoroastrian approach that adapts some traditions to modern life and emphasizes ethical practice.',
+    'denominationZoroastrianismOtherDescription':
+        'A Zoroastrian tradition or group not listed here.',
+    'denominationShintoShrineDescription':
+        'The traditional public form of Shinto centered on local shrines, festivals, and kami worship.',
+    'denominationShintoSectDescription':
+        'Independent Shinto movements and schools with their own teachings and practices.',
+    'denominationShintoOtherDescription':
+        'A Shinto tradition or group not listed here.',
+    'denominationTaoismQuanzhenDescription':
+        'A major Taoist school emphasizing monastic life, meditation, and inner alchemy.',
+    'denominationTaoismZhengyiDescription':
+        'A major Taoist school of hereditary priests, ritual, and community practice.',
+    'denominationTaoismOtherDescription':
+        'A Taoist tradition or school not listed here.',
+    'denominationPaganEarthWiccanDescription':
+        'A modern pagan tradition centered on nature, seasonal cycles, and ritual magic.',
+    'denominationPaganEarthDruidDescription':
+        'A modern or historical pagan path honoring nature, wisdom, and Celtic traditions.',
+    'denominationPaganEarthHeathenDescription':
+        'A modern pagan tradition rooted in Norse or Germanic gods, culture, and community.',
+    'denominationPaganEarthOtherDescription':
+        'A pagan or Earth-based path not listed here.',
+
+    // Practice frequency
+    'practiceDaily': 'Daily or almost daily',
+    'practiceWeekly': 'Weekly',
+    'practiceMonthly': 'Monthly',
+    'practiceFewTimesAYear': 'A few times a year',
+    'practiceRarelyOrNever': 'Rarely or never',
     'profileYes': 'Yes',
     'profileNo': 'No',
     'profileHasChildren': 'Has children',
@@ -2525,9 +2980,9 @@ class LocalizationState {
     'profileUnknownIntent': 'Unknown Intent',
     'profileVerification': 'Profile Verification',
     'profileVerified': 'Your profile is verified',
-    'profileVerifiedBadge': 'Verified',
-    'profileVerifiedBadgeFemale': 'Verified',
-    'profileVerifiedBadgeNeutral': 'Verified',
+    'profileVerifiedBadge': 'Primary Photo Verified',
+    'profileVerifiedBadgeFemale': 'Primary Photo Verified',
+    'profileVerifiedBadgeNeutral': 'Primary Photo Verified',
     'profileWizardAddPhotoFromCamera': 'Take photo with camera',
     'profileWizardAddPhotoFromGallery': 'Add photo from gallery',
     'profileWizardAddPhotoTooltip': 'Add a photo',
@@ -2604,7 +3059,6 @@ class LocalizationState {
     'promoCodeExpired': 'This promo code has expired',
     'promoCodeExpiresIn': 'Expires in {days} days',
     'promoCodeExpiresInHours': 'Expires in {hours} hours',
-    'promoCodeExpiresInSingular': 'Expires in {days} day',
     'promoCodeExpiresToday': 'Expires today',
     'promoCodeGlobalLimitReached':
         'This promo code has reached its usage limit',
@@ -2633,8 +3087,7 @@ class LocalizationState {
     'promoCodeValidationError': 'Error validating code: {error}',
     'promoCodeYouPay': 'You Pay',
     'promoDiscountFixedFormat': '{amount} Off',
-    'promoDiscountFreeDaysManyFormat': '{days} days Free',
-    'promoDiscountFreeDaysOneFormat': '{days} day Free',
+    'promoDiscountFreeDaysFormat': '{days} days Free',
     'promoDiscountPercentageFormat': '{amount}% Off',
     'promoDiscountSpecialOffer': 'Special Offer',
     'promoDiscountTierUpgradeFormat': 'Upgrade to {tier}',
@@ -3341,10 +3794,10 @@ class LocalizationState {
     'settingsHeightRange': 'Height Range',
     'settingsHeightCm': 'centimeters',
     'settingsBeliefs': 'Beliefs',
-    'settingsReligion': 'Religion',
+    'settingsReligion': 'Religion or belief',
     'settingsReligionAny': 'Any',
-    'settingsReligiosity': 'Religiousness',
-    'settingsReligiosityAny': 'Any',
+    'settingsDenomination': 'Denomination or branch',
+    'settingsPractice': 'Religious practice',
     'settingsSameReligionOnly': 'Same religion only',
     'settingsPremiumActive': 'Premium Active',
     'settingsPremiumThanks': 'Thanks for your support!',
@@ -3390,7 +3843,6 @@ class LocalizationState {
     'settingsRetroDeleteNowDone': 'Saved places deleted',
     'settingsRetroPending': 'Saved places on this device: {count}',
     'settingsRetroHours': '{count} hours',
-    'settingsRetroOneDay': '1 day',
     'settingsRetroDays': '{count} days',
     'retroBanner':
         'You were near each other without internet. This match was found after you were back online.',
@@ -3454,6 +3906,7 @@ class LocalizationState {
     'listFilterInterestSection': 'What they are looking for',
     'listFilterOptionsSection': 'Options',
     'listFilterShowResults': 'Show {count} results',
+    'listFilterActiveCount': '{count} active',
     'listSortSection': 'Sort by',
     'sortUnreadFirst': 'Unread first',
     'sortNameAsc': 'Name A–Z',
@@ -3556,6 +4009,12 @@ class LocalizationState {
     'unitKilometers': 'Kilometers',
     'unitMeters': 'meters',
     'unitMiles': 'Miles',
+    // A distance carries its unit in one string so the unit can take the
+    // right plural form ("1 foot", not "1 feet").
+    'distanceInFeet': '{count} feet',
+    'distanceInKilometers': '{count} Kilometers',
+    'distanceInMeters': '{count} meters',
+    'distanceInMiles': '{count} Miles',
     'unmatch': 'Unmatch',
     'unmatchConfirm': 'Are you sure you want to unmatch?',
     'unmatchSuccess': 'You have successfully unmatched.',
@@ -3753,7 +4212,7 @@ class LocalizationState {
     'youMatchedBecause_non_binary': 'You matched because',
     'profileWizardSubIntentMin': '{intent} requires at least {min} sub-intent',
     'profileWizardSubIntentMax': '{intent} allows at most {max} sub-intents',
-    'profileWizardInterestMin': '{intent} requires at least {min} interest',
+    'profileWizardInterestMin': '{intent} requires at least {min} interests',
     'profileWizardInterestMaxPerCategory':
         'Maximum {max} sub-interests per category',
     'profileWizardInterestMaxCategoriesSocial':
@@ -3847,7 +4306,9 @@ class LocalizationState {
     'profileHeightUnitInches': 'inches',
     'profileHeightFeet': 'Feet',
     'profileHeightInches': 'Inches',
-    'profileHeightFeetInches': '{feet} feet {inches} inches',
+    'profileHeightFeetInches': '{feet} {inches}',
+    'profileHeightFeetValue': '{count} feet',
+    'profileHeightInchesValue': '{count} inches',
     'profileHeightInCm': '{cm} centimeters',
 
     // education level labels
@@ -3888,12 +4349,9 @@ class LocalizationState {
     'matchExtendedBadge': 'Extended',
     'matchExtendedByYou': 'Extended by you',
     'matchExtendedByOther': 'Extended by {name}',
-    'matchExtensionDurationHours': '{count} hour',
-    'matchExtensionDurationHoursPlural': '{count} hours',
-    'matchExtensionDurationMinutes': '{count} minute',
-    'matchExtensionDurationMinutesPlural': '{count} minutes',
-    'matchExtensionDurationDays': '{count} day',
-    'matchExtensionDurationDaysPlural': '{count} days',
+    'matchExtensionDurationHours': '{count} hours',
+    'matchExtensionDurationMinutes': '{count} minutes',
+    'matchExtensionDurationDays': '{count} days',
 
     // profile completeness (owner-facing %) — English fallbacks for keys also
     // shipped in migration 20262117000001_add_profile_completeness_translations.sql
@@ -3918,7 +4376,7 @@ class LocalizationState {
     'profileCompletionItemHeight': 'Add your height',
     'profileCompletionItemSocial': 'Link a social profile',
     'profileCompletionItemLanguages': 'Add at least 2 languages',
-    'profileCompletionBadge': 'Complete',
+    'profileCompletionBadge': 'Profile Complete',
     'profileCompletionBadgeTooltip': 'This profile is 100% complete',
     'profileCompletionBannerTitle': 'Complete your profile',
     'profileCompletionBannerMessage':
@@ -3950,6 +4408,7 @@ class LocalizationState {
     // --- Voice guidance (spoken coaching in profile wizard + verification) ---
     'voiceGuidanceMuteTooltip': 'Mute voice guidance',
     'voiceGuidanceUnmuteTooltip': 'Turn voice guidance on',
+    'voiceGuidanceEnabledConfirmation': 'Voice guidance is now on.',
     'voiceGuidanceSettingsLabel': 'Voice guidance',
     'voiceGuidanceSettingsDescription':
         'Spoken step-by-step help while you complete your profile and verify your photos.',
@@ -3971,7 +4430,7 @@ class LocalizationState {
         'Choose your lifestyle options, then tap Next.',
     'voiceGuidanceStepFamily': 'Share your family plans, then tap Next.',
     'voiceGuidanceStepReligion':
-        'Choose your religious background and how religious or spiritual you are, then tap Next.',
+        'Choose your religion or belief, denomination if relevant, and how often you practice. All fields are optional. Then tap Next.',
     'voiceGuidanceStepMatchPrefs':
         'Set what you are looking for in a match, then tap Next.',
     'voiceGuidanceStepSocial':
@@ -4072,7 +4531,7 @@ class LocalizationState {
     'onboardingBeatProfile1':
         'This is how others see you… AI-generated photos following the app photo rules, your age and bio, and your interests. A complete profile gets far more attention.',
     'onboardingBeatProfile2':
-        'You earned a Verified badge by completing the verification procedure from Settings… This badge shows on your profile and whenever others see you.',
+        'You earned a Primary Photo Verified badge by completing the verification procedure from Settings… This badge shows on your profile and whenever others see you.',
     'onboardingBeatProfile3':
         'Tap edit any time to update your photos or details through the same wizard you already know.',
     'onboardingBeatSettings1':
@@ -4084,7 +4543,7 @@ class LocalizationState {
     'onboardingBeatSettings4':
         'Under Invisibility Rules, you choose when you are automatically invisible… at work, at home, or on a schedule.',
     'onboardingBeatSettings5':
-        'Verification is launched from here… Complete a live selfie check to earn the Verified badge that appears on your profile and when others see you.',
+        'Verification is launched from here… Complete a live selfie check to earn the Primary Photo Verified badge that appears on your profile and when others see you.',
     'onboardingBeatSettingsTour':
         'Start with the app tour… replay this guided walkthrough any time you want a refresher.',
     'onboardingBeatSettingsDisplay':
@@ -4131,7 +4590,117 @@ class LocalizationState {
     'demoEventMeta2': 'Old Town · Friday 20:00',
     'onboardingBeatProfileVerifyLabel': 'Verification in progress…',
     'onboardingBeatProfileVerifyHint':
-        'A live selfie check is needed to unlock the verified badge.',
+        'A live selfie check is needed to unlock the Primary Photo Verified badge.',
+
+    // --- Plural forms -----------------------------------------------------
+    // The base key of a countable string holds the plural form; the singular
+    // lives under `<key>_one` and Hebrew's dual under `<key>_two`. `getString`
+    // picks the right one from the quantity it is handed, so "1 minute" and
+    // "2 minutes" read correctly in every language.
+    // See lib/utils/plural_rules.dart for the rules.
+    'billingMethodsUsed_one': '{count} method used',
+    'billingTotalTransactions_one': '{count} transaction',
+    'calendarSyncDeviceSummaryAccounts_one': '{count} account found',
+    'calendarSyncDeviceSummaryEvents_one': '{count} event found',
+    'calendarSyncDuplicateEventsFound_one': '{count} duplicate found',
+    'calendarSyncDuplicateSelectedWillSkip_one':
+        '{count} selected event will be skipped because it already exists.',
+    'calendarSyncSyncedEventsSuccess_one': 'Successfully imported {count} event.',
+    'calendarSyncSyncedEventsSuccessWithSkipped_one':
+        'Successfully imported {count} event. Skipped {skipped}.',
+    'chatsArchivedCount_one': '{count} chat archived',
+    'chatsResultsCount_one': '{count} conversation',
+    'chatsUnarchivedCount_one': '{count} chat unarchived',
+    'chatsUnreadMessages_one': '{count} unread message',
+    'inboxDeleteSelectedConfirm_one':
+        'Delete {count} selected notification? This cannot be undone.',
+    'inboxSelectedCount_one': '{count} selected',
+    'inboxUnreadCount_one': '{count} unread',
+    'durationDays_one': '{count} day',
+    'durationHours_one': '{count} hour',
+    'durationMinutes_one': '{count} minute',
+    'durationSeconds_one': '{count} second',
+    'generalAgeYearsOld_one': '{age} year old',
+    'gpsThrottledLowBattery_one':
+        'Low battery — GPS updates reduced to once every {interval} second to save battery. This will resume when your device is charging or battery is above {threshold}%.',
+    'gpsThrottledStationary_one':
+        'Not moving — GPS updates reduced to once every {interval} second to save battery. This will resume when you start moving.',
+    'homeRecentChatsCount_one': 'Showing top {count} Conversation',
+    'homeRecentChatsCountOf_one': 'Showing top {shown} of {total} Conversation',
+    'homeRecentMatchesCount_one': 'Showing top {count} Match',
+    'homeRecentMatchesCountOf_one': 'Showing top {shown} of {total} Match',
+    'listFilterResultCount_one': '{count} conversation',
+    'listFilterResultCountOf_one': '{shown} of {total} conversation',
+    'listFilterShowResults_one': 'Show {count} result',
+    'locationShareHours_one': '{count} hour',
+    'locationShareMinutes_one': '{count} minute',
+    'matchExpiryBody_one':
+        'You have {count} minute left to start a chat with {otherUserName}.',
+    'matchExpiryTitle_one': '{count} minute left',
+    'matchExtensionDurationDays_one': '{count} day',
+    'matchExtensionDurationHours_one': '{count} hour',
+    'matchExtensionDurationMinutes_one': '{count} minute',
+    'matchesResultsCount_one': '{count} Match',
+    'matchesResultsCountOf_one': '{shown} of {total} Match',
+    'offlinePendingChangesDescription_one':
+        'You have {count} pending change waiting to sync. These will be sent to the server when your connection is restored.\\n\\nActions in MatchMe will be unavailable until these sync.',
+    'offlineSyncingChanges_one': 'Syncing {count} change',
+    'onlineProvidersEventCount_one': '{count} event',
+    'onlineProvidersSummaryAccounts_one': '{count} account connected',
+    'onlineProvidersSummaryEvents_one': '{count} event found',
+    'promoCodeExpiresIn_one': 'Expires in {days} day',
+    'promoCodeExpiresInHours_one': 'Expires in {hours} hour',
+    'promoDiscountFreeDaysFormat_one': '{days} day Free',
+    'profileHeightFeetValue_one': '{count} foot',
+    'profileHeightInchesValue_one': '{count} inch',
+    'profileWizardCategorySubInterestExceeded_one':
+        'Category "{category}" exceeds maximum {max} sub-interest',
+    'profileWizardInterestMaxCategoriesBusiness_one':
+        'You can select up to {limit} business/networking interest.',
+    'profileWizardInterestMaxCategoriesSocial_one':
+        'You can select up to {limit} social interest.',
+    'profileWizardInterestMaxPerCategory_one':
+        'Maximum {max} sub-interest per category',
+    'profileWizardInterestMin_one': '{intent} requires at least {min} interest',
+    'profileWizardSubIntentMax_one': '{intent} allows at most {max} sub-intent',
+    'profileWizardSubIntentMin_one':
+        '{intent} requires at least {min} sub-intent',
+    'profileSelectSubIntentsMinMax_one': 'Select {min} to {max} sub-intent',
+    'ratingRatedBy_one': 'Rated by {count} user',
+    'ratingVerifiedCount_one': '{count} verified rating',
+    'rematchBanner_one': 'Rematch! This is your first time matching with {name}',
+    'rematchIndicator_one': 'This is the first time you matched!',
+    'settingsAccuracyMeters_one': 'Accuracy: ~{meters} meter',
+    'settingsMfaEmailCodeResendIn_one': 'Resend in {seconds} second',
+    'settingsMfaRecoveryCodesCount_one': '{count} recovery code ready',
+    'settingsRetroDays_one': '{count} day',
+    'settingsRetroHours_one': '{count} hour',
+    'translationCoverageWarningBody_one':
+        'Supabase is missing {count} UI text entry for {locale}. The app is showing English fallbacks for that key.',
+    'distanceInFeet_one': '{count} foot',
+    'distanceInKilometers_one': '{count} Kilometer',
+    'distanceInMeters_one': '{count} meter',
+    'distanceInMiles_one': '{count} Mile',
+
+    // --- Counters that only ever existed in the database -------------------
+    // Bundled so the count reads correctly before the first fetch lands.
+    'chatsArchivedCount': '{count} chats archived',
+    'chatsUnarchivedCount': '{count} chats unarchived',
+    'inboxDeleteSelectedConfirm':
+        'Delete {count} selected notifications? This cannot be undone.',
+    'inboxSelectedCount': '{count} selected',
+    'inboxUnreadCount': '{count} unread',
+
+    // --- Localized duration parts ------------------------------------------
+    // A countdown that names several units ("1 hour, 5 minutes and 3 seconds")
+    // cannot be pluralized in one template: every unit has its own quantity.
+    // The parts are translated separately and joined with these connectors.
+    'durationListAnd': '{first} and {second}',
+    'durationListCommaAnd': '{first}, {second} and {third}',
+    'locationShareCountdownRemaining': 'for another {duration}',
+
+    // Separator between the counters of a summary line.
+    'summarySeparator': ' · ',
   };
 
   /// Public helper to get a built-in default translation for a key (used when the app must show text before localization is initialized)
@@ -4163,11 +4732,17 @@ class LocalizationState {
 /// app with real strings and a non-empty language list on frame one.
 class _WarmLaunchLocalization {
   final String langCode;
+
+  /// The language the cached strings are actually in — see
+  /// [LocalizationState.contentLanguageCode].
+  final String contentLanguageCode;
+
   final Map<String, String> strings;
   final List<AppLanguage> supportedLanguages;
 
   const _WarmLaunchLocalization({
     required this.langCode,
+    required this.contentLanguageCode,
     required this.strings,
     required this.supportedLanguages,
   });
@@ -4250,6 +4825,11 @@ class Localization extends _$Localization {
 
       _warmLaunchPreload = _WarmLaunchLocalization(
         langCode: langCode,
+        contentLanguageCode: resolveCachedContentLanguage(
+          langCode: langCode,
+          strings: strings,
+          marker: prefs.getString(translationContentMarkerKey(langCode)),
+        ),
         strings: strings,
         supportedLanguages: supported,
       );
@@ -4264,8 +4844,8 @@ class Localization extends _$Localization {
 
   // Remember which DB keys we've warned about already to avoid log spam
   final Set<String> _missingDbKeysWarned = <String>{};
-  RealtimeChannel? _languageRealtimeChannel;
-  String? _languageRealtimeUserId;
+  StreamSubscription<MyUserUpdate>? _myUserSubscription;
+  StreamSubscription<void>? _languageResyncSubscription;
   StreamSubscription<AuthState>? _authStateSubscription;
   bool _localeChangeInFlight = false;
   String? _localeChangeTarget;
@@ -4325,6 +4905,10 @@ class Localization extends _$Localization {
     _initCompleter = Completer<void>();
     ref.onDispose(() {
       _clearLanguageRealtimeSubscription();
+      _myUserSubscription?.cancel();
+      _myUserSubscription = null;
+      _languageResyncSubscription?.cancel();
+      _languageResyncSubscription = null;
       _authStateSubscription?.cancel();
       _authStateSubscription = null;
     });
@@ -4372,6 +4956,7 @@ class Localization extends _$Localization {
       return LocalizationState(
         currentLocale: Locale(initialLang.code),
         textDirection: initialLang.direction,
+        contentLanguageCode: warmPreload.contentLanguageCode,
         strings: warmPreload.strings,
         supportedLanguages: warmPreload.supportedLanguages,
         isLoading: false,
@@ -4397,73 +4982,37 @@ class Localization extends _$Localization {
   }
 
   void _clearLanguageRealtimeSubscription() {
-    final userId = _languageRealtimeUserId;
-    _languageRealtimeChannel = null;
-    _languageRealtimeUserId = null;
-    if (userId != null) {
-      SupabaseRealtimeManager.instance.unregister('user_language_$userId');
-    }
+    // The subscription is owned by MyUserRealtimeService; nothing to tear
+    // down here. The service drops the channel itself on sign-out.
   }
 
+  /// Subscribes to the shared "my own user row" realtime channel.
   void _ensureLanguageRealtimeSubscription() {
-    final userId = Supabase.instance.client.auth.currentUser?.id;
-    if (userId == null) {
-      _clearLanguageRealtimeSubscription();
-      return;
-    }
-    if (_languageRealtimeChannel != null && _languageRealtimeUserId == userId) {
-      return;
-    }
-    _clearLanguageRealtimeSubscription();
-
-    final channelName = 'user_language_$userId';
-    SupabaseRealtimeManager.instance.register(channelName, () {
-      _languageRealtimeChannel = Supabase.instance.client
-          .channel(channelName)
-          .onPostgresChanges(
-            event: PostgresChangeEvent.update,
-            schema: 'public',
-            table: 'users',
-            filter: PostgresChangeFilter(
-              type: PostgresChangeFilterType.eq,
-              column: 'id',
-              value: userId,
-            ),
-            callback: (payload) {
-              final newRecord = payload.newRecord;
-              final remoteLanguage = newRecord['preferred_language'] as String?;
-              // Only an explicit in-app choice may move this device's UI.
-              // Seeds (the column default or a device-derived value another
-              // session wrote) must never override the device language.
-              final remoteExplicit =
-                  newRecord['preferred_language_explicit'] as bool? ?? false;
-              if (!remoteExplicit) return;
-              if (remoteLanguage == null || remoteLanguage.isEmpty) return;
-              if (remoteLanguage == state.currentLocale.languageCode) return;
-              if (_localeChangeInFlight &&
-                  _localeChangeTarget == remoteLanguage) {
-                return;
-              }
-              unawaited(setLocale(remoteLanguage, null, false));
-            },
-          )
-          .subscribe((status, err) {
-            if (status == RealtimeSubscribeStatus.channelError ||
-                status == RealtimeSubscribeStatus.timedOut ||
-                status == RealtimeSubscribeStatus.closed) {
-              if (err != null && isExpectedOfflineFailure(err)) {
-                // Proactively pause to suppress errors from other
-                // channels and avoid the race with the connectivity
-                // provider's own pauseAll() call.
-                SupabaseRealtimeManager.instance.pauseAll();
-                return;
-              }
-              if (SupabaseRealtimeManager.instance.isPaused) return;
-              unawaited(_syncLanguageFromRemote());
-            }
-          });
-      _languageRealtimeUserId = userId;
-      return _languageRealtimeChannel!;
+    _myUserSubscription?.cancel();
+    _myUserSubscription = MyUserRealtimeService.instance.updates.listen((
+      update,
+    ) {
+      if (!update.changed('preferred_language') &&
+          !update.changed('preferred_language_explicit')) {
+        return;
+      }
+      final remoteLanguage = update.row['preferred_language'] as String?;
+      // Only an explicit in-app choice may move this device's UI.
+      // Seeds (the column default or a device-derived value another
+      // session wrote) must never override the device language.
+      final remoteExplicit =
+          update.row['preferred_language_explicit'] as bool? ?? false;
+      if (!remoteExplicit) return;
+      if (remoteLanguage == null || remoteLanguage.isEmpty) return;
+      if (remoteLanguage == state.currentLocale.languageCode) return;
+      if (_localeChangeInFlight && _localeChangeTarget == remoteLanguage) {
+        return;
+      }
+      unawaited(setLocale(remoteLanguage, null, false));
+    });
+    _languageResyncSubscription =
+        MyUserRealtimeService.instance.resyncRequests.listen((_) {
+          unawaited(_syncLanguageFromRemote());
     });
   }
 
@@ -4612,21 +5161,23 @@ class Localization extends _$Localization {
     // Prefer cache over DB to avoid slow timeouts when offline and to
     // prevent _initImpl from racing with setLocale (which would revert the
     // user's language choice after _initImpl completes).
-    final cachedStrings = await _loadTranslationsFromCache(initialLang.code);
-    if (cachedStrings.isNotEmpty) {
+    final cached = await _loadTranslationsFromCache(initialLang.code);
+    if (cached.strings.isNotEmpty) {
       if (!ref.mounted) return;
 
       state = LocalizationState(
         currentLocale: Locale(initialLang.code),
         textDirection: initialLang.direction,
-        strings: cachedStrings,
+        contentLanguageCode: cached.contentLanguageCode,
+        strings: cached.strings,
         supportedLanguages: supported,
         isLoading: false,
       );
       debugPrint(
-        '[L10N] Translations loaded from cache for $langCode (${cachedStrings.length} strings)',
+        '[L10N] Translations loaded from cache for $langCode '
+        '(${cached.strings.length} strings, content=${cached.contentLanguageCode})',
       );
-      _syncNativeBackgroundNotificationStrings(cachedStrings);
+      _syncNativeBackgroundNotificationStrings(cached.strings);
 
       // Refresh cache from DB in the background (only when online).
       if (offlineCacheManager.isSupabaseAvailable) {
@@ -4641,18 +5192,32 @@ class Localization extends _$Localization {
       // language's strings here costs no extra loader: first paint lands in
       // the device's language. Anything slower than the timeout falls back to
       // the defaults plus the background load, exactly as before.
+      //
+      // The fallback is English, so the content language is English too and
+      // the UI lays out left-to-right until the real translations arrive.
+      // Laying the English fallback out right-to-left (Hebrew locale) is the
+      // impossible state this must never ship.
       var strings = Map<String, String>.from(
         LocalizationState._defaultTranslations,
       );
+      var contentLanguage = 'en';
       var loadedFromDb = false;
       if (initialLang.code != 'en' && offlineCacheManager.isSupabaseAvailable) {
         try {
           final fetched = await _fetchTranslationsFromDB(
             initialLang.code,
           ).timeout(const Duration(seconds: 6));
-          if (_lastFetchedDbKeys.isNotEmpty) {
-            strings = fetched;
-            await _saveTranslationsToCache(initialLang.code, fetched);
+          if (fetched.hasLocalizedRows) {
+            strings = fetched.strings;
+            contentLanguage = resolveContentLanguageCode(
+              localeCode: initialLang.code,
+              hasLocalizedRows: true,
+            );
+            await _saveTranslationsToCache(
+              initialLang.code,
+              fetched.strings,
+              contentLanguageCode: contentLanguage,
+            );
             loadedFromDb = true;
           }
         } catch (e) {
@@ -4665,6 +5230,7 @@ class Localization extends _$Localization {
       state = LocalizationState(
         currentLocale: Locale(initialLang.code),
         textDirection: initialLang.direction,
+        contentLanguageCode: contentLanguage,
         strings: strings,
         supportedLanguages: supported,
         isLoading: false,
@@ -4765,10 +5331,36 @@ class Localization extends _$Localization {
   }
 
   /// Background-refresh translation cache from DB (only call when online).
+  ///
+  /// The cache is only written when the server actually returned rows for the
+  /// locale: saving the English fallback under a Hebrew cache key would make
+  /// the next launch paint English text in an RTL layout, and it would stick
+  /// there until the next successful fetch.
+  ///
+  /// The fresh strings are applied to the live state as well, so a member
+  /// whose cached copy was an English fallback sees the real translations
+  /// without having to restart the app.
   Future<void> _refreshTranslationCache(String langCode) async {
     try {
-      final strings = await _fetchTranslationsFromDB(langCode);
-      await _saveTranslationsToCache(langCode, strings);
+      final fetched = await _fetchTranslationsFromDB(langCode);
+      if (!fetched.hasLocalizedRows) return;
+      final contentLanguage = resolveContentLanguageCode(
+        localeCode: langCode,
+        hasLocalizedRows: true,
+      );
+      await _saveTranslationsToCache(
+        langCode,
+        fetched.strings,
+        contentLanguageCode: contentLanguage,
+      );
+      if (!ref.mounted) return;
+      if (state.currentLocale.languageCode != langCode) return;
+      state = state.copyWith(
+        strings: fetched.strings,
+        dbKeys: _lastFetchedDbKeys,
+        contentLanguageCode: contentLanguage,
+      );
+      _syncNativeBackgroundNotificationStrings(fetched.strings);
     } catch (_) {}
   }
 
@@ -4778,16 +5370,31 @@ class Localization extends _$Localization {
   /// server set without a reload.
   Future<void> _loadTranslationsInBackground(String langCode) async {
     try {
-      final strings = await _fetchTranslationsFromDB(langCode);
-      await _saveTranslationsToCache(langCode, strings);
+      final fetched = await _fetchTranslationsFromDB(langCode);
+      final contentLanguage = resolveContentLanguageCode(
+        localeCode: langCode,
+        hasLocalizedRows: fetched.hasLocalizedRows,
+      );
+      if (fetched.hasLocalizedRows) {
+        await _saveTranslationsToCache(
+          langCode,
+          fetched.strings,
+          contentLanguageCode: contentLanguage,
+        );
+      }
       if (!ref.mounted) return;
       // The user may have switched locale while the fetch was in flight; in
       // that case the setLocale path owns the state update for the new code.
       if (state.currentLocale.languageCode != langCode) return;
-      state = state.copyWith(strings: strings, dbKeys: _lastFetchedDbKeys);
-      _syncNativeBackgroundNotificationStrings(strings);
+      state = state.copyWith(
+        strings: fetched.strings,
+        dbKeys: _lastFetchedDbKeys,
+        contentLanguageCode: contentLanguage,
+      );
+      _syncNativeBackgroundNotificationStrings(fetched.strings);
       debugPrint(
-        '[L10N] Background DB translations applied for $langCode (${strings.length} strings)',
+        '[L10N] Background DB translations applied for $langCode '
+        '(${fetched.strings.length} strings, content=$contentLanguage)',
       );
     } catch (e) {
       debugPrint('[L10N] Background DB translation load failed: $e');
@@ -4800,11 +5407,25 @@ class Localization extends _$Localization {
   Future<void> refreshTranslations() async {
     final currentLang = state.currentLocale.languageCode;
     if (!offlineCacheManager.isSupabaseAvailable) return;
-    final strings = await _fetchTranslationsFromDB(currentLang);
-    await _saveTranslationsToCache(currentLang, strings);
+    final fetched = await _fetchTranslationsFromDB(currentLang);
+    final contentLanguage = resolveContentLanguageCode(
+      localeCode: currentLang,
+      hasLocalizedRows: fetched.hasLocalizedRows,
+    );
+    if (fetched.hasLocalizedRows) {
+      await _saveTranslationsToCache(
+        currentLang,
+        fetched.strings,
+        contentLanguageCode: contentLanguage,
+      );
+    }
     if (!ref.mounted) return;
-    state = state.copyWith(strings: strings, dbKeys: _lastFetchedDbKeys);
-    _syncNativeBackgroundNotificationStrings(strings);
+    state = state.copyWith(
+      strings: fetched.strings,
+      dbKeys: _lastFetchedDbKeys,
+      contentLanguageCode: contentLanguage,
+    );
+    _syncNativeBackgroundNotificationStrings(fetched.strings);
   }
 
   List<AppLanguage> _defaultSupportedLanguages() {
@@ -4827,15 +5448,26 @@ class Localization extends _$Localization {
     ];
   }
 
-  Future<Map<String, String>> _fetchTranslationsFromDB(String langCode) async {
+  /// Fetches the translation rows for [langCode] and merges them over the
+  /// bundled English defaults.
+  ///
+  /// [hasLocalizedRows] tells the caller whether the server actually returned
+  /// rows for the locale. When it is false every value in [strings] is the
+  /// English fallback, so the UI must lay out left-to-right — and the cache
+  /// must not be written under this locale's key.
+  Future<({Map<String, String> strings, bool hasLocalizedRows})>
+  _fetchTranslationsFromDB(String langCode) async {
     // Skip DB call when offline to avoid 50s auth timeout.
     if (!offlineCacheManager.isSupabaseAvailable) {
       debugPrint('[L10N] Skipping DB fetch for $langCode (offline)');
-      return <String, String>{};
+      return (strings: <String, String>{}, hasLocalizedRows: false);
     }
 
     final allStrings = <String, String>{};
     final fetchStart = DateTime.now();
+    // Reset before the fetch: a failed fetch must never leave the previous
+    // locale's DB keys behind, they would make a failed fetch look successful.
+    _lastFetchedDbKeys = <String>{};
 
     // Fetch from 'translations' table only
     try {
@@ -4900,10 +5532,17 @@ class Localization extends _$Localization {
     );
     merged.addAll(allStrings); // DB overrides defaults when present
 
-    return merged;
+    return (strings: merged, hasLocalizedRows: allStrings.isNotEmpty);
   }
 
-  Future<Map<String, String>> _loadTranslationsFromCache(
+  /// Reads the cached translations for [langCode] together with the language
+  /// they are actually in.
+  ///
+  /// The content language is read from the marker written next to the cache.
+  /// Legacy caches have no marker: their values are compared with the bundled
+  /// English defaults to find out whether they hold translated rows at all.
+  Future<({Map<String, String> strings, String contentLanguageCode})>
+  _loadTranslationsFromCache(
     String langCode,
   ) async {
     // Fast path: the warm-launch bootstrap already decoded this language's
@@ -4927,10 +5566,22 @@ class Localization extends _$Localization {
         } else {
           _lastFetchedDbKeys = predecoded.keys.toSet();
         }
+        final content = resolveCachedContentLanguage(
+          langCode: langCode,
+          strings: predecoded,
+          marker: prefs.getString(translationContentMarkerKey(langCode)),
+        );
+        return (strings: Map<String, String>.from(predecoded), contentLanguageCode: content);
       } catch (e) {
         // ignore prefs errors — strings themselves are already in hand
+        return (
+          strings: Map<String, String>.from(predecoded),
+          contentLanguageCode: resolveCachedContentLanguage(
+            langCode: langCode,
+            strings: predecoded,
+          ),
+        );
       }
-      return Map<String, String>.from(predecoded);
     }
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -4959,18 +5610,40 @@ class Localization extends _$Localization {
         } else {
           _lastFetchedDbKeys = map.keys.toSet();
         }
-        return map;
+        final content = resolveCachedContentLanguage(
+          langCode: langCode,
+          strings: map,
+          marker: prefs.getString(translationContentMarkerKey(langCode)),
+        );
+        return (strings: map, contentLanguageCode: content);
       }
     } catch (e) {
       // Ignore cache read errors
     }
-    return {};
+    return (strings: <String, String>{}, contentLanguageCode: 'en');
   }
 
+  /// Persists the translation strings for [langCode] together with the
+  /// language they are really in.
+  ///
+  /// The cache is only written when [contentLanguageCode] matches the locale:
+  /// saving the English fallback under a Hebrew cache key would make the next
+  /// launch paint English text in an RTL layout, and the damage would stick
+  /// there until a successful fetch overwrote it.
   Future<void> _saveTranslationsToCache(
     String langCode,
-    Map<String, String> strings,
-  ) async {
+    Map<String, String> strings, {
+    required String contentLanguageCode,
+  }) async {
+    if (normalizeContentLanguageCode(contentLanguageCode) !=
+        normalizeContentLanguageCode(langCode)) {
+      debugPrint(
+        '[L10N] Refusing to cache $langCode strings that are actually '
+        '${normalizeContentLanguageCode(contentLanguageCode)} — the cache would '
+        'render them in the wrong direction',
+      );
+      return;
+    }
     try {
       final prefs = await SharedPreferences.getInstance();
       final jsonString = jsonEncode(strings);
@@ -4979,6 +5652,16 @@ class Localization extends _$Localization {
       try {
         final dbJson = jsonEncode(_lastFetchedDbKeys.toList());
         await prefs.setString('translations_${langCode}_dbkeys', dbJson);
+      } catch (e) {
+        // ignore
+      }
+      // Record which language the cached blob is really in, so the next
+      // launch can lay it out correctly even when the blob is a fallback.
+      try {
+        await prefs.setString(
+          translationContentMarkerKey(langCode),
+          contentLanguageCode,
+        );
       } catch (e) {
         // ignore
       }
@@ -5039,19 +5722,26 @@ class Localization extends _$Localization {
       );
 
       // First check cache - if we already have translations for this language, use them
-      final cachedStrings = await _loadTranslationsFromCache(lang.code);
+      final cached = await _loadTranslationsFromCache(lang.code);
       Map<String, String> strings;
+      // The language the strings are really in. A cached blob can hold the
+      // English fallback (written while the server was unreachable), in which
+      // case the UI has to lay out left-to-right.
+      String contentLanguage;
 
-      if (cachedStrings.isNotEmpty) {
+      if (cached.strings.isNotEmpty) {
         // Use cached translations - they're faster and avoid DB round-trip
-        strings = cachedStrings;
+        strings = cached.strings;
+        contentLanguage = cached.contentLanguageCode;
         debugPrint(
-          '[L10N] Using cached translations for $langCode (${strings.length} strings)',
+          '[L10N] Using cached translations for $langCode '
+          '(${strings.length} strings, content=$contentLanguage)',
         );
 
         // If online and this is not English, refresh the cache in the
         // background so any corrupted cache (e.g. English defaults saved
-        // during a previous offline session) gets overwritten.
+        // during a previous offline session) gets overwritten — and applied
+        // right away, so the member is not stuck on the English fallback.
         if (langCode != 'en' && offlineCacheManager.isSupabaseAvailable) {
           unawaited(_refreshTranslationCache(langCode));
         }
@@ -5066,11 +5756,23 @@ class Localization extends _$Localization {
           state = state.copyWith(isLoading: false);
           return;
         }
-        strings = await _fetchTranslationsFromDB(lang.code);
-        // Save to cache for future use
-        await _saveTranslationsToCache(lang.code, strings);
+        final fetched = await _fetchTranslationsFromDB(lang.code);
+        strings = fetched.strings;
+        contentLanguage = resolveContentLanguageCode(
+          localeCode: lang.code,
+          hasLocalizedRows: fetched.hasLocalizedRows,
+        );
+        // Save to cache for future use (only real translations are cached).
+        if (fetched.hasLocalizedRows) {
+          await _saveTranslationsToCache(
+            lang.code,
+            strings,
+            contentLanguageCode: contentLanguage,
+          );
+        }
         debugPrint(
-          '[L10N] Fetched translations from DB for $langCode (${strings.length} strings)',
+          '[L10N] Fetched translations from DB for $langCode '
+          '(${strings.length} strings, content=$contentLanguage)',
         );
       }
 
@@ -5092,6 +5794,7 @@ class Localization extends _$Localization {
       state = state.copyWith(
         currentLocale: Locale(lang.code),
         textDirection: lang.direction,
+        contentLanguageCode: contentLanguage,
         strings: strings,
         supportedLanguages: supportedLanguages,
         isLoading: false,
@@ -5521,7 +6224,7 @@ class Localization extends _$Localization {
                   originalContent.isNotEmpty &&
                   originalContent != 'null') {
                 final translationService = ref.read(translationServiceProvider);
-                final clientDetected = normalizeLanguageCode(
+                final clientDetected = normalizeContentLanguageCode(
                   await translationService.identifyLanguage(originalContent),
                 );
                 if (isValidLanguageCode(clientDetected) &&
@@ -5938,6 +6641,12 @@ final translationsRealtimeProvider = StreamProvider<List<Map<String, dynamic>>>(
       localizationProvider.select((s) => s.currentLocale.languageCode),
     );
 
+    // A single migration can touch hundreds of rows at once. Without this
+    // every row would trigger its own full fetch of the locale; the refreshes
+    // are coalesced into one instead.
+    Timer? refreshTimer;
+    ref.onDispose(() => refreshTimer?.cancel());
+
     return Supabase.instance.client
         .from('translations')
         .stream(primaryKey: const ['locale', 'key'])
@@ -5947,7 +6656,11 @@ final translationsRealtimeProvider = StreamProvider<List<Map<String, dynamic>>>(
             'Translations changed for $currentLangCode, refreshing',
             name: 'TranslationsRealtime',
           );
-          ref.read(localizationProvider.notifier).refreshTranslations();
+          refreshTimer?.cancel();
+          refreshTimer = Timer(const Duration(milliseconds: 500), () {
+            if (!ref.mounted) return;
+            ref.read(localizationProvider.notifier).refreshTranslations();
+          });
           return rows;
         })
         .handleError((e) {
@@ -5961,3 +6674,4 @@ final translationsRealtimeProvider = StreamProvider<List<Map<String, dynamic>>>(
 
 // --- 4. The Main Provider ---
 // Generated by @riverpod
+

@@ -4777,13 +4777,17 @@ Future<void> showReactorsSheet(
               ? (() {
                   final parts = displayName!.trim().split(RegExp(r'\s+'));
                   if (parts.length > 1) {
-                    return '\u200E${parts.first} ${parts.last[0]}.\u200E';
+                    return '${parts.first} ${parts.last[0]}.'
+                        .withDirectionalMarks();
                   }
-                  return '\u200E$displayName\u200E';
+                  return displayName.withDirectionalMarks();
                 })()
               : l10n.getString('generalUnknown');
 
           final isMe = uid != null && uid == currentUserId;
+          // The reactor's name follows its own script so its trailing period
+          // stays on the right of the name in a Hebrew UI.
+          final nameLayout = name.displayTextLayout(Directionality.of(context));
 
           return ListTile(
             leading: photo != null && photo.isNotEmpty
@@ -4794,7 +4798,11 @@ Future<void> showReactorsSheet(
                     fit: BoxFit.cover,
                   )
                 : const Icon(Icons.person),
-            title: Text(name),
+            title: Text(
+              name,
+              textAlign: nameLayout.textAlign,
+              textDirection: nameLayout.textDirection,
+            ),
             subtitle: isMe
                 ? Text(l10n.getString('chatReactorsTapToRemove'))
                 : null,

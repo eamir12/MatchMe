@@ -6,6 +6,8 @@
 
 import 'dart:convert';
 
+import 'package:matchme/utils/string_extensions.dart';
+
 class NotifLimits {
   static const int adminTitleMaxChars = 60;
   static const int adminTitleMaxBytes = 200;
@@ -61,18 +63,22 @@ int notifUtf8Bytes(String s) => utf8.encode(s).length;
 /// returns it unchanged, so server-produced titles pass through. Notification
 /// display MUST use this - not a first-name-only helper - so tray titles match
 /// what the app's other screens show.
+///
+/// The masked name carries the directional mark of its own script, so its
+/// trailing period stays glued to the initial wherever it is shown — a tray
+/// title in a Hebrew UI, a notification body, an expiry reminder.
 String maskFullName(String raw) {
-  final parts = raw
+  final parts = raw.withoutBidiControls
       .trim()
       .split(RegExp(r'\s+'))
       .where((e) => e.isNotEmpty)
       .toList();
   if (parts.isEmpty) return 'Someone';
-  if (parts.length == 1) return parts.first;
+  if (parts.length == 1) return parts.first.withDirectionalMarks();
   final first = parts.first;
   final last = parts.last;
-  if (last.isEmpty || last == first) return first;
-  return '$first ${last[0].toUpperCase()}.';
+  if (last.isEmpty || last == first) return first.withDirectionalMarks();
+  return '$first ${last[0].toUpperCase()}.'.withDirectionalMarks();
 }
 
 ({String title, String body, bool truncated}) enforceTitleBody(

@@ -23,6 +23,7 @@ import 'package:matchme/services/crypto_service.dart';
 import 'package:matchme/services/offline_cache_manager.dart';
 import 'package:matchme/services/web_notification_service.dart';
 import 'package:matchme/utils/offline_utils.dart';
+import 'package:matchme/utils/string_extensions.dart';
 import 'package:permission_handler/permission_handler.dart' as perm;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -347,7 +348,7 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
           .join('-');
     }
 
-    final cleaned = name.replaceAll(RegExp('[\u200E\u200F\u202A-\u202E]'), '');
+    final cleaned = name.replaceAll(bidiControls, '');
     final words = cleaned
         .trim()
         .split(RegExp(r'\s+'))
@@ -358,7 +359,7 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
       return 'Someone';
     } else if (words.length == 1) {
       // Single word name, capitalize it
-      return capWord(words.first);
+      return capWord(words.first).withDirectionalMarks();
     } else {
       // Multiple names: all words except the last are first names, last word's
       // initial is used. "Ana Maria Hernandez Martinez" -> "Ana Maria Hernandez M."
@@ -366,7 +367,8 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
       // through here unchanged apart from capitalization.
       if (words.length == 2) {
         // Simple case: "John Smith" -> "John S."
-        return '${capWord(words.first)} ${words.last[0].toUpperCase()}.';
+        return '${capWord(words.first)} ${words.last[0].toUpperCase()}.'
+            .withDirectionalMarks();
       } else {
         // Multiple names: "Ana Maria Hernandez Martinez" -> "Ana Maria Hernandez M."
         final firstNameWords = words
@@ -375,7 +377,8 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
             .toList();
         // Last name initial = last word's initial (uppercased)
         final lastNameInitial = '${words.last[0].toUpperCase()}.';
-        return '${firstNameWords.join(' ')} $lastNameInitial';
+        return '${firstNameWords.join(' ')} $lastNameInitial'
+            .withDirectionalMarks();
       }
     }
   }
@@ -865,12 +868,15 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
                   final minutes = remaining.inMinutes % 60;
                   final seconds = remaining.inSeconds % 60;
                   fallbackDuration =
-                      ' - for another $hours hours, $minutes minutes and $seconds seconds';
+                      ' - for another ${_englishCountUnit(hours, 'hour')}, '
+                      '${_englishCountUnit(minutes, 'minute')} and '
+                      '${_englishCountUnit(seconds, 'second')}';
                 } else {
                   final minutes = remaining.inMinutes;
                   final seconds = remaining.inSeconds % 60;
                   fallbackDuration =
-                      ' - for another $minutes minutes and $seconds seconds';
+                      ' - for another ${_englishCountUnit(minutes, 'minute')} '
+                      'and ${_englishCountUnit(seconds, 'second')}';
                 }
               } else {
                 fallbackDuration = ' - until turned off';
@@ -2418,11 +2424,17 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
         final minutes = remaining.inMinutes % 60;
         final seconds = remaining.inSeconds % 60;
         title = '📍 $_notifCountdownName';
-        body = hours > 0
-            ? '$_notifCountdownName is sharing their live location with you'
-                  ' - for another $hours hours, $minutes minutes and $seconds seconds'
-            : '$_notifCountdownName is sharing their live location with you'
-                  ' - for another $minutes minutes and $seconds seconds';
+        // English fallback for the case where the localization layer is not
+        // available: the units still take the right plural form.
+        final duration = hours > 0
+            ? '${_englishCountUnit(hours, 'hour')} and '
+                  '${_englishCountUnit(minutes, 'minute')} and '
+                  '${_englishCountUnit(seconds, 'second')}'
+            : '${_englishCountUnit(minutes, 'minute')} and '
+                  '${_englishCountUnit(seconds, 'second')}';
+        body =
+            '$_notifCountdownName is sharing their live location with you'
+            ' - for another $duration';
       }
 
       try {
@@ -2790,6 +2802,12 @@ LocationShare Broadcast State:
       _positionChannelSubscribed = false;
     }
   }
+}
+
+/// "1 hour" / "3 hours" — the English fallback used when the localization
+/// layer is not available.
+String _englishCountUnit(int count, String unit) {
+  return '$count $unit${count == 1 ? '' : 's'}';
 }
 
 final locationShareProvider =

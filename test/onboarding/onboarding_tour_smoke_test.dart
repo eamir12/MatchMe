@@ -504,5 +504,115 @@ void main() {
         await tester.pump(const Duration(seconds: 5));
       });
     });
+
+    group('the tour lays out in the direction of the content', () {
+      // The bug this pins: the tour is a PUSHED route, so it inherited the
+      // direction of the app locale (Hebrew) while its strings were the
+      // English fallback — English narration mirrored right-to-left. The app
+      // now applies the direction of the CONTENT around the Navigator (see
+      // lib/main.dart), so every route follows it.
+      Future<void> pumpTourAsRoute(
+        WidgetTester tester, {
+        required Locale appLocale,
+        required String contentLanguageCode,
+        required Map<String, String> strings,
+      }) async {
+        final direction = isRtlLanguageCode(contentLanguageCode)
+            ? TextDirection.rtl
+            : TextDirection.ltr;
+        final state = LocalizationState(
+          currentLocale: appLocale,
+          textDirection: direction,
+          contentLanguageCode: contentLanguageCode,
+          strings: strings,
+          supportedLanguages: const [],
+        );
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [localizationProvider.overrideWithValue(state)],
+            child: MaterialApp(
+              locale: appLocale,
+              supportedLocales: const [
+                Locale('en'),
+                Locale('es'),
+                Locale('he'),
+              ],
+              localizationsDelegates: GlobalMaterialLocalizations.delegates,
+              // The app-wide direction is applied around the Navigator, so
+              // pushed routes follow the content as well.
+              builder: (context, child) => Directionality(
+                textDirection: direction,
+                child: child!,
+              ),
+              home: Builder(
+                builder: (context) => Scaffold(
+                  body: Center(
+                    child: ElevatedButton(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          fullscreenDialog: true,
+                          builder: (_) => OnboardingIntroScreen(
+                            tour: kOnboardingCoreTour,
+                          ),
+                        ),
+                      ),
+                      child: const Text('open'),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.tap(find.text('open'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+      }
+
+      testWidgets('English content under a Hebrew locale stays left-to-right', (
+        tester,
+      ) async {
+        usePhoneSurface(tester);
+        await pumpTourAsRoute(
+          tester,
+          appLocale: const Locale('he'),
+          contentLanguageCode: 'en',
+          strings: g['en']!,
+        );
+
+        final subtitle = find.byKey(const ValueKey('subtitle-0'));
+        expect(subtitle, findsOneWidget);
+        expect(
+          Directionality.of(tester.element(subtitle)),
+          TextDirection.ltr,
+          reason:
+              'English narration must never be laid out right-to-left, even '
+              'when the member picked Hebrew',
+        );
+        expect(tester.takeException(), isNull);
+        await tester.pump(const Duration(seconds: 20));
+      });
+
+      testWidgets('Hebrew content under a Hebrew locale stays right-to-left', (
+        tester,
+      ) async {
+        usePhoneSurface(tester);
+        await pumpTourAsRoute(
+          tester,
+          appLocale: const Locale('he'),
+          contentLanguageCode: 'he',
+          strings: g['he']!,
+        );
+
+        final subtitle = find.byKey(const ValueKey('subtitle-0'));
+        expect(subtitle, findsOneWidget);
+        expect(
+          Directionality.of(tester.element(subtitle)),
+          TextDirection.rtl,
+        );
+        expect(tester.takeException(), isNull);
+        await tester.pump(const Duration(seconds: 20));
+      });
+    });
   });
 }

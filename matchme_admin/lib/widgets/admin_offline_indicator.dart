@@ -15,7 +15,7 @@ final adminConnectivityProvider = StreamProvider<bool>((ref) {
 /// Widget that displays when the admin app is in offline mode
 class AdminOfflineIndicator extends ConsumerWidget {
   final double height;
-  final String Function(String key, {Map<String, String>? params})? t;
+  final String Function(String key, {Map<String, String>? params, String? pluralParam})? t;
 
   const AdminOfflineIndicator({super.key, this.height = 48, this.t});
 
@@ -27,7 +27,7 @@ class AdminOfflineIndicator extends ConsumerWidget {
     final isOnline = connectivity.hasValue
         ? connectivity.value!
         : adminOfflineCacheManager.isSupabaseAvailable;
-    final tr = t ?? ((String key, {Map<String, String>? params}) => key);
+    final tr = t ?? ((String key, {Map<String, String>? params, String? pluralParam}) => key);
 
     if (isOnline) {
       return const SizedBox.shrink();
@@ -75,9 +75,9 @@ void showOfflineFeatureDialog(
   BuildContext context, {
   required String title,
   required String message,
-  String Function(String key, {Map<String, String>? params})? t,
+  String Function(String key, {Map<String, String>? params, String? pluralParam})? t,
 }) {
-  final tr = t ?? ((String key, {Map<String, String>? params}) => key);
+  final tr = t ?? ((String key, {Map<String, String>? params, String? pluralParam}) => key);
   showDialog(
     context: context,
     builder: (context) => AlertDialog(
@@ -98,7 +98,7 @@ void showOfflineFeatureDialog(
 mixin OfflineAwareStateMixin<T extends StatefulWidget> on State<T> {
   bool get isOffline => adminOfflineCacheManager.shouldUseCachedData();
 
-  String t(String key, {Map<String, String>? params}) => key;
+  String t(String key, {Map<String, String>? params, String? pluralParam}) => key;
 
   void checkOfflineBeforeAction(VoidCallback action, {String? featureName}) {
     if (isOffline) {

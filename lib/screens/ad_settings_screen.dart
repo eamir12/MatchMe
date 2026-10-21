@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/external_ad_provider.dart';
@@ -58,25 +60,30 @@ class _AdSettingsScreenState extends ConsumerState<AdSettingsScreen> {
     }
   }
 
-  Future<void> _saveConsent() async {
+  /// Commits a consent change immediately.
+  Future<void> _applyConsent({bool? personalizedAds, bool? nonPersonalizedAds}) async {
     final l10n = ref.read(localizationProvider);
-    if (_personalizedAds == null || _nonPersonalizedAds == null) {
-      return;
-    }
+    final nextPersonalized = personalizedAds ?? _personalizedAds ?? false;
+    final nextNonPersonalized =
+        nonPersonalizedAds ?? _nonPersonalizedAds ?? true;
 
     // Validate at least one option is selected
-    if (!_personalizedAds! && !_nonPersonalizedAds!) {
+    if (!nextPersonalized && !nextNonPersonalized) {
       _showSnackBar(l10n.getString('adSettingsAtLeastOneConsent'));
       return;
     }
 
-    setState(() => _isSaving = true);
+    setState(() {
+      _personalizedAds = nextPersonalized;
+      _nonPersonalizedAds = nextNonPersonalized;
+      _isSaving = true;
+    });
 
     try {
       final consentService = ref.read(adConsentServiceProvider);
       final result = await consentService.updateUserConsent(
-        personalizedAds: _personalizedAds!,
-        nonPersonalizedAds: _nonPersonalizedAds!,
+        personalizedAds: nextPersonalized,
+        nonPersonalizedAds: nextNonPersonalized,
       );
 
       if (result != null && mounted) {
@@ -212,7 +219,12 @@ class _AdSettingsScreenState extends ConsumerState<AdSettingsScreen> {
                   onChanged: _isSaving
                       ? null
                       : (value) {
-                          setState(() => _personalizedAds = value);
+                          // The consent toggles commit the moment they are
+                          // touched - no Save button, like every other
+                          // setting in the app.
+                          unawaited(
+                            _applyConsent(personalizedAds: value),
+                          );
                         },
                 ),
               ),
@@ -232,7 +244,9 @@ class _AdSettingsScreenState extends ConsumerState<AdSettingsScreen> {
                   onChanged: _isSaving
                       ? null
                       : (value) {
-                          setState(() => _nonPersonalizedAds = value);
+                          unawaited(
+                            _applyConsent(nonPersonalizedAds: value),
+                          );
                         },
                 ),
               ),
@@ -255,22 +269,6 @@ class _AdSettingsScreenState extends ConsumerState<AdSettingsScreen> {
                   ),
                 ),
               const SizedBox(height: 24),
-
-              // Save button
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: _isSaving ? null : _saveConsent,
-                  child: _isSaving
-                      ? const SizedBox(
-                          height: 20,
-                          width: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : Text(l10n.getString('generalSave')),
-                ),
-              ),
-              const SizedBox(height: 12),
 
               // Opt out button
               SizedBox(

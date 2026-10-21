@@ -402,9 +402,10 @@ class _PasswordResetOtpScreenState
                   )
                 : _resendCooldownRemainingSeconds > 0
                 ? Text(
-                    l10n.getString(
+                    l10n.getPluralString(
                       'settingsMfaEmailCodeResendIn',
-                      params: {'seconds': '$_resendCooldownRemainingSeconds'},
+                      _resendCooldownRemainingSeconds,
+                      countParam: 'seconds',
                     ),
                   )
                 : Text(l10n.getString('authSignupCodeResend')),

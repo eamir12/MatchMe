@@ -10,6 +10,7 @@ import 'package:matchme/models/match_model.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/unit_provider.dart';
 import 'package:matchme/services/map_tile_cache_service.dart';
+import 'package:matchme/theme/app_theme_tokens.dart';
 import 'package:matchme/utils/map_theme_utils.dart';
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:matchme/utils/time_format_utils.dart';
@@ -329,6 +330,8 @@ class MatchLocationMiniMapList extends ConsumerWidget {
         .toList();
     if (displayable.isEmpty) return const SizedBox.shrink();
     final l10n = ref.watch(localizationProvider);
+    final scheme = Theme.of(context).colorScheme;
+    final brightness = Theme.of(context).brightness;
     final sorted = List<MatchLocation>.from(displayable)
       ..sort((a, b) => a.occurrence.compareTo(b.occurrence));
     return Column(
@@ -338,20 +341,27 @@ class MatchLocationMiniMapList extends ConsumerWidget {
           padding: const EdgeInsets.only(bottom: 8),
           child: Row(
             children: [
-              Icon(Icons.map_outlined, size: 14, color: Colors.blue.shade700),
+              Icon(
+                Icons.map_outlined,
+                size: 14,
+                color: AppThemeTokens.accentInk(
+                  Colors.blue.shade700,
+                  brightness,
+                ),
+              ),
               const SizedBox(width: 6),
               Text(
                 l10n.getString('matchMiniMapTitle'),
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
-                  color: Colors.grey.shade800,
+                  color: scheme.onSurface,
                 ),
               ),
               const SizedBox(width: 6),
               Text(
                 l10n.getString('matchMiniMapDescProximity'),
-                style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+                style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
               ),
             ],
           ),

@@ -4,7 +4,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
+/// "Primary Photo Verified" chip. Shares its size, font and shape with
+/// [NewUserBadge] and ProfileCompletePill — only the colour differs, so the
+/// three status markers always read as one set.
 class VerifiedBadge extends ConsumerWidget {
   final double size;
   final bool showText;
@@ -21,7 +25,7 @@ class VerifiedBadge extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final l10n = ref.watch(localizationProvider);
-    final displayText = text ?? l10n.getString('verified');
+    final displayText = text ?? l10n.getString('profileVerifiedBadge');
 
     return Semantics(
       container: true,
@@ -49,11 +53,12 @@ class VerifiedBadge extends ConsumerWidget {
                 if (showText) ...[
                   const SizedBox(width: 4),
                   Flexible(
-                    child: Text(
+                    child: ShrinkText(
                       displayText,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onPrimary,
+                      style: TextStyle(
+                        fontSize: 12,
                         fontWeight: FontWeight.w600,
+                        color: theme.colorScheme.onPrimary,
                       ),
                     ),
                   ),
@@ -79,7 +84,7 @@ class VerifiedBadgeSmall extends ConsumerWidget {
 
     return Semantics(
       container: true,
-      label: l10n.getString('verified'),
+      label: l10n.getString('profileVerifiedBadge'),
       child: ExcludeSemantics(
         child: Container(
           padding: const EdgeInsets.all(1.0),

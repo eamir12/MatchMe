@@ -675,9 +675,10 @@ class _SensitiveActionVerificationDialogState
                     : () => _sendEmailCode(forceResend: true),
                 child: Text(
                   coolingDown
-                      ? widget.l10n.getString(
+                      ? widget.l10n.getPluralString(
                           'settingsMfaEmailCodeResendIn',
-                          params: {'seconds': '$remaining'},
+                          remaining,
+                          countParam: 'seconds',
                         )
                       : widget.l10n.getString('settingsMfaEmailCodeResend'),
                 ),

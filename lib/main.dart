@@ -60,6 +60,7 @@ import 'package:matchme/services/auth_transition_guard.dart';
 import 'package:matchme/services/background_service.dart';
 import 'package:matchme/services/web_notification_service.dart';
 import 'package:matchme/services/chat_view_state_service.dart';
+import 'package:matchme/services/chat_route_observer.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/calendar_sync_service.dart';
 import 'package:matchme/services/local_db_service.dart'; // Added for explicit init
@@ -111,6 +112,7 @@ import 'package:matchme/services/referral_service.dart';
 import 'package:matchme/services/admin_broadcast_service.dart';
 import 'package:matchme/providers/location_share_provider.dart';
 import 'package:matchme/services/supabase_realtime_manager.dart';
+import 'package:matchme/services/my_user_realtime_service.dart';
 import 'package:matchme/widgets/startup_loader.dart';
 import 'package:matchme/widgets/birthday_overlay.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
@@ -125,6 +127,12 @@ import 'package:matchme/widgets/safe_text.dart';
 
 final container = ProviderContainer();
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
+/// Watches the root navigator for chat deep links so a single notification
+/// tap can never open the same conversation twice, and so a deep-link route
+/// always replaces itself instead of whatever route happens to be on top of
+/// the stack. See lib/services/chat_route_observer.dart for the details.
+final ChatRouteObserver chatRouteObserver = ChatRouteObserver();
 
 // MainActivity (Android) can deliver notification taps while the app is running.
 // If we receive one before Navigator is ready, keep it here and replay post-frame.
@@ -4744,7 +4752,13 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
               html.document.hidden == true) {
             lastHiddenAt = DateTime.now();
             debugPrint('🔌 [Web] Disconnecting Supabase Realtime (tab hidden)');
-            Supabase.instance.client.realtime.disconnect();
+            // Go through the realtime manager so the channels are re-joined
+            // when the tab becomes visible again. Calling
+            // `realtime.disconnect()` directly dropped the socket without
+            // dropping the server-side channel subscriptions, so every
+            // `postgres_changes` subscription (settings included) stayed
+            // dead for the rest of the tab's lifetime.
+            SupabaseRealtimeManager.instance.pauseAll();
           } else {
             // Skip rapid hidden->visible bounces (window focus switches,
             // minimize/maximize). The socket reconnect alone is enough to
@@ -4760,22 +4774,19 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
                 '(${hiddenFor.inMilliseconds}ms) - reconnecting socket only, '
                 'skipping re-sync to avoid UI flicker',
               );
-              // ignore: invalid_use_of_internal_member
               if (!_shouldConnectRealtime()) return;
-              // ignore: invalid_use_of_internal_member
-              Supabase.instance.client.realtime.connect();
+              SupabaseRealtimeManager.instance.resumeAll();
               return;
             }
             debugPrint('🔌 [Web] Reconnecting Supabase Realtime (tab visible)');
             // ignore: invalid_use_of_internal_member
             if (!_shouldConnectRealtime()) {
               debugPrint(
-                'ðŸ”Œ [Web] Skipping Supabase Realtime reconnect (tab visible, no authenticated user)',
+                '🔌 [Web] Skipping Supabase Realtime reconnect (tab visible, no authenticated user)',
               );
               return;
             }
-            // ignore: invalid_use_of_internal_member
-            Supabase.instance.client.realtime.connect();
+            SupabaseRealtimeManager.instance.resumeAll();
 
             // Re-sync profile and settings when tab becomes visible
             // This ensures gender/age preferences, radius, and other settings are current
@@ -4854,7 +4865,10 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
       });
       void disconnectOnUnload(_) {
         try {
-          Supabase.instance.client.realtime.disconnect();
+          // Route through the manager so its state stays consistent with the
+          // socket: a restored page (bfcache) must be able to resume
+          // cleanly instead of believing its channels are still live.
+          SupabaseRealtimeManager.instance.pauseAll();
         } catch (_) {}
       }
 
@@ -4898,6 +4912,18 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
     );
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+
+    // Watchdog for channels that silently stopped being subscribed (a socket
+    // drop that the connectivity layer never saw, a server-side channel that
+    // was never joined). Without it, a settings change made on one device
+    // simply stopped reaching the other one.
+    SupabaseRealtimeManager.instance.startHealthWatchdog();
+
+    // The single realtime subscription to the signed-in user's own row. The
+    // theme, language, visibility, preferences and matching-settings
+    // notifiers all listen to it, so a change made on one device reaches
+    // the others.
+    MyUserRealtimeService.instance.start();
 
     // A network flap that starts and ends entirely while the app is
     // foregrounded never triggers a lifecycle resume, so the lifecycle path
@@ -5175,6 +5201,8 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
     WidgetsBinding.instance.removeObserver(this);
     _connectivityUiStatusSub?.close();
     _realtimeRestoreUnregister?.call();
+    SupabaseRealtimeManager.instance.stopHealthWatchdog();
+    MyUserRealtimeService.instance.stop();
     super.dispose();
   }
 
@@ -5417,15 +5445,15 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
     final localization = ref.watch(localizationProvider);
     final authState = ref.watch(authStateProvider);
 
-    // Keep the OS app-icon badge in lockstep with the in-app unread state
-    // (match banners + unread chats + notification inbox). Previously the
-    // badge was only cleared by tapping a push notification, so opening the
-    // app from the home-screen icon left a stale red badge forever.
+    // Keep the OS app-icon badge in lockstep with the persistent notification
+    // inbox. Previously the badge was only cleared by tapping a push
+    // notification, so opening the app from the home-screen icon left a stale
+    // red badge forever.
     ref.listen<int?>(iconBadgeCountProvider, (previous, next) {
       if (next == null) return;
       unawaited(AppBadgeService.setCount(next));
     });
-    // One-shot: a listener only fires on *changes*, so if chat data is
+    // One-shot: a listener only fires on *changes*, so if inbox data is
     // already cached at first build (value never transitions through null)
     // the stale OS badge would otherwise survive this cold start.
     if (!_initialBadgeSyncDone) {
@@ -5654,6 +5682,9 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
 
         if (matchId.isNotEmpty) {
           return MaterialPageRoute(
+            // Keep the route name so the deep link can be identified as the
+            // chat deep-link route (see lib/services/chat_route_observer.dart).
+            settings: settings,
             builder: (context) => _DeepLinkChatHandler(matchId: matchId),
           );
         }
@@ -5828,7 +5859,10 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: localization.getString('appName'),
-      navigatorObservers: [ChatViewStateService.routeObserver],
+      navigatorObservers: [
+        ChatViewStateService.routeObserver,
+        chatRouteObserver,
+      ],
       locale: localization.currentLocale,
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
@@ -5839,8 +5873,13 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
           .map((lang) => Locale(lang.code))
           .toList(),
       localeResolutionCallback: (locale, supportedLocales) {
-        // Always return the current app locale to prevent system locale override
-        return localization.currentLocale;
+        // Resolve to the language the UI actually renders. Normally that is
+        // the member's choice, but when the server copy of that language is
+        // unavailable the app falls back to the bundled English strings —
+        // and then the framework's own strings (date pickers, dialog
+        // buttons) have to follow the content as well, otherwise the app
+        // mixes languages.
+        return Locale(localization.contentLanguageCode);
       },
       // Light theme defined inline below
       darkTheme: darkTheme,
@@ -5877,128 +5916,138 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
         // ✅ Mouse wheel smoothing applied app-wide
         // Always wrap the app content in a SafeArea so all screens respect Android status/navigation bars
         // Additionally add a visual fallback overlay for Android devices that ignore status/nav bar color
-        return MediaQuery.withClampedTextScaling(
-          minScaleFactor: 0.85,
-          maxScaleFactor: 1.35,
-          child: ScrollConfiguration(
-            behavior: const _SmoothScrollBehavior(),
-            child: Builder(
-              builder: (context) {
-                final bool isAndroid =
-                    defaultTargetPlatform == TargetPlatform.android;
-                final EdgeInsets padding = MediaQuery.of(context).padding;
-                final Color barColor = Theme.of(
-                  context,
-                ).scaffoldBackgroundColor;
-                // Text scaler is already clamped by the ancestor above.
-                // Bold-text is intentionally preserved (accessibility):
-                // wrapping + clamp absorbs its extra width.
-                final Widget content = child ?? const SizedBox.shrink();
+        //
+        // The Directionality lives HERE, not on `home:` — the builder wraps
+        // the Navigator, so every route (including the pushed onboarding tour)
+        // lays out in the direction of the language the app currently shows.
+        // Wrapping only `home:` left pushed routes on the direction derived
+        // from the chosen locale, which is how English tour text ended up
+        // laid out right-to-left.
+        return Directionality(
+          textDirection: localization.textDirection,
+          child: MediaQuery.withClampedTextScaling(
+            minScaleFactor: 0.85,
+            maxScaleFactor: 1.35,
+            child: ScrollConfiguration(
+              behavior: const _SmoothScrollBehavior(),
+              child: Builder(
+                builder: (context) {
+                  final bool isAndroid =
+                      defaultTargetPlatform == TargetPlatform.android;
+                  final EdgeInsets padding = MediaQuery.of(context).padding;
+                  final Color barColor = Theme.of(
+                    context,
+                  ).scaffoldBackgroundColor;
+                  // Text scaler is already clamped by the ancestor above.
+                  // Bold-text is intentionally preserved (accessibility):
+                  // wrapping + clamp absorbs its extra width.
+                  final Widget content = child ?? const SizedBox.shrink();
 
-                return Stack(
-                  children: [
-                    if (isAndroid) SafeArea(child: content) else content,
-                    if (isAndroid && padding.top > 0)
-                      Positioned(
-                        left: 0,
-                        right: 0,
-                        top: 0,
-                        child: Container(height: padding.top, color: barColor),
-                      ),
-                    if (isAndroid && padding.bottom > 0)
-                      Positioned(
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        child: Container(
-                          height: padding.bottom,
-                          color: barColor,
+                  return Stack(
+                    children: [
+                      if (isAndroid) SafeArea(child: content) else content,
+                      if (isAndroid && padding.top > 0)
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          top: 0,
+                          child: Container(height: padding.top, color: barColor),
                         ),
+                      if (isAndroid && padding.bottom > 0)
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          bottom: 0,
+                          child: Container(
+                            height: padding.bottom,
+                            color: barColor,
+                          ),
+                        ),
+                      if (isAndroid && padding.left > 0)
+                        Positioned(
+                          left: 0,
+                          top: 0,
+                          bottom: 0,
+                          child: Container(width: padding.left, color: barColor),
+                        ),
+                      if (isAndroid && padding.right > 0)
+                        Positioned(
+                          right: 0,
+                          top: 0,
+                          bottom: 0,
+                          child: Container(width: padding.right, color: barColor),
+                        ),
+                      Positioned.fill(
+                        child: BirthdayOverlay(isBirthdayToday: isBirthdayToday),
                       ),
-                    if (isAndroid && padding.left > 0)
-                      Positioned(
-                        left: 0,
-                        top: 0,
-                        bottom: 0,
-                        child: Container(width: padding.left, color: barColor),
-                      ),
-                    if (isAndroid && padding.right > 0)
-                      Positioned(
-                        right: 0,
-                        top: 0,
-                        bottom: 0,
-                        child: Container(width: padding.right, color: barColor),
-                      ),
-                    Positioned.fill(
-                      child: BirthdayOverlay(isBirthdayToday: isBirthdayToday),
-                    ),
-                  ],
-                );
-              },
+                    ],
+                  );
+                },
+              ),
             ),
           ),
         );
       },
       theme: AppThemeTokens.lightThemeData(textTheme: finalTextTheme),
-      home: Directionality(
-        textDirection: localization.textDirection,
-        child: authState.when(
-          data: (state) {
-            final user = state.session?.user;
-            print(
-              '[STARTUP_DIAG] auth_route_state '
-              'hasUser=${user != null} '
-              'loading=${authState.isLoading} error=${authState.hasError}',
+      // No Directionality wrapper here on purpose: the builder above already
+      // applies the app-wide direction and, unlike a wrapper on `home:`, it
+      // also covers every pushed route (the onboarding tour included).
+      home: authState.when(
+        data: (state) {
+          final user = state.session?.user;
+          print(
+            '[STARTUP_DIAG] auth_route_state '
+            'hasUser=${user != null} '
+            'loading=${authState.isLoading} error=${authState.hasError}',
+          );
+          if (user == null) {
+            print('[STARTUP_DIAG] selecting_auth_screen');
+            return const AuthScreen();
+          }
+          // A calendar import borrows the social sign-in flow to obtain a
+          // provider access token, which transiently creates a session for
+          // the *provider* account. Honouring it would swap the entire widget
+          // tree to that account and dump the user on its home screen, so
+          // keep rendering the account they are actually signed in as until
+          // the original session is restored.
+          if (AuthTransitionGuard.shouldIgnoreSessionFor(user.id)) {
+            debugPrint(
+              '[Auth] ignoring transient provider session for ${user.id} '
+              '(calendar OAuth in flight, anchor '
+              '${AuthTransitionGuard.anchorUserId})',
             );
-            if (user == null) {
-              print('[STARTUP_DIAG] selecting_auth_screen');
-              return const AuthScreen();
-            }
-            // A calendar import borrows the social sign-in flow to obtain a
-            // provider access token, which transiently creates a session for
-            // the *provider* account. Honouring it would swap the entire widget
-            // tree to that account and dump the user on its home screen, so
-            // keep rendering the account they are actually signed in as until
-            // the original session is restored.
-            if (AuthTransitionGuard.shouldIgnoreSessionFor(user.id)) {
-              debugPrint(
-                '[Auth] ignoring transient provider session for ${user.id} '
-                '(calendar OAuth in flight, anchor '
-                '${AuthTransitionGuard.anchorUserId})',
+            final anchor = _lastRenderedAuthUser;
+            if (anchor != null &&
+                anchor.id == AuthTransitionGuard.anchorUserId) {
+              // Keep showing the account the user is really signed in as.
+              return ProfileCheckScreen(
+                key: ValueKey(anchor.id),
+                user: anchor,
               );
-              final anchor = _lastRenderedAuthUser;
-              if (anchor != null &&
-                  anchor.id == AuthTransitionGuard.anchorUserId) {
-                // Keep showing the account the user is really signed in as.
-                return ProfileCheckScreen(
-                  key: ValueKey(anchor.id),
-                  user: anchor,
-                );
-              }
-              // No usable anchor (cold start mid-transition): hold a neutral
-              // screen rather than switching to the provider account.
-              return const StartupLoaderScaffold();
             }
-            _lastRenderedAuthUser = user;
-            // Key by user id so a different account signing in on the same
-            // device gets a fresh ProfileCheckScreen state (loading gate,
-            // cached profile future) instead of reusing the previous user's
-            // already-resolved home screen — same sequence as a cold start.
-            return ProfileCheckScreen(key: ValueKey(user.id), user: user);
-          },
-          loading: () {
+            // No usable anchor (cold start mid-transition): hold a neutral
+            // screen rather than switching to the provider account.
             return const StartupLoaderScaffold();
-          },
-          error: (err, stack) {
-            return Scaffold(
-              body: Center(
-                child: Text(
-                  LocalizationState.defaultTranslation('authStreamError'),
-                ),
+          }
+          _lastRenderedAuthUser = user;
+          // Key by user id so a different account signing in on the same
+          // device gets a fresh ProfileCheckScreen state (loading gate,
+          // cached profile future) instead of reusing the previous user's
+          // already-resolved home screen — same sequence as a cold start.
+          return ProfileCheckScreen(key: ValueKey(user.id), user: user);
+        },
+        loading: () {
+          return const StartupLoaderScaffold();
+        },
+        error: (err, stack) {
+          return Scaffold(
+            body: Center(
+              child: Text(
+                LocalizationState.defaultTranslation('authStreamError'),
               ),
-            );
-          },
-        ),
+            ),
+          );
+        },
       ),
       navigatorKey: navigatorKey,
       onGenerateRoute: appOnGenerateRoute,
@@ -6095,35 +6144,40 @@ class _DeepLinkChatHandlerState extends ConsumerState<_DeepLinkChatHandler>
   bool _resolutionStarted = false;
   bool _resolutionFinished = false;
   bool _didRouteFromHere = false;
+
+  /// True while this route holds the claim on [widget.matchId]. The claim
+  /// keeps a second deep link for the same conversation from opening a
+  /// second copy of the chat.
+  bool _ownsConversationClaim = false;
+
+  /// True once the conversation screen has been pushed. The claim is then
+  /// released by [ChatRouteObserver] when that screen goes away, not here.
+  bool _pushedConversation = false;
+
   Timer? _resolveSafetyTimer;
 
   @override
   void dispose() {
     _resolveSafetyTimer?.cancel();
     _resolveSafetyTimer = null;
+    // Give the claim back unless the conversation screen took it over.
+    if (_ownsConversationClaim && !_pushedConversation) {
+      chatRouteObserver.releaseConversation(widget.matchId);
+      _ownsConversationClaim = false;
+    }
     super.dispose();
   }
 
+  /// Takes this splash off the navigator stack.
+  ///
+  /// [Navigator.pop] removes the top-most route, which is not necessarily
+  /// this one: with a duplicate deep link pushed on top of it, popping would
+  /// have removed the duplicate and left this splash stranded under the
+  /// chat - the white screen with the pulsing logo that never went away.
   void _routeOffSplash() {
     if (_didRouteFromHere || !mounted) return;
-    final navigator = Navigator.of(context, rootNavigator: true);
-    if (!navigator.canPop()) return;
     _didRouteFromHere = true;
-    navigator.pop();
-  }
-
-  String _wrapLtrIsolateIfNeeded(String text) {
-    final t = text.trim();
-    if (t.isEmpty) return text;
-
-    // If the name is Latin-only (no strong RTL chars), force it to render as an LTR
-    // segment even inside RTL UI, so punctuation like '.' doesn't flip to the front.
-    final hasRtl = RegExp(r'[\u0590-\u08FF]').hasMatch(t);
-    final hasLatin = RegExp(r'[A-Za-z]').hasMatch(t);
-    if (hasLatin && !hasRtl) {
-      return '\u2066$t\u2069'; // LRI ... PDI
-    }
-    return text;
+    removeOwnRoute(context);
   }
 
   String _capNameWord(String word) {
@@ -6145,18 +6199,20 @@ class _DeepLinkChatHandlerState extends ConsumerState<_DeepLinkChatHandler>
   }
 
   String _maskDisplayName(String? fullName) {
-    final raw = (fullName ?? '')
-        .replaceAll(RegExp('[\u200E\u200F\u202A-\u202E]'), '')
-        .trim();
+    final raw = (fullName ?? '').replaceAll(bidiControls, '').trim();
     if (raw.isEmpty) return 'Unknown User';
     final parts = raw.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
     if (parts.isEmpty) return 'Unknown User';
-    if (parts.length == 1) return _capNameWord(parts.first);
+    if (parts.length == 1) {
+      return _capNameWord(parts.first).withDirectionalMarks();
+    }
     final first = _capNameWord(parts.first);
     final last = parts.last;
     final lastInitial = last.isNotEmpty ? last[0].toUpperCase() : '';
     final masked = lastInitial.isEmpty ? first : '$first $lastInitial.';
-    return _wrapLtrIsolateIfNeeded(masked);
+    // The name carries the directional mark of its own script, so its trailing
+    // period stays glued to the initial even in a Hebrew UI.
+    return masked.withDirectionalMarks();
   }
 
   @override
@@ -6183,6 +6239,28 @@ class _DeepLinkChatHandlerState extends ConsumerState<_DeepLinkChatHandler>
       }());
       PermissionCoordinator.handleOnResume(context, ref);
     });
+
+    // One notification tap can reach the app through several channels at
+    // once (the FCM callbacks, the Android intent channel and the native
+    // launch intent), and each of them pushed its own `/chat/<matchId>`
+    // route. Claim the conversation so the first route wins and the
+    // duplicates stand down instead of racing it.
+    _ownsConversationClaim = chatRouteObserver.claimConversation(
+      widget.matchId,
+    );
+    if (!_ownsConversationClaim) {
+      // A duplicate deep link for a conversation that is already being
+      // opened. Mark the resolve as started so the auth listener below
+      // cannot start a second one, then take this splash off the stack.
+      _resolutionStarted = true;
+      _resolutionFinished = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _routeOffSplash();
+      });
+      return;
+    }
+
     _kickResolve();
     // Safety net: never leave the user stuck on the splash. If we still
     // haven't routed away after the timeout, pop ourselves off the stack so
@@ -6307,8 +6385,19 @@ class _DeepLinkChatHandlerState extends ConsumerState<_DeepLinkChatHandler>
       if (mounted) {
         _markResolved();
         _didRouteFromHere = true;
-        Navigator.of(context, rootNavigator: true).pushReplacement(
+        // Replace *this* splash with the conversation, not whatever route
+        // happens to be on top of the stack. `pushReplacement` replaces the
+        // top-most route, so a duplicate deep link pushed above this one
+        // used to be removed while this splash survived underneath the chat
+        // with its resolve already finished: pressing back then showed the
+        // pulsing startup logo forever.
+        _pushedConversation = true;
+        replaceOwnRoute(
+          context,
           MaterialPageRoute(
+            settings: RouteSettings(
+              name: '$kChatConversationRoutePrefix${widget.matchId}',
+            ),
             builder: (context) => ChatScreen(
               matchId: widget.matchId,
               otherUserName: otherUserName,

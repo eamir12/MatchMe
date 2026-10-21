@@ -79,14 +79,9 @@ class PendingMutationsIndicator extends ConsumerWidget {
         }
 
         final count = mutations.length;
-        final syncingText = localization.getString(
+        final syncingText = localization.getPluralString(
           'offlineSyncingChanges',
-          params: {
-            'count': count.toString(),
-            'plural': count == 1
-                ? ''
-                : localization.getString('offlineSyncingChangesPlural'),
-          },
+          count,
         );
         final detailsText = localization.getString('offlineViewDetails');
 
@@ -278,12 +273,9 @@ void showPendingMutationsDialog(
 }) {
   final localization = ref.read(localizationProvider);
   final title = localization.getString('offlinePendingChanges');
-  final plural = count == 1
-      ? ''
-      : localization.getString('offlinePendingChangesPlural');
-  final message = localization.getString(
+  final message = localization.getPluralString(
     'offlinePendingChangesDescription',
-    params: {'count': count.toString(), 'plural': plural},
+    count,
   );
   final okButton = localization.getString('offlineOkButton');
   final detailsButton = localization.getString('offlineViewPendingDetails');

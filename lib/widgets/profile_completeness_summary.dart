@@ -5,6 +5,8 @@
 //     Deliberately free of wizard/navigation imports so it can be embedded in
 //     both the owner profile card and the wizard's final review page.
 //   * ProfileCompletePill — the public 100% badge shown to OTHER users.
+//     Reads "Profile Complete" and is styled like the verified / new-here
+//     chips so all three status markers look like one set.
 //     Incomplete profiles get no public indicator: the nudge is private, the
 //     badge is a positive signal only.
 //
@@ -20,59 +22,73 @@ import 'package:matchme/utils/profile_completeness.dart';
 import 'package:matchme/utils/profile_wizard_page_map.dart';
 import 'package:matchme/widgets/safe_text.dart';
 
-/// Amber "Complete" badge for profiles at 100%. Never render a raw percentage
-/// for other users — only this badge when the profile is full.
+/// Amber "Profile Complete" badge for profiles at 100%. Never render a raw
+/// percentage for other users — only this badge when the profile is full.
+///
+/// Styled like its siblings ([VerifiedBadge] / [NewUserBadge]): same chip
+/// size, same font, same shape — only the colour differs. The three status
+/// chips are meant to be read as one set wherever they appear together.
 class ProfileCompletePill extends StatelessWidget {
   const ProfileCompletePill({
     super.key,
     required this.l10n,
-    this.compact = false,
+    this.size = 18.0,
   });
 
   final LocalizationState l10n;
-  final bool compact;
+
+  /// Icon size; also drives the chip's corner radius, exactly like the
+  /// verified / new-here chips.
+  final double size;
+
+  /// Solid amber fill. White text keeps the same contrast story as the
+  /// primary (verified) and green (new here) chips.
+  static const Color fillColor = Color(0xFF92400E);
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final color = isDark ? Colors.amber.shade400 : const Color(0xFF92400E);
     final raw = l10n.getString('profileCompletionBadge');
-    final label = (raw.isEmpty || raw.startsWith('[')) ? 'Complete' : raw;
+    final label = (raw.isEmpty || raw.startsWith('['))
+        ? 'Profile Complete'
+        : raw;
     return Tooltip(
       message: l10n.getString('profileCompletionBadgeTooltip'),
       child: Semantics(
-        label: l10n.getString('profileCompletionBadgeTooltip'),
+        label: label,
         container: true,
-        child: Container(
-          padding: EdgeInsets.symmetric(
-            horizontal: compact ? 7 : 8,
-            vertical: compact ? 2 : 3,
-          ),
-          decoration: BoxDecoration(
-            color: Colors.amber.withValues(alpha: 0.18),
-            borderRadius: BorderRadius.circular(999),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            textDirection: Directionality.of(context),
-            children: [
-              Icon(
-                Icons.workspace_premium_rounded,
-                size: compact ? 12 : 14,
-                color: color,
-              ),
-              const SizedBox(width: 3),
-              Flexible(
-                child: ShrinkText(
-                  label,
-                  style: TextStyle(
-                    fontSize: compact ? 10 : 12,
-                    fontWeight: FontWeight.w700,
-                    color: color,
+        child: ExcludeSemantics(
+          child: Container(
+            padding: const EdgeInsets.symmetric(
+              horizontal: 10.0,
+              vertical: 4.0,
+            ),
+            decoration: BoxDecoration(
+              color: fillColor,
+              borderRadius: BorderRadius.circular(size * 0.6),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              textDirection: Directionality.of(context),
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.workspace_premium_rounded,
+                  color: Colors.white,
+                  size: size,
+                ),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: ShrinkText(
+                    label,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

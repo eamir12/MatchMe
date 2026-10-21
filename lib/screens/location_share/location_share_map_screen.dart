@@ -12,6 +12,7 @@ import 'package:matchme/providers/current_location_provider.dart';
 import 'package:matchme/providers/unit_provider.dart';
 import 'package:matchme/screens/location_share/location_share_duration_dialog.dart';
 import 'package:matchme/utils/map_theme_utils.dart';
+import 'package:matchme/utils/localized_duration.dart';
 import 'package:matchme/utils/unit_utils.dart';
 import 'package:matchme/widgets/signed_image.dart';
 import 'package:matchme/services/location_service.dart';
@@ -398,14 +399,20 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
     }
     final remaining = session.timeRemaining;
     if (remaining == null || remaining.inSeconds <= 0) return '';
-    if (remaining.inHours > 0) {
-      final hours = remaining.inHours;
-      final minutes = remaining.inMinutes % 60;
-      return '(${l10n.getString('locationShareCountdownHours', params: {'hours': hours.toString(), 'minutes': minutes.toString()})})';
-    }
-    final minutes = remaining.inMinutes;
+    final hours = remaining.inHours;
+    final minutes = remaining.inMinutes % 60;
     final seconds = remaining.inSeconds % 60;
-    return '(${l10n.getString('locationShareCountdownMinutes', params: {'minutes': minutes.toString(), 'seconds': seconds.toString()})})';
+    // Each unit is translated on its own so it picks the right plural form
+    // ("1 hour", not "1 hours").
+    final duration = hours > 0
+        ? formatDurationParts(l10n.getString, hours: hours, minutes: minutes)
+        : formatDurationParts(l10n.getString, minutes: minutes, seconds: seconds);
+    if (duration.isEmpty) return '';
+    final remainingText = l10n.getString(
+      'locationShareCountdownRemaining',
+      params: {'duration': duration},
+    );
+    return '($remainingText)';
   }
 
   String _statusText(LocationShareSession session, LocalizationState l10n) {

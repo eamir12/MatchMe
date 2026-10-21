@@ -1,10 +1,14 @@
 import 'dart:async';
 import 'dart:math';
+import 'dart:ui' as ui;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/providers/profile_provider.dart';
+import 'package:matchme/services/offline_cache_manager.dart';
+import 'package:matchme/services/translation_text_cache.dart';
 import 'package:matchme/services/verification_service.dart';
 import 'package:matchme/services/voice_guidance_service.dart';
 import 'package:matchme/providers/locale_provider.dart';
@@ -14,7 +18,6 @@ import 'package:matchme/widgets/please_wait_dialog.dart';
 import 'package:matchme/widgets/voice_guidance_mute_button.dart';
 import 'package:matchme/services/verification_mediapipe.dart';
 import 'package:matchme/widgets/signed_image.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:matchme/widgets/safe_text.dart';
 
 class VerificationGesture {
@@ -172,25 +175,39 @@ class _ComparisonRegion {
 }
 
 /// Paints the AI mismatch rectangles plus a numbered badge over each photo.
-/// Coordinates are approximate (normalized 0-1, rendered over a cover-fitted
-/// image), so boxes are indicative rather than pixel-exact.
+/// Coordinates are approximate (normalized 0-1, mapped onto a frame that
+/// matches the photo's own aspect ratio), so boxes are indicative rather than
+/// pixel-exact.
 class _MismatchBoxesPainter extends CustomPainter {
   final List<List<double>?> boxes;
 
   const _MismatchBoxesPainter(this.boxes);
 
+  static const double _badgeRadius = 11;
+
   @override
   void paint(Canvas canvas, Size size) {
-    var index = 0;
-    for (final box in boxes) {
+    if (size.isEmpty) return;
+    final placedBadges = <Rect>[];
+    for (var i = 0; i < boxes.length; i++) {
+      final box = boxes[i];
       if (box == null) continue;
-      index++;
-      final rect = Rect.fromLTWH(
+      final rawRect = Rect.fromLTWH(
         box[0] * size.width,
         box[1] * size.height,
         box[2] * size.width,
         box[3] * size.height,
       );
+      // Keep tiny AI boxes visible without moving them off their feature.
+      final padded = rawRect.width < 18 || rawRect.height < 18
+          ? Rect.fromCenter(
+              center: rawRect.center,
+              width: max(rawRect.width, 18),
+              height: max(rawRect.height, 18),
+            )
+          : rawRect;
+      final rect = padded.intersect(Offset.zero & size);
+      if (rect.isEmpty) continue;
       final rrect = RRect.fromRectAndRadius(rect, const Radius.circular(6));
       canvas.drawRRect(
         rrect,
@@ -203,14 +220,18 @@ class _MismatchBoxesPainter extends CustomPainter {
           ..style = PaintingStyle.stroke
           ..strokeWidth = 2.5,
       );
-      final badgeCenter = Offset(
-        (rect.left + 13).clamp(13.0, size.width - 13.0),
-        (rect.top + 13).clamp(13.0, size.height - 13.0),
+      final badgeCenter = _placeBadge(rect, size, placedBadges);
+      placedBadges.add(
+        Rect.fromCircle(center: badgeCenter, radius: _badgeRadius + 1),
       );
-      canvas.drawCircle(badgeCenter, 11, Paint()..color = const Color(0xFFD32F2F));
+      canvas.drawCircle(
+        badgeCenter,
+        _badgeRadius,
+        Paint()..color = const Color(0xFFD32F2F),
+      );
       final label = TextPainter(
         text: TextSpan(
-          text: '$index',
+          text: '${i + 1}',
           style: const TextStyle(
             color: Colors.white,
             fontSize: 12,
@@ -226,9 +247,281 @@ class _MismatchBoxesPainter extends CustomPainter {
     }
   }
 
+  /// Picks a badge corner that does not overlap a badge already placed for a
+  /// previous (possibly overlapping) rectangle.
+  Offset _placeBadge(Rect rect, Size size, List<Rect> placed) {
+    final candidates = <Offset>[
+      Offset(rect.left + _badgeRadius + 2, rect.top + _badgeRadius + 2),
+      Offset(rect.right - _badgeRadius - 2, rect.top + _badgeRadius + 2),
+      Offset(rect.left + _badgeRadius + 2, rect.bottom - _badgeRadius - 2),
+      Offset(rect.right - _badgeRadius - 2, rect.bottom - _badgeRadius - 2),
+      Offset(rect.center.dx, rect.top - _badgeRadius - 2),
+      Offset(rect.center.dx, rect.bottom + _badgeRadius + 2),
+      Offset(rect.left - _badgeRadius - 2, rect.center.dy),
+      Offset(rect.right + _badgeRadius + 2, rect.center.dy),
+    ];
+    final margin = min(_badgeRadius + 1, min(size.width, size.height) / 2);
+    for (final candidate in candidates) {
+      final center = Offset(
+        candidate.dx.clamp(margin, size.width - margin),
+        candidate.dy.clamp(margin, size.height - margin),
+      );
+      final bounds = Rect.fromCircle(center: center, radius: _badgeRadius + 1);
+      if (!placed.any((other) => other.overlaps(bounds))) return center;
+    }
+    return Offset(
+      (rect.left + margin).clamp(margin, size.width - margin),
+      (rect.top + margin).clamp(margin, size.height - margin),
+    );
+  }
+
   @override
   bool shouldRepaint(_MismatchBoxesPainter oldDelegate) =>
       oldDelegate.boxes != boxes;
+}
+
+/// One comparison photo, sized to its real aspect ratio (never cropped),
+/// capped by the responsive width/height the parent computes. Tapping opens a
+/// full-screen pinch-zoom viewer; the AI boxes are only painted once the
+/// intrinsic size is known so they always land on the correct feature.
+class _ComparisonPhoto extends StatefulWidget {
+  final String label;
+  final String? path;
+  final String bucket;
+  final List<List<double>?> boxes;
+  final double maxWidth;
+  final double maxHeight;
+
+  const _ComparisonPhoto({
+    super.key,
+    required this.label,
+    required this.path,
+    required this.bucket,
+    required this.boxes,
+    required this.maxWidth,
+    required this.maxHeight,
+  });
+
+  @override
+  State<_ComparisonPhoto> createState() => _ComparisonPhotoState();
+}
+
+class _ComparisonPhotoState extends State<_ComparisonPhoto> {
+  // Portrait-ish frame used until the real image dimensions are decoded.
+  static const double _fallbackAspect = 0.78;
+
+  double _aspectRatio = _fallbackAspect;
+  bool _hasMeasuredAspect = false;
+  int _measureGeneration = 0;
+
+  bool get _hasPhoto => widget.path != null && widget.path!.isNotEmpty;
+
+  @override
+  void didUpdateWidget(covariant _ComparisonPhoto oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.path != widget.path || oldWidget.bucket != widget.bucket) {
+      _measureGeneration++;
+      _aspectRatio = _fallbackAspect;
+      _hasMeasuredAspect = false;
+    }
+  }
+
+  Future<void> _handleBytes(Uint8List? bytes) async {
+    if (bytes == null || bytes.isEmpty) return;
+    final generation = ++_measureGeneration;
+    ui.Codec? codec;
+    try {
+      codec = await ui.instantiateImageCodec(bytes, targetWidth: 720);
+      final frame = await codec.getNextFrame();
+      final width = frame.image.width.toDouble();
+      final height = frame.image.height.toDouble();
+      frame.image.dispose();
+      if (!mounted || generation != _measureGeneration) return;
+      if (width <= 0 || height <= 0) return;
+      final ratio = width / height;
+      if (_hasMeasuredAspect && (ratio - _aspectRatio).abs() < 0.001) {
+        return;
+      }
+      setState(() {
+        _aspectRatio = ratio;
+        _hasMeasuredAspect = true;
+      });
+    } catch (_) {
+      // Keep the fallback frame; the image itself still renders.
+    } finally {
+      codec?.dispose();
+    }
+  }
+
+  Size _frameSize(BuildContext context) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final maxWidth = widget.maxWidth.isFinite && widget.maxWidth > 0
+        ? widget.maxWidth
+        : screenWidth;
+    final maxHeight = widget.maxHeight.isFinite && widget.maxHeight > 0
+        ? widget.maxHeight
+        : maxWidth / _aspectRatio;
+    var width = maxWidth;
+    var height = width / _aspectRatio;
+    if (height > maxHeight) {
+      height = maxHeight;
+      width = height * _aspectRatio;
+    }
+    return Size(width, height);
+  }
+
+  void _openFullScreen() {
+    final path = widget.path;
+    if (path == null || path.isEmpty) return;
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black,
+      builder: (dialogContext) {
+        return Dialog(
+          insetPadding: EdgeInsets.zero,
+          backgroundColor: Colors.black,
+          child: SafeArea(
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: InteractiveViewer(
+                    minScale: 1,
+                    maxScale: 5,
+                    child: Center(
+                      child: AspectRatio(
+                        aspectRatio: _aspectRatio,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            SignedImage(
+                              source: path,
+                              bucket: widget.bucket,
+                              fit: BoxFit.contain,
+                              errorWidget: const Icon(
+                                Icons.broken_image_outlined,
+                                color: Colors.white70,
+                                size: 48,
+                              ),
+                              placeholder: const Center(
+                                child: CircularProgressIndicator(),
+                              ),
+                            ),
+                            if (_hasMeasuredAspect)
+                              IgnorePointer(
+                                child: CustomPaint(
+                                  painter: _MismatchBoxesPainter(widget.boxes),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  top: 8,
+                  right: 8,
+                  child: Material(
+                    color: Colors.black54,
+                    shape: const CircleBorder(),
+                    child: IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white),
+                      tooltip: MaterialLocalizations.of(dialogContext)
+                          .closeButtonTooltip,
+                      onPressed: () => Navigator.of(dialogContext).maybePop(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final frameSize = _frameSize(context);
+    final borderColor = theme.dividerColor.withValues(alpha: 0.6);
+
+    return Semantics(
+      container: true,
+      label: widget.label,
+      image: true,
+      button: _hasPhoto,
+      child: MouseRegion(
+        cursor: _hasPhoto ? SystemMouseCursors.click : MouseCursor.defer,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _hasPhoto ? _openFullScreen : null,
+          child: Container(
+            width: frameSize.width,
+            height: frameSize.height,
+            clipBehavior: Clip.antiAlias,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerHighest.withValues(
+                alpha: 0.3,
+              ),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: borderColor),
+            ),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (_hasPhoto)
+                  SignedImage(
+                    source: widget.path!,
+                    bucket: widget.bucket,
+                    fit: BoxFit.contain,
+                    filterQualityLow: true,
+                    width: frameSize.width,
+                    onBytesLoaded: _handleBytes,
+                    errorWidget: Icon(
+                      Icons.photo_library_outlined,
+                      color: theme.disabledColor,
+                    ),
+                  )
+                else
+                  Center(
+                    child: Icon(
+                      Icons.photo_library_outlined,
+                      color: theme.disabledColor,
+                    ),
+                  ),
+                if (_hasPhoto && _hasMeasuredAspect)
+                  IgnorePointer(
+                    child: CustomPaint(
+                      painter: _MismatchBoxesPainter(widget.boxes),
+                    ),
+                  ),
+                if (_hasPhoto)
+                  Positioned(
+                    top: 6,
+                    right: 6,
+                    child: IgnorePointer(
+                      child: Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Icon(
+                          Icons.open_in_full,
+                          size: 14,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// Bundled gesture artwork (Microsoft Fluent Emoji 3D, MIT), keyed by the
@@ -294,6 +587,27 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
   bool _isRequestingManualReview = false;
   bool _didSpeakIntro = false;
   bool _didSpeakTakePhotoHint = false;
+
+  /// Latest verification status payload (server truth, or the on-device copy
+  /// of it). Held in state so the screen renders the full result — AI
+  /// analysis, verification photo, rejection reason — as soon as it is
+  /// entered, instead of waiting for the network round-trip.
+  Map<String, dynamic>? _statusData;
+
+  /// True until the first status payload (cached or fetched) is available.
+  bool _isLoadingStatus = true;
+
+  /// Signature of the last profile-cache heal that was requested, so the
+  /// sync is not re-triggered on every rebuild.
+  String? _lastStatusSyncSignature;
+
+  /// In-flight translations, keyed by the (text, locale) cache key.
+  ///
+  /// One entry per distinct text: the reasoning and every mismatch-region
+  /// description are translated separately, and each of them must be
+  /// translated only once — not once per rebuild.
+  final Map<String, Future<String>> _reasoningTranslations =
+      <String, Future<String>>{};
 
   // Accessibility: content on this screen is also spoken, in visual order.
   // Announcements are serialized on one queue so two sources scheduled in the
@@ -381,6 +695,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
   void initState() {
     super.initState();
     _selectRandomGestureIfNeeded();
+    unawaited(_loadVerificationStatus());
   }
 
   @override
@@ -581,6 +896,12 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
       );
       final status = statusData?['verification_status'] as String?;
 
+      if (mounted && statusData != null) {
+        setState(() {
+          _statusData = statusData;
+        });
+      }
+
       if (status != null) {
         await profileNotifier.applyLocalVerificationUpdate(
           verificationStatus: status,
@@ -669,6 +990,64 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
     return fallbackStatus;
   }
 
+  /// Loads the verification status for the signed-in user.
+  ///
+  /// The on-device copy of the payload is applied first, so re-entering the
+  /// screen after a rejection renders the AI analysis and the verification
+  /// photo immediately. The server copy then refreshes it in the background,
+  /// so a decision taken elsewhere (e.g. an admin review) still lands.
+  Future<void> _loadVerificationStatus({bool preferCache = true}) async {
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId == null) {
+      if (mounted) {
+        setState(() {
+          _isLoadingStatus = false;
+        });
+      }
+      return;
+    }
+
+    if (preferCache) {
+      final cached = await _verificationService.getCachedVerificationStatus(
+        userId,
+      );
+      if (!mounted) return;
+      if (cached != null) {
+        setState(() {
+          _statusData = cached;
+          _isLoadingStatus = false;
+        });
+      }
+    }
+
+    // Offline: the copy on disk is all there is, and waiting for the network
+    // would only keep the placeholder spinning.
+    if (OfflineCacheManager.instance.shouldUseCachedData()) {
+      if (mounted) {
+        setState(() {
+          _isLoadingStatus = false;
+        });
+      }
+      return;
+    }
+
+    Map<String, dynamic>? fresh;
+    try {
+      fresh = await _verificationService
+          .getVerificationStatus(userId)
+          .timeout(const Duration(seconds: 10));
+    } catch (_) {
+      fresh = null;
+    }
+    if (!mounted) return;
+    setState(() {
+      if (fresh != null) {
+        _statusData = fresh;
+      }
+      _isLoadingStatus = false;
+    });
+  }
+
   Future<void> _handleRequestManualReview() async {
     final user = Supabase.instance.client.auth.currentUser;
     if (user == null || _isRequestingManualReview) return;
@@ -719,6 +1098,9 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
         verificationStatus: 'pending',
         isVerified: false,
       );
+      // Pull the new server state (pending + no AI rejection details) so the
+      // card stops showing the stale rejection content right away.
+      await _loadVerificationStatus(preferCache: false);
       try {
         await ref
             .read(profileSyncProvider)
@@ -770,9 +1152,23 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
   Widget _buildStatusCard({
     required Map<String, dynamic>? statusData,
     required String fallbackStatus,
+    bool isLoading = false,
   }) {
     final l10n = ref.watch(localizationProvider);
     final translationService = ref.watch(translationServiceProvider);
+
+    // Nothing is known about the status yet. Show a placeholder instead of a
+    // half-built card: a rejected status without its AI analysis and its
+    // verification photo would show the wrong explanation.
+    if (isLoading) {
+      return Card(
+        margin: const EdgeInsets.all(16),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 16),
+          child: const Center(child: CircularProgressIndicator()),
+        ),
+      );
+    }
 
     Color statusColor;
     IconData statusIcon;
@@ -1021,12 +1417,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
         );
     }
     if (showComparison) {
-      parts
-        ..add(l10n.getString('verificationComparisonTitle'))
-        ..add(l10n.getString('verificationComparisonProfilePhotoLabel'))
-        ..add(
-          l10n.getString('verificationComparisonVerificationPhotoLabel'),
-        );
+      parts.add(l10n.getString('verificationComparisonTitle'));
       if (regions.isEmpty && showNoBoxesNote) {
         parts.add(l10n.getString('verificationComparisonNoBoxes'));
       } else if (regions.isNotEmpty) {
@@ -1145,7 +1536,11 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
     TranslationService translationService,
   ) {
     return FutureBuilder<String>(
-      future: _translateGeminiReasoning(reasoning, l10n, translationService),
+      future: _memoizedReasoningTranslation(
+        reasoning,
+        l10n,
+        translationService,
+      ),
       builder: (context, snapshot) {
         final translatedReasoning = snapshot.data ?? reasoning;
         final errorColor = Theme.of(context).colorScheme.error;
@@ -1186,6 +1581,25 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
     );
   }
 
+  /// Keeps one in-flight translation per (text, locale) pair.
+  ///
+  /// The reasoning card is rebuilt whenever the screen rebuilds, so creating
+  /// the future inline would re-run the translation on every build.
+  Future<String> _memoizedReasoningTranslation(
+    String reasoning,
+    LocalizationState l10n,
+    TranslationService translationService,
+  ) {
+    final key = TranslationTextCache.cacheKey(
+      reasoning,
+      l10n.currentLocale.languageCode,
+    );
+    return _reasoningTranslations.putIfAbsent(
+      key,
+      () => _translateGeminiReasoning(reasoning, l10n, translationService),
+    );
+  }
+
   Future<String> _translateGeminiReasoning(
     String reasoning,
     LocalizationState l10n,
@@ -1198,52 +1612,48 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
       return reasoning;
     }
 
-    // Create a cache key based on the reasoning text and target language
-    final cacheKey = 'gemini_reasoning_${reasoning.hashCode}_$currentLocale';
+    // The translation is cached on the device (and in memory for this
+    // session), so the text is sent to DeepL only once per language.
+    return TranslationTextCache.instance.translate(
+      reasoning,
+      currentLocale,
+      () async {
+        // Try to identify the language of the reasoning (should be English
+        // from Gemini).
+        final sourceLang = await translationService.identifyLanguage(reasoning);
 
-    try {
-      // Check local storage for cached translation first
-      final prefs = await SharedPreferences.getInstance();
-      final cachedTranslation = prefs.getString(cacheKey);
+        // If already in target language, return as-is (and cache it).
+        if (sourceLang == currentLocale) {
+          await TranslationTextCache.instance.write(
+            reasoning,
+            currentLocale,
+            reasoning,
+          );
+          return reasoning;
+        }
 
-      if (cachedTranslation != null && cachedTranslation.isNotEmpty) {
-        print('Using cached Gemini reasoning translation');
-        return cachedTranslation;
-      }
-
-      // No cached translation, perform translation
-      // Try to identify the language of the reasoning (should be English from Gemini)
-      final sourceLang = await translationService.identifyLanguage(reasoning);
-
-      // If already in target language, return as-is
-      if (sourceLang == currentLocale) {
-        // Still cache it for consistency
-        await prefs.setString(cacheKey, reasoning);
-        return reasoning;
-      }
-
-      // Translate to current UI language
-      final translated = await translationService.translateText(
-        reasoning,
-        sourceLang,
-        currentLocale,
-      );
-
-      // Cache the translation
-      await prefs.setString(cacheKey, translated);
-      print('Cached new Gemini reasoning translation');
-
-      return translated;
-    } catch (e) {
-      print('Failed to translate Gemini reasoning: $e');
-      // Return original reasoning if translation fails
-      return reasoning;
-    }
+        // Translate to current UI language
+        return translationService.translateText(
+          reasoning,
+          sourceLang,
+          currentLocale,
+        );
+      },
+      // Older builds cached the translation under a key built from
+      // `String.hashCode`. Adopt that entry instead of paying for another
+      // DeepL request.
+      legacyStorageKey: 'gemini_reasoning_${reasoning.hashCode}_$currentLocale',
+      // A failed request comes back as the untranslated source text. It is
+      // not a translation, so it must not be cached: the next attempt should
+      // try again.
+      shouldCache: (translated) => translated != reasoning,
+    );
   }
 
-  /// Rejected-result comparison: shows the profile photo next to the
-  /// verification selfie with the AI's mismatch rectangles (numbered badges)
-  /// and a translated, numbered explanation of each difference.
+  /// Rejected-result comparison: shows the profile photo alongside (or stacked
+  /// above, on narrow screens) the verification selfie with the AI's mismatch
+  /// rectangles (numbered badges) and a translated, numbered explanation of
+  /// each difference.
   Widget _buildRejectedPhotoComparison({
     required List<_ComparisonRegion> regions,
     required bool showNoBoxesNote,
@@ -1253,171 +1663,218 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
     required TranslationService translationService,
   }) {
     final comparisonErrorColor = Theme.of(context).colorScheme.error;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: comparisonErrorColor.withValues(alpha: 0.06),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: comparisonErrorColor.withValues(alpha: 0.25)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.compare, color: comparisonErrorColor, size: 16),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  l10n.getString('verificationComparisonTitle'),
-                  style: TextStyle(
-                    color: comparisonErrorColor,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: _buildComparisonPhoto(
-                  label: l10n.getString(
-                    'verificationComparisonProfilePhotoLabel',
-                  ),
-                  path: profilePhotoPath,
-                  bucket: 'profile-photos',
-                  boxes: regions
-                      .map((region) => region.profileBox)
-                      .toList(growable: false),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _buildComparisonPhoto(
-                  label: l10n.getString(
-                    'verificationComparisonVerificationPhotoLabel',
-                  ),
-                  path: verificationPhotoPath,
-                  bucket: 'verification-photos',
-                  boxes: regions
-                      .map((region) => region.verificationBox)
-                      .toList(growable: false),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          if (regions.isEmpty && showNoBoxesNote)
-            Text(
-              l10n.getString('verificationComparisonNoBoxes'),
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).textTheme.bodySmall?.color,
-              ),
-            )
-          else if (regions.isNotEmpty) ...[
-            Text(
-              l10n.getString('verificationComparisonMismatchHeader'),
-              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-            ),
-            const SizedBox(height: 6),
-            for (var i = 0; i < regions.length; i++)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      width: 20,
-                      height: 20,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.error,
-                        shape: BoxShape.circle,
-                      ),
-                      child: Text(
-                        '${i + 1}',
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.onError,
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
+    final labelStyle = Theme.of(context).textTheme.labelSmall
+        ?.copyWith(fontWeight: FontWeight.w600);
+    final profileLabel = l10n.getString(
+      'verificationComparisonProfilePhotoLabel',
+    );
+    final verificationLabel = l10n.getString(
+      'verificationComparisonVerificationPhotoLabel',
+    );
+    final profileBoxes = regions
+        .map((region) => region.profileBox)
+        .toList(growable: false);
+    final verificationBoxes = regions
+        .map((region) => region.verificationBox)
+        .toList(growable: false);
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final availableWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : MediaQuery.sizeOf(context).width;
+        // On phones the two photos are stacked so both faces stay readable;
+        // tablets and desktop keep the classic side-by-side comparison.
+        final sideBySide = availableWidth >= 340;
+        final gap = sideBySide ? 8.0 : 14.0;
+        final photoMaxWidth = sideBySide
+            ? min((availableWidth - gap) / 2, 360.0)
+            : min(availableWidth, 360.0);
+        final screenHeight = MediaQuery.sizeOf(context).height;
+        final isLandscape =
+            MediaQuery.orientationOf(context) == Orientation.landscape;
+        final maxPhotoHeight = isLandscape
+            ? (screenHeight * 0.35).clamp(220.0, 360.0).toDouble()
+            : (screenHeight * 0.40).clamp(280.0, 360.0).toDouble();
+
+        Widget photo(
+          String label,
+          String? path,
+          String bucket,
+          List<List<double>?> boxes,
+        ) {
+          return _ComparisonPhoto(
+            key: ValueKey<String>('$bucket|${path ?? ''}'),
+            label: label,
+            path: path,
+            bucket: bucket,
+            boxes: boxes,
+            maxWidth: photoMaxWidth,
+            maxHeight: maxPhotoHeight,
+          );
+        }
+
+        final profilePhoto = photo(
+          profileLabel,
+          profilePhotoPath,
+          'profile-photos',
+          profileBoxes,
+        );
+        final verificationPhoto = photo(
+          verificationLabel,
+          verificationPhotoPath,
+          'verification-photos',
+          verificationBoxes,
+        );
+
+        final photos = sideBySide
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          profileLabel,
+                          textAlign: TextAlign.center,
+                          style: labelStyle,
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _buildTranslatedRegionText(
-                        regions[i],
-                        l10n,
-                        translationService,
+                      SizedBox(width: gap),
+                      Expanded(
+                        child: Text(
+                          verificationLabel,
+                          textAlign: TextAlign.center,
+                          style: labelStyle,
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-              ),
-          ],
-        ],
-      ),
-    );
-  }
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: Center(child: profilePhoto)),
+                      SizedBox(width: gap),
+                      Expanded(child: Center(child: verificationPhoto)),
+                    ],
+                  ),
+                ],
+              )
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    profileLabel,
+                    textAlign: TextAlign.center,
+                    style: labelStyle,
+                  ),
+                  const SizedBox(height: 4),
+                  Center(child: profilePhoto),
+                  const SizedBox(height: 14),
+                  Text(
+                    verificationLabel,
+                    textAlign: TextAlign.center,
+                    style: labelStyle,
+                  ),
+                  const SizedBox(height: 4),
+                  Center(child: verificationPhoto),
+                ],
+              );
 
-  Widget _buildComparisonPhoto({
-    required String label,
-    required String? path,
-    required String bucket,
-    required List<List<double>?> boxes,
-  }) {
-    final hasPhoto = path != null && path.isNotEmpty;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          label,
-          textAlign: TextAlign.center,
-          style: Theme.of(
-            context,
-          ).textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w600),
-        ),
-        const SizedBox(height: 4),
-        Container(
-          height: 150,
-          clipBehavior: Clip.antiAlias,
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(10),
+            color: comparisonErrorColor.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(8),
             border: Border.all(
-              color: Theme.of(context).dividerColor.withValues(alpha: 0.6),
+              color: comparisonErrorColor.withValues(alpha: 0.25),
             ),
           ),
-          child: Stack(
-            fit: StackFit.expand,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (hasPhoto)
-                SignedImage(
-                  source: path,
-                  bucket: bucket,
-                  fit: BoxFit.cover,
-                  filterQualityLow: true,
-                  errorWidget: Icon(
-                    Icons.photo_library_outlined,
-                    color: Theme.of(context).disabledColor,
+              Row(
+                children: [
+                  Icon(Icons.compare, color: comparisonErrorColor, size: 16),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      l10n.getString('verificationComparisonTitle'),
+                      style: TextStyle(
+                        color: comparisonErrorColor,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 760),
+                  child: photos,
+                ),
+              ),
+              const SizedBox(height: 10),
+              if (regions.isEmpty && showNoBoxesNote)
+                Text(
+                  l10n.getString('verificationComparisonNoBoxes'),
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).textTheme.bodySmall?.color,
                   ),
                 )
-              else
-                Center(
-                  child: Icon(
-                    Icons.photo_library_outlined,
-                    color: Theme.of(context).disabledColor,
+              else if (regions.isNotEmpty) ...[
+                Text(
+                  l10n.getString('verificationComparisonMismatchHeader'),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
                   ),
                 ),
-              if (hasPhoto) CustomPaint(painter: _MismatchBoxesPainter(boxes)),
+                const SizedBox(height: 6),
+                for (var i = 0; i < regions.length; i++)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          width: 20,
+                          height: 20,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.error,
+                            shape: BoxShape.circle,
+                          ),
+                          child: Text(
+                            '${i + 1}',
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.onError,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: _buildTranslatedRegionText(
+                            regions[i],
+                            l10n,
+                            translationService,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
             ],
           ),
-        ),
-      ],
+        );
+      },
     );
   }
 
@@ -1431,7 +1888,9 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
         : region.feature;
     if (text.isEmpty) return const SizedBox.shrink();
     return FutureBuilder<String>(
-      future: _translateGeminiReasoning(text, l10n, translationService),
+      // Memoized: the comparison block is rebuilt on every screen rebuild,
+      // and an inline future would start a new translation each time.
+      future: _memoizedReasoningTranslation(text, l10n, translationService),
       builder: (context, snapshot) {
         return Text(
           snapshot.data ?? text,
@@ -1756,12 +2215,9 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
         title: ShrinkText(l10n.getString('verification')),
         actions: const [VoiceGuidanceMuteButton()],
       ),
-      body: FutureBuilder<Map<String, dynamic>?>(
-        future: userId == null
-            ? Future<Map<String, dynamic>?>.value(null)
-            : _verificationService.getVerificationStatus(userId),
-        builder: (context, snapshot) {
-          final statusData = snapshot.data;
+      body: Builder(
+        builder: (context) {
+          final statusData = _statusData;
           final effectiveVerificationStatus = _resolveVerificationStatus(
             statusData: statusData,
             fallbackStatus: cachedVerificationStatus,
@@ -1777,14 +2233,19 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
                       (statusData['verification_status']?.toString() ??
                           profile.verificationStatus) ||
                   profile.isVerified != (statusData['is_verified'] == true))) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (!mounted) return;
-              try {
-                ref
-                    .read(profileSyncProvider)
-                    .syncProfile(userId, source: 'verification-screen-refresh');
-              } catch (_) {}
-            });
+            final syncSignature =
+                '${statusData['verification_status']}|${statusData['is_verified']}';
+            if (_lastStatusSyncSignature != syncSignature) {
+              _lastStatusSyncSignature = syncSignature;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (!mounted) return;
+                try {
+                  ref
+                      .read(profileSyncProvider)
+                      .syncProfile(userId, source: 'verification-screen-refresh');
+                } catch (_) {}
+              });
+            }
           }
           final shouldShowVerificationInstructions =
               effectiveVerificationStatus != 'approved';
@@ -1874,6 +2335,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
                         _buildStatusCard(
                           statusData: statusData,
                           fallbackStatus: cachedVerificationStatus,
+                          isLoading: statusData == null && _isLoadingStatus,
                         ),
                       if (shouldShowVerificationInstructions)
                         _buildVerificationInstructions(

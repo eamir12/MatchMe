@@ -419,9 +419,15 @@ class _InvisibilityRulesScreenState
           });
 
           final accuracyText = position.accuracy.toStringAsFixed(0);
+          final accuracy = l10n.getPluralString(
+            'settingsAccuracyMeters',
+            position.accuracy.round(),
+            countParam: 'meters',
+            displayValue: accuracyText,
+          );
           final message = position.accuracy > 50
-              ? '${l10n.getString('settingsLocationSuccess')} ($accuracyText${l10n.getString('settingsAccuracyMeters')} - ${l10n.getString('settingsConsiderIncreasingRadius')} ${formatDistanceWithImperial(position.accuracy * 2, ref.watch(unitSystemProvider).maybeWhen(data: (useImperial) => useImperial, orElse: () => false), l10n)})'
-              : '${l10n.getString('settingsLocationSuccess')} ($accuracyText${l10n.getString('settingsAccuracyMeters')})';
+              ? '${l10n.getString('settingsLocationSuccess')} ($accuracy - ${l10n.getString('settingsConsiderIncreasingRadius')} ${formatDistanceWithImperial(position.accuracy * 2, ref.watch(unitSystemProvider).maybeWhen(data: (useImperial) => useImperial, orElse: () => false), l10n)})'
+              : '${l10n.getString('settingsLocationSuccess')} ($accuracy)';
 
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -1580,9 +1586,15 @@ class _InvisibilityRulesScreenState
           });
 
           final accuracyText = position.accuracy.toStringAsFixed(0);
+          final accuracy = l10n.getPluralString(
+            'settingsAccuracyMeters',
+            position.accuracy.round(),
+            countParam: 'meters',
+            displayValue: accuracyText,
+          );
           final message = position.accuracy > 50
-              ? '${l10n.getString('settingsLocationSuccess')} ($accuracyText${l10n.getString('settingsAccuracyMeters')} - ${l10n.getString('settingsConsiderIncreasingRadius')} ${formatDistanceWithImperial(position.accuracy * 2, ref.watch(unitSystemProvider).maybeWhen(data: (useImperial) => useImperial, orElse: () => false), l10n)})'
-              : '${l10n.getString('settingsLocationSuccess')} ($accuracyText${l10n.getString('settingsAccuracyMeters')})';
+              ? '${l10n.getString('settingsLocationSuccess')} ($accuracy - ${l10n.getString('settingsConsiderIncreasingRadius')} ${formatDistanceWithImperial(position.accuracy * 2, ref.watch(unitSystemProvider).maybeWhen(data: (useImperial) => useImperial, orElse: () => false), l10n)})'
+              : '${l10n.getString('settingsLocationSuccess')} ($accuracy)';
 
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(

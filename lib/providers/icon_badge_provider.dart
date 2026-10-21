@@ -1,8 +1,7 @@
 // lib/providers/icon_badge_provider.dart
 //
-// Single source for the OS app-icon badge count: the sum of every unread
-// surface the in-app UI actually shows (match banners, chats with unread
-// messages, notification inbox).
+// Single source for the OS app-icon badge count: the unread entries in the
+// persistent notification inbox.
 //
 // Why this exists: previously the iOS icon badge was only cleared when the
 // user tapped the push notification itself. Opening the app from the home
@@ -12,34 +11,36 @@
 // unread state makes the badge self-correcting: it appears when something
 // is unread and clears as soon as the user has seen everything, no matter
 // how the app was opened.
+//
+// The inbox is the only surface counted. The match banner and chat list both
+// represent events that also get an inbox row (new matches, match extensions,
+// every chat message), so adding them on top counted one notification two or
+// three times: a single unread chat message produced an unread chat plus an
+// unread inbox row, and the iOS icon showed 2.
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import 'package:matchme/providers/home_providers.dart';
-import 'package:matchme/providers/match_notification_provider.dart';
 import 'package:matchme/providers/notification_inbox_provider.dart';
 
-/// Icon-badge total, or `null` while chat unread state is still loading.
+/// Icon-badge total, or `null` while the initial inbox load is in flight.
 ///
-/// Returning `null` while `recentChatsProvider` is loading prevents a cold
-/// start from stamping 0 over the server-set badge and then flickering back
-/// once the real counts arrive.
+/// Returning `null` while the inbox has no cached rows prevents a cold start
+/// from stamping 0 over the server-set badge and then flickering back once
+/// the real counts arrive.
 final iconBadgeCountProvider = Provider<int?>((ref) {
-  final userId = Supabase.instance.client.auth.currentUser?.id ?? '';
-  if (userId.isEmpty) return 0;
-
-  final matches = ref.watch(unreadMatchCountProvider);
-  final inbox = ref.watch(unreadInboxCountProvider);
-
-  final chatsAsync = ref.watch(recentChatsProvider(userId));
-  final chats = chatsAsync.asData?.value;
-  if (chats == null) {
-    // Error (offline with no cache) falls through to 0 so a stale badge
-    // still clears; only the loading state is deferred.
-    if (chatsAsync.isLoading) return null;
-    return matches + inbox;
-  }
-
-  return matches + inbox + chats.where((c) => c.unreadCount > 0).length;
+  return iconBadgeValueFor(
+    userId: Supabase.instance.client.auth.currentUser?.id ?? '',
+    inbox: ref.watch(notificationInboxProvider),
+  );
 });
+
+/// Pure badge calculation used by [iconBadgeCountProvider] and its tests.
+int? iconBadgeValueFor({
+  required String userId,
+  required NotificationInboxState inbox,
+}) {
+  if (userId.isEmpty) return 0;
+  if (inbox.isLoading && inbox.items.isEmpty) return null;
+  return inbox.unreadCount;
+}

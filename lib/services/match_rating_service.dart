@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/utils/offline_utils.dart';
+import 'package:matchme/utils/string_extensions.dart';
 
 final _supabase = Supabase.instance.client;
 
@@ -128,18 +129,18 @@ class DueRatingPrompt {
 
   factory DueRatingPrompt.fromRpcRow(Map<String, dynamic> row) {
     String maskName(String raw) {
-      final s = raw.toString().trim();
+      final s = raw.toString().replaceAll(bidiControls, '').trim();
       if (s.isEmpty) return s;
       final parts = s
           .split(RegExp(r'\s+'))
           .where((p) => p.trim().isNotEmpty)
           .toList(growable: false);
       if (parts.isEmpty) return s;
-      if (parts.length == 1) return parts.first;
+      if (parts.length == 1) return parts.first.withDirectionalMarks();
       final first = parts.first;
       final last = parts.last;
-      if (last.isEmpty) return first;
-      return '$first ${last[0].toUpperCase()}.';
+      if (last.isEmpty) return first.withDirectionalMarks();
+      return '$first ${last[0].toUpperCase()}.'.withDirectionalMarks();
     }
 
     return DueRatingPrompt(

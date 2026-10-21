@@ -894,17 +894,20 @@ class _MatchingSettingsScreenState extends ConsumerState<MatchingSettingsScreen>
                               : 24;
                           String label(int h) {
                             if (h < 24) {
-                              return l10n.getString(
+                              return l10n.getPluralString(
                                 'settingsRetroHours',
-                                params: {'count': '$h'},
+                                h,
                               );
                             }
                             if (h == 24) {
-                              return l10n.getString('settingsRetroOneDay');
+                              return l10n.getPluralString(
+                                'settingsRetroDays',
+                                1,
+                              );
                             }
-                            return l10n.getString(
+                            return l10n.getPluralString(
                               'settingsRetroDays',
-                              params: {'count': '${h ~/ 24}'},
+                              h ~/ 24,
                             );
                           }
 

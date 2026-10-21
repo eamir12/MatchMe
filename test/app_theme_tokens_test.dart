@@ -220,6 +220,34 @@ void main() {
     }
   });
 
+  test('adaptive accent chips keep label contrast in dark and AMOLED', () {
+    final accents = <String, Color>{
+      'blue': Colors.blue.shade700,
+      'green': Colors.green.shade700,
+      'teal': Colors.teal.shade700,
+      'purple': Colors.purple.shade500,
+    };
+    final backgrounds = <String, Color>{
+      'dark': AppThemeTokens.darkSurface,
+      'AMOLED': AppThemeTokens.amoledSurface,
+    };
+
+    backgrounds.forEach((backgroundName, background) {
+      accents.forEach((accentName, accent) {
+        final ink = AppThemeTokens.accentInk(accent, Brightness.dark);
+        final chipFill = Color.alphaBlend(
+          AppThemeTokens.accentSurface(accent, Brightness.dark),
+          background,
+        );
+        _expectNormalTextContrast(
+          '$accentName accent ink on $backgroundName chip',
+          ink,
+          chipFill,
+        );
+      });
+    });
+  });
+
   test('dark ThemeData wires text and component themes coherently', () {
     // main.dart builds its text theme from ThemeData.light() and hands the
     // same theme to light and dark; the dark theme must override every color.

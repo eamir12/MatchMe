@@ -76,14 +76,10 @@ class _LocationShareDurationDialogState
   String _formatDuration(int seconds, LocalizationState l10n) {
     if (seconds >= 3600) {
       final hours = seconds ~/ 3600;
-      return l10n
-          .getString('locationShareHours')
-          .replaceAll('{count}', '$hours');
+      return l10n.getPluralString('locationShareHours', hours);
     } else {
       final minutes = seconds ~/ 60;
-      return l10n
-          .getString('locationShareMinutes')
-          .replaceAll('{count}', '$minutes');
+      return l10n.getPluralString('locationShareMinutes', minutes);
     }
   }
 

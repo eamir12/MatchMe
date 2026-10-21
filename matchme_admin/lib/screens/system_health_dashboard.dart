@@ -54,13 +54,8 @@ class _AdminSystemHealthDashboardState
   /// Tap-selected latency bar (matched by timestamp across history shifts).
   SystemHealthLatencySample? _selectedSample;
 
-  String t(String key, {Map<String, String>? params}) {
-    var value = widget.t(key, params: params);
-    params?.forEach((paramKey, paramValue) {
-      value = value.replaceAll('{$paramKey}', paramValue);
-    });
-    return value;
-  }
+  String t(String key, {Map<String, String>? params, String? pluralParam}) =>
+      widget.t(key, params: params, pluralParam: pluralParam);
 
   String _agoLabel(DateTime? dt) => SystemHealthCards.agoLabel(dt);
 

@@ -17,6 +17,7 @@ import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/match_extension_service.dart';
 import 'package:matchme/services/global_sync_manager.dart';
 import 'package:matchme/theme/semantic_colors.dart';
+import 'package:matchme/theme/app_theme_tokens.dart';
 import 'package:matchme/utils/match_score_utils.dart';
 import 'package:matchme/utils/profile_completeness.dart';
 import 'package:matchme/utils/string_extensions.dart';
@@ -24,7 +25,9 @@ import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/widgets/safe_text.dart';
 import 'package:matchme/widgets/signed_image.dart';
 import 'package:matchme/widgets/match_profile_navigation_cue.dart';
+import 'package:matchme/widgets/new_user_badge.dart';
 import 'package:matchme/widgets/profile_completeness_summary.dart';
+import 'package:matchme/widgets/verified_badge.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:ui' as ui;
 
@@ -188,16 +191,10 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
   String _formatExtensionDuration(LocalizationState l10n, int seconds) {
     if (seconds >= 3600 && seconds % 3600 == 0) {
       final hours = (seconds / 3600).round();
-      final key = hours == 1
-          ? 'matchExtensionDurationHours'
-          : 'matchExtensionDurationHoursPlural';
-      return l10n.getString(key, params: {'count': '$hours'});
+      return l10n.getPluralString('matchExtensionDurationHours', hours);
     }
     final minutes = (seconds / 60).ceil();
-    final key = minutes == 1
-        ? 'matchExtensionDurationMinutes'
-        : 'matchExtensionDurationMinutesPlural';
-    return l10n.getString(key, params: {'count': '$minutes'});
+    return l10n.getPluralString('matchExtensionDurationMinutes', minutes);
   }
 
   /// Text for the green extension badge:
@@ -466,6 +463,14 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     required List<String> fallbackPhotos,
   }) {
     final semanticName = fallbackName;
+    // One status band for every status mark (verified / new here / profile
+    // complete), placed below the identity block so the three chips always
+    // sit in the same spot on every card.
+    final statusPills = _buildStatusPills(
+      context,
+      l10n,
+      otherProfileAsync.asData?.value,
+    );
 
     return Semantics(
       container: true,
@@ -545,6 +550,10 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
                   ),
                 ],
               ),
+              if (statusPills != null) ...[
+                const SizedBox(height: 6),
+                statusPills,
+              ],
               const SizedBox(height: 6),
               _buildMetaLine(
                 context,
@@ -573,12 +582,13 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     );
   }
 
-  /// Identity column: bold name (+ "New here!" pill when applicable) on line
-  /// 1, quiet "67 · Male" on line 2 with the "Verified" pill riding the same
-  /// line — no "Age:"/"Gender:" labels, and the name's trailing last-initial
-  /// period never collides with the age. The avatar stays clean: the status is
-  /// spelled out in words instead of stamped on the photo. Rating sits
-  /// top-right of the card (rendered by the caller).
+  /// Identity column: bold name on line 1, quiet "67 · Male" on line 2 — no
+  /// "Age:"/"Gender:" labels, and the name's trailing last-initial period
+  /// never collides with the age. The status chips live in their own band
+  /// below this column (see [_buildStatusPills]) so all three of them always
+  /// share one location. The avatar stays clean: the status is spelled out in
+  /// words instead of stamped on the photo. Rating sits top-right of the
+  /// card (rendered by the caller).
   Widget _buildContentColumn(
     BuildContext context,
     WidgetRef ref,
@@ -600,14 +610,6 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
         (rawGender != null && rawGender.trim().isNotEmpty)
             ? _getGenderLabel(rawGender, ref, l10n)
             : null;
-    bool isNewUser = false;
-    if (profile?.createdAt != null) {
-      isNewUser = DateTime.now().difference(profile!.createdAt!).inDays < 7;
-    }
-    final isVerified = profile?.isVerified ?? false;
-    // Public completeness badge: only a positive 100% signal, never a raw
-    // percentage for other users.
-    final isComplete = profile != null && ProfileCompleteness.isFull(profile);
 
     final metaParts = <String>[
       if (age != null) '$age',
@@ -635,109 +637,68 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
                 textDirection: nameLayout.textDirection,
               ),
             ),
-            if (isNewUser) ...[
-              const SizedBox(width: 6),
-              _buildNewUserPill(context, l10n, profile!),
-            ],
           ],
         ),
-        if (metaParts.isNotEmpty || isVerified || isComplete) ...[
+        if (metaParts.isNotEmpty) ...[
           const SizedBox(height: 1),
-          Wrap(
-            textDirection: textDir,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            spacing: 6,
-            runSpacing: 2,
-            children: [
-              if (metaParts.isNotEmpty)
-                SafeText(
-                  metaParts.join('  ·  '),
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w400,
-                    color: Theme.of(context).colorScheme.onSurface.withValues(
-                      alpha: 0.55,
-                    ),
-                  ),
-                  textAlign: TextAlign.start,
-                ),
-              if (isVerified) _buildVerifiedPill(context, l10n, profile!),
-              if (isComplete)
-                ProfileCompletePill(l10n: l10n, compact: true),
-            ],
+          SafeText(
+            metaParts.join('  ·  '),
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w400,
+              color: Theme.of(context).colorScheme.onSurface.withValues(
+                alpha: 0.55,
+              ),
+            ),
+            textAlign: TextAlign.start,
           ),
         ],
       ],
     );
   }
 
-  /// "Verified" pill riding the age/gender line, sized to read as a status
-  /// chip at a glance (12px label, 14px icon). The avatar carries no check of
-  /// its own any more: this word is the status mark.
-  Widget _buildVerifiedPill(
+  /// Status band: "Primary Photo Verified", "New Here" and "Profile
+  /// Complete" are all status marks, so they always travel together in this
+  /// one band, in this one order, at this one size — the reader sees a
+  /// single status line instead of marks scattered across the card.
+  ///
+  /// Returns null when the profile carries no status at all.
+  Widget? _buildStatusPills(
     BuildContext context,
     LocalizationState l10n,
-    UserProfile profile,
+    UserProfile? profile,
   ) {
-    final color = Theme.of(context).colorScheme.primary;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        textDirection: Directionality.of(context),
-        children: [
-          Icon(Icons.verified, size: 14, color: color),
-          const SizedBox(width: 3),
-          Flexible(
-            child: ShrinkText(
-              _verifiedBadgeText(l10n, profile.gender),
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: color,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+    if (profile == null) return null;
+    final isVerified = profile.isVerified;
+    final isNewUser =
+        profile.createdAt != null &&
+        DateTime.now().difference(profile.createdAt!).inDays < 7;
+    // Public completeness badge: only a positive 100% signal, never a raw
+    // percentage for other users.
+    final isComplete = ProfileCompleteness.isFull(profile);
+    if (!isVerified && !isNewUser && !isComplete) return null;
 
-  /// Compact "New here!" accent pill shown inline after the name.
-  Widget _buildNewUserPill(
-    BuildContext context,
-    LocalizationState l10n,
-    UserProfile profile,
-  ) {
-    final color = Colors.green.shade700;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-      decoration: BoxDecoration(
-        color: Colors.green.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        textDirection: Directionality.of(context),
-        children: [
-          Icon(Icons.fiber_new_rounded, size: 12, color: color),
-          const SizedBox(width: 2),
-          Flexible(
-            child: ShrinkText(
-              _newUserBadgeText(l10n, profile.gender),
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w700,
-                color: color,
-              ),
-            ),
+    return Wrap(
+      textDirection: Directionality.of(context),
+      crossAxisAlignment: WrapCrossAlignment.center,
+      spacing: 6,
+      runSpacing: 4,
+      children: [
+        if (isVerified)
+          VerifiedBadge(
+            size: 16,
+            showText: true,
+            text: _verifiedBadgeText(l10n, profile.gender),
           ),
-        ],
-      ),
+        if (isNewUser)
+          NewUserBadge(
+            size: 16,
+            showText: true,
+            text: _newUserBadgeText(l10n, profile.gender),
+            gender: profile.gender,
+          ),
+        if (isComplete) ProfileCompletePill(l10n: l10n, size: 16),
+      ],
     );
   }
 
@@ -753,9 +714,9 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
         translated == '[$key]' ||
         translated == '$key...' ||
         translated.startsWith(key)) {
-      return 'Verified';
+      return 'Primary Photo Verified';
     }
-    if (translated.trim().isEmpty) return 'Verified';
+    if (translated.trim().isEmpty) return 'Primary Photo Verified';
     return translated;
   }
 
@@ -812,7 +773,10 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
               Icon(
                 Icons.wifi_off_rounded,
                 size: 14,
-                color: Colors.teal.shade700,
+                color: AppThemeTokens.accentInk(
+                  Colors.teal.shade700,
+                  Theme.of(context).brightness,
+                ),
               ),
               const SizedBox(width: 6),
               Expanded(
@@ -820,7 +784,10 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
                   l10n.getString('retroBanner'),
                   style: TextStyle(
                     fontSize: 12,
-                    color: Colors.teal.shade700,
+                    color: AppThemeTokens.accentInk(
+                      Colors.teal.shade700,
+                      Theme.of(context).brightness,
+                    ),
                     fontWeight: FontWeight.w600,
                   ),
                 ),

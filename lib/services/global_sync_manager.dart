@@ -4,6 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/providers/chat_provider.dart';
+import 'package:matchme/providers/user_preferences_provider.dart';
+import 'package:matchme/providers/profile_provider.dart';
+import 'package:matchme/providers/theme_provider.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/match_rating_service.dart';
@@ -375,6 +378,12 @@ class GlobalHomeSyncManager {
           debugPrint('⚠️ [SYNC] Pending mutations sync failed: $e');
           // Don't mark as failed - mutations can be retried
         }),
+        _syncUserSettings(userId).catchError((e) {
+          if (!isBenignSyncFailure(e)) {
+            debugPrint('⚠️ [SYNC] User settings sync failed: $e');
+          }
+          if (!isBenignSyncFailure(e)) anyTaskFailed = true;
+        }),
       ];
 
       await Future.wait(syncTasks, eagerError: false);
@@ -399,9 +408,39 @@ class GlobalHomeSyncManager {
     }
   }
 
+  /// Reconciles the user's own settings with the server.
+  ///
+  /// Realtime is the fast path for settings, but a realtime event can be
+  /// missed: the socket was down, the app was suspended, or the server-side
+  /// subscription was silently dropped while the client still believed it was
+  /// live. This slow poll is the guarantee that a setting changed on another
+  /// device is picked up within a minute even then.
+  Future<void> _syncUserSettings(String userId) async {
+    if (shouldSkipSupabaseCalls()) return;
+    try {
+      await _ref
+          .read(userPreferencesProvider.notifier)
+          .reconcileFromServer();
+    } catch (_) {
+      // Best effort: the next cycle retries.
+    }
+    try {
+      await _ref.read(themeModeProvider.notifier).refreshFromRemote();
+    } catch (_) {
+      // Best effort: the next cycle retries.
+    }
+    try {
+      // The match preferences live on `user_profiles`, not on `users`.
+      await _ref
+          .read(profileEditProvider(userId).notifier)
+          .reconcileMatchPreferences();
+    } catch (_) {
+      // Best effort: the next cycle retries.
+    }
+  }
+
   /// Sync all pending mutations to Supabase
-  Future<void> _syncPendingMutations() async {
-    final pendingCount = await offlineCacheManager.getPendingMutationCount();
+  Future<void> _syncPendingMutations() async {    final pendingCount = await offlineCacheManager.getPendingMutationCount();
     if (pendingCount == 0) return;
 
     debugPrint('🔄 [SYNC] Syncing $pendingCount pending mutations...');

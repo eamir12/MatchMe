@@ -1749,7 +1749,7 @@ packages:
     source: hosted
     version: "1.1.0"
   realtime_client:
-    dependency: "direct overridden"
+    dependency: "direct dev"
     description:
       path: "third_party/realtime_client"
       relative: true

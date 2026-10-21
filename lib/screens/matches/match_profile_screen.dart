@@ -6,6 +6,7 @@ import 'dart:ui' as ui;
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/theme/app_theme_tokens.dart';
+import 'package:matchme/theme/semantic_colors.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
@@ -40,6 +41,7 @@ import 'package:matchme/widgets/location_share_banner.dart';
 import 'package:matchme/utils/match_score_utils.dart';
 import 'package:matchme/utils/profile_completeness.dart';
 import 'package:matchme/utils/shared_intent_utils.dart';
+import 'package:matchme/utils/unit_utils.dart';
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:matchme/services/location_service.dart';
 import 'package:matchme/services/app_config_service.dart';
@@ -303,6 +305,46 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
     return s.replaceFirst(RegExp(r'\.?0+$'), '');
   }
 
+  /// "Primary Photo Verified" chip label, gender-aware where the language
+  /// needs it. Falls back to the English wording when the translation is
+  /// missing.
+  String _verifiedBadgeText(LocalizationState l10n, String? gender) {
+    final normalized = (gender ?? '').trim().toLowerCase();
+    final key = normalized == 'female'
+        ? 'profileVerifiedBadgeFemale'
+        : (normalized == 'non_binary' || normalized == 'nonbinary')
+            ? 'profileVerifiedBadgeNeutral'
+            : 'profileVerifiedBadge';
+    final translated = l10n.getString(key);
+    if (translated == key ||
+        translated == '[$key]' ||
+        translated == '$key...' ||
+        translated.startsWith(key) ||
+        translated.trim().isEmpty) {
+      return 'Primary Photo Verified';
+    }
+    return translated;
+  }
+
+  /// "New here!" chip label, gender-aware where the language needs it.
+  String _newUserBadgeText(LocalizationState l10n, String? gender) {
+    final normalized = (gender ?? '').trim().toLowerCase();
+    final key = normalized == 'female'
+        ? 'profileNewUserBadgeFemale'
+        : (normalized == 'non_binary' || normalized == 'nonbinary')
+            ? 'profileNewUserBadgeNeutral'
+            : 'profileNewUserBadge';
+    final translated = l10n.getString(key);
+    if (translated == key ||
+        translated == '[$key]' ||
+        translated == '$key...' ||
+        translated.startsWith(key) ||
+        translated.trim().isEmpty) {
+      return 'New here!';
+    }
+    return translated;
+  }
+
   String _headerKeyForQuestion(RatingQuestion q) {
     switch (q.id) {
       case 'communication':
@@ -452,12 +494,22 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
     return _tryGetString(l10n, key) ?? _humanizeKey(value);
   }
 
-  String _localizedReligiosityValue(LocalizationState l10n, String value) {
+  String _localizedDenominationValue(LocalizationState l10n, String value) =>
+      _localizedBeliefFieldValue(l10n, 'denomination', value);
+
+  String _localizedPracticeValue(LocalizationState l10n, String value) =>
+      _localizedBeliefFieldValue(l10n, 'practice', value);
+
+  String _localizedBeliefFieldValue(
+    LocalizationState l10n,
+    String fieldKey,
+    String value,
+  ) {
     final opts =
         ref
             .watch(
               fieldOptionsProvider((
-                fieldKey: 'religiosity',
+                fieldKey: fieldKey,
                 context: 'profile',
               )),
             )
@@ -520,13 +572,7 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
     if (unit.trim().toLowerCase() != 'ft') {
       return '$heightCm ${l10n.getString('settingsHeightCm')}';
     }
-    final totalInches = (heightCm / 2.54).round();
-    final feet = totalInches ~/ 12;
-    final inches = totalInches % 12;
-    return l10n
-        .getString('profileHeightFeetInches')
-        .replaceAll('{feet}', feet.toString())
-        .replaceAll('{inches}', inches.toString());
+    return formatHeightFeetInches(l10n, heightCm);
   }
 
   List<String> _orderedLanguageSkills(Iterable<String> skills) {
@@ -1258,6 +1304,12 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
     final isOtherUserVerified =
         otherProfileAsync.asData?.value?.isVerified ?? false;
 
+    // Public completeness badge: positive 100% signal only. The raw
+    // percentage is never shown for other users.
+    final otherProfileForBadges = otherProfileAsync.asData?.value;
+    final isOtherUserComplete = otherProfileForBadges != null &&
+        ProfileCompleteness.isFull(otherProfileForBadges);
+
     // Check if other user is new (under 1 week)
     final otherProfileCreatedAt = otherProfileAsync.asData?.value?.createdAt;
     final otherProfileGender = otherProfileAsync.asData?.value?.gender;
@@ -1293,7 +1345,8 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
     // whole title width and squeeze the name to zero (it rendered as a tiny
     // dash). The name now gets the full title width on line 1 and the badges
     // sit on line 2 — nothing truncates, online or offline, no ellipsis.
-    final hasTitleBadges = isOtherUserVerified || isOtherUserNew;
+    final hasTitleBadges =
+        isOtherUserVerified || isOtherUserNew || isOtherUserComplete;
 
     return Scaffold(
       appBar: AppBar(
@@ -1313,18 +1366,17 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                 effectiveOtherUserName,
                 maxLines: 2,
                 softWrap: true,
-                textDirection:
-                    RegExp(r'[a-zA-Z]').hasMatch(effectiveOtherUserName)
-                    ? ui.TextDirection.ltr
-                    : (effectiveOtherUserName.isRtl()
-                          ? ui.TextDirection.rtl
-                          : ui.TextDirection.ltr),
+                // The name follows its own script so its trailing period stays
+                // on the right of the name, whichever language the UI is in.
+                textDirection: effectiveOtherUserName.displayTextDirection(),
               ),
             ),
             if (hasTitleBadges) ...[
               const SizedBox(height: 4),
-              // Badges get their own full-width line; scaleDown keeps both
+              // Badges get their own full-width line; scaleDown keeps all
               // chips fully visible (never truncated) on narrow screens.
+              // Every status chip lives here, in one row, at one size:
+              // Primary Photo Verified / New Here / Profile Complete.
               FittedBox(
                 fit: BoxFit.scaleDown,
                 alignment: AlignmentDirectional.centerStart,
@@ -1335,79 +1387,23 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                       VerifiedBadge(
                         size: 18,
                         showText: true,
-                        text: (() {
-                          final normalizedGender = otherProfileGender
-                              ?.trim()
-                              .toLowerCase();
-                          if (normalizedGender == 'female') {
-                            final translated = l10n.getString(
-                              'profileVerifiedBadgeFemale',
-                            );
-                            return translated != 'profileVerifiedBadgeFemale' &&
-                                    translated.isNotEmpty
-                                ? translated
-                                : 'Verified';
-                          } else if (normalizedGender == 'non_binary' ||
-                              normalizedGender == 'nonbinary') {
-                            final translated = l10n.getString(
-                              'profileVerifiedBadgeNeutral',
-                            );
-                            return translated !=
-                                        'profileVerifiedBadgeNeutral' &&
-                                    translated.isNotEmpty
-                                ? translated
-                                : 'Verified';
-                          } else {
-                            final translated = l10n.getString(
-                              'profileVerifiedBadge',
-                            );
-                            return translated != 'profileVerifiedBadge' &&
-                                    translated.isNotEmpty
-                                ? translated
-                                : 'Verified';
-                          }
-                        })(),
+                        text: _verifiedBadgeText(l10n, otherProfileGender),
                       ),
-                    if (isOtherUserVerified && isOtherUserNew)
+                    if (isOtherUserVerified &&
+                        (isOtherUserNew || isOtherUserComplete))
                       const SizedBox(width: 8),
                     if (isOtherUserNew)
                       // Use gender-specific translation key based on other user's gender
                       NewUserBadge(
                         size: 18,
                         showText: true,
-                        text: (() {
-                          final normalizedGender = otherProfileGender
-                              ?.trim()
-                              .toLowerCase();
-                          if (normalizedGender == 'female') {
-                            final translated = l10n.getString(
-                              'profileNewUserBadgeFemale',
-                            );
-                            return translated != 'profileNewUserBadgeFemale' &&
-                                    translated.isNotEmpty
-                                ? translated
-                                : 'New here!';
-                          } else if (normalizedGender == 'non_binary' ||
-                              normalizedGender == 'nonbinary') {
-                            final translated = l10n.getString(
-                              'profileNewUserBadgeNeutral',
-                            );
-                            return translated != 'profileNewUserBadgeNeutral' &&
-                                    translated.isNotEmpty
-                                ? translated
-                                : 'New here!';
-                          } else {
-                            final translated = l10n.getString(
-                              'profileNewUserBadge',
-                            );
-                            return translated != 'profileNewUserBadge' &&
-                                    translated.isNotEmpty
-                                ? translated
-                                : 'New here!';
-                          }
-                        })(),
+                        text: _newUserBadgeText(l10n, otherProfileGender),
                         gender: otherProfileGender,
                       ),
+                    if (isOtherUserNew && isOtherUserComplete)
+                      const SizedBox(width: 8),
+                    if (isOtherUserComplete)
+                      ProfileCompletePill(l10n: l10n, size: 18),
                   ],
                 ),
               ),
@@ -1803,7 +1799,23 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
           },
         ),
       ),
-      bottomNavigationBar: _buildQuickActions(context, ref, l10n),
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Sticky match countdown: stays visible above the Chat / Share
+          // actions while the profile scrolls beneath it.
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+            child: _MatchExtensionSection(
+              matchId: widget.matchId,
+              otherUserId: widget.otherUserId,
+              otherUserName: effectiveOtherUserName,
+              createdAt: widget.createdAt,
+            ),
+          ),
+          _buildQuickActions(context, ref, l10n),
+        ],
+      ),
     );
   }
 
@@ -2111,16 +2123,9 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                 height: 140,
                 child: Center(child: Text(l10n.getString('profileNoPhotos'))),
               ),
-            // Public completeness badge: positive 100% signal only. The raw
-            // percentage is never shown for other users.
-            if (otherProfile != null &&
-                ProfileCompleteness.isFull(otherProfile)) ...[
-              const SizedBox(height: 12),
-              Align(
-                alignment: AlignmentDirectional.centerStart,
-                child: ProfileCompletePill(l10n: l10n),
-              ),
-            ],
+            // NOTE: the completeness badge ("Profile Complete") lives in the
+            // AppBar badge row together with "Primary Photo Verified" and
+            // "New Here", so every status chip stays in one place.
             const SizedBox(height: 16),
             // NOTE: the matched user's name lives in the AppBar title (single
             // location, offline-first via _effectiveOtherUserName) — no body
@@ -2422,8 +2427,13 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                         (otherProfile.religion!['religion'] as String)
                             .trim()
                             .isNotEmpty) ||
-                    (otherProfile.religion!['religiosity'] != null &&
-                        otherProfile.religion!['religiosity']
+                    (otherProfile.religion!['denomination'] != null &&
+                        otherProfile.religion!['denomination']
+                            .toString()
+                            .trim()
+                            .isNotEmpty) ||
+                    (otherProfile.religion!['practice'] != null &&
+                        otherProfile.religion!['practice']
                             .toString()
                             .trim()
                             .isNotEmpty))) ...[
@@ -2437,15 +2447,25 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                   Icons.self_improvement_outlined,
                   '${l10n.getString('profileReligion')}: ${_localizedReligionValue(l10n, otherProfile.religion!['religion'] as String)}',
                 ),
-              if (otherProfile.religion!['religiosity'] != null &&
-                  otherProfile.religion!['religiosity']
+              if (otherProfile.religion!['denomination'] != null &&
+                  otherProfile.religion!['denomination']
+                      .toString()
+                      .trim()
+                      .isNotEmpty)
+                _buildMatchProfileItem(
+                  context,
+                  Icons.account_tree_outlined,
+                  '${l10n.getString('profileDenomination')}: ${_localizedDenominationValue(l10n, otherProfile.religion!['denomination'].toString())}',
+                ),
+              if (otherProfile.religion!['practice'] != null &&
+                  otherProfile.religion!['practice']
                       .toString()
                       .trim()
                       .isNotEmpty)
                 _buildMatchProfileItem(
                   context,
                   Icons.auto_awesome_outlined,
-                  '${l10n.getString('profileReligiosity')}: ${_localizedReligiosityValue(l10n, otherProfile.religion!['religiosity'].toString())}',
+                  '${l10n.getString('profileReligiousPractice')}: ${_localizedPracticeValue(l10n, otherProfile.religion!['practice'].toString())}',
                 ),
               const Divider(height: 20),
             ],
@@ -2830,13 +2850,6 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                 }
                 return const SizedBox.shrink();
               },
-            ),
-            const SizedBox(height: 12),
-            _MatchExtensionSection(
-              matchId: widget.matchId,
-              otherUserId: widget.otherUserId,
-              otherUserName: effectiveName,
-              createdAt: widget.createdAt,
             ),
             const SizedBox(height: 12),
             SizedBox(
@@ -3650,6 +3663,8 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
     if (originalIntents.isEmpty) return Container();
 
     final categoryDisplay = l10n.getString(categoryKey);
+    final brightness = Theme.of(context).brightness;
+    final isDark = brightness == Brightness.dark;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 16.0),
@@ -3660,7 +3675,9 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
             categoryDisplay,
             style: Theme.of(context).textTheme.titleSmall?.copyWith(
               fontWeight: FontWeight.bold,
-              color: Colors.blue[800],
+              color: isDark
+                  ? AppThemeTokens.accentInk(Colors.blue.shade700, brightness)
+                  : Colors.blue[800],
             ),
           ),
           const SizedBox(height: 8),
@@ -3679,10 +3696,19 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
               final displayText = l10n.getString(keyToUse);
               return Chip(
                 label: Text(displayText, style: const TextStyle(fontSize: 12)),
-                backgroundColor: Colors.blue[50],
+                backgroundColor: isDark
+                    ? AppThemeTokens.accentSurface(
+                        Colors.blue.shade700,
+                        brightness,
+                      )
+                    : Colors.blue[50],
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(16),
-                  side: BorderSide(color: Colors.blue[200]!),
+                  side: BorderSide(
+                    color: isDark
+                        ? Colors.blue.shade300.withValues(alpha: 0.45)
+                        : Colors.blue[200]!,
+                  ),
                 ),
               );
             }).toList(),
@@ -3828,13 +3854,16 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
       categoryKey,
       interestDisplayMap,
     );
+    final brightness = Theme.of(context).brightness;
     return Padding(
       padding: const EdgeInsets.only(left: 8.0, bottom: 8.0),
       child: Text(
         display,
         style: Theme.of(context).textTheme.titleSmall?.copyWith(
           fontWeight: FontWeight.w600,
-          color: Colors.green[700],
+          color: brightness == Brightness.dark
+              ? AppThemeTokens.accentInk(Colors.green.shade700, brightness)
+              : Colors.green[700],
         ),
       ),
     );
@@ -3847,6 +3876,8 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
     Map<String, String> interestDisplayMap,
   ) {
     final sortedCategories = categoryMap.keys.toList(growable: false)..sort();
+    final brightness = Theme.of(context).brightness;
+    final isDark = brightness == Brightness.dark;
     return sortedCategories.map((categoryKey) {
       final categoryDisplay = _resolveInterestDisplayText(
         l10n,
@@ -3877,7 +3908,12 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
               categoryDisplay,
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
                 fontWeight: FontWeight.w600,
-                color: Colors.green[700],
+                color: isDark
+                    ? AppThemeTokens.accentInk(
+                        Colors.green.shade700,
+                        brightness,
+                      )
+                    : Colors.green[700],
               ),
             ),
             const SizedBox(height: 4),
@@ -3897,10 +3933,19 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen> {
                       displayText,
                       style: const TextStyle(fontSize: 12),
                     ),
-                    backgroundColor: Colors.green[50],
+                    backgroundColor: isDark
+                        ? AppThemeTokens.accentSurface(
+                            Colors.green.shade700,
+                            brightness,
+                          )
+                        : Colors.green[50],
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(16),
-                      side: BorderSide(color: Colors.green[200]!),
+                      side: BorderSide(
+                        color: isDark
+                            ? Colors.green.shade300.withValues(alpha: 0.45)
+                            : Colors.green[200]!,
+                      ),
                     ),
                   );
                 }).toList(),
@@ -4535,16 +4580,10 @@ class _MatchExtensionSectionState
   String _formatDuration(LocalizationState l10n, int seconds) {
     if (seconds >= 3600 && seconds % 3600 == 0) {
       final hours = (seconds / 3600).round();
-      final key = hours == 1
-          ? 'matchExtensionDurationHours'
-          : 'matchExtensionDurationHoursPlural';
-      return l10n.getString(key, params: {'count': '$hours'});
+      return l10n.getPluralString('matchExtensionDurationHours', hours);
     }
     final minutes = (seconds / 60).ceil();
-    final key = minutes == 1
-        ? 'matchExtensionDurationMinutes'
-        : 'matchExtensionDurationMinutesPlural';
-    return l10n.getString(key, params: {'count': '$minutes'});
+    return l10n.getPluralString('matchExtensionDurationMinutes', minutes);
   }
 
   /// Text for the green extension badge:
@@ -4890,7 +4929,7 @@ class _MatchExtensionSectionState
                   Icon(
                     Icons.hourglass_top_rounded,
                     size: 12,
-                    color: Colors.green.shade700,
+                    color: SemanticColors.of(context).success,
                   ),
                   const SizedBox(width: 4),
                   Flexible(
@@ -4903,7 +4942,7 @@ class _MatchExtensionSectionState
                       ),
                       style: TextStyle(
                         fontSize: 11,
-                        color: Colors.green.shade700,
+                        color: SemanticColors.of(context).success,
                         fontWeight: FontWeight.w600,
                       ),
                     ),

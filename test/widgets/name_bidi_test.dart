@@ -12,8 +12,11 @@ import 'package:matchme/models/match_model.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/match_rating_provider.dart';
+import 'package:matchme/providers/notification_inbox_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
+import 'package:matchme/screens/notifications/notification_inbox_screen.dart';
 import 'package:matchme/services/match_rating_service.dart';
+import 'package:matchme/services/notification_inbox_service.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/widgets/chat_list_item.dart';
 import 'package:matchme/widgets/match_box.dart';
@@ -53,6 +56,18 @@ class _TestLocalization extends Localization {
 
   @override
   Future<void> syncLanguageAfterLogin() async {}
+}
+
+/// An inbox that only serves the rows a test hands it — the real notifier
+/// talks to Supabase and the local cache.
+class _FakeInboxNotifier extends NotificationInboxNotifier {
+  _FakeInboxNotifier(this.items);
+
+  final List<NotificationInboxItem> items;
+
+  @override
+  NotificationInboxState build() =>
+      NotificationInboxState(items: items, isLoading: false);
 }
 
 LocalizationState _l10n(TextDirection direction) => LocalizationState(
@@ -99,6 +114,51 @@ Text _nameText(WidgetTester tester, String name) {
     isNotEmpty,
     reason: 'no Text rendered the display name "$name"',
   );
+  return texts.first;
+}
+
+/// Lays [text] out the way a [Text] with [direction] would and reports whether
+/// the trailing punctuation sits to the right of every Latin glyph — the
+/// placement a Latin reader expects, and the one every screen of the app
+/// produces.
+bool _punctuationSitsRightOfName(String text, TextDirection direction) {
+  final painter = TextPainter(
+    text: TextSpan(text: text, style: const TextStyle(fontSize: 16)),
+    textDirection: direction,
+    textScaler: TextScaler.noScaling,
+  )..layout(maxWidth: 400);
+
+  double leftOf(int index) => painter
+      .getBoxesForSelection(
+        TextSelection(baseOffset: index, extentOffset: index + 1),
+      )
+      .first
+      .left;
+
+  var punctuationIndex = -1;
+  for (var i = text.length - 1; i >= 0; i--) {
+    if ('.!?'.contains(text[i])) {
+      punctuationIndex = i;
+      break;
+    }
+  }
+  if (punctuationIndex < 0) return false;
+  final punctuation = leftOf(punctuationIndex);
+  final latinLefts = <double>[
+    for (var i = 0; i < text.length; i++)
+      if (RegExp(r'[A-Za-z]').hasMatch(text[i])) leftOf(i),
+  ];
+  if (latinLefts.isEmpty) return false;
+  return punctuation > latinLefts.reduce((a, b) => a > b ? a : b);
+}
+
+/// The [Text] widget that rendered [needle] (the text may carry the invisible
+/// bidi marks the app adds around a name).
+Text _textContaining(WidgetTester tester, String needle) {
+  final texts = tester.widgetList<Text>(
+    find.byWidgetPredicate((w) => w is Text && (w.data ?? '').contains(needle)),
+  );
+  expect(texts, isNotEmpty, reason: 'no Text rendered "$needle"');
   return texts.first;
 }
 
@@ -149,9 +209,12 @@ void main() {
         isTrue,
         reason: 'the period must land left of the name, not past its end',
       );
-      // The direction the UI language used to impose gets the placement wrong,
-      // which is why the name cannot simply inherit the ambient direction.
-      expect(_periodSitsLeftOfName(name, TextDirection.ltr), isFalse);
+      // The name carries the mark of its own script, so its period stays with
+      // the initial whichever direction the surrounding paragraph runs in.
+      expect(_periodSitsLeftOfName(name, TextDirection.ltr), isTrue);
+      // Without the mark the ambient direction would push the period to the
+      // wrong side of the name.
+      expect(_periodSitsLeftOfName('דוד ל.', TextDirection.ltr), isFalse);
     });
 
     test('a Hebrew name keeps its right edge in a Hebrew UI', () {
@@ -173,6 +236,51 @@ void main() {
       final inHebrewUi = name.displayTextLayout(TextDirection.rtl);
       expect(inHebrewUi.textDirection, TextDirection.ltr);
       expect(inHebrewUi.textAlign, TextAlign.right);
+    });
+
+    test(
+      'a masked name keeps its period on the right in a Hebrew paragraph',
+      () {
+        // The name the server stores in the notification inbox: plain text, no
+        // direction marks.
+        const masked = 'First L.';
+
+        // Marked with the direction of its own script, the period stays glued
+        // to the initial even when the surrounding paragraph is right-to-left.
+        final marked = masked.withDirectionalMarks();
+        expect(
+          _punctuationSitsRightOfName(marked, TextDirection.rtl),
+          isTrue,
+          reason: 'the period must land right of the name, not before it',
+        );
+        expect(_punctuationSitsRightOfName(masked, TextDirection.rtl), isFalse);
+      },
+    );
+
+    test('a masked name inside a sentence keeps its period on the right', () {
+      const body = 'יש לך התאמה עם First L.';
+
+      final isolated = body.isolateTrailingDisplayName();
+
+      expect(isolated, isNot(body));
+      expect(
+        _punctuationSitsRightOfName(isolated, TextDirection.rtl),
+        isTrue,
+        reason: 'the name keeps its period even inside a Hebrew sentence',
+      );
+      // The sentence itself keeps its own direction.
+      expect(isolated.displayTextDirection(), TextDirection.rtl);
+    });
+
+    test('a sentence that starts in Hebrew stays right-to-left', () {
+      expect(
+        'יש לך התאמה עם First L.'.displayTextDirection(),
+        TextDirection.rtl,
+      );
+      expect(
+        'You matched with First L.'.displayTextDirection(),
+        TextDirection.ltr,
+      );
     });
   });
 
@@ -333,6 +441,104 @@ void main() {
       await tester.pump(const Duration(seconds: 11));
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump(const Duration(seconds: 51));
+    });
+  });
+
+  group('notification inbox row', () {
+    testWidgets('keeps an English name period on the right in a Hebrew UI', (
+      tester,
+    ) async {
+      // What the server stores for a chat message: the masked sender name as
+      // the subject, the message preview as the body.
+      final item = NotificationInboxItem(
+        id: 'inbox-bidi',
+        type: 'chat_message',
+        title: 'First L.',
+        body: 'Hi!',
+        data: const {},
+        createdAt: DateTime(2026, 1, 1, 11, 2),
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            localizationProvider.overrideWithValue(_l10n(TextDirection.rtl)),
+            notificationInboxProvider.overrideWith(
+              () => _FakeInboxNotifier([item]),
+            ),
+          ],
+          child: MaterialApp(
+            home: Directionality(
+              textDirection: TextDirection.rtl,
+              child: Scaffold(body: NotificationInboxScreen()),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // The subject is the masked name: it lays out in its own script (LTR)
+      // and stays flush with the UI edge.
+      final title = _textContaining(tester, 'First L.');
+      expect(title.textDirection, TextDirection.ltr);
+      expect(title.textAlign, TextAlign.right);
+      expect(
+        _punctuationSitsRightOfName(title.data!, title.textDirection!),
+        isTrue,
+        reason: 'the period must land right of the name, not before it',
+      );
+
+      // The preview is English too: it must not be flipped by the Hebrew UI.
+      final body = _textContaining(tester, 'Hi!');
+      expect(body.textDirection, TextDirection.ltr);
+      expect(body.textAlign, TextAlign.right);
+      expect(
+        _punctuationSitsRightOfName('Hi!', body.textDirection!),
+        isTrue,
+        reason: 'the exclamation mark must stay right of the word',
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('keeps a Hebrew sentence right-to-left in a Hebrew UI', (
+      tester,
+    ) async {
+      final item = NotificationInboxItem(
+        id: 'inbox-bidi-he',
+        type: 'new_match',
+        title: 'התאמה חדשה!',
+        body: 'יש לך התאמה עם First L.',
+        data: const {},
+        createdAt: DateTime(2026, 1, 1, 11, 2),
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            localizationProvider.overrideWithValue(_l10n(TextDirection.rtl)),
+            notificationInboxProvider.overrideWith(
+              () => _FakeInboxNotifier([item]),
+            ),
+          ],
+          child: MaterialApp(
+            home: Directionality(
+              textDirection: TextDirection.rtl,
+              child: Scaffold(body: NotificationInboxScreen()),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final body = _textContaining(tester, 'התאמה עם');
+      expect(body.textDirection, TextDirection.rtl);
+      expect(body.textAlign, TextAlign.right);
+      expect(
+        _punctuationSitsRightOfName(body.data!, body.textDirection!),
+        isTrue,
+        reason: 'the name inside the sentence keeps its period',
+      );
+      expect(tester.takeException(), isNull);
     });
   });
 }

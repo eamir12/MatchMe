@@ -46,6 +46,19 @@ class _ProfileCheckScreenState extends ConsumerState<ProfileCheckScreen> {
   /// below must not re-trap a user who was deliberately let through.
   bool _enteredViaNoProfileEscape = false;
 
+  /// True once the app shell has been shown.
+  ///
+  /// The cold-cache hold below (the pulsing startup logo) is an *entry* gate:
+  /// it may only run while the member is being let into the app for the
+  /// first time. Once the shell is on screen the member is inside the app,
+  /// and returning from a screen that was pushed on top of it - a chat
+  /// opened from a notification, for example - must never drop them back
+  /// onto the splash. The hold is also driven by an `autoDispose` provider
+  /// that is watched only while the hold applies, so it can re-arm itself
+  /// (and restart the whole home sync) the moment the provider is disposed
+  /// and recreated.
+  bool _hasEnteredAppShell = false;
+
   /// Set when the wizard is opened because a *completed* profile has a
   /// critical gap (missing field/photo) so the wizard jumps straight to
   /// the gap's page. Null when the wizard is opened the ordinary way
@@ -87,6 +100,9 @@ class _ProfileCheckScreenState extends ConsumerState<ProfileCheckScreen> {
     _mainScreen = null;
     _gapSection = null;
     _enteredViaNoProfileEscape = false;
+    // A different account gets the same entry sequence, including the
+    // cold-cache hold.
+    _hasEnteredAppShell = false;
     _loadingGateStartedAt = DateTime.now();
     _armLoadingGateWatchdog();
     _cachedProfileFuture = _loadCachedProfile();
@@ -179,7 +195,7 @@ class _ProfileCheckScreenState extends ConsumerState<ProfileCheckScreen> {
         // banner) and the background sync keeps retrying. A warm relaunch
         // (complete local snapshot) passes within a frame or two.
         // The no-cached-profile escape hatch bypasses this hold.
-        if (!_enteredViaNoProfileEscape) {
+        if (!_enteredViaNoProfileEscape && !_hasEnteredAppShell) {
           final hasCompleteCache = ref
               .watch(homeHasCompleteCacheProvider(widget.user.id))
               .asData
@@ -190,6 +206,8 @@ class _ProfileCheckScreenState extends ConsumerState<ProfileCheckScreen> {
             return const StartupLoaderScaffold();
           }
         }
+        // The member is inside the app: the entry hold must never run again.
+        _hasEnteredAppShell = true;
         if (!_didRunPermissionGate) {
           _didRunPermissionGate = true;
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -343,6 +361,10 @@ class _ProfileCheckScreenState extends ConsumerState<ProfileCheckScreen> {
             }
             // Same per-user key as the main branch below so a reused state
             // can never resurface the previous account's navigation shell.
+            // The shell is on screen: the cold-cache entry hold must not
+            // replace it with the startup logo when the live profile
+            // arrives a moment later.
+            _hasEnteredAppShell = true;
             return MainNavigationScreen(
               key: ValueKey('main-nav-${widget.user.id}'),
             );
@@ -383,6 +405,7 @@ class _ProfileCheckScreenState extends ConsumerState<ProfileCheckScreen> {
           _mainScreen ??= MainNavigationScreen(
             key: ValueKey('main-nav-${widget.user.id}'),
           );
+          _hasEnteredAppShell = true;
           return _mainScreen!;
         }
 

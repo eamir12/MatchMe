@@ -315,6 +315,7 @@ class PromoCodeDetailsResult {
     if (serverExpired) return 'Expired';
     final now = DateTime.now();
     final difference = validUntil!.difference(now).inDays;
-    return difference <= 0 ? 'Today' : '$difference days left';
+    if (difference <= 0) return 'Today';
+    return difference == 1 ? '1 day left' : '$difference days left';
   }
 }

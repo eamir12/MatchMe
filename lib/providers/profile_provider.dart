@@ -15,6 +15,7 @@ import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:matchme/services/local_db_service.dart';
+import 'package:matchme/services/my_user_realtime_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/services/profile_request_service.dart';
 import 'package:matchme/services/storage_helper.dart';
@@ -25,10 +26,14 @@ import 'package:matchme/providers/visibility_provider.dart';
 import 'package:matchme/providers/new_options_provider.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/providers/home_providers.dart'
-    show dashboardStatsProvider, warmDashboardStatsForUser;
+    show
+        dashboardStatsProvider,
+        warmDashboardStatsForUser,
+        resolveNearbyCountAnchor;
 import 'package:matchme/utils/resume_diagnostics.dart';
 import 'package:matchme/utils/profile_sync_result.dart';
 import 'package:matchme/utils/offline_utils.dart';
+import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/services/referral_service.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/services/photo_prescreen_service.dart';
@@ -392,7 +397,7 @@ String _normalizeIntentKey(String? value) {
 String maskName(String? fullName) {
   if (fullName == null || fullName.trim().isEmpty) return 'Unknown User';
   final parts = fullName
-      .replaceAll(RegExp('[\u200E\u200F\u202A-\u202E]'), '')
+      .replaceAll(bidiControls, '')
       .trim()
       .split(RegExp(r'\s+'))
       .where((p) => p.isNotEmpty)
@@ -406,7 +411,7 @@ String maskName(String? fullName) {
       suffix = ' ${last[0].toUpperCase()}.';
     }
   }
-  return '$first$suffix';
+  return '$first$suffix'.withDirectionalMarks();
 }
 
 String _capitalizeNameWordLocal(String word) {
@@ -476,7 +481,7 @@ class UserProfile {
   final Map<String, dynamic>?
   lifestyle; // { smoking, drinking, exercise, diet }
   final Map<String, dynamic>? family; // { has_children, wants_children }
-  final Map<String, dynamic>? religion; // { religion, religiosity }
+  final Map<String, dynamic>? religion; // { religion, denomination, practice }
 
   // Per-intent filter preferences (combined value + strict)
   final Map<String, Map<String, dynamic>>
@@ -736,9 +741,7 @@ class UserProfile {
       profileCompleteness: (() {
         final raw = data['profileCompleteness'] ?? data['profile_completeness'];
         if (raw == null) return null;
-        final parsed = raw is int
-            ? raw
-            : int.tryParse(raw.toString());
+        final parsed = raw is int ? raw : int.tryParse(raw.toString());
         if (parsed == null) return null;
         if (parsed < 0) return 0;
         if (parsed > 100) return 100;
@@ -1070,9 +1073,9 @@ class UserProfile {
     String? occupation,
     String? education,
     String? zodiacSign,
-    Map<String, dynamic>? lifestyle,
-    Map<String, dynamic>? family,
-    Map<String, dynamic>? religion,
+    Object? lifestyle = _sentinel,
+    Object? family = _sentinel,
+    Object? religion = _sentinel,
     Map<String, Map<String, dynamic>>? lifestyleFilters,
     Map<String, Map<String, dynamic>>? familyFilters,
     Map<String, Map<String, dynamic>>? religionFilters,
@@ -1157,9 +1160,15 @@ class UserProfile {
       occupation: occupation ?? this.occupation,
       education: education ?? this.education,
       zodiacSign: zodiacSign ?? this.zodiacSign,
-      lifestyle: lifestyle ?? this.lifestyle,
-      family: family ?? this.family,
-      religion: religion ?? this.religion,
+      lifestyle: lifestyle == _sentinel
+          ? this.lifestyle
+          : lifestyle as Map<String, dynamic>?,
+      family: family == _sentinel
+          ? this.family
+          : family as Map<String, dynamic>?,
+      religion: religion == _sentinel
+          ? this.religion
+          : religion as Map<String, dynamic>?,
       lifestyleFilters: lifestyleFilters != null
           ? cloneDynamicMap(lifestyleFilters)
           : cloneDynamicMap(this.lifestyleFilters),
@@ -1293,15 +1302,32 @@ class UserProfile {
           return false;
         }
       }
-      final religiosityList = _extractList(rf, 'religiosity', 'religiosity');
-      if (religiosityList.isNotEmpty && !religiosityList.contains('any')) {
-        final otherReligiosity = other.religion?['religiosity'] as String?;
-        if (otherReligiosity == null ||
+      final denominationList = _extractList(
+        rf,
+        'denominations',
+        'denomination',
+      );
+      if (denominationList.isNotEmpty && !denominationList.contains('any')) {
+        final otherDenomination = other.religion?['denomination'] as String?;
+        if (otherDenomination == null ||
             !anyFilterMatches(
               optionMapping,
-              'religiosity',
-              religiosityList,
-              otherReligiosity,
+              'denomination',
+              denominationList,
+              otherDenomination,
+            )) {
+          return false;
+        }
+      }
+      final practiceList = _extractList(rf, 'practices', 'practice');
+      if (practiceList.isNotEmpty && !practiceList.contains('any')) {
+        final otherPractice = other.religion?['practice'] as String?;
+        if (otherPractice == null ||
+            !anyFilterMatches(
+              optionMapping,
+              'practice',
+              practiceList,
+              otherPractice,
             )) {
           return false;
         }
@@ -1412,7 +1438,7 @@ class ProfileSyncService {
 
   final Map<String, int> _syncGenerations = <String, int>{};
   final Map<String, Future<ProfileSyncResult>> _inFlight = {};
-  
+
   // Debounce: track last successful sync time PER USER to prevent rapid
   // redundant calls. Keyed by userId — a global timestamp made matched-user
   // warm-up syncs cancel each other (the first to finish stamped the single
@@ -1420,7 +1446,10 @@ class ProfileSyncService {
   final Map<String, DateTime> _lastSuccessfulSyncAt = <String, DateTime>{};
   static const _debounceWindow = Duration(seconds: 5);
   // Sources that should bypass debounce (explicit user actions)
-  static const _debounceBypassSources = {'manual-review-request', 'admin-review-change'};
+  static const _debounceBypassSources = {
+    'manual-review-request',
+    'admin-review-change',
+  };
 
   int _beginSync(String userId) {
     final generation = (_syncGenerations[userId] ?? 0) + 1;
@@ -1569,11 +1598,15 @@ class ProfileSyncService {
     if (lastSyncAt != null &&
         now.difference(lastSyncAt) < _debounceWindow &&
         !_debounceBypassSources.contains(source)) {
-      debugPrint('ProfileSyncService.syncProfile SKIP debounced source=$source');
-      return Future.value(ProfileSyncResult(
-        status: ProfileSyncStatus.skipped,
-        cacheAvailable: false,
-      ));
+      debugPrint(
+        'ProfileSyncService.syncProfile SKIP debounced source=$source',
+      );
+      return Future.value(
+        ProfileSyncResult(
+          status: ProfileSyncStatus.skipped,
+          cacheAvailable: false,
+        ),
+      );
     }
 
     final future = _syncProfileInternal(userId, source: source);
@@ -1648,9 +1681,9 @@ class ProfileSyncService {
           // revert to pre-wizard data right after saving).
           final fetchStartedAt = DateTime.now();
           // Fetch user row (identity + settings only)
-          final userFuture = _fetchUserRowWithFallback(userId).timeout(
-            const Duration(seconds: 10),
-          );
+          final userFuture = _fetchUserRowWithFallback(
+            userId,
+          ).timeout(const Duration(seconds: 10));
 
           // Fetch single user_profiles row
           final profilesFuture = supabase
@@ -1754,13 +1787,15 @@ class ProfileSyncService {
 
                       if (shouldPersistTrial) {
                         try {
-                          final dynamic rpcResult = await supabase.rpc(
-                            'apply_revenuecat_subscription',
-                            params: {
-                              'p_tier': trialTier,
-                              'p_expires_at': trialEndUtc.toIso8601String(),
-                            },
-                          ).timeout(const Duration(seconds: 10));
+                          final dynamic rpcResult = await supabase
+                              .rpc(
+                                'apply_revenuecat_subscription',
+                                params: {
+                                  'p_tier': trialTier,
+                                  'p_expires_at': trialEndUtc.toIso8601String(),
+                                },
+                              )
+                              .timeout(const Duration(seconds: 10));
 
                           Map<String, dynamic>? result;
                           if (rpcResult is Map) {
@@ -2172,7 +2207,10 @@ class ProfileSyncService {
           if (!shouldSkipSupabaseCalls()) {
             try {
               final prefs = await SharedPreferences.getInstance();
-              await prefs.setBool('flutter.retro_enabled', profile.retroMatchingEnabled);
+              await prefs.setBool(
+                'flutter.retro_enabled',
+                profile.retroMatchingEnabled,
+              );
               final retention = profile.retroRetentionHours.clamp(2, 72);
               await prefs.setInt('flutter.retro_retention_hours', retention);
             } catch (_) {}
@@ -2516,10 +2554,12 @@ userProfileProvider = StreamProvider.family<UserProfile?, String>((
         debugPrint(
           '[ProfileProvider] userProfileProvider missing subscription expiry fields; syncing',
         );
-        return ref.read(profileSyncProvider).syncProfile(
-          userId,
-          source: 'user-profile-missing-subscription-fields',
-        );
+        return ref
+            .read(profileSyncProvider)
+            .syncProfile(
+              userId,
+              source: 'user-profile-missing-subscription-fields',
+            );
       }());
     }
 
@@ -2654,8 +2694,7 @@ final otherUserProfileProvider = FutureProvider.family<UserProfile?, String>((
       final isStale =
           cachedAt == null ||
           DateTime.now().difference(cachedAt) > const Duration(minutes: 1);
-      final isIncompleteForHome =
-          !_hasCompleteOtherUserProfileForHome(cached);
+      final isIncompleteForHome = !_hasCompleteOtherUserProfileForHome(cached);
       if (hasSession &&
           isOnline &&
           (isStale || isIncompleteForHome) &&
@@ -2873,6 +2912,23 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
   List<String>? _editableFieldsBeforeRecentEdit;
   int _profileLoadCount = 0;
   DateTime? _lastRadiusChangeAt;
+  StreamSubscription<MyUserUpdate>? _matchingSettingsSubscription;
+  StreamSubscription<MyUserUpdate>? _matchPreferencesSubscription;
+
+  /// The `users` columns that back the matching settings.
+  ///
+  /// These are written to the `users` row by this notifier, but nothing used
+  /// to listen for them: changing the match radius on one device left the
+  /// other device showing the old value until the next full profile sync.
+  static const _matchingSettingsColumns = <String>{
+    'match_radius_default',
+    'gps_interval_default',
+    'smart_gps_throttling_enabled',
+    'shared_event_matching_enabled',
+    'shared_movement_matching_enabled',
+    'retro_matching_enabled',
+    'retro_retention_hours',
+  };
 
   @override
   AsyncValue<UserProfile?> build(String userId) {
@@ -2912,8 +2968,8 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
               const Duration(seconds: 10);
       final shouldApplyRealtimeSettings =
           (!hasRecentRadiusChange &&
-                  currentProfile.matchRadiusDefault !=
-                      remoteProfile.matchRadiusDefault) ||
+              currentProfile.matchRadiusDefault !=
+                  remoteProfile.matchRadiusDefault) ||
           currentProfile.gpsIntervalDefault !=
               remoteProfile.gpsIntervalDefault ||
           currentProfile.smartGpsThrottlingEnabled !=
@@ -2982,7 +3038,222 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
         ),
       );
     }, fireImmediately: true);
+    ref.onDispose(() {
+      _matchingSettingsSubscription?.cancel();
+      _matchingSettingsSubscription = null;
+      _matchPreferencesSubscription?.cancel();
+      _matchPreferencesSubscription = null;
+    });
+    _attachMatchingSettingsRealtime();
     return state;
+  }
+
+  /// Subscribes to the shared "my own user row" realtime channel so the
+  /// matching settings follow the account across devices.
+  void _attachMatchingSettingsRealtime() {
+    _matchingSettingsSubscription?.cancel();
+    _matchingSettingsSubscription =
+        MyUserRealtimeService.instance.updates.listen((update) {
+          final changed = update.changedKeys
+              .where(_matchingSettingsColumns.contains)
+              .toSet();
+          if (changed.isEmpty) return;
+          unawaited(_applyRemoteMatchingSettings(update.row, changed));
+        });
+
+    // The match preferences (gender, age range, lifestyle, family, religion
+    // and height filters) live on `user_profiles`, not on `users`.
+    _matchPreferencesSubscription =
+        MyUserRealtimeService.instance.profileUpdates.listen((update) {
+          if (!update.changed('intent_preferences')) return;
+          unawaited(_applyRemoteMatchPreferences(update.row));
+        });
+  }
+
+  /// Reconciles the match preferences with the server.
+  ///
+  /// The realtime event is the fast path; this is the slow guarantee that a
+  /// change made on another device is picked up even when its event was
+  /// missed.
+  Future<void> reconcileMatchPreferences() async {
+    try {
+      final row = await supabase
+          .from('user_profiles')
+          .select('intent_preferences')
+          .eq('user_id', userId)
+          .maybeSingle();
+      if (row == null) return;
+      await _applyRemoteMatchPreferences(row);
+    } catch (_) {
+      // Best effort: the next cycle retries.
+    }
+  }
+
+  /// Applies match preferences that were changed on another device.
+  ///
+  /// `user_profiles.intent_preferences` holds the per-intent gender, age and
+  /// filter maps as one JSONB blob. Only the parts the remote row actually
+  /// carries are applied - a partial payload must not clear the rest.
+  Future<void> _applyRemoteMatchPreferences(Map<String, dynamic> row) async {
+    final current = state.value;
+    if (current == null) return;
+    final intentPreferences = row['intent_preferences'];
+    if (intentPreferences is! Map) return;
+    final prefs = Map<String, dynamic>.from(intentPreferences);
+
+    final updated = current.copyWith(
+      genderPreferences: prefs.containsKey('gender_preferences')
+          ? _mapOfLists(prefs['gender_preferences'])
+          : null,
+      agePreferences: prefs.containsKey('age_preferences')
+          ? _mapOfDoubleLists(prefs['age_preferences'])
+          : null,
+      lifestyleFilters: prefs.containsKey('lifestyle_filters')
+          ? _mapOfMapOfDynamic(prefs['lifestyle_filters'])
+          : null,
+      familyFilters: prefs.containsKey('family_filters')
+          ? _mapOfMapOfDynamic(prefs['family_filters'])
+          : null,
+      religionFilters: prefs.containsKey('religion_filters')
+          ? _mapOfMapOfDynamic(prefs['religion_filters'])
+          : null,
+      heightPreferences: prefs.containsKey('height_preferences')
+          ? _mapOfMapOfDynamic(prefs['height_preferences'])
+          : null,
+    );
+
+    if (_sameMatchPreferences(updated, current)) return;
+    state = AsyncData(updated);
+
+    // Keep the local cache in step so the settings screen and the matching
+    // queries read the new values without a round-trip.
+    try {
+      await ref.read(localDbProvider).saveLocalProfile(userId, updated.toMap());
+    } catch (_) {}
+  }
+
+  static bool _sameMatchPreferences(UserProfile a, UserProfile b) {
+    return mapEquals(a.genderPreferences, b.genderPreferences) &&
+        mapEquals(a.agePreferences, b.agePreferences) &&
+        mapEquals(a.lifestyleFilters, b.lifestyleFilters) &&
+        mapEquals(a.familyFilters, b.familyFilters) &&
+        mapEquals(a.religionFilters, b.religionFilters) &&
+        mapEquals(a.heightPreferences, b.heightPreferences);
+  }
+
+  /// Applies matching settings that were changed on another device.
+  Future<void> _applyRemoteMatchingSettings(
+    Map<String, dynamic> row,
+    Set<String> changed,
+  ) async {
+    final current = state.value;
+    if (current == null) return;
+
+    int? readInt(String key, int fallback) {
+      final raw = row[key];
+      if (raw is int) return raw;
+      if (raw is num) return raw.toInt();
+      return int.tryParse('${raw ?? ''}') ?? fallback;
+    }
+
+    bool? readBool(String key, bool fallback) {
+      final raw = row[key];
+      if (raw is bool) return raw;
+      if (raw is String) return raw.toLowerCase() == 'true';
+      return fallback;
+    }
+
+    final updated = current.copyWith(
+      matchRadiusDefault: changed.contains('match_radius_default')
+          ? readInt('match_radius_default', current.matchRadiusDefault)
+          : null,
+      gpsIntervalDefault: changed.contains('gps_interval_default')
+          ? readInt('gps_interval_default', current.gpsIntervalDefault)
+          : null,
+      smartGpsThrottlingEnabled: changed.contains('smart_gps_throttling_enabled')
+          ? readBool(
+              'smart_gps_throttling_enabled',
+              current.smartGpsThrottlingEnabled,
+            )
+          : null,
+      sharedEventMatchingEnabled: changed.contains(
+        'shared_event_matching_enabled',
+      )
+          ? readBool(
+              'shared_event_matching_enabled',
+              current.sharedEventMatchingEnabled,
+            )
+          : null,
+      sharedMovementMatchingEnabled: changed.contains(
+        'shared_movement_matching_enabled',
+      )
+          ? readBool(
+              'shared_movement_matching_enabled',
+              current.sharedMovementMatchingEnabled,
+            )
+          : null,
+      retroMatchingEnabled: changed.contains('retro_matching_enabled')
+          ? readBool('retro_matching_enabled', current.retroMatchingEnabled)
+          : null,
+      retroRetentionHours: changed.contains('retro_retention_hours')
+          ? readInt('retro_retention_hours', current.retroRetentionHours)!
+              .clamp(2, 72)
+          : null,
+    );
+
+    if (updated.matchRadiusDefault == current.matchRadiusDefault &&
+        updated.gpsIntervalDefault == current.gpsIntervalDefault &&
+        updated.smartGpsThrottlingEnabled == current.smartGpsThrottlingEnabled &&
+        updated.sharedEventMatchingEnabled ==
+            current.sharedEventMatchingEnabled &&
+        updated.sharedMovementMatchingEnabled ==
+            current.sharedMovementMatchingEnabled &&
+        updated.retroMatchingEnabled == current.retroMatchingEnabled &&
+        updated.retroRetentionHours == current.retroRetentionHours) {
+      return;
+    }
+    state = AsyncData(updated);
+
+    // Keep the local cache and the on-device mirrors in step, exactly like a
+    // local change does.
+    final localDb = ref.read(localDbProvider);
+    await localDb.saveLocalProfile(userId, updated.toMap());
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (changed.contains('gps_interval_default')) {
+        await prefs.setInt('flutter.gps_interval', updated.gpsIntervalDefault);
+      }
+      if (changed.contains('smart_gps_throttling_enabled')) {
+        await prefs.setBool(
+          'flutter.smart_throttling_enabled',
+          updated.smartGpsThrottlingEnabled,
+        );
+      }
+      if (changed.contains('retro_matching_enabled')) {
+        await prefs.setBool('flutter.retro_enabled', updated.retroMatchingEnabled);
+      }
+      if (changed.contains('retro_retention_hours')) {
+        await prefs.setInt(
+          'flutter.retro_retention_hours',
+          updated.retroRetentionHours,
+        );
+      }
+    } catch (_) {}
+
+    // The GPS cadence and the throttling switch are applied by the visibility
+    // notifier, so it has to be told about the new values.
+    if (changed.contains('gps_interval_default') ||
+        changed.contains('smart_gps_throttling_enabled')) {
+      try {
+        await ref
+            .read(isVisibleProvider.notifier)
+            .updateLocationStreamInterval(
+              newGpsRate: changed.contains('gps_interval_default')
+                  ? updated.gpsIntervalDefault
+                  : null,
+            );
+      } catch (_) {}
+    }
   }
 
   Future<void> _cleanupWizardUploadedPhotosNotIn(Set<String> keep) async {
@@ -3105,7 +3376,10 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
       final tTop = ty * hPx;
       final tRight = tLeft + tw * wPx;
       final tBottom = tTop + th * hPx;
-      if (tRight <= left || tLeft >= right || tBottom <= top || tTop >= bottom) {
+      if (tRight <= left ||
+          tLeft >= right ||
+          tBottom <= top ||
+          tTop >= bottom) {
         continue; // already outside the crop
       }
 
@@ -3244,8 +3518,9 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     final serverKey = data is Map && data['translationKey'] is String
         ? data['translationKey'] as String
         : null;
-    final fixedKey =
-        serverKey != null && serverKey.isNotEmpty ? serverKey : fallbackKey;
+    final fixedKey = serverKey != null && serverKey.isNotEmpty
+        ? serverKey
+        : fallbackKey;
     final fixedMessage = locale.getString(fixedKey);
 
     String displayMessage = fixedMessage;
@@ -3310,8 +3585,7 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
       }
     }
 
-    final sexualContent =
-        data is Map && data['sexualContent'] is String
+    final sexualContent = data is Map && data['sexualContent'] is String
         ? data['sexualContent'] as String
         : 'none';
     final isContentRejection =
@@ -3441,7 +3715,9 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
 
       // Server-side sanitize: the function cropped the flagged text out of
       // the photo itself and approved the cleaned copy — swap to its path.
-      if (data is Map && data['serverSanitized'] == true && data['photoPath'] is String) {
+      if (data is Map &&
+          data['serverSanitized'] == true &&
+          data['photoPath'] is String) {
         final sanitizedPath = data['photoPath'] as String;
         if (sanitizedPath.isNotEmpty && sanitizedPath != photoPath) {
           approved.add(sanitizedPath);
@@ -4145,7 +4421,9 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
           .eq('id', userId);
       synced = true;
     } catch (e) {
-      debugPrint('[ProfileEdit] radius server update failed, queued to outbox: $e');
+      debugPrint(
+        '[ProfileEdit] radius server update failed, queued to outbox: $e',
+      );
       // If offline or error, add to outbox for later sync
       await localDb.saveProfileUpdateToOutbox(userId, {
         'userId': userId,
@@ -4160,7 +4438,12 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     // listeners immediately and warm the persisted snapshot even if neither
     // screen is currently mounted.
     ref.invalidate(dashboardStatsProvider);
-    unawaited(warmDashboardStatsForUser(userId));
+    unawaited(
+      warmDashboardStatsForUser(
+        userId,
+        center: resolveNearbyCountAnchor(ref),
+      ),
+    );
     // Note: Removed ref.invalidate(isVisibleProvider) to break circular dependency.
     // The visibility provider already listens to profileEditProvider changes via ref.listen,
     // so explicit invalidation here was unnecessary and caused a rebuild cycle.
@@ -4724,21 +5007,52 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     state = AsyncData(state.value!.copyWith(zodiacSign: value));
   }
 
+  /// Draft variant of [updateLifestyle].
+  ///
+  /// The profile wizard is a form: every field it collects is committed by
+  /// its Save button. Writing a single page straight to the server would
+  /// leave the wizard half-saved - the value would be on the server while
+  /// the rest of the form was still a draft.
+  void updateLifestyleDraft(Map<String, dynamic>? value) {
+    if (!state.hasValue || state.value == null) return;
+    final updated = state.value!.copyWith(lifestyle: value);
+    state = AsyncData(updated);
+    unawaited(_saveToLocalCache(updated));
+  }
+
+  /// Draft variant of [updateFamily] - see [updateLifestyleDraft].
+  void updateFamilyDraft(Map<String, dynamic>? value) {
+    if (!state.hasValue || state.value == null) return;
+    final updated = state.value!.copyWith(family: value);
+    state = AsyncData(updated);
+    unawaited(_saveToLocalCache(updated));
+  }
+
+  /// Draft variant of [updateReligion] - see [updateLifestyleDraft].
+  void updateReligionDraft(Map<String, dynamic>? value) {
+    if (!state.hasValue || state.value == null) return;
+    final updated = state.value!.copyWith(religion: value);
+    state = AsyncData(updated);
+    unawaited(_saveToLocalCache(updated));
+  }
+
   Future<void> updateLifestyle(Map<String, dynamic>? value) async {
     if (!state.hasValue || state.value == null) return;
     final updated = state.value!.copyWith(lifestyle: value);
     state = AsyncData(updated);
     final localDb = ref.read(localDbProvider);
     await localDb.saveLocalProfile(userId, updated.toMap());
+    _markProfileLocalSave(userId);
     try {
-      await supabase
-          .from('user_profiles')
-          .update({'lifestyle': value})
-          .eq('user_id', userId);
+      await supabase.from('user_profiles').upsert({
+        'user_id': userId,
+        'lifestyle': value,
+      }, onConflict: 'user_id');
     } catch (e) {
       await localDb.saveProfileUpdateToOutbox(userId, {
+        'type': 'profile_update',
         'userId': userId,
-        'updates': {'lifestyle': value},
+        'profilePayload': {'user_id': userId, 'lifestyle': value},
       });
     }
   }
@@ -4749,15 +5063,17 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     state = AsyncData(updated);
     final localDb = ref.read(localDbProvider);
     await localDb.saveLocalProfile(userId, updated.toMap());
+    _markProfileLocalSave(userId);
     try {
-      await supabase
-          .from('user_profiles')
-          .update({'family': value})
-          .eq('user_id', userId);
+      await supabase.from('user_profiles').upsert({
+        'user_id': userId,
+        'family': value,
+      }, onConflict: 'user_id');
     } catch (e) {
       await localDb.saveProfileUpdateToOutbox(userId, {
+        'type': 'profile_update',
         'userId': userId,
-        'updates': {'family': value},
+        'profilePayload': {'user_id': userId, 'family': value},
       });
     }
   }
@@ -4768,15 +5084,17 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     state = AsyncData(updated);
     final localDb = ref.read(localDbProvider);
     await localDb.saveLocalProfile(userId, updated.toMap());
+    _markProfileLocalSave(userId);
     try {
-      await supabase
-          .from('user_profiles')
-          .update({'religion': value})
-          .eq('user_id', userId);
+      await supabase.from('user_profiles').upsert({
+        'user_id': userId,
+        'religion': value,
+      }, onConflict: 'user_id');
     } catch (e) {
       await localDb.saveProfileUpdateToOutbox(userId, {
+        'type': 'profile_update',
         'userId': userId,
-        'updates': {'religion': value},
+        'profilePayload': {'user_id': userId, 'religion': value},
       });
     }
   }
@@ -5163,10 +5481,9 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
             .eq('user_id', userId)
             .catchError((e) {
               unawaited(
-                ref.read(profileSyncProvider).syncProfile(
-                  userId,
-                  source: 'photo-add-persist-recovery',
-                ),
+                ref
+                    .read(profileSyncProvider)
+                    .syncProfile(userId, source: 'photo-add-persist-recovery'),
               );
             }),
       );
@@ -5249,10 +5566,12 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
             .eq('user_id', userId)
             .catchError((e) {
               unawaited(
-                ref.read(profileSyncProvider).syncProfile(
-                  userId,
-                  source: 'photo-remove-persist-recovery',
-                ),
+                ref
+                    .read(profileSyncProvider)
+                    .syncProfile(
+                      userId,
+                      source: 'photo-remove-persist-recovery',
+                    ),
               );
             })
             .whenComplete(() async {
@@ -5376,10 +5695,12 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
             .eq('user_id', userId)
             .catchError((e) {
               unawaited(
-                ref.read(profileSyncProvider).syncProfile(
-                  userId,
-                  source: 'photo-replace-persist-recovery',
-                ),
+                ref
+                    .read(profileSyncProvider)
+                    .syncProfile(
+                      userId,
+                      source: 'photo-replace-persist-recovery',
+                    ),
               );
             })
             .whenComplete(() async {
@@ -5459,10 +5780,12 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
             .eq('user_id', userId)
             .catchError((e) {
               unawaited(
-                ref.read(profileSyncProvider).syncProfile(
-                  userId,
-                  source: 'photo-reorder-persist-recovery',
-                ),
+                ref
+                    .read(profileSyncProvider)
+                    .syncProfile(
+                      userId,
+                      source: 'photo-reorder-persist-recovery',
+                    ),
               );
             }),
       );
@@ -5826,3 +6149,4 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     }
   }
 }
+

@@ -475,9 +475,12 @@ class ChatListItem extends ConsumerWidget {
                                 listPreviewText.toLowerCase().contains(
                                   activeSearchQuery.toLowerCase(),
                                 )) {
-                              final highlightBg = Colors.yellow.withValues(
-                                alpha: 0.65,
-                              );
+                              final isDark =
+                                  Theme.of(context).brightness ==
+                                  Brightness.dark;
+                              final highlightBg = isDark
+                                  ? Colors.amber.withValues(alpha: 0.35)
+                                  : Colors.yellow.withValues(alpha: 0.65);
                               previewSpans = [
                                 for (final (segment, isMatch)
                                     in chatSearchSplitMatches(

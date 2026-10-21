@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/utils/localized_duration.dart';
 import 'package:matchme/utils/time_of_day_ranges.dart';
 import 'package:matchme/providers/user_preferences_provider.dart';
 
@@ -160,62 +161,28 @@ String formatDurationWords(LocalizationState l10n, Duration remaining) {
   var d = remaining;
   if (d.isNegative) d = Duration.zero;
 
-  String formatCountUnit({
-    required int count,
-    required String singularKey,
-    required String pluralKey,
-  }) {
-    final key = count == 1 ? singularKey : pluralKey;
-    final template = l10n.getString(key);
-    if (template.contains('{count}')) {
-      return l10n.getString(key, params: {'count': count.toString()});
-    }
-    if (RegExp(r'\d').hasMatch(template)) return template;
-    return '$count $template';
-  }
-
   if (d.inDays > 0) {
-    final days = d.inDays;
     final hours = d.inHours.remainder(24);
-    final dayText = formatCountUnit(
-      count: days,
-      singularKey: 'durationDay',
-      pluralKey: 'durationDays',
+    return formatDurationParts(
+      l10n.getString,
+      days: d.inDays,
+      hours: hours > 0 ? hours : null,
     );
-    if (hours <= 0) return dayText;
-    final hourText = formatCountUnit(
-      count: hours,
-      singularKey: 'durationHour',
-      pluralKey: 'durationHours',
-    );
-    return '$dayText, $hourText';
   }
 
   if (d.inHours > 0) {
-    final hours = d.inHours;
     final minutes = d.inMinutes.remainder(60);
-    final hourText = formatCountUnit(
-      count: hours,
-      singularKey: 'durationHour',
-      pluralKey: 'durationHours',
+    return formatDurationParts(
+      l10n.getString,
+      hours: d.inHours,
+      minutes: minutes > 0 ? minutes : null,
     );
-    if (minutes <= 0) return hourText;
-    final minuteText = formatCountUnit(
-      count: minutes,
-      singularKey: 'durationMinute',
-      pluralKey: 'durationMinutes',
-    );
-    return '$hourText, $minuteText';
   }
 
   if (d.inMinutes > 0) {
-    final minutes = d.inMinutes;
-    return formatCountUnit(
-      count: minutes,
-      singularKey: 'durationMinute',
-      pluralKey: 'durationMinutes',
-    );
+    return formatDurationParts(l10n.getString, minutes: d.inMinutes);
   }
 
   return l10n.getString('durationLessThanOneMinute');
 }
+

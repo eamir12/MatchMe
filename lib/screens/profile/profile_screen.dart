@@ -32,6 +32,9 @@ import 'package:matchme/widgets/app_skeleton.dart';
 import 'package:matchme/models/sponsored_ad.dart';
 import 'package:matchme/widgets/photo_gallery_viewer.dart';
 import 'package:matchme/widgets/profile_completeness_card.dart';
+import 'package:matchme/widgets/profile_completeness_summary.dart';
+import 'package:matchme/utils/profile_completeness.dart';
+import 'package:matchme/utils/unit_utils.dart';
 import 'package:matchme/screens/onboarding/onboarding_content.dart';
 import 'package:matchme/widgets/onboarding_section_prompt.dart';
 
@@ -211,12 +214,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     if (!useImperial) {
       return '$heightCm ${_t(l10n, 'settingsHeightCm')}';
     }
-    final totalInches = (heightCm / 2.54).round();
-    final feet = totalInches ~/ 12;
-    final inches = totalInches % 12;
-    return _t(l10n, 'profileHeightFeetInches')
-        .replaceAll('{feet}', feet.toString())
-        .replaceAll('{inches}', inches.toString());
+    return formatHeightFeetInches(l10n, heightCm);
   }
 
   String? _resolveLookupTranslationKey(
@@ -422,12 +420,22 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     return _tryGetString(l10n, key) ?? _humanizeKey(value);
   }
 
-  String _localizedReligiosityValue(LocalizationState l10n, String value) {
+  String _localizedDenominationValue(LocalizationState l10n, String value) =>
+      _localizedBeliefFieldValue(l10n, 'denomination', value);
+
+  String _localizedPracticeValue(LocalizationState l10n, String value) =>
+      _localizedBeliefFieldValue(l10n, 'practice', value);
+
+  String _localizedBeliefFieldValue(
+    LocalizationState l10n,
+    String fieldKey,
+    String value,
+  ) {
     final opts =
         ref
             .watch(
               fieldOptionsProvider((
-                fieldKey: 'religiosity',
+                fieldKey: fieldKey,
                 context: 'profile',
               )),
             )
@@ -1152,6 +1160,14 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                         ),
                       );
                     }
+                    // "Profile Complete" is a status chip too: it joins the
+                    // other two in the same row, at the same size, so the
+                    // three always read as one set.
+                    if (ProfileCompleteness.isFull(profile)) {
+                      badgeWidgets.add(
+                        ProfileCompletePill(l10n: l10n, size: 20),
+                      );
+                    }
                     final uiDirection = Directionality.of(context);
                     final nameLabel = _t(l10n, 'profileName');
                     return Card(
@@ -1192,11 +1208,14 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                   Text.rich(
                                     TextSpan(
                                       children: [
-                                        TextSpan(text: '$nameLabel: '),
-                                        // Isolate the user-entered name so mixed
+                                        TextSpan(
+                                          text: '$nameLabel: '),
+                                        // Mark the user-entered name with the
+                                        // direction of its own script so mixed
                                         // RTL/LTR content orders correctly.
                                         TextSpan(
-                                          text: '\u2066$displayName\u2069',
+                                          text: displayName
+                                              .withDirectionalMarks(),
                                         ),
                                       ],
                                     ),
@@ -1567,8 +1586,13 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                               (profile.religion!['religion'] as String)
                                   .trim()
                                   .isNotEmpty) ||
-                          (profile.religion!['religiosity'] != null &&
-                              profile.religion!['religiosity']
+                          (profile.religion!['denomination'] != null &&
+                              profile.religion!['denomination']
+                                  .toString()
+                                  .trim()
+                                  .isNotEmpty) ||
+                          (profile.religion!['practice'] != null &&
+                              profile.religion!['practice']
                                   .toString()
                                   .trim()
                                   .isNotEmpty))) ...[
@@ -1596,8 +1620,25 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                           ),
                         ),
                       ),
-                    if (profile.religion!['religiosity'] != null &&
-                        profile.religion!['religiosity']
+                    if (profile.religion!['denomination'] != null &&
+                        profile.religion!['denomination']
+                            .toString()
+                            .trim()
+                            .isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: _buildProfileItem(
+                          context,
+                          Icons.account_tree_outlined,
+                          _t(l10n, 'profileDenomination'),
+                          _localizedDenominationValue(
+                            l10n,
+                            profile.religion!['denomination'].toString(),
+                          ),
+                        ),
+                      ),
+                    if (profile.religion!['practice'] != null &&
+                        profile.religion!['practice']
                             .toString()
                             .trim()
                             .isNotEmpty)
@@ -1606,10 +1647,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                         child: _buildProfileItem(
                           context,
                           Icons.auto_awesome_outlined,
-                          _t(l10n, 'profileReligiosity'),
-                          _localizedReligiosityValue(
+                          _t(l10n, 'profileReligiousPractice'),
+                          _localizedPracticeValue(
                             l10n,
-                            profile.religion!['religiosity'].toString(),
+                            profile.religion!['practice'].toString(),
                           ),
                         ),
                       ),

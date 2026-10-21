@@ -32,10 +32,10 @@ void main() {
 
     final semantics = tester.getSemantics(
       find.byWidgetPredicate(
-        (widget) => widget is Semantics && widget.properties.label == 'Verified',
+        (widget) => widget is Semantics && widget.properties.label == 'Primary Photo Verified',
       ),
     );
-    expect(semantics.label, 'Verified');
+    expect(semantics.label, 'Primary Photo Verified');
     expect(semantics.hint, anyOf(isNull, isEmpty));
   });
 
@@ -58,17 +58,17 @@ void main() {
     expect(find.byType(Tooltip), findsNothing);
     final semantics = tester.getSemantics(
       find.byWidgetPredicate(
-        (widget) => widget is Semantics && widget.properties.label == 'Verified',
+        (widget) => widget is Semantics && widget.properties.label == 'Primary Photo Verified',
       ),
     );
-    expect(semantics.label, 'Verified');
+    expect(semantics.label, 'Primary Photo Verified');
     expect(semantics.hint, anyOf(isNull, isEmpty));
   });
 
   testWidgets('badge with text still renders the label', (tester) async {
     await tester.pumpWidget(wrap(const VerifiedBadge(showText: true)));
 
-    expect(find.text('Verified'), findsOneWidget);
+    expect(find.text('Primary Photo Verified'), findsOneWidget);
     expect(find.byType(Tooltip), findsNothing);
   });
 }

@@ -480,6 +480,10 @@ class _ListSearchBarState extends State<ListSearchBar> {
           _FilterButton(
             activeCount: widget.activeFilterCount,
             tooltip: l10n.getString('listFiltersTitle'),
+            activeLabel: l10n.getString(
+              'listFilterActiveCount',
+              params: {'count': '${widget.activeFilterCount}'},
+            ),
             onPressed: widget.onOpenFilters,
           ),
         ],
@@ -492,11 +496,15 @@ class _FilterButton extends StatelessWidget {
   const _FilterButton({
     required this.activeCount,
     required this.tooltip,
+    required this.activeLabel,
     required this.onPressed,
   });
 
   final int activeCount;
   final String tooltip;
+
+  /// The accessibility label for the active state, e.g. "2 active".
+  final String activeLabel;
   final VoidCallback onPressed;
 
   @override
@@ -506,7 +514,7 @@ class _FilterButton extends StatelessWidget {
 
     return Semantics(
       button: true,
-      label: active ? '$tooltip, $activeCount active' : tooltip,
+      label: active ? '$tooltip, $activeLabel' : tooltip,
       child: Tooltip(
         message: tooltip,
         child: Material(
@@ -1366,10 +1374,15 @@ class ResultCountLabel extends StatelessWidget {
         liveRegion: true,
         child: Text(
           isFiltered
-              ? l10n.getString(countOfKey, params: {
-                  'shown': '$shown',
-                  'total': '$total',
-                })
+              ? l10n.getString(
+                  countOfKey,
+                  params: {
+                    'shown': '$shown',
+                    'total': '$total',
+                  },
+                  // The noun agrees with the total ("1 of 5 conversations").
+                  pluralParam: 'total',
+                )
               : l10n.getString(countKey, params: {
                   'count': '$shown',
                 }),

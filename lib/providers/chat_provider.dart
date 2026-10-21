@@ -26,6 +26,7 @@ import 'package:matchme/services/global_sync_manager.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:matchme/utils/translation_edit_marker.dart';
+import 'package:matchme/utils/string_extensions.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:matchme/providers/auth_provider.dart';
 import 'package:matchme/services/supabase_realtime_manager.dart';
@@ -59,10 +60,7 @@ String formatSenderNameForNotification(String fullName) {
         .join('-');
   }
 
-  final cleaned = fullName.replaceAll(
-    RegExp('[\u200E\u200F\u202A-\u202E]'),
-    '',
-  );
+  final cleaned = fullName.replaceAll(bidiControls, '');
   final parts = cleaned
       .trim()
       .split(RegExp(r'\s+'))
@@ -70,13 +68,14 @@ String formatSenderNameForNotification(String fullName) {
       .toList();
   if (parts.isEmpty) return 'MatchMe';
   if (parts.length == 1) {
-    return capWord(parts[0]); // Just first name if no last name
+    return capWord(parts[0])
+        .withDirectionalMarks(); // Just first name if no last name
   }
 
   // First name + first letter of last name with period
   final firstName = capWord(parts[0]);
   final lastInitial = parts[parts.length - 1][0].toUpperCase();
-  return '$firstName $lastInitial.';
+  return '$firstName $lastInitial.'.withDirectionalMarks();
 }
 
 /// Drops a stale tray card after a peer edit/delete: cancels the Flutter
@@ -3052,12 +3051,17 @@ class ChatService {
 
       String? maskFullName(String? fullName) {
         if (fullName == null) return null;
-        final parts = fullName.trim().split(RegExp(r'\s+'));
+        final parts = fullName
+            .replaceAll(bidiControls, '')
+            .trim()
+            .split(RegExp(r'\s+'))
+            .where((p) => p.isNotEmpty)
+            .toList();
         if (parts.isEmpty) return null;
-        if (parts.length == 1) return parts.first;
+        if (parts.length == 1) return parts.first.withDirectionalMarks();
         final first = parts.first;
         final lastInitial = parts.last[0].toUpperCase();
-        return '$first $lastInitial.';
+        return '$first $lastInitial.'.withDirectionalMarks();
       }
 
       final List<Map<String, dynamic>> result = [];

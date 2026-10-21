@@ -939,7 +939,12 @@ class RealtimeChannel {
     if (isLeaving) {
       return;
     }
-    socket.leaveOpenTopic(topic);
+    // `except: this` keeps the channel from unsubscribing *itself*: the
+    // duplicate-topic cleanup is meant to remove a *different* channel that
+    // happens to share this topic. Unsubscribing itself would drop the
+    // channel from the socket's registry and it would no longer receive
+    // access-token refreshes.
+    socket.leaveOpenTopic(topic, except: this);
     _state = ChannelStates.joining;
     joinPush.resend(timeout ?? _timeout);
   }
@@ -957,6 +962,10 @@ class RealtimeChannel {
     if (isLeaving) {
       return;
     }
+    // Suppress the channel-level retry while the forced re-join is in
+    // flight. If the join fails, the join timeout re-arms the retry timer,
+    // so nothing is lost.
+    _rejoinTimer.reset();
     _state = ChannelStates.joining;
     joinPush.resend(timeout ?? _timeout);
   }

@@ -2,6 +2,7 @@
 
 import 'package:flutter/foundation.dart' show listEquals;
 import 'package:matchme/utils/encrypted_text_guard.dart';
+import 'package:matchme/utils/string_extensions.dart';
 
 class ChatModel {
   final String matchId;
@@ -108,10 +109,7 @@ class ChatModel {
     }
 
     String maskNameLocal(dynamic raw) {
-      final s = (raw?.toString() ?? '').replaceAll(
-        RegExp('[\u200E\u200F\u202A-\u202E]'),
-        '',
-      );
+      final s = (raw?.toString() ?? '').replaceAll(bidiControls, '');
       if (s.trim().isEmpty) return 'Unknown User';
       final parts = s
           .trim()
@@ -120,9 +118,10 @@ class ChatModel {
           .toList();
       if (parts.length > 1 &&
           parts.last.toLowerCase() != parts.first.toLowerCase()) {
-        return '${capWord(parts.first)} ${parts.last.substring(0, 1).toUpperCase()}.';
+        return '${capWord(parts.first)} ${parts.last.substring(0, 1).toUpperCase()}.'
+            .withDirectionalMarks();
       }
-      return capWord(parts.first);
+      return capWord(parts.first).withDirectionalMarks();
     }
 
     // Accept preview/preview field from new RPC, legacy `last_message_content`, or local DB `last_message`
@@ -193,9 +192,7 @@ class ChatModel {
       return 'User...';
     }
 
-    final cleaned = otherUserName
-        .replaceAll(RegExp('[\u200E\u200F\u202A-\u202E]'), '')
-        .trim();
+    final cleaned = otherUserName.replaceAll(bidiControls, '').trim();
     final parts = cleaned
         .split(RegExp(r'\s+'))
         .where((p) => p.isNotEmpty)
@@ -220,9 +217,10 @@ class ChatModel {
     }
 
     if (parts.length > 1 && parts.last.isNotEmpty) {
-      return '\u200E${capWord(parts.first)} ${parts.last[0].toUpperCase()}.\u200E';
+      return '${capWord(parts.first)} ${parts.last[0].toUpperCase()}.'
+          .withDirectionalMarks();
     }
-    return '\u200E${capWord(parts[0])}\u200E';
+    return capWord(parts[0]).withDirectionalMarks();
   }
   // --- END NEW ---
 

@@ -22,6 +22,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:matchme/theme/app_button_styles.dart';
+import 'package:matchme/theme/semantic_colors.dart';
 import 'package:matchme/widgets/passkey_setup_dialog.dart';
 import 'package:matchme/widgets/safe_text.dart';
 
@@ -1016,8 +1017,9 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
     required bool hasPasskeys,
     required bool hasMfa,
     required ColorScheme colors,
+    required Color success,
   }) {
-    if (hasPasskeys && hasMfa) return Colors.green.shade700;
+    if (hasPasskeys && hasMfa) return success;
     if (hasPasskeys || hasMfa) return colors.primary;
     return colors.secondary;
   }
@@ -1192,6 +1194,7 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
       hasPasskeys: hasPasskeys,
       hasMfa: mfaStatus.hasVerifiedTotp,
       colors: colors,
+      success: SemanticColors.of(context).success,
     );
 
     return Container(
@@ -1303,7 +1306,7 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
                       : 'securityCenterBadgeAuthenticatorOff',
                 ),
                 color: mfaStatus.hasVerifiedTotp
-                    ? Colors.green.shade700
+                    ? SemanticColors.of(context).success
                     : colors.onSurfaceVariant,
               ),
               _SecurityBadge(
@@ -1331,7 +1334,9 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
     final colors = theme.colorScheme;
     final hasMfa = status.hasVerifiedTotp;
     final recoveryCodesRemaining = status.recoveryCodesRemaining;
-    final accent = hasMfa ? Colors.green.shade700 : colors.secondary;
+    final accent = hasMfa
+        ? SemanticColors.of(context).success
+        : colors.secondary;
 
     return _SecurityFeatureCard(
       accent: accent,
@@ -1359,7 +1364,7 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
                     ? Icons.key_rounded
                     : Icons.key_off_outlined,
                 color: recoveryCodesRemaining > 0
-                    ? Colors.green.shade700
+                    ? SemanticColors.of(context).success
                     : colors.onSurfaceVariant,
                 label: l10n.getString('securityCenterMetricBackupCodes'),
                 value: recoveryCodesRemaining > 0
@@ -1501,7 +1506,7 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
     final accent = hasAvailablePasskeys
         ? colors.primary
         : canUsePasskeysHere
-        ? Colors.green.shade700
+        ? SemanticColors.of(context).success
         : colors.secondary;
     final statusLabelKey = hasAvailablePasskeys
         ? (canUsePasskeysHere
@@ -1547,7 +1552,7 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
                     ? Icons.devices_outlined
                     : Icons.phonelink_erase_outlined,
                 color: deviceSupportsPasskeys
-                    ? Colors.green.shade700
+                    ? SemanticColors.of(context).success
                     : colors.onSurfaceVariant,
                 label: l10n.getString('securityCenterMetricDevice'),
                 value: l10n.getString(
@@ -1575,7 +1580,7 @@ class _SecurityCenterScreenState extends ConsumerState<SecurityCenterScreen>
                       ? Icons.fingerprint_rounded
                       : Icons.login_rounded,
                   color: isPasskeySession
-                      ? Colors.green.shade700
+                      ? SemanticColors.of(context).success
                       : colors.primary,
                 ),
                 const SizedBox(width: 10),

@@ -130,7 +130,79 @@ void main() {
     );
   });
 
-  testWidgets('invalid active gender preference blocks save and explains why', (
+  testWidgets(
+    'an invalid active gender preference blocks the write and explains why',
+    (tester) async {
+      _TestProfileEditNotifier.saveCalls = 0;
+      final profile = _profile();
+      final l10n = LocalizationState(
+        currentLocale: const Locale('en'),
+        textDirection: TextDirection.ltr,
+        strings: const {
+          'intent.romantic': 'Romantic',
+          'settingsCopyFromProfile': 'Copy from profile',
+          'settingsPreferredGenders': 'Preferred genders',
+          'Female': 'Female',
+          'profileWizardGenderPreferenceRequired':
+              'Please select at least one preferred gender for {intent}.',
+        },
+        supportedLanguages: [AppLanguage(code: 'en', displayName: 'English')],
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            localizationProvider.overrideWithValue(l10n),
+            mainIntentsProvider.overrideWithValue([
+              AppIntent(
+                id: 1,
+                key: 'romantic',
+                translationKey: 'intent.romantic',
+                sortOrder: 0,
+                isSocial: true,
+              ),
+            ]),
+            genderOptionsProvider.overrideWith(
+              (ref) async => [
+                {'key': 'female', 'displayKey': 'Female'},
+              ],
+            ),
+            profileOptionsProvider.overrideWith((ref) async => const []),
+            unitSystemProvider.overrideWith(_TestUnitSystem.new),
+            userProfileProvider(
+              'test-user',
+            ).overrideWith((ref) => Stream.value(profile)),
+            profileEditProvider(
+              'test-user',
+            ).overrideWith(() => _TestProfileEditNotifier(profile)),
+          ],
+          child: const MaterialApp(home: MatchPreferencesScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // The screen has no Save button: every control commits itself. While
+      // the preferences are invalid nothing may be written, and the reason
+      // has to be explained.
+      await tester.tap(find.text('Copy from profile'));
+      await tester.pump();
+      await tester.pump();
+
+      expect(
+        find.text('Please select at least one preferred gender for Romantic.'),
+        findsWidgets,
+      );
+      expect(_TestProfileEditNotifier.saveCalls, 0);
+      expect(
+        find.bySemanticsLabel(
+          'Please select at least one preferred gender for Romantic.',
+        ),
+        findsWidgets,
+      );
+    },
+  );
+
+  testWidgets('selecting a gender commits the preferences immediately', (
     tester,
   ) async {
     _TestProfileEditNotifier.saveCalls = 0;
@@ -141,7 +213,6 @@ void main() {
       strings: const {
         'intent.romantic': 'Romantic',
         'settingsCopyFromProfile': 'Copy from profile',
-        'generalSave': 'Save',
         'settingsPreferredGenders': 'Preferred genders',
         'Female': 'Female',
         'profileWizardGenderPreferenceRequired':
@@ -182,21 +253,13 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Copy from profile'));
+    // There is no Save button on this screen.
+    expect(find.text('Save'), findsNothing);
+
+    await tester.tap(find.text('Female'));
     await tester.pump();
-    await tester.tap(find.text('Save'));
     await tester.pump();
 
-    expect(
-      find.text('Please select at least one preferred gender for Romantic.'),
-      findsWidgets,
-    );
-    expect(_TestProfileEditNotifier.saveCalls, 0);
-    expect(
-      find.bySemanticsLabel(
-        'Please select at least one preferred gender for Romantic.',
-      ),
-      findsWidgets,
-    );
+    expect(_TestProfileEditNotifier.saveCalls, 1);
   });
 }

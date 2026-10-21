@@ -101,6 +101,15 @@ class RealtimeClient {
   List<RealtimeChannel> channels = [];
   final String endPoint;
 
+  /// Topics whose server-side channel subscription was lost together with the
+  /// socket that carried them.
+  ///
+  /// Phoenix channels are scoped to a socket: when the socket goes away the
+  /// server drops every channel it carried, so the client has to re-join them
+  /// on the next connection. This set records which topics were live on the
+  /// previous socket so [_onConnOpen] can restore exactly those.
+  final Set<String> _lostChannelTopics = <String>{};
+
   final Map<String, String> headers;
   final Map<String, dynamic> params;
 
@@ -312,6 +321,9 @@ class RealtimeClient {
   Future<void> disconnect({int? code, String? reason}) async {
     final conn = this.conn;
     if (conn != null) {
+      // The server drops every channel that belonged to this socket, so the
+      // client has to re-join them on the next connection.
+      _markChannelsLost();
       final oldState = connState;
       final shouldCloseSink =
           oldState == SocketStates.open || oldState == SocketStates.connecting;
@@ -367,6 +379,23 @@ class RealtimeClient {
 
   List<RealtimeChannel> getChannels() {
     return channels;
+  }
+
+  /// Whether a channel for [topic] is currently live (joined, or in the middle
+  /// of joining) on the server.
+  ///
+  /// [topic] may be given either as the bare sub-topic (`user_settings_1`)
+  /// or as the full Phoenix topic (`realtime:user_settings_1`).
+  ///
+  /// A channel that is `joining` still counts as live: the join push has been
+  /// sent and the server has not rejected it yet. Treating it as dead would
+  /// create a duplicate channel for the same topic.
+  bool isTopicLive(String topic) {
+    for (final channel in channels) {
+      if (channel.subTopic != topic && channel.topic != topic) continue;
+      if (channel.isJoined || channel.isJoining) return true;
+    }
+    return false;
   }
 
   Future<String> removeChannel(RealtimeChannel channel) async {
@@ -625,10 +654,14 @@ class RealtimeClient {
   }
 
   /// Unsubscribe from joined or joining channels with the specified topic.
+  ///
+  /// [except] is never unsubscribed, which lets a channel re-join its own
+  /// topic without dropping itself from the socket's registry.
   @internal
-  void leaveOpenTopic(String topic) {
+  void leaveOpenTopic(String topic, {RealtimeChannel? except}) {
     final dupChannel = channels.firstWhereOrNull(
-      (c) => c.topic == topic && (c.isJoined || c.isJoining),
+      (c) =>
+          c != except && c.topic == topic && (c.isJoined || c.isJoining),
     );
     if (dupChannel != null) {
       log('transport', 'leaving duplicate topic "$topic"');
@@ -646,8 +679,78 @@ class RealtimeClient {
       Duration(milliseconds: heartbeatIntervalMs),
       (Timer t) => unawaited(sendHeartbeat()),
     );
+    _rejoinLostChannels();
     for (final callback in stateChangeCallbacks['open']!) {
       callback();
+    }
+  }
+
+  /// Re-joins the channels that were subscribed on the previous socket.
+  ///
+  /// A socket reconnect does not restore server-side channel subscriptions:
+  /// the server drops every channel that belonged to the closed socket, and
+  /// the Phoenix protocol requires an explicit `phx_join` per topic.
+  ///
+  /// Without this, any transient socket drop (packet loss, mobile network
+  /// handover, server restart) - or an explicit `disconnect()` followed by a
+  /// `connect()`, which is exactly what the web tab hide/show path does -
+  /// silently leaves every `postgres_changes` subscription dead for the rest
+  /// of the process lifetime.
+  void _rejoinLostChannels() {
+    if (_lostChannelTopics.isEmpty) return;
+    final lost = Set<String>.from(_lostChannelTopics);
+    _lostChannelTopics.clear();
+
+    // Keep a single channel per topic: Phoenix scopes a channel to its
+    // topic, so a second join for the same topic is rejected by the server
+    // ("already joined") and would leave the topic unsubscribed. When
+    // duplicates exist the newest one wins, because that is the one the app
+    // currently holds a reference to.
+    final keepers = <String, RealtimeChannel>{};
+    final duplicates = <RealtimeChannel>[];
+    for (final channel in List<RealtimeChannel>.from(channels)) {
+      if (!lost.contains(channel.topic)) continue;
+      if (!channel.joinedOnce) continue;
+      if (channel.isLeaving) continue;
+      final previous = keepers[channel.topic];
+      if (previous != null) duplicates.add(previous);
+      keepers[channel.topic] = channel;
+    }
+
+    // Leave the duplicates first so the server sees the `leave` before the
+    // `join` that re-establishes the topic.
+    for (final duplicate in duplicates) {
+      try {
+        unawaited(duplicate.unsubscribe());
+      } catch (e) {
+        log(
+          'transport',
+          'failed to drop duplicate channel ${duplicate.topic}',
+          e,
+        );
+      }
+    }
+
+    for (final entry in keepers.entries) {
+      log('transport', 'rejoining channel ${entry.key}');
+      try {
+        // `forceRejoin` re-sends the join push without leaving the topic
+        // first, which is what we want: the server has already forgotten
+        // this channel, so there is nothing to leave.
+        entry.value.forceRejoin();
+      } catch (e) {
+        log('transport', 'failed to rejoin channel ${entry.key}', e);
+      }
+    }
+  }
+
+  /// Records the topics that lose their server-side subscription when the
+  /// socket goes away.
+  void _markChannelsLost() {
+    for (final channel in channels) {
+      if (!channel.joinedOnce) continue;
+      if (channel.isLeaving) continue;
+      _lostChannelTopics.add(channel.topic);
     }
   }
 
@@ -659,6 +762,13 @@ class RealtimeClient {
       event = RealtimeCloseEvent(code: statusCode, reason: conn?.closeReason);
     }
     log('transport', 'close', event, Level.FINE);
+
+    // The server drops every channel that belonged to this socket, so the
+    // client has to re-join them on the next connection. This has to happen
+    // for user-initiated disconnects too: `connState` is `disconnected` in
+    // that case, so the branch below does not run and the channels would
+    // otherwise stay "joined" locally while being gone on the server.
+    _markChannelsLost();
 
     /// SocketStates.disconnected: by user with socket.disconnect()
     /// SocketStates.closed: NOT by user, should try to reconnect

@@ -12,7 +12,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme_admin/widgets/safe_text.dart';
 
 typedef AdminTextLookup =
-    String Function(String key, {Map<String, String>? params});
+    String Function(String key, {Map<String, String>? params, String? pluralParam});
 
 enum _SponsoredCampaignFilter {
   all,
@@ -4332,10 +4332,23 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
                                 t(
                                   'adminSponsoredAdsReportDialogSubtitle',
                                   params: {
-                                    'count': reportSummary.reportCount
-                                        .toString(),
-                                    'users': reportSummary.uniqueReporterCount
-                                        .toString(),
+                                    // Every counter is translated on its
+                                    // own so it picks the right plural form.
+                                    'reports': t(
+                                      'adminSponsoredAdsReportCount',
+                                      params: {
+                                        'count': reportSummary.reportCount
+                                            .toString(),
+                                      },
+                                    ),
+                                    'users': t(
+                                      'adminSponsoredAdsReportUsers',
+                                      params: {
+                                        'count': reportSummary
+                                            .uniqueReporterCount
+                                            .toString(),
+                                      },
+                                    ),
                                   },
                                 ),
                                 style: theme.textTheme.bodyMedium?.copyWith(

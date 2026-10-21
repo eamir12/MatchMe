@@ -3,7 +3,7 @@ import 'package:matchme_admin/screens/external_ads_dashboard.dart';
 import 'package:matchme_admin/screens/sponsored_ads_dashboard.dart';
 
 typedef AdminTextLookup =
-    String Function(String key, {Map<String, String>? params});
+    String Function(String key, {Map<String, String>? params, String? pluralParam});
 
 /// Hosts the two ad systems behind an Internal / External switch.
 ///

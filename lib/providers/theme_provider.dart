@@ -5,8 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:matchme/services/supabase_realtime_manager.dart';
-import 'package:matchme/utils/offline_utils.dart';
+import 'package:matchme/services/my_user_realtime_service.dart';
 import 'package:matchme/web_imports.dart' as html;
 
 final themeModeProvider = NotifierProvider<ThemeModeNotifier, ThemeMode>(
@@ -54,8 +53,7 @@ class AmoledThemeNotifier extends Notifier<bool> {
 class ThemeModeNotifier extends Notifier<ThemeMode>
     with WidgetsBindingObserver {
   static const _prefsKey = 'theme_mode';
-  RealtimeChannel? _themeSubscription;
-  String? _themeSubscriptionUserId;
+  StreamSubscription<MyUserUpdate>? _myUserSubscription;
   StreamSubscription<AuthState>? _authStateSubscription;
   bool _lifecycleObserverAttached = false;
   dynamic _webVisibilityListener;
@@ -64,7 +62,8 @@ class ThemeModeNotifier extends Notifier<ThemeMode>
   ThemeMode build() {
     final defaultMode = ThemeMode.system;
     ref.onDispose(() {
-      _clearRealtimeSubscription();
+      _myUserSubscription?.cancel();
+      _myUserSubscription = null;
       _authStateSubscription?.cancel();
       _authStateSubscription = null;
       _detachLifecycleObserver();
@@ -90,12 +89,10 @@ class ThemeModeNotifier extends Notifier<ThemeMode>
           (event) {
             switch (event.event) {
               case AuthChangeEvent.signedOut:
-                _clearRealtimeSubscription();
                 break;
               case AuthChangeEvent.initialSession:
               case AuthChangeEvent.signedIn:
               case AuthChangeEvent.userUpdated:
-                _ensureRealtimeSubscription();
                 unawaited(_syncFromRemote());
                 break;
               default:
@@ -106,7 +103,7 @@ class ThemeModeNotifier extends Notifier<ThemeMode>
             debugPrint('[THEME] Auth stream error: $error');
           },
         );
-    _ensureRealtimeSubscription();
+    _attachMyUserRealtime();
     _attachLifecycleObserver();
     _attachWebVisibilityListener();
     unawaited(_syncFromRemote());
@@ -166,66 +163,23 @@ class ThemeModeNotifier extends Notifier<ThemeMode>
     }
   }
 
-  void _clearRealtimeSubscription() {
-    final userId = _themeSubscriptionUserId;
-    _themeSubscription = null;
-    _themeSubscriptionUserId = null;
-    if (userId != null) {
-      SupabaseRealtimeManager.instance.unregister('user_theme_$userId');
-    }
-  }
-
-  void _ensureRealtimeSubscription() {
-    final userId = Supabase.instance.client.auth.currentUser?.id;
-    if (userId == null) {
-      _clearRealtimeSubscription();
-      return;
-    }
-    if (_themeSubscription != null && _themeSubscriptionUserId == userId) {
-      return;
-    }
-    _clearRealtimeSubscription();
-
-    final channelName = 'user_theme_$userId';
-    SupabaseRealtimeManager.instance.register(channelName, () {
-      _themeSubscription = Supabase.instance.client
-          .channel(channelName)
-          .onPostgresChanges(
-            event: PostgresChangeEvent.update,
-            schema: 'public',
-            table: 'users',
-            filter: PostgresChangeFilter(
-              type: PostgresChangeFilterType.eq,
-              column: 'id',
-              value: userId,
-            ),
-            callback: (payload) {
-              final newRecord = payload.newRecord;
-              final remoteTheme = newRecord['theme_mode'] as String?;
-              if (remoteTheme == null || remoteTheme.isEmpty) return;
-              final remoteMode = _stringToMode(remoteTheme);
-              if (state == remoteMode) return;
-              state = remoteMode;
-              unawaited(_persistThemeToPrefs(remoteMode));
-            },
-          )
-          .subscribe((status, err) {
-            if (status == RealtimeSubscribeStatus.channelError ||
-                status == RealtimeSubscribeStatus.timedOut ||
-                status == RealtimeSubscribeStatus.closed) {
-              if (err != null && isExpectedOfflineFailure(err)) {
-                // Proactively pause to suppress errors from other
-                // channels and avoid the race with the connectivity
-                // provider's own pauseAll() call.
-                SupabaseRealtimeManager.instance.pauseAll();
-                return;
-              }
-              if (SupabaseRealtimeManager.instance.isPaused) return;
-              unawaited(_syncFromRemote());
-            }
-          });
-      _themeSubscriptionUserId = userId;
-      return _themeSubscription!;
+  /// Subscribes to the shared "my own user row" realtime channel.
+  ///
+  /// The theme used to own a private `users` subscription. All four settings
+  /// notifiers now share one channel, so a change to this row is delivered
+  /// once and fanned out in Dart.
+  void _attachMyUserRealtime() {
+    _myUserSubscription?.cancel();
+    _myUserSubscription = MyUserRealtimeService.instance.updates.listen((
+      update,
+    ) {
+      if (!update.changed('theme_mode')) return;
+      final remoteTheme = update.row['theme_mode'] as String?;
+      if (remoteTheme == null || remoteTheme.isEmpty) return;
+      final remoteMode = _stringToMode(remoteTheme);
+      if (state == remoteMode) return;
+      state = remoteMode;
+      unawaited(_persistThemeToPrefs(remoteMode));
     });
   }
 
@@ -275,7 +229,6 @@ class ThemeModeNotifier extends Notifier<ThemeMode>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       // Re-establish realtime subscription when app resumes
-      _ensureRealtimeSubscription();
       unawaited(_syncFromRemote());
     }
   }
@@ -288,7 +241,6 @@ class ThemeModeNotifier extends Notifier<ThemeMode>
           if (html.document.visibilityState == 'visible' &&
               html.document.hidden != true) {
             // Tab became visible - re-establish subscription
-            _ensureRealtimeSubscription();
             unawaited(_syncFromRemote());
           }
         } catch (_) {}
@@ -311,3 +263,4 @@ class ThemeModeNotifier extends Notifier<ThemeMode>
     } catch (_) {}
   }
 }
+

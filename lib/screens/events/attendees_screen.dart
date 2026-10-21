@@ -574,14 +574,23 @@ class AttendeesScreen extends ConsumerWidget {
                                         ),
                                       );
                                     }
+                                    // "First L., 34" — the name keeps its
+                                    // period on the right and the whole row
+                                    // follows the direction of its content.
+                                    final withAge = l10n.getString(
+                                      'generalNameAge',
+                                      params: {
+                                        'name': name,
+                                        'age': age.toString(),
+                                      },
+                                    );
+                                    final layout = withAge.displayTextLayout(
+                                      Directionality.of(context),
+                                    );
                                     return Text(
-                                      l10n.getString(
-                                        'generalNameAge',
-                                        params: {
-                                          'name': name,
-                                          'age': age.toString(),
-                                        },
-                                      ),
+                                      withAge,
+                                      textAlign: layout.textAlign,
+                                      textDirection: layout.textDirection,
                                       style: const TextStyle(
                                         fontWeight: FontWeight.bold,
                                       ),

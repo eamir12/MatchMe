@@ -14,6 +14,7 @@ import 'package:extended_image/extended_image.dart';
 
 import 'package:matchme/models/hierarchy_models.dart';
 import 'package:matchme/models/photo_moderation_rejection.dart';
+import 'package:matchme/theme/app_theme_tokens.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/providers/main_intents_provider.dart';
@@ -23,6 +24,7 @@ import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/unit_provider.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/profile_completeness.dart';
+import 'package:matchme/utils/unit_utils.dart';
 import 'package:matchme/utils/profile_wizard_page_map.dart';
 import 'package:matchme/utils/zodiac.dart';
 import 'package:matchme/screens/profile/request_change_dialog.dart';
@@ -115,6 +117,53 @@ class _WizardFieldLegend extends StatelessWidget {
             child: Text(
               l10n.getString('profileWizardRequiredLegend'),
               style: style,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Warning shown in the skip-confirmation dialog when the skipped page holds
+// voluntary fields that participate in matching filters.
+class _SkipMatchingWarning extends StatelessWidget {
+  final String message;
+
+  const _SkipMatchingWarning({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final foreground = isDark ? Colors.amber.shade100 : Colors.orange.shade900;
+    return Container(
+      padding: const EdgeInsets.all(12.0),
+      decoration: BoxDecoration(
+        color: isDark
+            ? Colors.orange.withValues(alpha: 0.16)
+            : Colors.orange.shade50,
+        borderRadius: BorderRadius.circular(8.0),
+        border: Border.all(
+          color: isDark
+              ? Colors.orange.shade300.withValues(alpha: 0.5)
+              : Colors.orange.shade200,
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.warning_amber_rounded,
+            size: 20.0,
+            color: isDark ? Colors.amber.shade200 : Colors.orange.shade800,
+          ),
+          const SizedBox(width: 8.0),
+          Expanded(
+            child: Text(
+              message,
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: foreground),
             ),
           ),
         ],
@@ -686,7 +735,11 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     final key = isSocial
         ? 'profileWizardInterestMaxCategoriesSocial'
         : 'profileWizardInterestMaxCategoriesBusiness';
-    final text = l10n.getString(key, params: {'limit': '$limit'});
+    final text = l10n.getPluralString(
+      key,
+      limit,
+      countParam: 'limit',
+    );
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(text)));
@@ -711,12 +764,11 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            l10n.getString(
+            l10n.getPluralString(
               'profileWizardSubIntentMax',
-              params: {
-                'intent': l10n.getString(intent.translationKey),
-                'max': '$_maxSubIntents',
-              },
+              _maxSubIntents,
+              countParam: 'max',
+              params: {'intent': l10n.getString(intent.translationKey)},
             ),
           ),
         ),
@@ -1981,18 +2033,22 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
       final intentName = l10n.getString(intent.translationKey);
       if (subs.length < _minSubIntents) {
         return _ProfileWizardValidationIssue(
-          l10n.getString(
+          l10n.getPluralString(
             'profileWizardSubIntentMin',
-            params: {'intent': intentName, 'min': '$_minSubIntents'},
+            _minSubIntents,
+            countParam: 'min',
+            params: {'intent': intentName},
           ),
           ProfileWizardSection.subIntents,
         );
       }
       if (subs.length > _maxSubIntents) {
         return _ProfileWizardValidationIssue(
-          l10n.getString(
+          l10n.getPluralString(
             'profileWizardSubIntentMax',
-            params: {'intent': intentName, 'max': '$_maxSubIntents'},
+            _maxSubIntents,
+            countParam: 'max',
+            params: {'intent': intentName},
           ),
           ProfileWizardSection.subIntents,
         );
@@ -2040,9 +2096,11 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
       final valueList = entry.value;
       if (valueList.length > _maxSubInterestsPer + 1) {
         return _ProfileWizardValidationIssue(
-          l10n.getString(
+          l10n.getPluralString(
             'profileWizardCategorySubInterestExceeded',
-            params: {'category': entry.key, 'max': '$_maxSubInterestsPer'},
+            _maxSubInterestsPer,
+            countParam: 'max',
+            params: {'category': entry.key},
           ),
           p.personalInterests.containsKey(entry.key)
               ? ProfileWizardSection.personalInterests
@@ -2506,9 +2564,11 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
           messenger.showSnackBar(
             SnackBar(
               content: Text(
-                l10n.getString(
+                l10n.getPluralString(
                   'profileWizardSubIntentMin',
-                  params: {'intent': intentName, 'min': '$_minSubIntents'},
+                  _minSubIntents,
+                  countParam: 'min',
+                  params: {'intent': intentName},
                 ),
               ),
             ),
@@ -2519,9 +2579,11 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
           messenger.showSnackBar(
             SnackBar(
               content: Text(
-                l10n.getString(
+                l10n.getPluralString(
                   'profileWizardSubIntentMax',
-                  params: {'intent': intentName, 'max': '$_maxSubIntents'},
+                  _maxSubIntents,
+                  countParam: 'max',
+                  params: {'intent': intentName},
                 ),
               ),
             ),
@@ -2827,6 +2889,10 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     int currentPage,
   ) async {
     final pageMap = _profileWizardPageMap(p);
+    // Some voluntary fields feed the matching filters. When the skipped page
+    // left any of them blank, the dialog warns that matches filtering on those
+    // fields may exclude this user.
+    var showMatchingWarning = false;
     switch (pageMap.sectionForPage(currentPage)) {
       case ProfileWizardSection.details:
         // With a business intent, occupation/education are mandatory and the
@@ -2839,6 +2905,11 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         }
         if ((p.occupation ?? '').trim().isNotEmpty) return true;
         if ((p.education ?? '').trim().isNotEmpty) return true;
+        // Only height is used by match filters on this page, and it is only
+        // collected for the Romantic intent.
+        showMatchingWarning = p.activeModes.any(
+          (m) => _normalizeKey(m) == 'romantic',
+        );
         break;
       case ProfileWizardSection.lifestyle:
         final lf = p.lifestyle ?? const <String, dynamic>{};
@@ -2850,12 +2921,14 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             has('diet')) {
           return true;
         }
+        showMatchingWarning = true;
         break;
       case ProfileWizardSection.family:
         final f = p.family ?? const <String, dynamic>{};
         if (f['has_children'] != null) return true;
         final wants = f['wants_children'];
         if (wants != null && wants.toString().trim().isNotEmpty) return true;
+        showMatchingWarning = true;
         break;
       case ProfileWizardSection.religion:
         final r = p.religion ?? const <String, dynamic>{};
@@ -2863,15 +2936,21 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             r['religion'].toString().trim().isNotEmpty) {
           return true;
         }
-        if (r['religiosity'] != null &&
-            r['religiosity'].toString().trim().isNotEmpty) {
+        if (r['denomination'] != null &&
+            r['denomination'].toString().trim().isNotEmpty) {
           return true;
         }
+        if (r['practice'] != null &&
+            r['practice'].toString().trim().isNotEmpty) {
+          return true;
+        }
+        showMatchingWarning = true;
         break;
       case ProfileWizardSection.socialLinks:
         if ((p.instagramUrl ?? '').trim().isNotEmpty) return true;
         if ((p.linkedinUrl ?? '').trim().isNotEmpty) return true;
         if ((p.facebookUrl ?? '').trim().isNotEmpty) return true;
+        // Social links are not used by matching filters.
         break;
       default:
         // Required pages and interest pages never trigger the skip confirm.
@@ -2880,14 +2959,32 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
 
     if (!mounted) return true;
     final body = l10n.getString('profileWizardSkipConfirmBody');
+    final matchingWarning = showMatchingWarning
+        ? l10n.getString('profileWizardSkipConfirmMatchingWarning')
+        : null;
     if (ref.read(voiceGuidanceEnabledProvider)) {
-      unawaited(VoiceGuidanceService.instance.speakText(body));
+      unawaited(
+        VoiceGuidanceService.instance.speakText(
+          matchingWarning == null ? body : '$body $matchingWarning',
+        ),
+      );
     }
     final skip = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
+        scrollable: true,
         title: Text(l10n.getString('profileWizardSkipConfirmTitle')),
-        content: Text(body),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(body),
+            if (matchingWarning != null) ...[
+              const SizedBox(height: 16),
+              _SkipMatchingWarning(message: matchingWarning),
+            ],
+          ],
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -3640,12 +3737,22 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     return _tryGetString(l10n, key) ?? _humanizeKey(value);
   }
 
-  String _localizedReligiosityValue(LocalizationState l10n, String value) {
+  String _localizedDenominationValue(LocalizationState l10n, String value) =>
+      _localizedBeliefFieldValue(l10n, 'denomination', value);
+
+  String _localizedPracticeValue(LocalizationState l10n, String value) =>
+      _localizedBeliefFieldValue(l10n, 'practice', value);
+
+  String _localizedBeliefFieldValue(
+    LocalizationState l10n,
+    String fieldKey,
+    String value,
+  ) {
     final opts =
         ref
             .watch(
               fieldOptionsProvider((
-                fieldKey: 'religiosity',
+                fieldKey: fieldKey,
                 context: 'profile',
               )),
             )
@@ -4325,9 +4432,10 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              l10n.getString(
+              l10n.getPluralString(
                 'profileWizardInterestMaxPerCategory',
-                params: {'max': '$_maxSubInterestsPer'},
+                _maxSubInterestsPer,
+                countParam: 'max',
               ),
             ),
           ),
@@ -4529,9 +4637,10 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text(
-                      l10n.getString(
+                      l10n.getPluralString(
                         'profileWizardInterestMaxPerCategory',
-                        params: {'max': '$_maxSubInterestsPer'},
+                        _maxSubInterestsPer,
+                        countParam: 'max',
                       ),
                     ),
                   ),
@@ -4730,7 +4839,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                 children: [
                   Expanded(
                     child: Text(
-                      l10n.getString('profileInterests'),
+                      l10n.getString('profilePersonalInterests'),
                       style: Theme.of(ctx).textTheme.headlineSmall?.copyWith(
                         fontWeight: FontWeight.bold,
                       ),
@@ -5434,7 +5543,10 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                                 child: Text(
                                   '${l10n.getString('profileZodiacSign')}: ${zodiacIcon(zodiacSign)} ${l10n.getString('zodiac${zodiacSign.capitalize()}')}',
                                   style: TextStyle(
-                                    color: Colors.purple.shade500,
+                                    color: AppThemeTokens.accentInk(
+                                      Colors.purple.shade500,
+                                      Theme.of(context).brightness,
+                                    ),
                                     fontSize: 13,
                                   ),
                                 ),
@@ -6822,9 +6934,11 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
               ),
               const SizedBox(height: 20),
               Text(
-                l10n.getString(
+                l10n.getPluralString(
                   'profileSelectSubIntentsMinMax',
-                  params: {'min': '$_minSubIntents', 'max': '$_maxSubIntents'},
+                  _maxSubIntents,
+                  countParam: 'max',
+                  params: {'min': '$_minSubIntents'},
                 ),
                 style: Theme.of(
                   ctx,
@@ -6961,7 +7075,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                   children: [
                     Expanded(
                       child: Text(
-                        l10n.getString('profileInterests'),
+                        l10n.getString('profileBusinessInterests'),
                         style: Theme.of(ctx).textTheme.headlineSmall?.copyWith(
                           fontWeight: FontWeight.bold,
                         ),
@@ -9566,13 +9680,24 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             ),
           );
         }
-        if (toVal['religiosity'] != null &&
-            (toVal['religiosity'] as String).trim().isNotEmpty) {
+        if (toVal['denomination'] != null &&
+            (toVal['denomination'] as String).trim().isNotEmpty) {
           items.add(
             Padding(
               padding: const EdgeInsets.only(left: 16, bottom: 4),
               child: Text(
-                '${l10n.getString('profileReligiosity')}: ${_localizedReligiosityValue(l10n, toVal['religiosity'] as String)}',
+                '${l10n.getString('profileDenomination')}: ${_localizedDenominationValue(l10n, toVal['denomination'] as String)}',
+              ),
+            ),
+          );
+        }
+        if (toVal['practice'] != null &&
+            (toVal['practice'] as String).trim().isNotEmpty) {
+          items.add(
+            Padding(
+              padding: const EdgeInsets.only(left: 16, bottom: 4),
+              child: Text(
+                '${l10n.getString('profileReligiousPractice')}: ${_localizedPracticeValue(l10n, toVal['practice'] as String)}',
               ),
             ),
           );
@@ -9806,10 +9931,11 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         appendIntentFilters(f, t, ik, [
           ('religions', l10n.getString('settingsReligion'), 'religion'),
           (
-            'religiosity',
-            l10n.getString('settingsReligiosity'),
-            'religiosity',
+            'denominations',
+            l10n.getString('settingsDenomination'),
+            'denomination',
           ),
+          ('practices', l10n.getString('settingsPractice'), 'practice'),
         ]);
       }
     }
@@ -10609,11 +10735,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     if (!useImperial) {
       return '$heightCm ${l10n.getString('settingsHeightCm')}';
     }
-    final totalInches = (heightCm / 2.54).round();
-    return l10n
-        .getString('profileHeightFeetInches')
-        .replaceAll('{feet}', (totalInches ~/ 12).toString())
-        .replaceAll('{inches}', (totalInches % 12).toString());
+    return formatHeightFeetInches(l10n, heightCm);
   }
 
   List<String> _orderedLanguageSkills(Iterable<String> skills) {
@@ -10738,7 +10860,14 @@ class LifestyleWizardPage extends ConsumerStatefulWidget {
 class _OptionDef {
   final String value;
   final String label;
-  const _OptionDef(this.value, this.label);
+  final String? optionKey;
+  final String? description;
+  const _OptionDef(
+    this.value,
+    this.label, {
+    this.optionKey,
+    this.description,
+  });
 }
 
 class _LifestyleWizardPageState extends ConsumerState<LifestyleWizardPage> {
@@ -10779,7 +10908,7 @@ class _LifestyleWizardPageState extends ConsumerState<LifestyleWizardPage> {
     if (_diet != null) data['diet'] = _diet;
     ref
         .read(profileEditProvider(widget.profile.id).notifier)
-        .updateLifestyle(data.isEmpty ? null : data);
+        .updateLifestyleDraft(data.isEmpty ? null : data);
   }
 
   List<_OptionDef> _profileOptions(LocalizationState l10n, String fieldKey) {
@@ -11004,7 +11133,7 @@ class _FamilyWizardPageState extends ConsumerState<FamilyWizardPage> {
     if (_wantsChildren != null) data['wants_children'] = _wantsChildren;
     ref
         .read(profileEditProvider(widget.profile.id).notifier)
-        .updateFamily(data.isEmpty ? null : data);
+        .updateFamilyDraft(data.isEmpty ? null : data);
   }
 
   List<_OptionDef> _profileOptions(LocalizationState l10n, String fieldKey) {
@@ -11262,8 +11391,18 @@ class ReligionWizardPage extends ConsumerStatefulWidget {
 }
 
 class _ReligionWizardPageState extends ConsumerState<ReligionWizardPage> {
+  /// Practice frequency options, ordered from least often to most often.
+  static const List<String> _practiceFrequencyOrder = <String>[
+    'rarely_or_never',
+    'few_times_a_year',
+    'monthly',
+    'weekly',
+    'daily',
+  ];
+
   String? _religion;
-  String? _religiosity;
+  String? _denomination;
+  String? _practice;
   bool _initializedDefaults = false;
 
   @override
@@ -11282,27 +11421,104 @@ class _ReligionWizardPageState extends ConsumerState<ReligionWizardPage> {
 
   void _syncWithProfile(UserProfile profile) {
     final religion = profile.religion;
-    if (religion != null) {
-      _religion = religion['religion'] as String?;
-      _religiosity = religion['religiosity'] as String?;
-    }
+    _religion = religion?['religion'] as String?;
+    _denomination = religion?['denomination'] as String?;
+    _practice = _showsPracticeFor(_religion)
+        ? (religion?['practice'] as String?)
+        : null;
   }
 
   void _updateParent() {
     final data = <String, dynamic>{};
     if (_religion != null) data['religion'] = _religion;
-    if (_religiosity != null) data['religiosity'] = _religiosity;
+    if (_denomination != null) data['denomination'] = _denomination;
+    if (_practice != null) data['practice'] = _practice;
     ref
         .read(profileEditProvider(widget.profile.id).notifier)
-        .updateReligion(data.isEmpty ? null : data);
+        .updateReligionDraft(data.isEmpty ? null : data);
+  }
+
+  void _setReligion(String? value) {
+    final selectedKey = value == null
+        ? null
+        : _religionOptionsForProfile()
+              .where((o) => o.profileValue == value)
+              .firstOrNull
+              ?.optionKey ??
+            value;
+    final showPractice = _showsPracticeFor(value);
+    setState(() {
+      _religion = value;
+      if (selectedKey == null ||
+          !(_denomination?.startsWith('${selectedKey}__') ?? false)) {
+        _denomination = null;
+      }
+      if (!showPractice) _practice = null;
+    });
+    _updateParent();
+  }
+
+  void _setDenomination(String? value) {
+    setState(() => _denomination = value);
+    _updateParent();
+  }
+
+  void _setPractice(String? value) {
+    setState(() => _practice = value);
+    _updateParent();
   }
 
   List<_OptionDef> _religionOptions(LocalizationState l10n) {
     return _fieldOptions(l10n, 'religion');
   }
 
-  List<_OptionDef> _religiosityOptions(LocalizationState l10n) {
-    return _fieldOptions(l10n, 'religiosity');
+  List<AppProfileOption> _religionOptionsForProfile() {
+    return ref
+            .read(
+              fieldOptionsProvider((
+                fieldKey: 'religion',
+                context: 'profile',
+              )),
+            )
+            .asData
+            ?.value ??
+        const [];
+  }
+
+  bool _showsPracticeFor(String? religion) {
+    if (religion == null || religion.trim().isEmpty) return false;
+    const hiddenKeys = {'atheist', 'agnostic', 'humanist', 'no_religion'};
+    const hiddenLabels = {
+      'atheist',
+      'agnostic',
+      'humanist',
+      'no religion',
+      'no religious affiliation',
+    };
+    final option = _religionOptionsForProfile()
+        .where((o) => o.profileValue == religion)
+        .firstOrNull;
+    final key = option?.optionKey.toLowerCase();
+    if (key != null && hiddenKeys.contains(key)) return false;
+    return !hiddenLabels.contains(religion.trim().toLowerCase());
+  }
+
+  List<_OptionDef> _denominationOptions(LocalizationState l10n) {
+    final religion = _religion;
+    if (religion == null) return const [];
+    final religionKey =
+        _religionOptionsForProfile()
+            .where((o) => o.profileValue == religion)
+            .firstOrNull
+            ?.optionKey ??
+        religion;
+    return _fieldOptions(l10n, 'denomination')
+        .where((o) => (o.optionKey ?? o.value).startsWith('${religionKey}__'))
+        .toList();
+  }
+
+  List<_OptionDef> _practiceOptions(LocalizationState l10n) {
+    return _fieldOptions(l10n, 'practice');
   }
 
   List<_OptionDef> _fieldOptions(LocalizationState l10n, String fieldKey) {
@@ -11314,14 +11530,171 @@ class _ReligionWizardPageState extends ConsumerState<ReligionWizardPage> {
             .asData
             ?.value ??
         [];
-    return opts
-        .map(
-          (o) => _OptionDef(
-            o.profileValue ?? '',
-            l10n.getString(o.profileDisplayKey),
+    return _sortedOptions(fieldKey, opts).map((o) {
+      final descriptionKey = o.profileDisplayKey.isEmpty
+          ? ''
+          : '${o.profileDisplayKey}Description';
+      return _OptionDef(
+        o.profileValue ?? '',
+        l10n.getString(o.profileDisplayKey),
+        optionKey: o.optionKey,
+        description:
+            descriptionKey.isNotEmpty && l10n.containsKey(descriptionKey)
+            ? l10n.getString(descriptionKey)
+            : null,
+      );
+    }).toList();
+  }
+
+  /// Order the options of a belief field so the list always reads the same way:
+  ///  * the catch-all "Other" option is always last, because it is the choice
+  ///    for people who do not want any of the options listed above it;
+  ///  * practice frequency runs from least often to most often.
+  List<AppProfileOption> _sortedOptions(
+    String fieldKey,
+    List<AppProfileOption> options,
+  ) {
+    final decorated = <(int, AppProfileOption)>[
+      for (var i = 0; i < options.length; i++) (i, options[i]),
+    ];
+    decorated.sort((a, b) {
+      if (fieldKey == 'practice') {
+        final byFrequency = _comparePracticeFrequency(a.$2, b.$2);
+        if (byFrequency != 0) return byFrequency;
+      }
+      final bySortOrder = a.$2.profileSortOrder.compareTo(
+        b.$2.profileSortOrder,
+      );
+      return bySortOrder != 0 ? bySortOrder : a.$1.compareTo(b.$1);
+    });
+
+    final regular = <AppProfileOption>[];
+    final catchAll = <AppProfileOption>[];
+    for (final entry in decorated) {
+      (_isCatchAllOption(entry.$2) ? catchAll : regular).add(entry.$2);
+    }
+    return [...regular, ...catchAll];
+  }
+
+  /// "Other" is the catch-all option of a field (e.g. `other` for religion,
+  /// `christianity__other` for a denomination).
+  bool _isCatchAllOption(AppProfileOption option) {
+    final key = option.optionKey.toLowerCase();
+    if (key == 'other' || key.endsWith('__other')) return true;
+    return option.profileDisplayKey.toLowerCase().endsWith('other');
+  }
+
+  /// Compares two practice options on the "least often → most often" scale.
+  /// Options that are not part of the known scale are listed after it.
+  int _comparePracticeFrequency(AppProfileOption a, AppProfileOption b) {
+    final aIndex = _practiceFrequencyIndex(a);
+    final bIndex = _practiceFrequencyIndex(b);
+    if (aIndex < 0 && bIndex < 0) return 0;
+    if (aIndex < 0) return 1;
+    if (bIndex < 0) return -1;
+    return aIndex.compareTo(bIndex);
+  }
+
+  int _practiceFrequencyIndex(AppProfileOption option) {
+    final index = _practiceFrequencyOrder.indexOf(
+      option.optionKey.toLowerCase(),
+    );
+    if (index >= 0) return index;
+    return _practiceFrequencyOrder.indexOf(
+      (option.profileValue ?? '').toLowerCase(),
+    );
+  }
+
+  Future<void> _showOptionDescriptions({
+    required LocalizationState l10n,
+    required String fieldKey,
+    required String title,
+    required List<_OptionDef> options,
+    required String? selected,
+    required ValueChanged<String?> onChanged,
+  }) async {
+    final described = options
+        .where((option) => option.description?.isNotEmpty == true)
+        .toList(growable: false);
+    if (described.isEmpty) return;
+
+    final chosen = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      useSafeArea: true,
+      builder: (sheetContext) {
+        final theme = Theme.of(sheetContext);
+        return SafeArea(
+          child: SizedBox(
+            height: MediaQuery.sizeOf(sheetContext).height * 0.75,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                  child: Text(
+                    title,
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: ListView.separated(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    itemCount: described.length,
+                    separatorBuilder: (_, _) => const Divider(height: 1),
+                    itemBuilder: (context, index) {
+                      final option = described[index];
+                      final isSelected = selected == option.value;
+                      return ListTile(
+                        key: ValueKey(
+                          '${fieldKey}_description_${option.value}',
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 4,
+                        ),
+                        title: Text(
+                          option.label,
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        subtitle: Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            option.description!,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              height: 1.35,
+                            ),
+                          ),
+                        ),
+                        trailing: isSelected
+                            ? Icon(
+                                Icons.check_circle,
+                                color: theme.colorScheme.primary,
+                              )
+                            : null,
+                        onTap: () =>
+                            Navigator.of(sheetContext).pop(option.value),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
           ),
-        )
-        .toList();
+        );
+      },
+    );
+
+    if (chosen != null && chosen != selected) {
+      onChanged(chosen);
+    }
   }
 
   @override
@@ -11333,15 +11706,20 @@ class _ReligionWizardPageState extends ConsumerState<ReligionWizardPage> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
           final religion = widget.profile.religion;
-          if (religion != null) {
-            setState(() {
-              _religion = religion['religion'] as String?;
-              _religiosity = religion['religiosity'] as String?;
-            });
-          }
+          final religionValue = religion?['religion'] as String?;
+          setState(() {
+            _religion = religionValue;
+            _denomination = religion?['denomination'] as String?;
+            _practice = _showsPracticeFor(religionValue)
+                ? (religion?['practice'] as String?)
+                : null;
+          });
         }
       });
     }
+
+    final denominationOptions = _denominationOptions(l10n);
+    final showPractice = _showsPracticeFor(_religion);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 24.0),
@@ -11380,13 +11758,17 @@ class _ReligionWizardPageState extends ConsumerState<ReligionWizardPage> {
           _WizardFieldLegend(l10n: l10n, allOptional: true),
           const SizedBox(height: 20),
 
-          // Religion choice chips
           _buildReligionChips(l10n),
 
-          const SizedBox(height: 24),
+          if (denominationOptions.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            _buildDenominationChips(l10n, denominationOptions),
+          ],
 
-          // Degree religious / spiritual chips
-          _buildReligiosityChips(l10n),
+          if (showPractice) ...[
+            const SizedBox(height: 24),
+            _buildPracticeChips(l10n),
+          ],
 
           const SizedBox(height: 60),
         ],
@@ -11395,91 +11777,89 @@ class _ReligionWizardPageState extends ConsumerState<ReligionWizardPage> {
   }
 
   Widget _buildReligionChips(LocalizationState l10n) {
-    final religionOptions = _religionOptions(l10n);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          _optionalFieldLabel(l10n, 'profileReligion'),
-          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-        ),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            ChoiceChip(
-              label: Text(l10n.getString('settingsReligionAny')),
-              selected: _religion == null,
-              onSelected: (_) {
-                setState(() => _religion = null);
-                _updateParent();
-              },
-              selectedColor: Theme.of(
-                context,
-              ).colorScheme.primary.withValues(alpha: 0.15),
-              backgroundColor: Theme.of(
-                context,
-              ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
-              shape: StadiumBorder(
-                side: BorderSide(
-                  color: _religion == null
-                      ? Theme.of(context).colorScheme.primary
-                      : Theme.of(context).dividerColor,
-                ),
-              ),
-            ),
-            ...religionOptions.map((opt) {
-              final isSelected = _religion == opt.value;
-              return ChoiceChip(
-                label: Text(opt.label),
-                selected: isSelected,
-                onSelected: (_) {
-                  setState(() => _religion = isSelected ? null : opt.value);
-                  _updateParent();
-                },
-                selectedColor: Theme.of(
-                  context,
-                ).colorScheme.primary.withValues(alpha: 0.15),
-                backgroundColor: Theme.of(
-                  context,
-                ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
-                shape: StadiumBorder(
-                  side: BorderSide(
-                    color: isSelected
-                        ? Theme.of(context).colorScheme.primary
-                        : Theme.of(context).dividerColor,
-                  ),
-                ),
-              );
-            }),
-          ],
-        ),
-      ],
+    return _buildOptionalChips(
+      l10n: l10n,
+      fieldKey: 'profileReligion',
+      labelKey: 'profileReligion',
+      options: _religionOptions(l10n),
+      selected: _religion,
+      onChanged: _setReligion,
     );
   }
 
-  Widget _buildReligiosityChips(LocalizationState l10n) {
-    final religiosityOptions = _religiosityOptions(l10n);
+  Widget _buildDenominationChips(
+    LocalizationState l10n,
+    List<_OptionDef> options,
+  ) {
+    return _buildOptionalChips(
+      l10n: l10n,
+      fieldKey: 'profileDenomination',
+      labelKey: 'profileWizardDenominationQuestion',
+      options: options,
+      selected: _denomination,
+      onChanged: _setDenomination,
+    );
+  }
+
+  Widget _buildPracticeChips(LocalizationState l10n) {
+    return _buildOptionalChips(
+      l10n: l10n,
+      fieldKey: 'profileReligiousPractice',
+      labelKey: 'profileWizardPracticeQuestion',
+      options: _practiceOptions(l10n),
+      selected: _practice,
+      onChanged: _setPractice,
+    );
+  }
+
+  Widget _buildOptionalChips({
+    required LocalizationState l10n,
+    required String fieldKey,
+    required String labelKey,
+    required List<_OptionDef> options,
+    required String? selected,
+    required ValueChanged<String?> onChanged,
+  }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          _optionalFieldLabel(l10n, 'profileWizardReligiosityQuestion'),
+          _optionalFieldLabel(l10n, labelKey),
           style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
         ),
+        if (options.any((opt) => opt.description?.isNotEmpty == true))
+          Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: TextButton.icon(
+              key: ValueKey('${fieldKey}_help'),
+              onPressed: () => _showOptionDescriptions(
+                l10n: l10n,
+                fieldKey: fieldKey,
+                title: _optionalFieldLabel(l10n, labelKey),
+                options: options,
+                selected: selected,
+                onChanged: onChanged,
+              ),
+              icon: const Icon(Icons.info_outline, size: 16),
+              label: Text(l10n.getString('religionOptionHelp')),
+              style: TextButton.styleFrom(
+                minimumSize: const Size(0, 32),
+                padding: const EdgeInsetsDirectional.only(end: 8),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ),
+          ),
         const SizedBox(height: 8),
         Wrap(
           spacing: 8,
           runSpacing: 8,
-          children: [
-            ChoiceChip(
-              label: Text(l10n.getString('religiosityNotSpecified')),
-              selected: _religiosity == null,
-              onSelected: (_) {
-                setState(() => _religiosity = null);
-                _updateParent();
-              },
+          children: options.map((opt) {
+            final isSelected = selected == opt.value;
+            return ChoiceChip(
+              key: ValueKey('${fieldKey}_${opt.value}'),
+              label: Text(opt.label),
+              selected: isSelected,
+              onSelected: (_) => onChanged(isSelected ? null : opt.value),
               selectedColor: Theme.of(
                 context,
               ).colorScheme.primary.withValues(alpha: 0.15),
@@ -11488,37 +11868,13 @@ class _ReligionWizardPageState extends ConsumerState<ReligionWizardPage> {
               ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
               shape: StadiumBorder(
                 side: BorderSide(
-                  color: _religiosity == null
+                  color: isSelected
                       ? Theme.of(context).colorScheme.primary
                       : Theme.of(context).dividerColor,
                 ),
               ),
-            ),
-            ...religiosityOptions.map((opt) {
-              final isSelected = _religiosity == opt.value;
-              return ChoiceChip(
-                label: Text(opt.label),
-                selected: isSelected,
-                onSelected: (_) {
-                  setState(() => _religiosity = isSelected ? null : opt.value);
-                  _updateParent();
-                },
-                selectedColor: Theme.of(
-                  context,
-                ).colorScheme.primary.withValues(alpha: 0.15),
-                backgroundColor: Theme.of(
-                  context,
-                ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
-                shape: StadiumBorder(
-                  side: BorderSide(
-                    color: isSelected
-                        ? Theme.of(context).colorScheme.primary
-                        : Theme.of(context).dividerColor,
-                  ),
-                ),
-              );
-            }),
-          ],
+            );
+          }).toList(),
         ),
       ],
     );
@@ -11635,7 +11991,8 @@ class _UnifiedMatchPreferencesWizardPageState
       if (_intentReligion(ik) && !_religionFilters.containsKey(ik)) {
         _religionFilters[ik] = {
           'religions': ['any'],
-          'religiosity': ['any'],
+          'denominations': ['any'],
+          'practices': ['any'],
         };
         changed = true;
       }
@@ -11692,11 +12049,7 @@ class _UnifiedMatchPreferencesWizardPageState
     if (!useImperial) {
       return '$heightCm ${l10n.getString('settingsHeightCm')}';
     }
-    final totalInches = (heightCm / 2.54).round();
-    return l10n
-        .getString('profileHeightFeetInches')
-        .replaceAll('{feet}', (totalInches ~/ 12).toString())
-        .replaceAll('{inches}', (totalInches % 12).toString());
+    return formatHeightFeetInches(l10n, heightCm);
   }
 
   @override
@@ -11805,6 +12158,15 @@ class _UnifiedMatchPreferencesWizardPageState
     final intentLifestyle = _lifestyleFilters[ik] ?? {};
     final intentFamily = _familyFilters[ik] ?? {};
     final intentReligion = _religionFilters[ik] ?? {};
+    final selectedReligions = _getListField(
+      intentReligion,
+      'religions',
+      'religion',
+    ).where((r) => r != 'any').toSet();
+    final denominationOptions = _denominationFilterOptions(
+      l10n,
+      selectedReligions,
+    );
 
     final isRomantic = ik.toLowerCase().contains('romantic');
     final isActivity = ik.toLowerCase().contains('activity');
@@ -12105,34 +12467,44 @@ class _UnifiedMatchPreferencesWizardPageState
               icon: Icons.auto_awesome_outlined,
               children: [
                 _buildMultiFilterRow(
-                  '',
+                  l10n.getString('settingsReligion'),
                   _filterOptions(l10n, 'religion'),
                   _getListField(intentReligion, 'religions', 'religion'),
-                  (v) {
-                    final m = Map<String, dynamic>.from(
-                      _religionFilters[ik] ?? {},
-                    );
-                    m['religions'] = v;
-                    _religionFilters[ik] = m;
-                    _updateParent();
-                    setState(() {});
-                  },
+                  (v) => _setReligionFilter(ik, v),
                   l10n,
                 ),
+                if (denominationOptions.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  _buildMultiFilterRow(
+                    l10n.getString('settingsDenomination'),
+                    denominationOptions,
+                    _getListField(
+                      intentReligion,
+                      'denominations',
+                      'denomination',
+                    ),
+                    (v) {
+                      final m = Map<String, dynamic>.from(
+                        _religionFilters[ik] ?? {},
+                      );
+                      m['denominations'] = v;
+                      _religionFilters[ik] = m;
+                      _updateParent();
+                      setState(() {});
+                    },
+                    l10n,
+                  ),
+                ],
                 const SizedBox(height: 12),
                 _buildMultiFilterRow(
-                  l10n.getString('settingsReligiosity'),
-                  _filterOptions(l10n, 'religiosity'),
-                  _getListField(
-                    intentReligion,
-                    'religiosity',
-                    'religiosity',
-                  ),
+                  l10n.getString('settingsPractice'),
+                  _filterOptions(l10n, 'practice'),
+                  _getListField(intentReligion, 'practices', 'practice'),
                   (v) {
                     final m = Map<String, dynamic>.from(
                       _religionFilters[ik] ?? {},
                     );
-                    m['religiosity'] = v;
+                    m['practices'] = v;
                     _religionFilters[ik] = m;
                     _updateParent();
                     setState(() {});
@@ -12262,6 +12634,68 @@ class _UnifiedMatchPreferencesWizardPageState
     );
   }
 
+  void _setReligionFilter(String ik, List<String> values) {
+    final m = Map<String, dynamic>.from(_religionFilters[ik] ?? {});
+    m['religions'] = values;
+    final selected = values.where((r) => r != 'any').toSet();
+    final religionOptions =
+        ref
+            .read(
+              fieldOptionsProvider((
+                fieldKey: 'religion',
+                context: 'filter',
+              )),
+            )
+            .asData
+            ?.value ??
+        const [];
+    final keyByValue = {
+      for (final o in religionOptions)
+        if (o.filterValue != null) o.filterValue!: o.optionKey,
+    };
+    final selectedKeys = selected.map((r) => keyByValue[r] ?? r).toSet();
+    final current = _getListField(
+      m,
+      'denominations',
+      'denomination',
+    ).where((d) => d != 'any');
+    final valid = current
+        .where((d) => selectedKeys.any((r) => d.startsWith('${r}__')))
+        .toList();
+    m['denominations'] = valid.isEmpty ? ['any'] : valid;
+    _religionFilters[ik] = m;
+    _updateParent();
+    setState(() {});
+  }
+
+  List<_ChipOption> _denominationFilterOptions(
+    LocalizationState l10n,
+    Set<String> selectedReligions,
+  ) {
+    if (selectedReligions.isEmpty) return const [];
+    final religionOptions = _filterOptions(l10n, 'religion');
+    final keyByValue = {
+      for (final o in religionOptions) o.value: o.optionKey ?? o.value,
+    };
+    final labelByKey = {
+      for (final o in religionOptions) (o.optionKey ?? o.value): o.label,
+    };
+    final selectedKeys = selectedReligions
+        .map((r) => keyByValue[r] ?? r)
+        .toSet();
+    final showParent = selectedReligions.length > 1;
+    return _filterOptions(l10n, 'denomination')
+        .where((o) => selectedKeys.contains(o.value.split('__').first))
+        .map((o) {
+          if (!showParent) return o;
+          final parentKey = o.value.split('__').first;
+          final parentLabel = labelByKey[parentKey];
+          if (parentLabel == null || parentLabel.isEmpty) return o;
+          return _ChipOption(o.value, '$parentLabel: ${o.label}');
+        })
+        .toList();
+  }
+
   List<String> _getListField(
     Map<String, dynamic> map,
     String key,
@@ -12291,11 +12725,13 @@ class _UnifiedMatchPreferencesWizardPageState
       final label = (val.isNotEmpty && val != key)
           ? val
           : _humanizeSimple(o.filterValue ?? '');
-      return _chipOpt(o.filterValue ?? '', label);
+      return _ChipOption(
+        o.filterValue ?? '',
+        label,
+        optionKey: o.optionKey,
+      );
     }).toList();
   }
-
-  _ChipOption _chipOpt(String value, String label) => _ChipOption(value, label);
 
   String _humanizeSimple(String value) {
     if (value.isEmpty) return '';
@@ -12306,5 +12742,7 @@ class _UnifiedMatchPreferencesWizardPageState
 class _ChipOption {
   final String value;
   final String label;
-  const _ChipOption(this.value, this.label);
+  final String? optionKey;
+  const _ChipOption(this.value, this.label, {this.optionKey});
 }
+

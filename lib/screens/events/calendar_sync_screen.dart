@@ -1873,13 +1873,11 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            l10n.getString(
-              'calendarSyncDeviceSummaryBody',
-              params: {
-                'accounts': '${accountLabels.length}',
-                'events': '${_events.length}',
-                'selected': '$selectedCount',
-              },
+            _buildDeviceSummaryText(
+              l10n,
+              accountLabels.length,
+              _events.length,
+              selectedCount,
             ),
           ),
         ],
@@ -2860,14 +2858,34 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
   }
 
   String _buildEventCountText(LocalizationState l10n, int count) {
-    final countText = l10n.formatCount(count);
-    final eventWord = count == 1
-        ? l10n.getString('onlineProvidersEventSingular')
-        : l10n.getString('onlineProvidersEvents');
-    if (l10n.currentLocale.languageCode == 'he' && count == 1) {
-      return '$eventWord $countText';
-    }
-    return '$countText $eventWord';
+    // The word order is the translation's business, so the count and the noun
+    // travel together in one string.
+    return l10n.getPluralString(
+      'onlineProvidersEventCount',
+      count,
+      displayValue: l10n.formatCount(count),
+    );
+  }
+
+  /// The counters of the device summary line.
+  ///
+  /// Every counter is translated on its own so each one can pick the right
+  /// plural form ("1 account found", not "1 accounts found").
+  String _buildDeviceSummaryText(
+    LocalizationState l10n,
+    int accountCount,
+    int eventCount,
+    int selectedCount,
+  ) {
+    final parts = <String>[
+      l10n.getPluralString('calendarSyncDeviceSummaryAccounts', accountCount),
+      l10n.getPluralString('calendarSyncDeviceSummaryEvents', eventCount),
+      l10n.getString(
+        'calendarSyncDeviceSummarySelected',
+        params: {'count': '$selectedCount'},
+      ),
+    ];
+    return parts.join(l10n.getString('summarySeparator'));
   }
 
   int _stableColorHash(String value) {

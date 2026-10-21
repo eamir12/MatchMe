@@ -1951,14 +1951,7 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            l10n.getString(
-              'onlineProvidersSummaryBody',
-              params: {
-                'accounts': l10n.formatCount(accountCount),
-                'events': l10n.formatCount(eventCount),
-                'selected': l10n.formatCount(selectedCount),
-              },
-            ),
+            _buildSummaryText(l10n, accountCount, eventCount, selectedCount),
           ),
         ],
       ),
@@ -2135,14 +2128,42 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
     ConnectedOnlineAccount account,
   ) {
     final count = account.events.length;
-    final countText = l10n.formatCount(count);
-    final eventWord = count == 1
-        ? l10n.getString('onlineProvidersEventSingular')
-        : l10n.getString('onlineProvidersEvents');
-    if (l10n.currentLocale.languageCode == 'he' && count == 1) {
-      return '$eventWord $countText';
-    }
-    return '$countText $eventWord';
+    // The word order is the translation's business, so the count and the noun
+    // travel together in one string.
+    return l10n.getPluralString(
+      'onlineProvidersEventCount',
+      count,
+      displayValue: l10n.formatCount(count),
+    );
+  }
+
+  /// The counters of the summary line.
+  ///
+  /// Every counter is translated on its own so each one can pick the right
+  /// plural form ("1 account connected", not "1 accounts connected").
+  String _buildSummaryText(
+    LocalizationState l10n,
+    int accountCount,
+    int eventCount,
+    int selectedCount,
+  ) {
+    final parts = <String>[
+      l10n.getPluralString(
+        'onlineProvidersSummaryAccounts',
+        accountCount,
+        displayValue: l10n.formatCount(accountCount),
+      ),
+      l10n.getPluralString(
+        'onlineProvidersSummaryEvents',
+        eventCount,
+        displayValue: l10n.formatCount(eventCount),
+      ),
+      l10n.getString(
+        'onlineProvidersSummarySelected',
+        params: {'count': l10n.formatCount(selectedCount)},
+      ),
+    ];
+    return parts.join(l10n.getString('summarySeparator'));
   }
 
   Widget _buildAccountSection(

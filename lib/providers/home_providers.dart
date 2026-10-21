@@ -23,9 +23,12 @@ import 'package:matchme/services/user_activity_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:matchme/utils/encrypted_text_guard.dart';
 import 'package:matchme/utils/offline_utils.dart';
+import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/translation_edit_marker.dart';
 import 'package:matchme/utils/notification_limits.dart';
 import 'package:matchme/utils/nearby_radius_utils.dart';
+import 'package:matchme/providers/current_location_provider.dart';
+import 'package:matchme/providers/pinned_location_provider.dart';
 import 'package:matchme/services/offline_cache_manager.dart';
 import 'package:matchme/services/encrypted_notification_preview_service.dart';
 import 'package:matchme/services/supabase_realtime_manager.dart';
@@ -47,6 +50,8 @@ final supabase = Supabase.instance.client;
 // app in place of the actual sender.
 // Capitalizes first letters regardless of input casing and handles multiple
 // first/last names (e.g. Spanish names).
+// The result carries the directional mark of the name's own script so the
+// trailing period stays glued to the initial in a Hebrew UI too.
 String formatSenderNameForNotification(String fullName) {
   if (fullName.isEmpty) return 'Unknown User';
 
@@ -68,10 +73,7 @@ String formatSenderNameForNotification(String fullName) {
         .join('-');
   }
 
-  final cleaned = fullName.replaceAll(
-    RegExp('[\u200E\u200F\u202A-\u202E]'),
-    '',
-  );
+  final cleaned = fullName.replaceAll(bidiControls, '');
   final parts = cleaned
       .trim()
       .split(RegExp(r'\s+'))
@@ -79,13 +81,14 @@ String formatSenderNameForNotification(String fullName) {
       .toList();
   if (parts.isEmpty) return 'Unknown User';
   if (parts.length == 1) {
-    return capWord(parts[0]); // Just first name if no last name
+    return capWord(parts[0])
+        .withDirectionalMarks(); // Just first name if no last name
   }
 
   // First name + first letter of last name with period
   final firstName = capWord(parts[0]);
   final lastInitial = parts[parts.length - 1][0].toUpperCase();
-  return '$firstName $lastInitial.';
+  return '$firstName $lastInitial.'.withDirectionalMarks();
 }
 
 // Resolves the chat counterpart's display name for notifications.
@@ -3455,6 +3458,31 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
   });
 });
 
+/// The position the nearby count must be measured from: the active pin when
+/// there is one (the nearby map centres on the pin), otherwise the device's
+/// live fix.
+///
+/// This mirrors how the nearby map queries its cells
+/// (get_visible_online_user_map_cells is called with the device position),
+/// so the nearby number and the nearby map always describe the same circle.
+/// Returns null when no position is known - the RPC then falls back to the
+/// server's own copy of the user's position.
+({double latitude, double longitude})? resolveNearbyCountAnchor(Ref ref) {
+  try {
+    final pin = ref.read(pinnedLocationProvider);
+    if (pin.isActive && pin.latitude != null && pin.longitude != null) {
+      return (latitude: pin.latitude!, longitude: pin.longitude!);
+    }
+    final position = ref.read(currentLocationProvider);
+    if (position != null) {
+      return (latitude: position.latitude, longitude: position.longitude);
+    }
+  } catch (_) {
+    // Best effort: without a position the RPC uses its server-side anchor.
+  }
+  return null;
+}
+
 // Dashboard stats provider - live-only counters with real-time updates
 /// Fetches the live dashboard stats (online + nearby) for [userId] directly
 /// from the server. Returns the stats map plus the radius actually used for
@@ -3476,6 +3504,7 @@ Future<({Map<String, int?> stats, int radiusMeters, double radiusKm})>
 _fetchLiveDashboardStats(
   String userId, {
   void Function(Map<String, int?> partial)? onOnlineReady,
+  ({double latitude, double longitude})? center,
 }) async {
   // One round trip for the online number, self completeness and the user's
   // match radius (20262111 get_online_dashboard_stats). No config Edge
@@ -3503,10 +3532,20 @@ _fetchLiveDashboardStats(
     statsMap['match_radius_default'],
   );
   final userRadiusKm = nearbyRadiusKilometers(userRadiusMeters);
+  // Anchor the count on the position the user is actually looking from (the
+  // device's live fix, or the active pin). Without it the RPC falls back to
+  // the server's own copy of the user's position, which can be missing
+  // (count 0) or stale - and then the nearby number disagrees with the
+  // nearby map, which is anchored on the device.
   final nearbyCount =
       ((await supabase.rpc(
             'get_nearby_users_count',
-            params: {'p_user_id': userId, 'p_radius_km': userRadiusKm},
+            params: {
+              'p_user_id': userId,
+              'p_radius_km': userRadiusKm,
+              if (center != null) 'p_center_lat': center.latitude,
+              if (center != null) 'p_center_lng': center.longitude,
+            },
           ))
           as int?) ??
       0;
@@ -3537,11 +3576,14 @@ DateTime? _lastDashboardResumeStatsRefreshAt;
 /// Pre-fetches live dashboard stats for [userId] right after an auth event
 /// (signedIn / cold-start initialSession), before the home screen builds, so
 /// the online count is displayed immediately when the dashboard first renders.
-Future<void> warmDashboardStatsForUser(String userId) async {
+Future<void> warmDashboardStatsForUser(
+  String userId, {
+  ({double latitude, double longitude})? center,
+}) async {
   if (userId.isEmpty) return;
   if (supabase.auth.currentSession == null) return;
   try {
-    final live = await _fetchLiveDashboardStats(userId);
+    final live = await _fetchLiveDashboardStats(userId, center: center);
     _warmDashboardStatsByUser[userId] = (stats: live.stats, at: DateTime.now());
   } catch (e) {
     _warmDashboardStatsByUser.remove(userId);
@@ -3695,6 +3737,9 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
           };
           emitIfChanged(merged);
         },
+        // Anchor the nearby count on the position the user is looking from,
+        // so it counts the same circle the nearby map draws.
+        center: resolveNearbyCountAnchor(ref),
       );
       final freshStats = live.stats;
       final userRadiusMeters = live.radiusMeters;

@@ -87,7 +87,7 @@ bool _isMissing(String value, String key) {
 
 String _tryKeys(
   List<String> keys,
-  String Function(String, {Map<String, String>? params}) t, {
+  String Function(String, {Map<String, String>? params, String? pluralParam}) t, {
   String? fallback,
 }) {
   for (final k in keys) {
@@ -99,7 +99,7 @@ String _tryKeys(
 
 String _localizeIntent(
   String raw,
-  String Function(String, {Map<String, String>? params}) t,
+  String Function(String, {Map<String, String>? params, String? pluralParam}) t,
 ) {
   final trimmed = raw.trim();
   if (trimmed.isEmpty) return '';
@@ -151,7 +151,7 @@ IconData _intentIcon(String raw) {
 
 String _localizeSubIntent(
   String raw,
-  String Function(String, {Map<String, String>? params}) t,
+  String Function(String, {Map<String, String>? params, String? pluralParam}) t,
 ) {
   final trimmed = raw.trim();
   if (trimmed.isEmpty) return '';
@@ -215,7 +215,7 @@ String _localizeSubIntent(
 
 String _localizeGender(
   String raw,
-  String Function(String, {Map<String, String>? params}) t,
+  String Function(String, {Map<String, String>? params, String? pluralParam}) t,
 ) {
   final trimmed = raw.trim().toLowerCase();
   if (trimmed.isEmpty) return '';
@@ -230,7 +230,7 @@ String _localizeGender(
 
 String _localizeIntentList(
   List<String> raws,
-  String Function(String, {Map<String, String>? params}) t,
+  String Function(String, {Map<String, String>? params, String? pluralParam}) t,
 ) => raws
     .map((r) => _localizeIntent(r, t))
     .where((s) => s.isNotEmpty)
@@ -250,7 +250,7 @@ bool _isRtlText(String text) {
 
 String _localizeMatchType(
   String raw,
-  String Function(String, {Map<String, String>? params}) t,
+  String Function(String, {Map<String, String>? params, String? pluralParam}) t,
 ) {
   final trimmed = raw.trim().toLowerCase();
   if (trimmed.isEmpty) return '';
@@ -287,7 +287,7 @@ String _pascal(String s) {
 String _localizeFilterValue(
   String raw,
   String key,
-  String Function(String, {Map<String, String>? params}) t,
+  String Function(String, {Map<String, String>? params, String? pluralParam}) t,
 ) {
   final lower = raw.trim().toLowerCase();
   if (lower.isEmpty || lower == 'any' || lower == '[]') {
@@ -349,7 +349,7 @@ String _localizeFilterValue(
 
 String _localizeDomainType(
   String raw,
-  String Function(String, {Map<String, String>? params}) t,
+  String Function(String, {Map<String, String>? params, String? pluralParam}) t,
 ) {
   final lower = raw.trim().toLowerCase();
   if (lower == 'personal') {
@@ -380,7 +380,7 @@ String _localizeDomainType(
 
 String _localizeInterestCategory(
   String raw,
-  String Function(String, {Map<String, String>? params}) t,
+  String Function(String, {Map<String, String>? params, String? pluralParam}) t,
 ) {
   final trimmed = raw.trim();
   if (trimmed.isEmpty) return '';
@@ -417,7 +417,7 @@ String _localizeInterestCategory(
 
 String _localizeInterestSub(
   String raw,
-  String Function(String, {Map<String, String>? params}) t, {
+  String Function(String, {Map<String, String>? params, String? pluralParam}) t, {
   String? category,
 }) {
   final trimmed = raw.trim();
@@ -481,7 +481,7 @@ String _localizeInterestSub(
 String _formatValueList(
   dynamic val,
   String key,
-  String Function(String, {Map<String, String>? params}) t,
+  String Function(String, {Map<String, String>? params, String? pluralParam}) t,
 ) {
   final notSet = _tryKeys(['matchInspectorEmpty'], t, fallback: 'Not set');
   final anyStr = _tryKeys(
@@ -522,7 +522,7 @@ String _formatValueList(
 
 String _formatAgePref(
   dynamic val,
-  String Function(String, {Map<String, String>? params}) t,
+  String Function(String, {Map<String, String>? params, String? pluralParam}) t,
 ) {
   if (val is List && val.length >= 2) {
     return '${val[0]} – ${val[1]}';
@@ -533,7 +533,7 @@ String _formatAgePref(
 /// Localizes a system-level visibility status value (visible / hidden / ghosted / etc.)
 String _localizeVisSys(
   String raw,
-  String Function(String, {Map<String, String>? params}) t,
+  String Function(String, {Map<String, String>? params, String? pluralParam}) t,
 ) {
   switch (raw.trim().toLowerCase()) {
     case 'visible':
@@ -555,7 +555,7 @@ class AdminMatchComparisonDashboard extends ConsumerStatefulWidget {
     required this.localeCode,
   });
 
-  final String Function(String key, {Map<String, String>? params}) t;
+  final String Function(String key, {Map<String, String>? params, String? pluralParam}) t;
   final String localeCode;
 
   @override
@@ -1125,7 +1125,7 @@ class _UserPickerCard extends StatelessWidget {
   final Color badgeColor;
   final Map<String, dynamic>? user;
   final String hint;
-  final String Function(String key, {Map<String, String>? params}) t;
+  final String Function(String key, {Map<String, String>? params, String? pluralParam}) t;
   final VoidCallback onTap;
   final VoidCallback? onClear;
 
@@ -1403,7 +1403,7 @@ class _UserPickerCard extends StatelessWidget {
 class _UserSearchDialog extends StatefulWidget {
   const _UserSearchDialog({required this.t, required this.searchUsers});
 
-  final String Function(String key, {Map<String, String>? params}) t;
+  final String Function(String key, {Map<String, String>? params, String? pluralParam}) t;
   final Future<List<Map<String, dynamic>>> Function(String) searchUsers;
 
   @override
@@ -1723,7 +1723,7 @@ class _EnhancedComparisonView extends StatelessWidget {
   final Map<String, dynamic> result;
   final String? selectedIntent;
   final ValueChanged<String> onSelectIntent;
-  final String Function(String key, {Map<String, String>? params}) t;
+  final String Function(String key, {Map<String, String>? params, String? pluralParam}) t;
 
   String _tr(String key, {Map<String, String>? params, String? fallback}) {
     var s = t(key, params: params);
@@ -2258,7 +2258,7 @@ class _EnvironmentalStatusCard extends StatelessWidget {
   final Map env;
   final Map userA;
   final Map userB;
-  final String Function(String key, {Map<String, String>? params}) t;
+  final String Function(String key, {Map<String, String>? params, String? pluralParam}) t;
 
   String _tr(String key, {Map<String, String>? params, String? fallback}) {
     var s = t(key, params: params);
@@ -2547,7 +2547,7 @@ class _IntentMatrixCard extends StatelessWidget {
   final Map<String, dynamic> intentData;
   final Map userA;
   final Map userB;
-  final String Function(String key, {Map<String, String>? params}) t;
+  final String Function(String key, {Map<String, String>? params, String? pluralParam}) t;
 
   String _tr(String key, {Map<String, String>? params, String? fallback}) {
     var s = t(key, params: params);
@@ -3073,7 +3073,7 @@ class _IntentMatrixCard extends StatelessWidget {
     required String bText,
     required bool passed,
     String? customVerdict,
-    required String Function(String key, {Map<String, String>? params}) t,
+    required String Function(String key, {Map<String, String>? params, String? pluralParam}) t,
     required ThemeData theme,
     required bool isEven,
   }) {
@@ -3148,7 +3148,7 @@ class _IntentMatrixCard extends StatelessWidget {
     required String label,
     required Map? data,
     required String keyName,
-    required String Function(String key, {Map<String, String>? params}) t,
+    required String Function(String key, {Map<String, String>? params, String? pluralParam}) t,
     required ThemeData theme,
     required bool isEven,
   }) {
@@ -3273,7 +3273,7 @@ class _InterestsDetail extends StatelessWidget {
   final List? overlapCats;
   final String userAName;
   final String userBName;
-  final String Function(String key, {Map<String, String>? params}) t;
+  final String Function(String key, {Map<String, String>? params, String? pluralParam}) t;
 
   String _tr(String key, {Map<String, String>? params, String? fallback}) {
     var s = t(key, params: params);

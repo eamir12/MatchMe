@@ -34,81 +34,11 @@ UserProfile _profile({
 }
 
 void main() {
-  test('religiosity filter matches only the selected degree', () {
+  test('denomination filter matches only the selected branch', () {
     final viewer = _profile(
       religionFilters: const {
         'romantic': {
-          'religiosity': ['moderately religious'],
-        },
-      },
-    );
-
-    expect(
-      viewer.isCompatibleWithFilters(
-        _profile(religion: const {'religiosity': 'Moderately religious'}),
-        'romantic',
-      ),
-      isTrue,
-    );
-    expect(
-      viewer.isCompatibleWithFilters(
-        _profile(religion: const {'religiosity': 'Very religious'}),
-        'romantic',
-      ),
-      isFalse,
-    );
-    expect(
-      viewer.isCompatibleWithFilters(
-        _profile(religion: const {'religiosity': 'Prefer not to say'}),
-        'romantic',
-      ),
-      isFalse,
-    );
-  });
-
-  test('religiosity filter rejects candidates without the field', () {
-    final viewer = _profile(
-      religionFilters: const {
-        'romantic': {
-          'religiosity': ['not religious'],
-        },
-      },
-    );
-
-    expect(
-      viewer.isCompatibleWithFilters(
-        _profile(religion: const {'religion': 'Christianity'}),
-        'romantic',
-      ),
-      isFalse,
-    );
-  });
-
-  test('any or empty religiosity filter accepts missing the field', () {
-    final anyViewer = _profile(
-      religionFilters: const {
-        'romantic': {
-          'religiosity': ['any'],
-        },
-      },
-    );
-    final emptyViewer = _profile(
-      religionFilters: const {
-        'romantic': {'religiosity': <String>[]},
-      },
-    );
-    final candidate = _profile(religion: const {'religion': 'Christianity'});
-
-    expect(anyViewer.isCompatibleWithFilters(candidate, 'romantic'), isTrue);
-    expect(emptyViewer.isCompatibleWithFilters(candidate, 'romantic'), isTrue);
-  });
-
-  test('religion and religiosity filters must both match', () {
-    final viewer = _profile(
-      religionFilters: const {
-        'romantic': {
-          'religions': ['christianity'],
-          'religiosity': ['very religious'],
+          'denominations': ['christianity__catholic'],
         },
       },
     );
@@ -118,7 +48,7 @@ void main() {
         _profile(
           religion: const {
             'religion': 'Christianity',
-            'religiosity': 'Very religious',
+            'denomination': 'christianity__catholic',
           },
         ),
         'romantic',
@@ -130,7 +60,123 @@ void main() {
         _profile(
           religion: const {
             'religion': 'Christianity',
-            'religiosity': 'Not religious',
+            'denomination': 'christianity__protestant',
+          },
+        ),
+        'romantic',
+      ),
+      isFalse,
+    );
+    expect(
+      viewer.isCompatibleWithFilters(
+        _profile(religion: const {'religion': 'Christianity'}),
+        'romantic',
+      ),
+      isFalse,
+    );
+  });
+
+  test('practice filter matches only the selected frequency', () {
+    final viewer = _profile(
+      religionFilters: const {
+        'romantic': {
+          'practices': ['weekly'],
+        },
+      },
+    );
+
+    expect(
+      viewer.isCompatibleWithFilters(
+        _profile(religion: const {'practice': 'weekly'}),
+        'romantic',
+      ),
+      isTrue,
+    );
+    expect(
+      viewer.isCompatibleWithFilters(
+        _profile(religion: const {'practice': 'daily'}),
+        'romantic',
+      ),
+      isFalse,
+    );
+    expect(
+      viewer.isCompatibleWithFilters(
+        _profile(religion: const {'religion': 'Christianity'}),
+        'romantic',
+      ),
+      isFalse,
+    );
+  });
+
+  test('any or empty belief filters accept missing fields', () {
+    final anyViewer = _profile(
+      religionFilters: const {
+        'romantic': {
+          'religions': ['any'],
+          'denominations': ['any'],
+          'practices': ['any'],
+        },
+      },
+    );
+    final emptyViewer = _profile(
+      religionFilters: const {
+        'romantic': {
+          'religions': <String>[],
+          'denominations': <String>[],
+          'practices': <String>[],
+        },
+      },
+    );
+    final candidate = _profile(religion: const {'religion': 'Christianity'});
+
+    expect(anyViewer.isCompatibleWithFilters(candidate, 'romantic'), isTrue);
+    expect(emptyViewer.isCompatibleWithFilters(candidate, 'romantic'), isTrue);
+  });
+
+  test('religion, denomination, and practice filters must all match', () {
+    final viewer = _profile(
+      religionFilters: const {
+        'romantic': {
+          'religions': ['christianity'],
+          'denominations': ['christianity__catholic'],
+          'practices': ['weekly'],
+        },
+      },
+    );
+
+    expect(
+      viewer.isCompatibleWithFilters(
+        _profile(
+          religion: const {
+            'religion': 'Christianity',
+            'denomination': 'christianity__catholic',
+            'practice': 'weekly',
+          },
+        ),
+        'romantic',
+      ),
+      isTrue,
+    );
+    expect(
+      viewer.isCompatibleWithFilters(
+        _profile(
+          religion: const {
+            'religion': 'Christianity',
+            'denomination': 'christianity__catholic',
+            'practice': 'daily',
+          },
+        ),
+        'romantic',
+      ),
+      isFalse,
+    );
+    expect(
+      viewer.isCompatibleWithFilters(
+        _profile(
+          religion: const {
+            'religion': 'Christianity',
+            'denomination': 'christianity__protestant',
+            'practice': 'weekly',
           },
         ),
         'romantic',
@@ -142,9 +188,35 @@ void main() {
         _profile(
           religion: const {
             'religion': 'Islam',
-            'religiosity': 'Very religious',
+            'denomination': 'christianity__catholic',
+            'practice': 'weekly',
           },
         ),
+        'romantic',
+      ),
+      isFalse,
+    );
+  });
+
+  test('denomination filter accepts multiple selected branches', () {
+    final viewer = _profile(
+      religionFilters: const {
+        'romantic': {
+          'denominations': ['christianity__catholic', 'islam__sunni'],
+        },
+      },
+    );
+
+    expect(
+      viewer.isCompatibleWithFilters(
+        _profile(religion: const {'denomination': 'islam__sunni'}),
+        'romantic',
+      ),
+      isTrue,
+    );
+    expect(
+      viewer.isCompatibleWithFilters(
+        _profile(religion: const {'denomination': 'islam__shia'}),
         'romantic',
       ),
       isFalse,

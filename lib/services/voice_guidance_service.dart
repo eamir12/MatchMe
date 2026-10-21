@@ -30,10 +30,38 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/services/my_user_realtime_service.dart';
 
 class VoiceGuidanceService {
-  VoiceGuidanceService._internal();
+  VoiceGuidanceService._internal() {
+    // The preference belongs to the account, so a mute on one device has to
+    // reach the others. The service - not the Riverpod wrapper - owns this
+    // listener: the wrapper is only alive while a screen watches it, and the
+    // preference gates speech in flows that never touch that screen.
+    _myUserSubscription = MyUserRealtimeService.instance.updates.listen((
+      update,
+    ) {
+      if (!update.changed('voice_guidance_enabled')) return;
+      final remote = update.row['voice_guidance_enabled'];
+      if (remote is! bool) return;
+      if (remote == _enabled) return;
+      _enabled = remote;
+      unawaited(_persistEnabled(remote));
+      if (!remote) {
+        unawaited(stop());
+      }
+    });
+  }
   static final VoiceGuidanceService instance = VoiceGuidanceService._internal();
+
+  StreamSubscription<MyUserUpdate>? _myUserSubscription;
+
+  /// Releases the realtime listener. The service normally lives for the whole
+  /// process; this exists for tests and for a hard shutdown.
+  void dispose() {
+    _myUserSubscription?.cancel();
+    _myUserSubscription = null;
+  }
 
   /// Wired from main.dart bootstrap so the service can resolve translations
   /// (same pattern as AdminBroadcastService.setProviderContainer).
@@ -153,6 +181,18 @@ class VoiceGuidanceService {
     if (!value) {
       await stop();
     }
+  }
+
+  /// Persists [value] locally without touching the server.
+  ///
+  /// Used when the change came from another device: the server already has
+  /// it, so only the local snapshot needs updating.
+  Future<void> _persistEnabled(bool value) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_prefsEnabledKey, value);
+      await prefs.remove(_prefsMutedKey);
+    } catch (_) {}
   }
 
   /// Speaks the localized string for [key]. Resolves the text through the
@@ -420,8 +460,7 @@ class VoiceGuidanceService {
     String languageCode = 'en';
     try {
       languageCode =
-          _container?.read(localizationProvider).currentLocale.languageCode ??
-          'en';
+          _container?.read(localizationProvider).contentLanguageCode ?? 'en';
     } catch (_) {}
 
     if (_tts == null) {
@@ -504,13 +543,15 @@ class VoiceGuidanceService {
 
   /// Current UI language base code (en/es/he…), used for prosody tuning and
   /// speech-text normalization.
+  ///
+  /// This follows the language of the CONTENT the app currently shows, not
+  /// the language the member picked: when the server copy of the chosen
+  /// language is unavailable the UI falls back to the bundled English
+  /// strings, and speaking those with a Hebrew voice would put the narration
+  /// out of sync with the on-screen captions.
   String _currentLanguageCode() {
     try {
-      return _container
-              ?.read(localizationProvider)
-              .currentLocale
-              .languageCode ??
-          'en';
+      return _container?.read(localizationProvider).contentLanguageCode ?? 'en';
     } catch (_) {
       return 'en';
     }

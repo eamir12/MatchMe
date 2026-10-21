@@ -32,10 +32,11 @@ String localizePromoDiscountDescription(
       );
     case 'free_days':
       final dayCount = resolvedAmount ?? 1;
-      final key = dayCount == 1
-          ? 'promoDiscountFreeDaysOneFormat'
-          : 'promoDiscountFreeDaysManyFormat';
-      return l10n.getString(key, params: {'days': '$dayCount'});
+      return l10n.getPluralString(
+        'promoDiscountFreeDaysFormat',
+        dayCount,
+        countParam: 'days',
+      );
     case 'tier_upgrade':
       return l10n.getString(
         'promoDiscountTierUpgradeFormat',
@@ -59,14 +60,18 @@ String localizePromoCodeExpiry(LocalizationState l10n, DateTime? validUntil) {
   final difference = validUntil.difference(now);
   if (difference.inDays >= 1) {
     final days = difference.inDays;
-    final key = days == 1 ? 'promoCodeExpiresInSingular' : 'promoCodeExpiresIn';
-    return l10n.getString(key, params: {'days': '$days'});
+    return l10n.getPluralString(
+      'promoCodeExpiresIn',
+      days,
+      countParam: 'days',
+    );
   }
 
   if (difference.inHours >= 1) {
-    return l10n.getString(
+    return l10n.getPluralString(
       'promoCodeExpiresInHours',
-      params: {'hours': '${difference.inHours}'},
+      difference.inHours,
+      countParam: 'hours',
     );
   }
 

@@ -68,13 +68,8 @@ class _SystemHealthHistoryScreenState
     _fetch();
   }
 
-  String t(String key, {Map<String, String>? params}) {
-    var value = widget.t(key, params: params);
-    params?.forEach((paramKey, paramValue) {
-      value = value.replaceAll('{$paramKey}', paramValue);
-    });
-    return value;
-  }
+  String t(String key, {Map<String, String>? params, String? pluralParam}) =>
+      widget.t(key, params: params, pluralParam: pluralParam);
 
   String _fmtTime(DateTime dt) {
     try {

@@ -23,7 +23,7 @@ class AdminEventImportFeedbackDashboard extends ConsumerStatefulWidget {
     required this.localeCode,
   });
 
-  final String Function(String key, {Map<String, String>? params}) t;
+  final String Function(String key, {Map<String, String>? params, String? pluralParam}) t;
   final String localeCode;
 
   @override
@@ -51,8 +51,8 @@ class _AdminEventImportFeedbackDashboardState
   RealtimeChannel? _realtimeChannel;
   Timer? _pollTimer;
 
-  String t(String key, {Map<String, String>? params}) =>
-      widget.t(key, params: params);
+  String t(String key, {Map<String, String>? params, String? pluralParam}) =>
+      widget.t(key, params: params, pluralParam: pluralParam);
 
   @override
   void initState() {

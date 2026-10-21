@@ -325,7 +325,6 @@ class MobileLocalNotificationService {
         await prefs.setString('flutter.worker_last_notified_key', 'match:$id');
       } catch (_) {}
     }
-    await _bumpBadge();
   }
 
   static bool _shouldShowNewMatchNotification() {
@@ -400,13 +399,6 @@ class MobileLocalNotificationService {
       notificationDetails: details,
       payload: matchId,
     );
-    await _bumpBadge();
-  }
-
-  static Future<void> _bumpBadge() async {
-    try {
-      await AppBadgeService.increment();
-    } catch (_) {}
   }
 
   static Future<void> _requestPermissions() async {
@@ -551,7 +543,6 @@ class MobileLocalNotificationService {
       notificationDetails: details,
       payload: chatId,
     );
-    unawaited(AppBadgeService.increment());
 
     if (shouldAlert) {
       _lastNotifiedChatIds[chatId] = 1;
@@ -790,7 +781,6 @@ class MobileLocalNotificationService {
       notificationDetails: details,
       payload: matchId,
     );
-    unawaited(AppBadgeService.increment());
   }
 
   static Future<void> showAdminBroadcastNotification({
@@ -856,7 +846,6 @@ class MobileLocalNotificationService {
       notificationDetails: details,
       payload: actionUrl?.trim().isEmpty == false ? actionUrl : broadcastId,
     );
-    unawaited(AppBadgeService.increment());
   }
 
   static Future<void> showLocationShareNotification({

@@ -17,7 +17,7 @@ import 'package:matchme_admin/widgets/system_health_pill.dart';
 import 'package:matchme_admin/widgets/safe_text.dart';
 
 typedef AdminHealthTextLookup =
-    String Function(String key, {Map<String, String>? params});
+    String Function(String key, {Map<String, String>? params, String? pluralParam});
 
 class SystemHealthCards {
   SystemHealthCards._();
@@ -232,9 +232,11 @@ class SystemHealthCards {
               t,
               theme,
               t('adminHealthRegionsLabel'),
-              t('adminHealthRegionsAllOk', params: {
-                'total': '${s.spRegionsTotal}',
-              }),
+              t(
+                'adminHealthRegionsAllOk',
+                params: {'total': '${s.spRegionsTotal}'},
+                pluralParam: 'total',
+              ),
               Colors.green,
             )
           else if (s.spAffectedRegions.isNotEmpty) ...[

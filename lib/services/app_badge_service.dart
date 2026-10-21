@@ -1,44 +1,36 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-/// App-icon badge counter.
+/// App-icon badge writer.
 ///
-/// Server is the source of truth for killed/background (APNs `badge` in every
-/// push overwrites the icon). This service keeps the foreground best-effort
-/// count in sync: increment on each locally shown notification, clear when
-/// the user opens the conversation or taps the tray entry.
+/// `iconBadgeCountProvider` owns the foreground count (it mirrors the
+/// notification inbox) and the server's APNs `badge` owns the
+/// killed/background count. Locally shown notification cards must not bump
+/// this: they represent the same event that already added an inbox row, so a
+/// local increment would double count it.
 ///
 /// No third-party dependency: iOS goes through a `matchme/badge` channel
 /// implemented in AppDelegate; Android launchers derive badges from the tray
 /// (handler no-ops); Web uses `navigator.setAppBadge` when available.
 class AppBadgeService {
   static const MethodChannel _channel = MethodChannel('matchme/badge');
-  static int _count = 0;
   static bool _nativeAvailable = true;
 
-  static int get count => _count;
-
-  static Future<void> increment() async {
-    _count++;
-    await setCount(_count);
-  }
-
   static Future<void> setCount(int n) async {
-    _count = n < 0 ? 0 : n;
+    final count = n < 0 ? 0 : n;
     if (kIsWeb) {
-      await _setWebBadge(_count);
+      await _setWebBadge(count);
       return;
     }
     if (!_nativeAvailable) return;
     try {
-      await _channel.invokeMethod('setBadgeCount', {'count': _count});
+      await _channel.invokeMethod('setBadgeCount', {'count': count});
     } on MissingPluginException {
       _nativeAvailable = false;
     } catch (_) {}
   }
 
   static Future<void> clear() async {
-    _count = 0;
     if (kIsWeb) {
       await _clearWebBadge();
       return;

@@ -47,7 +47,7 @@ bool _mmIsMissing(String value, String key) {
 
 String _mmTryKeys(
   List<String> keys,
-  String Function(String, {Map<String, String>? params}) t,
+  String Function(String, {Map<String, String>? params, String? pluralParam}) t,
 ) {
   for (final k in keys) {
     final v = t(k);
@@ -58,7 +58,7 @@ String _mmTryKeys(
 
 String _mmLocalizeGender(
   String raw,
-  String Function(String, {Map<String, String>? params}) t,
+  String Function(String, {Map<String, String>? params, String? pluralParam}) t,
 ) {
   final trimmed = raw.trim().toLowerCase();
   if (trimmed.isEmpty) return '';
@@ -76,7 +76,7 @@ String _mmLocalizeGender(
 
 String _mmLocalizeIntent(
   String raw,
-  String Function(String, {Map<String, String>? params}) t,
+  String Function(String, {Map<String, String>? params, String? pluralParam}) t,
 ) {
   final trimmed = raw.trim();
   if (trimmed.isEmpty) return '';
@@ -99,7 +99,7 @@ String _mmLocalizeIntent(
 
 String _mmLocalizeMatchType(
   String raw,
-  String Function(String, {Map<String, String>? params}) t,
+  String Function(String, {Map<String, String>? params, String? pluralParam}) t,
 ) {
   final trimmed = raw.trim().toLowerCase();
   if (trimmed.isEmpty) return '';
@@ -126,7 +126,7 @@ class AdminUserMatchManagementDashboard extends ConsumerStatefulWidget {
     required this.localeCode,
   });
 
-  final String Function(String key, {Map<String, String>? params}) t;
+  final String Function(String key, {Map<String, String>? params, String? pluralParam}) t;
   final String localeCode;
 
   @override

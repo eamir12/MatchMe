@@ -192,6 +192,8 @@ void main() {
         translationEnabled: true,
         lastMessageSourceLanguage: 'es',
         lastMessageTranslated: 'How are you?',
+        // The translation was produced for the language of the UI.
+        lastMessageTranslatedTargetLanguage: 'en',
       );
       final l10n = LocalizationState(
         currentLocale: const Locale('en'),
@@ -222,7 +224,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('How are you?'), findsOneWidget);
-      expect(find.bySemanticsLabel('1 unread messages'), findsOneWidget);
+      expect(find.bySemanticsLabel('1 unread message'), findsOneWidget);
 
       // The badge shares the age/gender line instead of owning a row under
       // the timestamp: both centers sit on the same vertical position.
@@ -330,6 +332,9 @@ void main() {
       translationEnabled: true,
       lastMessageSourceLanguage: 'es',
       lastMessageTranslated: 'How are you?',
+      // The row only shows a translation that was produced for the language
+      // of the UI — that is what the server records when it publishes one.
+      lastMessageTranslatedTargetLanguage: 'en',
     );
     final l10n = LocalizationState(
       currentLocale: const Locale('en'),
@@ -354,6 +359,54 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('How are you?'), findsOneWidget);
+  });
+
+  // The row must never show a translation that was not produced for the
+  // language of the UI — and it must not fall back to the untranslated
+  // original either: the preview stays blank until the right translation
+  // lands.
+  testWidgets('hides a translation that was not made for the UI language', (
+    tester,
+  ) async {
+    final chat = ChatModel(
+      matchId: 'match-5-other-target',
+      otherUserId: 'other-user-5',
+      otherUserName: 'Bella V.',
+      lastMessage: 'Hola!',
+      lastMessageId: 'message-5-other-target',
+      lastMessageAt: DateTime(2026, 1, 1),
+      lastMessageSenderId: 'other-user-5',
+      unreadCount: 0,
+      translationEnabled: true,
+      lastMessageSourceLanguage: 'es',
+      lastMessageTranslated: 'How are you?',
+      lastMessageTranslatedTargetLanguage: 'es',
+    );
+    final l10n = LocalizationState(
+      currentLocale: const Locale('en'),
+      textDirection: TextDirection.ltr,
+      strings: const {},
+      supportedLanguages: const [],
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          localizationProvider.overrideWithValue(l10n),
+          userProfileProvider(
+            chat.otherUserId,
+          ).overrideWith((ref) => Stream.value(null)),
+        ],
+        child: MaterialApp(
+          home: Scaffold(body: ChatListItem(chat: chat)),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('How are you?'), findsNothing);
+    expect(find.text('Hola!'), findsNothing);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets(

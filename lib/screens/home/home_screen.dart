@@ -455,14 +455,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
     if (!mounted) return;
     final l10n = ref.read(localizationProvider);
-    final message = ids.length == 1
-        ? l10n.getString(
-            archived ? 'chatsArchivedOne' : 'chatsUnarchivedOne',
-          )
-        : l10n.getString(
-            archived ? 'chatsArchivedCount' : 'chatsUnarchivedCount',
-            params: {'count': ids.length.toString()},
-          );
+    // The count keys carry the plural form, so one chat reads as
+    // "1 chat archived" and five as "5 chats archived".
+    final message = l10n.getPluralString(
+      archived ? 'chatsArchivedCount' : 'chatsUnarchivedCount',
+      ids.length,
+    );
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
     );

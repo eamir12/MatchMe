@@ -63,6 +63,42 @@ export function truncateUtf8Bytes(input: string, maxBytes: number): { text: stri
   return { text: `${s.slice(0, cut)}${ellipsis}`, truncated: true };
 }
 
+// Bidi control characters the app may already have added around a name:
+// marks, embeddings/overrides and isolates.
+const BIDI_CONTROLS = /[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+
+// Left-to-right mark / right-to-left mark. A masked name ends in a period
+// ("John S."), and a period is a neutral character: in a right-to-left
+// paragraph it resolves to the paragraph direction and lands on the wrong
+// side of the name ("S. John" instead of "John S."). Marking the name with
+// the direction of its own script keeps the period glued to the initial
+// wherever the notification is rendered — tray title, inbox row, body.
+const LRM = '\u200E';
+const RLM = '\u200F';
+
+export function stripBidiControls(value: string): string {
+  return String(value ?? '').replace(BIDI_CONTROLS, '');
+}
+
+// The first strong character decides the script of the name: a Latin letter
+// makes it LTR, a Hebrew/Arabic letter makes it RTL.
+function isRtlName(value: string): boolean {
+  for (const ch of value) {
+    if (/[\u0590-\u05FF\u0600-\u06FF]/.test(ch)) return true;
+    if (/[A-Za-z]/.test(ch)) return false;
+  }
+  return false;
+}
+
+// Wraps a display name in the directional mark of its own script so its
+// trailing period stays with the initial in any paragraph direction.
+export function markDisplayName(name: string): string {
+  const cleaned = stripBidiControls(name).trim();
+  if (!cleaned) return String(name ?? '');
+  const mark = isRtlName(cleaned) ? RLM : LRM;
+  return `${mark}${cleaned}${mark}`;
+}
+
 // Mirrors public.mask_full_name(TEXT): "FirstName L." for multi-word names
 // (first name + last initial, e.g. "John S."), the first name alone for
 // single-word names. Empty/null falls back to 'Someone' (notification
@@ -71,16 +107,19 @@ export function truncateUtf8Bytes(input: string, maxBytes: number): { text: stri
 // ("John S.") returns it unchanged, so server-produced titles pass through.
 // Notification display MUST use this - not a first-name-only helper - so
 // tray titles match what the app's other screens show.
+//
+// The masked name carries the directional mark of its own script, so its
+// trailing period stays glued to the initial in a Hebrew UI too.
 export function maskFullName(raw: string | null | undefined): string {
-  const trimmed = String(raw ?? '').trim();
+  const trimmed = stripBidiControls(String(raw ?? '')).trim();
   if (!trimmed) return 'Someone';
   const parts = trimmed.split(/\s+/).filter((p) => p.length > 0);
   if (parts.length === 0) return 'Someone';
-  if (parts.length === 1) return parts[0];
+  if (parts.length === 1) return markDisplayName(parts[0]);
   const first = parts[0];
   const last = parts[parts.length - 1];
-  if (!last || last === first) return first;
-  return `${first} ${last.charAt(0).toUpperCase()}.`;
+  if (!last || last === first) return markDisplayName(first);
+  return markDisplayName(`${first} ${last.charAt(0).toUpperCase()}.`);
 }
 
 // Unicode bidi isolation: FSI (U+2068) picks the isolate direction from the

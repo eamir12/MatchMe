@@ -137,7 +137,7 @@ void main() {
     // The unread toggle is no longer a chip in a horizontal scroller — it is a
     // switch inside the filter sheet, so the assertion moved with it.
     expect(find.byType(ListSearchBar), findsOneWidget);
-    expect(find.text('1 conversations'), findsOneWidget);
+    expect(find.text('1 conversation'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -238,9 +238,9 @@ void main() {
       // Selecting Event narrows the live count to the one event conversation.
       await tester.tap(find.text('Event').last);
       await tester.pumpAndSettle();
-      expect(find.text('Show 1 results'), findsOneWidget);
+      expect(find.text('Show 1 result'), findsOneWidget);
 
-      await tester.tap(find.text('Show 1 results'));
+      await tester.tap(find.text('Show 1 result'));
       await tester.pumpAndSettle();
 
       expect(find.text('Near Sam'), findsNothing);
@@ -313,7 +313,7 @@ void main() {
     // The unread toggle label carries the number of unread CONVERSATIONS
     // (1 chat has unread messages), not the message count.
     expect(find.text('Unread only (1)'), findsOneWidget);
-    expect(find.text('Show 1 results'), findsOneWidget);
+    expect(find.text('Show 1 result'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

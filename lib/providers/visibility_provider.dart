@@ -12,8 +12,7 @@ import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/auth_provider.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/services/local_db_service.dart';
-import 'package:matchme/services/supabase_realtime_manager.dart';
-import 'package:matchme/utils/offline_utils.dart';
+import 'package:matchme/services/my_user_realtime_service.dart';
 import 'package:matchme/providers/invisibility_rules_provider.dart';
 import 'package:matchme/services/background_service.dart';
 import 'package:geolocator/geolocator.dart';
@@ -95,8 +94,8 @@ class IsVisible extends _$IsVisible {
   // _disableBackgroundMatchingForInvisibility() and _restoreBackgroundMatchingMode()
   // writing to SharedPreferences concurrently.
   bool _backgroundMatchingChangeInProgress = false;
-  RealtimeChannel? _visibilityRealtimeChannel;
-  String? _visibilityRealtimeUserId;
+  StreamSubscription<MyUserUpdate>? _myUserSubscription;
+  StreamSubscription<void>? _visibilityResyncSubscription;
   String _systemVisibilityStatus = 'visible';
   dynamic
   _webVisibilityListener; // Web visibility listener for minimized window support
@@ -144,6 +143,10 @@ class IsVisible extends _$IsVisible {
     ref.onDispose(() {
       _stopVisibilityPollTimer();
       _clearVisibilityRealtimeSubscription();
+      _myUserSubscription?.cancel();
+      _myUserSubscription = null;
+      _visibilityResyncSubscription?.cancel();
+      _visibilityResyncSubscription = null;
       _detachWebVisibilityListener();
       if (_lifecycleObserverAdded && _lifecycleObserver != null) {
         WidgetsBinding.instance.removeObserver(_lifecycleObserver!);
@@ -313,14 +316,11 @@ class IsVisible extends _$IsVisible {
                 try {
                   final l10n = ref.read(localizationProvider);
                   final msg = l10n
-                      .getString('gpsThrottledLowBattery')
-                      .replaceAll(
-                        '{interval}',
-                        _batteryThrottleInterval.toString(),
-                      )
-                      .replaceAll(
-                        '{threshold}',
-                        _batteryLowThreshold.toString(),
+                      .getPluralString(
+                        'gpsThrottledLowBattery',
+                        _batteryThrottleInterval,
+                        countParam: 'interval',
+                        params: {'threshold': _batteryLowThreshold.toString()},
                       );
                   ref
                       .read(systemNotificationProvider.notifier)
@@ -1320,83 +1320,33 @@ class IsVisible extends _$IsVisible {
   }
 
   void _clearVisibilityRealtimeSubscription() {
-    final userId = _visibilityRealtimeUserId;
-    _visibilityRealtimeChannel = null;
-    _visibilityRealtimeUserId = null;
-    if (userId != null) {
-      SupabaseRealtimeManager.instance.unregister('user_visibility_$userId');
-    }
+    // The subscription is owned by MyUserRealtimeService; nothing to tear
+    // down here. The service drops the channel itself on sign-out.
   }
 
+  /// Subscribes to the shared "my own user row" realtime channel.
   void _ensureVisibilityRealtimeSubscription() {
-    final userId = Supabase.instance.client.auth.currentUser?.id;
-    if (userId == null) {
-      _clearVisibilityRealtimeSubscription();
-      return;
-    }
-    if (_visibilityRealtimeChannel != null &&
-        _visibilityRealtimeUserId == userId) {
-      return;
-    }
-    _clearVisibilityRealtimeSubscription();
-
-    final channelName = 'user_visibility_$userId';
-    SupabaseRealtimeManager.instance.register(channelName, () {
-      _visibilityRealtimeChannel = Supabase.instance.client
-          .channel(channelName)
-          .onPostgresChanges(
-            event: PostgresChangeEvent.update,
-            schema: 'public',
-            table: 'users',
-            filter: PostgresChangeFilter(
-              type: PostgresChangeFilterType.eq,
-              column: 'id',
-              value: userId,
-            ),
-            callback: (payload) {
-              final newRecord = payload.newRecord;
-              final oldRecord = payload.oldRecord;
-              final hasUserVisibility =
-                  newRecord.containsKey('user_visibility_setting') ||
-                  oldRecord.containsKey('user_visibility_setting');
-              final hasSystemVisibility =
-                  newRecord.containsKey('system_visibility_status') ||
-                  oldRecord.containsKey('system_visibility_status');
-              if (!hasUserVisibility && !hasSystemVisibility) return;
-              final remoteManual =
-                  (newRecord['user_visibility_setting'] ??
-                      oldRecord['user_visibility_setting']) ==
-                  true;
-              final remoteSystem =
-                  (newRecord['system_visibility_status'] ??
-                          oldRecord['system_visibility_status'])
-                      as String?;
-              unawaited(
-                _applyRemoteVisibilitySnapshot(
-                  manualVisible: remoteManual,
-                  systemVisibilityStatus: remoteSystem,
-                  fromRealtime: true,
-                ),
-              );
-            },
-          )
-          .subscribe((status, err) {
-            if (status == RealtimeSubscribeStatus.channelError ||
-                status == RealtimeSubscribeStatus.timedOut ||
-                status == RealtimeSubscribeStatus.closed) {
-              if (err != null && isExpectedOfflineFailure(err)) {
-                // Proactively pause to suppress errors from other
-                // channels and avoid the race with the connectivity
-                // provider's own pauseAll() call.
-                SupabaseRealtimeManager.instance.pauseAll();
-                return;
-              }
-              if (SupabaseRealtimeManager.instance.isPaused) return;
-              unawaited(_syncVisibilityFromRemote());
-            }
-          });
-      _visibilityRealtimeUserId = userId;
-      return _visibilityRealtimeChannel!;
+    _myUserSubscription?.cancel();
+    _myUserSubscription = MyUserRealtimeService.instance.updates.listen((
+      update,
+    ) {
+      if (!update.changed('user_visibility_setting') &&
+          !update.changed('system_visibility_status')) {
+        return;
+      }
+      final remoteManual = update.row['user_visibility_setting'] == true;
+      final remoteSystem = update.row['system_visibility_status'] as String?;
+      unawaited(
+        _applyRemoteVisibilitySnapshot(
+          manualVisible: remoteManual,
+          systemVisibilityStatus: remoteSystem,
+          fromRealtime: true,
+        ),
+      );
+    });
+    _visibilityResyncSubscription =
+        MyUserRealtimeService.instance.resyncRequests.listen((_) {
+          unawaited(_syncVisibilityFromRemote());
     });
   }
 
@@ -1770,10 +1720,12 @@ class IsVisible extends _$IsVisible {
           if (state) {
             try {
               final l10n = ref.read(localizationProvider);
-              final msg = l10n
-                  .getString('gpsThrottledLowBattery')
-                  .replaceAll('{interval}', _batteryThrottleInterval.toString())
-                  .replaceAll('{threshold}', _batteryLowThreshold.toString());
+              final msg = l10n.getPluralString(
+                'gpsThrottledLowBattery',
+                _batteryThrottleInterval,
+                countParam: 'interval',
+                params: {'threshold': _batteryLowThreshold.toString()},
+              );
               ref
                   .read(systemNotificationProvider.notifier)
                   .notify(
@@ -1836,12 +1788,11 @@ class IsVisible extends _$IsVisible {
           if (isStationary && state) {
             try {
               final l10n = ref.read(localizationProvider);
-              final msg = l10n
-                  .getString('gpsThrottledStationary')
-                  .replaceAll(
-                    '{interval}',
-                    _stationaryThrottleInterval.toString(),
-                  );
+              final msg = l10n.getPluralString(
+                'gpsThrottledStationary',
+                _stationaryThrottleInterval,
+                countParam: 'interval',
+              );
               ref
                   .read(systemNotificationProvider.notifier)
                   .notify(
@@ -2242,3 +2193,4 @@ class _VisibilityLifecycleObserver extends Object with WidgetsBindingObserver {
     _onChanged(state);
   }
 }
+

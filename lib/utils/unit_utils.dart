@@ -222,10 +222,18 @@ String formatDistanceWithImperial(
     if (feet >= 5280) {
       final miles = metersToMiles(metersValue);
       final milesStr = miles.toStringAsFixed(miles < 10 ? 1 : 0);
-      return '$milesStr ${l10n.getString('unitMiles')}';
+      return l10n.getPluralString(
+        'distanceInMiles',
+        miles,
+        displayValue: milesStr,
+      );
     }
     final roundedFeet = ((feet / 5).round()) * 5;
-    return '$roundedFeet ${l10n.getString('unitFeet')}';
+    return l10n.getPluralString(
+      'distanceInFeet',
+      roundedFeet,
+      displayValue: roundedFeet.toString(),
+    );
   } else {
     // Use meters for small distances and kilometers for larger ones.
     if (metersValue >= 1000) {
@@ -233,8 +241,35 @@ String formatDistanceWithImperial(
       final kmStr = km == km.roundToDouble()
           ? km.toStringAsFixed(0)
           : km.toStringAsFixed(km < 10 ? 1 : 0);
-      return '$kmStr ${l10n.getString('unitKilometers')}';
+      return l10n.getPluralString(
+        'distanceInKilometers',
+        km,
+        displayValue: kmStr,
+      );
     }
-    return '${metersValue.round()} ${l10n.getString('unitMeters')}';
+    final meters = metersValue.round();
+    return l10n.getPluralString(
+      'distanceInMeters',
+      meters,
+      displayValue: meters.toString(),
+    );
   }
+}
+
+/// Formats a height in feet and inches, e.g. "5 feet 7 inches".
+///
+/// Each unit is translated on its own so it picks the right plural form —
+/// "1 foot", not "1 feet" — and the two are put together by a translation so
+/// every language keeps its own word order.
+String formatHeightFeetInches(LocalizationState l10n, int heightCm) {
+  final totalInches = (heightCm / 2.54).round();
+  final feet = totalInches ~/ 12;
+  final inches = totalInches % 12;
+  return l10n.getString(
+    'profileHeightFeetInches',
+    params: {
+      'feet': l10n.getPluralString('profileHeightFeetValue', feet),
+      'inches': l10n.getPluralString('profileHeightInchesValue', inches),
+    },
+  );
 }

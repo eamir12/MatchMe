@@ -1,7 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
-import { bidiIsolate, enforceTitleBody } from "../_shared/notification_limits.ts";
+import { bidiIsolate, enforceTitleBody, markDisplayName, stripBidiControls } from "../_shared/notification_limits.ts";
 import { isWnsChannelUri, sendWnsToast, wnsLaunchUri, WnsSendResult } from "../_shared/wns.ts";
 
 const corsHeaders = {
@@ -29,16 +29,19 @@ function base64UrlEncodeBytes(bytes: Uint8Array): string {
 // Mirrors public.mask_full_name(TEXT) from supabase/migrations.
 // Returns "FirstName L." for multi-word names, "FirstName" for single-word names,
 // or "Unknown User" when the input is empty/null. Input is trimmed.
+//
+// The masked name carries the directional mark of its own script, so its
+// trailing period stays glued to the initial in a Hebrew UI too.
 function maskFullName(rawFullName: string | null | undefined): string {
-  const trimmed = String(rawFullName ?? "").trim();
+  const trimmed = stripBidiControls(String(rawFullName ?? "")).trim();
   if (!trimmed) return "Unknown User";
   const parts = trimmed.split(/\s+/).filter((p) => p.length > 0);
   if (parts.length === 0) return "Unknown User";
   const first = parts[0];
-  if (parts.length === 1) return first;
+  if (parts.length === 1) return markDisplayName(first);
   const last = parts[parts.length - 1];
-  if (!last || last === first) return first;
-  return `${first} ${last.charAt(0).toUpperCase()}.`;
+  if (!last || last === first) return markDisplayName(first);
+  return markDisplayName(`${first} ${last.charAt(0).toUpperCase()}.`);
 }
 
 // Resolves the human-readable sender name for a chat push notification.
@@ -360,16 +363,18 @@ async function fetchBadgeCount(
   userId: string,
 ): Promise<number> {
   try {
-    const { data, error } = await client.rpc("check_unread_notifications", {
-      p_user_id: userId,
-    });
+    // Mirror the client's icon badge: unread entries in the persistent inbox.
+    // The old RPC-derived total added every match created in the last 24h
+    // (viewed or not) to every message unread in the last 2 min, so one
+    // unread notification could set a badge of 2+.
+    const { count, error } = await client
+      .from("user_notifications")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .is("read_at", null)
+      .is("deleted_at", null);
     if (error) return 1;
-    const row = Array.isArray(data) ? data[0] : data;
-    const r = row as Record<string, unknown> | null | undefined;
-    const matches = Number(r?.["unread_matches_count"] ?? 0);
-    const messages = Number(r?.["unread_messages_count"] ?? 0);
-    const total = (Number.isFinite(matches) ? matches : 0) +
-      (Number.isFinite(messages) ? messages : 0);
+    const total = Number(count ?? 0);
     // Allow 0: a push whose recomputed count is empty (e.g. message
     // retraction after everything was read) must clear the iOS icon badge,
     // not stamp a phantom "1" that never goes away.

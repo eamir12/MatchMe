@@ -2,6 +2,29 @@
 
 import 'dart:ui' show TextAlign, TextDirection;
 
+/// Left-to-right mark (U+200E).
+///
+/// A strong LTR character. Wrapping a name in it keeps the name's trailing
+/// period ("First L.") glued to the initial even when the name is shown
+/// inside a right-to-left paragraph.
+const String lrm = '\u200E';
+
+/// Right-to-left mark (U+200F) — the RTL counterpart of [lrm].
+const String rlm = '\u200F';
+
+/// Every explicit bidi control the app may have added around a name: the
+/// marks, the embeddings/overrides and the isolates.
+final RegExp bidiControls = RegExp('[\u200E\u200F\u202A-\u202E\u2066-\u2069]');
+
+/// A masked display name at the very end of a string: a word, a space, then a
+/// single-letter initial with its period ("First L." / "דוד ל.").
+///
+/// The server builds notification bodies by gluing a masked name onto a
+/// sentence ("You matched with First L."), and the trailing period of that
+/// name is a neutral character — inside a right-to-left paragraph it resolves
+/// to the paragraph direction and lands on the wrong side of the name.
+final RegExp _trailingDisplayName = RegExp(r'([^\s]+)\s+([^\s])\.$');
+
 extension StringExtension on String {
   /// Capitalizes the first letter of the string and lowercases the rest.
   String capitalize() {
@@ -44,10 +67,7 @@ extension StringExtension on String {
   /// Common particles (de, del, la, y, van, von, ...) stay lowercase unless
   /// they are the first word.
   String capitalizeName() {
-    final cleaned = replaceAll(
-      RegExp('[\u200E\u200F\u202A-\u202E]'),
-      '',
-    ).trim();
+    final cleaned = replaceAll(bidiControls, '').trim();
     if (cleaned.isEmpty) return '';
     final parts = cleaned
         .split(RegExp(r'\s+'))
@@ -74,11 +94,12 @@ extension StringExtension on String {
   /// -> "Ana Maria H."
   /// Capitalizes every displayed name part regardless of how the user typed it:
   /// "jOHN dOE" -> "John D.", "ana maria hernandez martinez" -> "Ana Maria H."
+  ///
+  /// The result carries the directional mark of the name's own script, so the
+  /// trailing period stays glued to the initial wherever the name is shown —
+  /// on its own or inside a sentence, in a Hebrew or an English UI.
   String formatAsFirstNameLastInitial() {
-    final cleaned = replaceAll(
-      RegExp('[\u200E\u200F\u202A-\u202E]'),
-      '',
-    ).trim();
+    final cleaned = replaceAll(bidiControls, '').trim();
     if (cleaned.isEmpty) return this;
     final parts = cleaned
         .split(RegExp(r'\s+'))
@@ -95,13 +116,13 @@ extension StringExtension on String {
 
     if (parts.length == 1) {
       // Single word name, capitalize it
-      return '\u200E${_capitalizeNameWord(parts[0])}\u200E';
+      return _capitalizeNameWord(parts[0]).withDirectionalMarks();
     } else if (parts.length == 2) {
       // Simple case: "John Doe" -> "John D."
       final first = capFirstName(parts[0], true);
       final initial = parts[1].isNotEmpty ? parts[1][0].toUpperCase() : '';
-      if (initial.isEmpty) return '\u200E$first\u200E';
-      return '\u200E$first $initial.\u200E';
+      if (initial.isEmpty) return first.withDirectionalMarks();
+      return '$first $initial.'.withDirectionalMarks();
     } else {
       // Multiple names: "Ana Maria Hernandez Martinez" -> "Ana Maria H."
       // First names = all words except the last one
@@ -116,23 +137,64 @@ extension StringExtension on String {
       final lastInitial = parts.last.isNotEmpty
           ? parts.last[0].toUpperCase()
           : '';
-      if (lastInitial.isEmpty) return '\u200E$firstNames\u200E';
-      return '\u200E$firstNames $lastInitial.\u200E';
+      if (lastInitial.isEmpty) return firstNames.withDirectionalMarks();
+      return '$firstNames $lastInitial.'.withDirectionalMarks();
     }
+  }
+
+  /// This string without the explicit bidi controls the app adds around names.
+  String get withoutBidiControls => replaceAll(bidiControls, '');
+
+  /// Wraps this string in the directional mark of its own script.
+  ///
+  /// A masked display name ends in a period ("First L."). That period is a
+  /// neutral character: in a right-to-left paragraph it resolves to the
+  /// paragraph direction and lands on the wrong side of the name — the name
+  /// reads "L First." instead of "First L.". Marking the name with its own
+  /// direction keeps the period glued to the initial wherever it is shown: as
+  /// a heading, as a notification title, or inside a sentence.
+  String withDirectionalMarks() {
+    final cleaned = withoutBidiControls.trim();
+    if (cleaned.isEmpty) return this;
+    final mark = cleaned.isRtlByFirstStrongChar() ? rlm : lrm;
+    return '$mark$cleaned$mark';
+  }
+
+  /// Marks a masked display name that ends this string ("First L.") with the
+  /// directional mark of the name's own script.
+  ///
+  /// Notification bodies embed the masked name in a sentence ("You matched
+  /// with First L."). The name arrives as plain text, so its trailing period
+  /// is swallowed by the surrounding paragraph direction. Marking just that
+  /// name keeps the period with the initial while the rest of the sentence
+  /// keeps its own direction.
+  String isolateTrailingDisplayName() {
+    final match = _trailingDisplayName.firstMatch(this);
+    if (match == null) return this;
+    final name = match.group(0)!;
+    final marked = name.withDirectionalMarks();
+    if (marked == name) return this;
+    return replaceRange(match.start, match.end, marked);
   }
 
   /// Base direction for showing this string as its own block of text.
   ///
-  /// Latin letters win LTR, Hebrew/Arabic wins RTL, anything else falls back
-  /// to LTR — the same rule the matched profile screen has always used for
+  /// The direction follows the first strong character of the string: Latin
+  /// letters win LTR, Hebrew/Arabic wins RTL, anything else falls back to
+  /// LTR — the same rule the matched profile screen has always used for
   /// its title. It matters because a name formatted as "First L." ends in a
   /// period: laid out against the surrounding UI direction the period ends up
   /// on the wrong side of the name (a Hebrew name in an English UI grows a
   /// stray dot on its right), while laying the name out in its own script
   /// keeps the dot glued to the initial where readers expect it.
+  ///
+  /// Only the *first* strong character decides: a sentence that starts in
+  /// Hebrew and mentions an English name ("יש לך התאמה עם First L.") stays
+  /// right-to-left, while a name that starts with a Latin letter stays
+  /// left-to-right.
   TextDirection displayTextDirection() {
-    if (RegExp(r'[a-zA-Z]').hasMatch(this)) return TextDirection.ltr;
-    return isRtl() ? TextDirection.rtl : TextDirection.ltr;
+    if (isRtlByFirstStrongChar()) return TextDirection.rtl;
+    return TextDirection.ltr;
   }
 
   /// [displayTextDirection] plus the edge the text block should sit against.

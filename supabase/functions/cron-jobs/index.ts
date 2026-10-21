@@ -4,6 +4,7 @@ import { createClient } from 'supabase';
 import { RRule } from 'rrule-deno';
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
 import { bidiIsolate, enforceTitleBody, maskFullName } from "../_shared/notification_limits.ts";
+import { pluralKeyFor } from "../_shared/plural.ts";
 import { isWnsChannelUri, sendWnsToast, wnsLaunchUri } from "../_shared/wns.ts";
 import { handleHealthSampler } from "./health_sampler.ts";
 
@@ -15,20 +16,109 @@ const supabase = createClient(
 );
 
 const _translationCache = new Map<string, string>();
-const _translationFallbacks: Record<string, string> = {
-  adminAiQuotaWarnTitle: 'AI quota warning',
-  adminAiQuotaCriticalTitle: 'AI quota critical',
-  adminAiQuotaAlertBody: '{provider}: {used}/{limit} {unit} used ({percent}%)',
-  adminAiQuotaAlertBodyNoLimit: '{provider}: {used} {unit} used',
-  adminAiProviderDeepL: 'DeepL',
-  adminAiProviderGemini: 'Gemini',
-  adminAiQuotaStatusOk: 'OK',
-  adminAiQuotaStatusWarn: 'Warning',
-  adminAiQuotaStatusCritical: 'Critical',
-  adminAiQuotaStatusUnknown: 'Unknown',
-  pinnedExpiryTitle: 'Pinned location expiring soon',
-  pinnedExpiryBodyMinutes: 'Your pinned location{labelPart} expires in {count} minutes. Open the app to add more time.',
-  pinnedExpiryBodyHours: 'Your pinned location{labelPart} expires in {count} hours. Open the app to add more time.',
+
+/**
+ * The copy used when the database has no row for a key.
+ *
+ * The fallbacks are per language: a Hebrew member must never be handed the
+ * English sentence because the Hebrew row is missing. English stays the last
+ * resort for a key that has no copy in the member's language at all — that
+ * still beats putting the raw key in front of them.
+ */
+const _translationFallbacks: Record<string, Record<string, string>> = {
+  en: {
+    adminAiQuotaWarnTitle: 'AI quota warning',
+    adminAiQuotaCriticalTitle: 'AI quota critical',
+    adminAiQuotaAlertBody: '{provider}: {used}/{limit} {unit} ({percent}%)',
+    adminAiQuotaAlertBodyNoLimit: '{provider}: {used} {unit}',
+    adminAiQuotaUnitChars: 'characters used',
+    adminAiQuotaUnitChars_one: 'character used',
+    adminAiQuotaUnitRequests: 'requests used',
+    adminAiQuotaUnitRequests_one: 'request used',
+    adminAiProviderDeepL: 'DeepL',
+    adminAiProviderGemini: 'Gemini',
+    adminAiQuotaStatusOk: 'OK',
+    adminAiQuotaStatusWarn: 'Warning',
+    adminAiQuotaStatusCritical: 'Critical',
+    adminAiQuotaStatusUnknown: 'Unknown',
+    matchExpiryTitle: '{count} minutes left',
+    matchExpiryTitle_one: '{count} minute left',
+    matchExpiryBody:
+      'You have {count} minutes left to start a chat with {otherUserName}.',
+    matchExpiryBody_one:
+      'You have {count} minute left to start a chat with {otherUserName}.',
+    pinnedExpiryTitle: 'Pinned location expiring soon',
+    pinnedExpiryBodyMinutes:
+      'Your pinned location{labelPart} expires in {count} minutes. Open the app to add more time.',
+    pinnedExpiryBodyMinutes_one:
+      'Your pinned location{labelPart} expires in {count} minute. Open the app to add more time.',
+    pinnedExpiryBodyHours:
+      'Your pinned location{labelPart} expires in {count} hours. Open the app to add more time.',
+    pinnedExpiryBodyHours_one:
+      'Your pinned location{labelPart} expires in {count} hour. Open the app to add more time.',
+  },
+  es: {
+    adminAiQuotaWarnTitle: 'Advertencia de cuota de IA',
+    adminAiQuotaCriticalTitle: 'Cuota de IA crítica',
+    adminAiQuotaAlertBody: '{provider}: {used}/{limit} {unit} ({percent}%)',
+    adminAiQuotaAlertBodyNoLimit: '{provider}: {used} {unit}',
+    adminAiQuotaUnitChars: 'caracteres usados',
+    adminAiQuotaUnitChars_one: 'carácter usado',
+    adminAiQuotaUnitRequests: 'solicitudes usadas',
+    adminAiQuotaUnitRequests_one: 'solicitud usada',
+    adminAiProviderDeepL: 'DeepL',
+    adminAiProviderGemini: 'Gemini',
+    adminAiQuotaStatusOk: 'OK',
+    adminAiQuotaStatusWarn: 'Advertencia',
+    adminAiQuotaStatusCritical: 'Crítico',
+    adminAiQuotaStatusUnknown: 'Desconocido',
+    matchExpiryTitle: '{count} minutos restantes',
+    matchExpiryTitle_one: '{count} minuto restante',
+    matchExpiryBody:
+      'Tienes {count} minutos para iniciar un chat con {otherUserName}.',
+    matchExpiryBody_one:
+      'Tienes {count} minuto para iniciar un chat con {otherUserName}.',
+    pinnedExpiryTitle: 'Tu ubicación fijada está por caducar',
+    pinnedExpiryBodyMinutes:
+      'Tu ubicación fijada{labelPart} caduca en {count} minutos. Abre la app para añadir más tiempo.',
+    pinnedExpiryBodyMinutes_one:
+      'Tu ubicación fijada{labelPart} caduca en {count} minuto. Abre la app para añadir más tiempo.',
+    pinnedExpiryBodyHours:
+      'Tu ubicación fijada{labelPart} caduca en {count} horas. Abre la app para añadir más tiempo.',
+    pinnedExpiryBodyHours_one:
+      'Tu ubicación fijada{labelPart} caduca en {count} hora. Abre la app para añadir más tiempo.',
+  },
+  he: {
+    adminAiQuotaWarnTitle: 'אזהרת מכסת AI',
+    adminAiQuotaCriticalTitle: 'מכסת AI קריטית',
+    adminAiQuotaAlertBody: '{provider}: {used}/{limit} {unit} ({percent}%)',
+    adminAiQuotaAlertBodyNoLimit: '{provider}: {used} {unit}',
+    adminAiQuotaUnitChars: 'תווים נוצלו',
+    adminAiQuotaUnitChars_one: 'תוו נוצל',
+    adminAiQuotaUnitRequests: 'בקשות נוצלו',
+    adminAiQuotaUnitRequests_one: 'בקשה נוצלה',
+    adminAiProviderDeepL: 'DeepL',
+    adminAiProviderGemini: 'Gemini',
+    adminAiQuotaStatusOk: 'תקין',
+    adminAiQuotaStatusWarn: 'אזהרה',
+    adminAiQuotaStatusCritical: 'קריטי',
+    adminAiQuotaStatusUnknown: 'לא ידוע',
+    matchExpiryTitle: '{count} דקות נותרו',
+    matchExpiryTitle_one: '{count} דקה נותרה',
+    matchExpiryBody:
+      'יש לך {count} דקות להתחיל שיחה עם {otherUserName}.',
+    matchExpiryBody_one:
+      'יש לך {count} דקה להתחיל שיחה עם {otherUserName}.',
+    pinnedExpiryTitle: 'הנעיצה עומדת לפוג',
+    pinnedExpiryBodyMinutes:
+      'המיקום הנעוץ{labelPart} יפוג בעוד {count} דקות. פתחו את האפליקציה כדי להוסיף זמן.',
+    pinnedExpiryBodyMinutes_one:
+      'המיקום הנעוץ{labelPart} יפוג בעוד {count} דקה. פתחו את האפליקציה כדי להוסיף זמן.',
+    pinnedExpiryBodyHours:
+      'המיקום הנעוץ{labelPart} יפוג בעוד {count} שעות. פתחו את האפליקציה כדי להוסיף זמן.',
+    pinnedExpiryBodyHours_one:
+      'המיקום הנעוץ{labelPart} יפוג בעוד {count} שעה. פתחו את האפליקציה כדי להוסיף זמן.',
+  },
 };
 
 /**
@@ -69,9 +159,40 @@ async function getTranslation(locale: string, key: string): Promise<string> {
   } catch {
   }
 
-  const fallback = _translationFallbacks[normalizedKey] ?? normalizedKey;
+  // The copy of the member's own language first, English only as the last
+  // resort for a key that was never translated into it.
+  const fallback =
+    _translationFallbacks[normalizedLocale]?.[normalizedKey] ??
+    _translationFallbacks.en?.[normalizedKey] ??
+    normalizedKey;
   _translationCache.set(cacheKey, fallback);
   return fallback;
+}
+
+/**
+ * Reads a translation that carries a count and picks the plural form that
+ * matches `count`.
+ *
+ * `matchExpiryTitle_one` holds the singular ("1 minute left"), `_two` the
+ * Hebrew dual, and the base key the plural ("5 minutes left"). The order is
+ * the same as the app's: the form of the user's language first, then the
+ * base key of that language, and English only as the last resort. A
+ * notification is therefore never sent with the key itself in it.
+ */
+async function getCountedTranslation(locale: string, key: string, count: number): Promise<string> {
+  const variantKey = pluralKeyFor(locale, key, count);
+
+  const variant = await getTranslation(locale, variantKey);
+  if (variant && variant !== variantKey) return variant;
+
+  const base = await getTranslation(locale, key);
+  if (base && base !== key) return base;
+
+  if (variantKey !== key) {
+    const englishVariant = await getTranslation('en', variantKey);
+    if (englishVariant && englishVariant !== variantKey) return englishVariant;
+  }
+  return getTranslation('en', key);
 }
 
 function tokenPrefix(value: string, prefixLen = 12): string {
@@ -1979,11 +2100,8 @@ async function handleMatchExpiryWarnings(invocationId: string) {
         const otherRec = userMap.get(otherUid);
         const otherName = maskFullName(String((otherRec?.name as string) ?? ''));
         const minutesLeft = Math.max(1, Math.ceil(c.remainingSec / 60));
-        let title = await getTranslation(locale, 'matchExpiryTitle');
-        let body = await getTranslation(locale, 'matchExpiryBody');
-        // getTranslation may return key itself if missing; fallback to English
-        if (!title || title === 'matchExpiryTitle') title = await getTranslation('en', 'matchExpiryTitle');
-        if (!body || body === 'matchExpiryBody') body = await getTranslation('en', 'matchExpiryBody');
+        let title = await getCountedTranslation(locale, 'matchExpiryTitle', minutesLeft);
+        let body = await getCountedTranslation(locale, 'matchExpiryBody', minutesLeft);
         title = String(title).replace('{count}', String(minutesLeft));
         body = String(body).replace('{count}', String(minutesLeft)).replace('{otherUserName}', bidiIsolate(otherName));
         // Transport guard: byte-based truncation (shared limits).
@@ -1997,6 +2115,10 @@ async function handleMatchExpiryWarnings(invocationId: string) {
 
         // Inbox records every warning, regardless of push preferences or
         // registered devices.
+        // ignoreDuplicates (ON CONFLICT DO NOTHING) keeps this idempotent:
+        // the queue capture trigger below writes one row per device token
+        // for the very same warning, and the partial unique index on
+        // (user_id, match_id, threshold_seconds, expiry_at) drops the extras.
         try {
           const { error: inboxErr } = await supabase.from('user_notifications').insert({
             user_id: uid,
@@ -2004,7 +2126,7 @@ async function handleMatchExpiryWarnings(invocationId: string) {
             title,
             body,
             data,
-          });
+          }, { ignoreDuplicates: true } as any);
           if (inboxErr) {
             logError(invocationId, 'Failed to record expiry warning in inbox', inboxErr, { matchId: c.matchId, userId: uid, threshold: c.threshold });
           }
@@ -2204,9 +2326,8 @@ async function handlePinnedExpiryWarnings(invocationId: string) {
         ? Math.ceil(c.remainingSec / 3600)
         : Math.max(1, Math.ceil(c.remainingSec / 60));
       let title = await getTranslation(locale, 'pinnedExpiryTitle');
-      let body = await getTranslation(locale, bodyKey);
+      let body = await getCountedTranslation(locale, bodyKey, count);
       if (!title || title === 'pinnedExpiryTitle') title = await getTranslation('en', 'pinnedExpiryTitle');
-      if (!body || body === bodyKey) body = await getTranslation('en', bodyKey);
       const safeLabel = bidiIsolate(c.label);
       const labelPart = c.label ? ` ("${safeLabel}")` : '';
       title = String(title).replace('{label}', safeLabel).replace('{labelPart}', labelPart);
@@ -2221,6 +2342,10 @@ async function handlePinnedExpiryWarnings(invocationId: string) {
 
       // Inbox records every warning, regardless of push preferences or
       // registered devices.
+      // ignoreDuplicates (ON CONFLICT DO NOTHING) keeps this idempotent:
+      // the queue capture trigger below writes one row per device token
+      // for the very same warning, and the partial unique index on
+      // (user_id, threshold_seconds, expiry_at) drops the extras.
       try {
         const { error: inboxErr } = await supabase.from('user_notifications').insert({
           user_id: c.userId,
@@ -2228,7 +2353,7 @@ async function handlePinnedExpiryWarnings(invocationId: string) {
           title,
           body,
           data,
-        });
+        }, { ignoreDuplicates: true } as any);
         if (inboxErr) {
           logError(invocationId, 'Failed to record pinned warning in inbox', inboxErr, { userId: c.userId, threshold: c.threshold });
         }
@@ -2558,11 +2683,16 @@ async function _queueAdminQuotaAlert({
     const usedText = used == null ? '' : String(Math.round(used));
     const limitText = limit == null ? '' : String(Math.round(limit));
     const percentText = _formatPercent(ratio);
+    // The unit is a countable noun ("characters", "requests"), so it takes
+    // the form that matches the quantity it stands for: "1 character used".
+    const unitKey = unit === 'requests' ? 'adminAiQuotaUnitRequests' : 'adminAiQuotaUnitChars';
+    const unitCount = limit != null && limit > 0 ? limit : (used ?? 0);
+    const unitText = await getCountedTranslation(t.locale, unitKey, unitCount);
     const body = bodyTemplate
       .replaceAll('{provider}', providerName)
       .replaceAll('{used}', usedText)
       .replaceAll('{limit}', limitText)
-      .replaceAll('{unit}', unit)
+      .replaceAll('{unit}', unitText)
       .replaceAll('{percent}', percentText);
 
     const data = {

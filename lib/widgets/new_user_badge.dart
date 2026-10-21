@@ -4,7 +4,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/widgets/safe_text.dart';
 
+/// "New here!" chip. Shares its size, font and shape with VerifiedBadge and
+/// ProfileCompletePill — only the colour differs, so the three status
+/// markers always read as one set.
 class NewUserBadge extends ConsumerWidget {
   final double size;
   final bool showText;
@@ -21,7 +25,6 @@ class NewUserBadge extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
     final l10n = ref.watch(localizationProvider);
     final displayText = text ?? l10n.getString('newUser');
 
@@ -46,11 +49,12 @@ class NewUserBadge extends ConsumerWidget {
           if (showText) ...[
             const SizedBox(width: 4),
             Flexible(
-              child: Text(
+              child: ShrinkText(
                 displayText,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: Colors.white,
+                style: const TextStyle(
+                  fontSize: 12,
                   fontWeight: FontWeight.w600,
+                  color: Colors.white,
                 ),
               ),
             ),

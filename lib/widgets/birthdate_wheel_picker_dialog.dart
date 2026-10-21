@@ -226,7 +226,7 @@ class _BirthdateWheelPickerDialogState
                 _isUnder18
                     ? l10n.getString('profileAgeRequirementNote')
                     : '${widget.formatDate(_selectedDate)}\n'
-                        '${l10n.getString('generalAgeYearsOld', params: {'age': '$age'})}',
+                        '${l10n.getPluralString('generalAgeYearsOld', age, countParam: 'age')}',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: _isUnder18

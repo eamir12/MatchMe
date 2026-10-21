@@ -28,6 +28,11 @@ class SignedImage extends StatefulWidget {
   final Alignment alignment;
   final bool filterQualityLow;
 
+  /// Reports the decoded bytes whenever they become available (or `null`
+  /// when loading fails), so callers can measure the image and lay out an
+  /// overlay (e.g. normalized boxes) against the real aspect ratio.
+  final ValueChanged<Uint8List?>? onBytesLoaded;
+
   const SignedImage({
     super.key,
     required this.source,
@@ -39,6 +44,7 @@ class SignedImage extends StatefulWidget {
     this.errorWidget,
     this.alignment = Alignment.center,
     this.filterQualityLow = false,
+    this.onBytesLoaded,
   });
 
   @override
@@ -51,6 +57,27 @@ class _SignedImageState extends State<SignedImage> {
   int _loadGeneration = 0;
   int _retryCount = 0;
   String? _lastCacheKey;
+  Uint8List? _lastNotifiedBytes;
+  ValueChanged<Uint8List?>? _lastNotifiedCallback;
+  bool _hasNotifiedBytes = false;
+
+  void _notifyBytesLoaded() {
+    final callback = widget.onBytesLoaded;
+    if (callback == null) return;
+    final bytes = _bytes;
+    if (_hasNotifiedBytes &&
+        identical(bytes, _lastNotifiedBytes) &&
+        callback == _lastNotifiedCallback) {
+      return;
+    }
+    _hasNotifiedBytes = true;
+    _lastNotifiedBytes = bytes;
+    _lastNotifiedCallback = callback;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      callback(_bytes);
+    });
+  }
 
   @override
   void initState() {
@@ -264,6 +291,7 @@ class _SignedImageState extends State<SignedImage> {
 
   @override
   Widget build(BuildContext context) {
+    _notifyBytesLoaded();
     final bytes = _bytes;
     if (bytes != null) {
       return Image.memory(

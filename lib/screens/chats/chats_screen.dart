@@ -108,16 +108,12 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
     }
     if (!mounted) return;
     final l10n = ref.read(localizationProvider);
-    // One chat reads better without the count ("Chat archived" vs
-    // "1 chats archived"); the count keys cover every other size.
-    final message = ids.length == 1
-        ? l10n.getString(
-            archived ? 'chatsArchivedOne' : 'chatsUnarchivedOne',
-          )
-        : l10n.getString(
-            archived ? 'chatsArchivedCount' : 'chatsUnarchivedCount',
-            params: {'count': ids.length.toString()},
-          );
+    // The count keys carry the plural form, so one chat reads as
+    // "1 chat archived" and five as "5 chats archived".
+    final message = l10n.getPluralString(
+      archived ? 'chatsArchivedCount' : 'chatsUnarchivedCount',
+      ids.length,
+    );
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
     );

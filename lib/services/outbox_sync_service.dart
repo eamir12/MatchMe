@@ -466,6 +466,19 @@ class OutboxSyncService {
                   }
                 }
               }
+            } else if (type == 'profile_update') {
+              // Wizard answers that live only in user_profiles (religion,
+              // lifestyle, family) must not be replayed against the users
+              // table: those columns no longer exist there, so the update
+              // would fail forever and the local value would later be
+              // overwritten by the next server sync.
+              final profilePayload = (updatePayload['profilePayload'] as Map?)
+                  ?.cast<String, dynamic>();
+              if (profilePayload != null && profilePayload.isNotEmpty) {
+                await supabase
+                    .from('user_profiles')
+                    .upsert(profilePayload, onConflict: 'user_id');
+              }
             } else {
               // Default: simple users-table update payload
               final updates = updatePayload['updates'] as Map<String, dynamic>;

@@ -10,7 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme_admin/services/system_health_monitor.dart';
 
 typedef SystemHealthTextLookup =
-    String Function(String key, {Map<String, String>? params});
+    String Function(String key, {Map<String, String>? params, String? pluralParam});
 
 /// Pulsing dot used by both the pill and the System Health screen banner.
 class SystemHealthPulseDot extends StatefulWidget {
@@ -90,7 +90,7 @@ class SystemHealthPill extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final health = ref.watch(systemHealthProvider);
     final snapshot = health.value ?? systemHealthMonitor.current;
-    final tr = t ?? ((String key, {Map<String, String>? params}) => key);
+    final tr = t ?? ((String key, {Map<String, String>? params, String? pluralParam}) => key);
     final status = snapshot.overall;
     final color = systemHealthStatusColor(status);
     final theme = Theme.of(context);

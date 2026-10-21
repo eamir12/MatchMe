@@ -41,8 +41,8 @@ class VoiceGuidanceMuteButton extends ConsumerWidget {
               .read(voiceGuidanceEnabledProvider.notifier)
               .setEnabled(true);
           await VoiceGuidanceService.instance.speakKey(
-            'voiceGuidanceUnmuteTooltip',
-            fallbackText: 'Voice guidance on',
+            'voiceGuidanceEnabledConfirmation',
+            fallbackText: 'Voice guidance is now on.',
           );
         }
       },

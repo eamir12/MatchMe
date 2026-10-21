@@ -15,6 +15,7 @@ import 'package:intl/intl.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/notification_inbox_provider.dart';
 import 'package:matchme/services/notification_inbox_service.dart';
+import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/widgets/app_empty_state.dart';
 import 'package:matchme/widgets/multi_select.dart';
@@ -320,6 +321,16 @@ class _InboxRow extends ConsumerWidget {
     final unread = item.isUnread;
     final (icon, iconColor) = _typeVisual(item.type, colors);
 
+    // The subject and the preview keep the direction of their own script: an
+    // English masked name ("First L.") in a Hebrew UI keeps its period on the
+    // right of the name, and an English preview keeps its punctuation where it
+    // belongs. The alignment stays flush with the UI edge.
+    final uiDirection = Directionality.of(context);
+    final title = item.title.isolateTrailingDisplayName();
+    final titleLayout = title.displayTextLayout(uiDirection);
+    final body = item.body.isolateTrailingDisplayName();
+    final bodyLayout = body.displayTextLayout(uiDirection);
+
     final Widget row = InkWell(
       onTap: selectionMode ? onToggleSelect : onTap,
       onLongPress: selectionMode ? null : onToggleSelect,
@@ -356,7 +367,9 @@ class _InboxRow extends ConsumerWidget {
                     children: [
                       Expanded(
                         child: SafeText(
-                          item.title,
+                          title,
+                          textAlign: titleLayout.textAlign,
+                          textDirection: titleLayout.textDirection,
                           style: TextStyle(
                             fontSize: 15,
                             fontWeight:
@@ -383,7 +396,9 @@ class _InboxRow extends ConsumerWidget {
                   ),
                   const SizedBox(height: 3),
                   SafeText(
-                    item.body,
+                    body,
+                    textAlign: bodyLayout.textAlign,
+                    textDirection: bodyLayout.textDirection,
                     style: TextStyle(
                       fontSize: 13,
                       height: 1.3,
@@ -539,6 +554,14 @@ class _InboxDetailSheet extends ConsumerWidget {
             item.type == 'new_match' ||
             item.type == 'match_extended');
 
+    // Same rule as the row: the subject and the body follow their own script
+    // so a masked name keeps its period on the right of the name.
+    final uiDirection = Directionality.of(context);
+    final title = item.title.isolateTrailingDisplayName();
+    final titleLayout = title.displayTextLayout(uiDirection);
+    final body = item.body.isolateTrailingDisplayName();
+    final bodyLayout = body.displayTextLayout(uiDirection);
+
     return SafeArea(
       child: Padding(
         padding: EdgeInsets.only(
@@ -595,13 +618,17 @@ class _InboxDetailSheet extends ConsumerWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              item.title,
+              title,
+              textAlign: titleLayout.textAlign,
+              textDirection: titleLayout.textDirection,
               style: theme.textTheme.titleMedium
                   ?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 10),
             Text(
-              item.body,
+              body,
+              textAlign: bodyLayout.textAlign,
+              textDirection: bodyLayout.textDirection,
               style: TextStyle(
                 fontSize: 14.5,
                 height: 1.45,

@@ -30,6 +30,7 @@ import 'package:matchme/utils/country_localized_names.dart';
 import 'package:matchme/utils/map_theme_utils.dart';
 import 'package:matchme/utils/unit_utils.dart';
 import 'package:matchme/utils/nearby_map_camera.dart';
+import 'package:matchme/utils/nearby_map_counts.dart';
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:matchme/providers/unit_provider.dart';
 import 'package:matchme/widgets/app_empty_state.dart';
@@ -93,18 +94,6 @@ final Crs _noWrap3857Crs = () {
   );
 }();
 
-class NearbyMapCell {
-  final double lat;
-  final double lng;
-  final int count;
-
-  const NearbyMapCell({
-    required this.lat,
-    required this.lng,
-    required this.count,
-  });
-}
-
 class NearbyMapScreen extends ConsumerStatefulWidget {
   const NearbyMapScreen({super.key});
 
@@ -149,6 +138,10 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
   bool _mapReady = false;
 
   bool _loading = false;
+  // True once a cell query has resolved at least once. Distinguishes
+  // "there are genuinely no nearby users" (loaded, empty -> count 0) from
+  // "we do not know yet" (never loaded -> no count is claimed).
+  bool _cellsLoaded = false;
   List<NearbyMapCell> _cells = const [];
   NearbyMapCell? _selectedCell;
   DateTime? _lastActivityCommitTimestamp;
@@ -884,6 +877,7 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
       if (!mounted) return;
       setState(() {
         _cells = cachedRows == null ? const [] : decodeCells(cachedRows);
+        _cellsLoaded = true;
         _selectedCell = null;
         _loading = false;
       });
@@ -941,6 +935,7 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
       if (!mounted) return;
       setState(() {
         _cells = parsed;
+        _cellsLoaded = true;
         if (_selectedCell != null) {
           final stillExists = parsed.any(
             (c) => c.lat == _selectedCell!.lat && c.lng == _selectedCell!.lng,
@@ -957,6 +952,7 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
       if (cachedRows != null) {
         setState(() {
           _cells = decodeCells(cachedRows!);
+          _cellsLoaded = true;
           _selectedCell = null;
         });
         return;
@@ -964,6 +960,7 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
       if (!isNetworkError) {
         setState(() {
           _cells = const [];
+          _cellsLoaded = true;
           _selectedCell = null;
         });
       }
@@ -1165,17 +1162,25 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
     final l10n = ref.watch(localizationProvider);
     final userId = Supabase.instance.client.auth.currentUser?.id;
     final isOnline = ref.watch(connectivityProvider).value ?? true;
-    // Use dashboardStatsProvider for the "nearby" total (same as the home
-    // screen): users within the user's selected proximity range who are
-    // currently visible. _cells only covers the visible viewport (which can
-    // exceed the selected range when zoomed out), so it is only a fallback
-    // while the shared stats stream is still loading.
-    final dashboardStats = ref.watch(dashboardStatsProvider);
-    final displayedNearbyCount = dashboardStats.when(
-      data: (stats) => stats['nearby'] ?? 0,
-      loading: () => _cells.fold<int>(0, (sum, cell) => sum + cell.count),
-      error: (_, e) => _cells.fold<int>(0, (sum, cell) => sum + cell.count),
-    );
+    // The "Showing ~N users" pill must state exactly what the map plots, so
+    // it is derived from the SAME query as the markers below.
+    //
+    // _fetchCells queries the server with the device's live position (or the
+    // active pin) and the selected match radius, and the RPC buckets the
+    // matching users into cells whose counts sum to the number of distinct
+    // users in range. Summing them therefore yields exactly the number of
+    // users plotted.
+    //
+    // The shared dashboard stats used to drive this pill, but
+    // get_nearby_users_count() anchors its query on the server's own copy of
+    // the requesting user's position (user_locations) while the cell query
+    // is anchored on the device's position. Whenever those two anchors were
+    // out of sync (missing/stale server-side row, invisible user whose
+    // location row was reaped by cleanup_old_user_locations) the pill read
+    // 0 while a real user was plotted right next to the "You" marker.
+    final displayedNearbyCount = _cellsLoaded
+        ? nearbyUsersPlottedOnMap(_cells)
+        : null;
 
     if (userId == null) {
       return Scaffold(
@@ -1602,34 +1607,35 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                             right: 12,
                             child: _legend(context, l10n),
                           ),
-                          Positioned(
-                            top: 12,
-                            left: 44,
-                            child: Material(
-                              elevation: 0,
-                              borderRadius: BorderRadius.circular(999),
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.surface.withValues(alpha: 0.92),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 8,
-                                ),
-                                child: Text(
-                                  l10n.getString(
-                                    'mapShowingApproxUsers',
-                                    params: {
-                                      'count': displayedNearbyCount.toString(),
-                                    },
+                          if (displayedNearbyCount != null)
+                            Positioned(
+                              top: 12,
+                              left: 44,
+                              child: Material(
+                                elevation: 0,
+                                borderRadius: BorderRadius.circular(999),
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.surface.withValues(alpha: 0.92),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 8,
                                   ),
-                                  style: Theme.of(
-                                    context,
-                                  ).textTheme.labelMedium,
+                                  child: Text(
+                                    l10n.getString(
+                                      'mapShowingApproxUsers',
+                                      params: {
+                                        'count': displayedNearbyCount.toString(),
+                                      },
+                                    ),
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.labelMedium,
+                                  ),
                                 ),
                               ),
                             ),
-                          ),
                           if (_selectedCell != null)
                             Positioned(
                               bottom: 120,

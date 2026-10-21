@@ -40,6 +40,7 @@ import 'package:matchme/utils/resume_route_restore.dart';
 import 'package:matchme/screens/onboarding/onboarding_intro_screen.dart';
 import 'package:matchme/screens/onboarding/onboarding_content.dart';
 import 'package:matchme/services/onboarding_intro_service.dart';
+import 'package:matchme/widgets/startup_loader.dart';
 import 'package:matchme/screens/profile/verification_screen.dart';
 import 'package:matchme/services/verification_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -558,6 +559,23 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
   bool _isLoggingOut = false;
   bool _didLaunchOnboardingIntro = false;
 
+  /// True while the one-time intro tour decision is still pending.
+  ///
+  /// The Home tab is held back until it resolves so the tour really comes
+  /// before the member's first Home screen — a tour that pops up over a Home
+  /// screen they already walked into is not "before" anything.
+  bool _onboardingIntroPending = true;
+
+  /// How long the Home tab waits for the intro-tour decision before it is
+  /// released anyway. The tour has to come first, but a slow or unreachable
+  /// server must never keep the member staring at a splash screen.
+  static const Duration _onboardingIntroDecisionGrace = Duration(
+    seconds: 3,
+  );
+
+  /// Releases the Home tab if the intro-tour decision takes too long.
+  Timer? _onboardingIntroGraceTimer;
+
   /// Process-wide record of accounts the intro tour has already auto-launched
   /// for. [MainNavigationScreen] states can be recreated (ProfileCheckScreen
   /// emits this screen from two tree positions), so an instance flag alone
@@ -574,18 +592,17 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // The intro-tour decision starts right away: the Home tab is held back
+    // until it resolves, so the tour comes before the first Home screen.
+    unawaited(
+      _maybeLaunchOnboardingIntro().then(
+        (_) => _maybePromptPhotoVerification(),
+      ),
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         _updateUserActivity();
         unawaited(_restoreNavigationContext());
-        // Verification prompt waits for the intro tour to finish so the two
-        // launch dialogs never overlap.
-        unawaited(
-          _maybeLaunchOnboardingIntro().then(
-            (_) => _maybePromptPhotoVerification(),
-          ),
-        );
-
         // Start background service for authenticated user
         final currentUserId = supabase.auth.currentUser?.id;
         if (currentUserId != null) {
@@ -600,50 +617,90 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
     });
   }
 
-  /// Runs the interactive introduction tour exactly once per user, right
+  /// Releases the Home tab. Idempotent — the decision and the grace timer can
+  /// both call it.
+  void _releaseHomeTab() {
+    if (!_onboardingIntroPending) return;
+    _onboardingIntroPending = false;
+    if (mounted) setState(() {});
+  }
+
+  /// Runs the interactive introduction tour exactly once per ACCOUNT, right
   /// after their first profile completion: this State is created fresh on
   /// app startup AND right after the profile wizard flips
   /// [ProfileCheckScreen] over to main navigation, so both entry points are
-  /// covered here. The launch is consumed the single time it fires (persisted
-  /// immediately, not only when the tour is finished) so it can never
-  /// auto-launch again — not on later cold starts, not after subsequent
-  /// profile edits. It can always be replayed manually from Settings, which
-  /// pushes [OnboardingIntroScreen] directly and bypasses this gate.
+  /// covered here.
+  ///
+  /// The tour is a one-time experience for the whole account, not for a
+  /// device: the decision comes from the account record (and, where the
+  /// database provides it, from an atomic server-side claim), so a member
+  /// who already saw the tour on another device never sees it again. The
+  /// launch is consumed the single time it fires (persisted immediately, not
+  /// only when the tour is finished) so it can never auto-launch again — not
+  /// on later cold starts, not after subsequent profile edits. It can always
+  /// be replayed manually from Settings, which pushes
+  /// [OnboardingIntroScreen] directly and bypasses this gate.
   Future<void> _maybeLaunchOnboardingIntro() async {
-    if (_didLaunchOnboardingIntro) return;
+    // The Home tab must not stay hidden forever while the account is asked.
+    _onboardingIntroGraceTimer?.cancel();
+    _onboardingIntroGraceTimer = Timer(
+      _onboardingIntroDecisionGrace,
+      _releaseHomeTab,
+    );
     try {
       final userId = supabase.auth.currentUser?.id;
       final launchKey = (userId == null || userId.isEmpty) ? 'anon' : userId;
-      if (_onboardingAutoLaunchedUserIds.contains(launchKey)) return;
-      final seen = await OnboardingIntroService.instance.hasSeenIntro(
+      if (_onboardingAutoLaunchedUserIds.contains(launchKey)) {
+        _releaseHomeTab();
+        return;
+      }
+      // This device already consumed the tour: no account round-trip, no
+      // delay, Home is released immediately.
+      if (await OnboardingIntroService.instance.hasSeenCoreTourLocally(
         userId: userId,
-      );
-      if (seen) return;
+      )) {
+        _releaseHomeTab();
+        return;
+      }
       // Auto-launch only after first profile completion. Main navigation is
       // normally reached only via a complete profile, but offline fallbacks
       // can land here early — never consume the one auto-launch then.
       // A negative result claims nothing, so a later State (after the real
       // completion) can still fire the single launch.
       final isComplete = await _isProfileCompleteForOnboardingIntro(userId);
-      if (!isComplete) return;
-      if (!mounted) return;
-      // Give the startup transition (please-wait dialog hide, pending route
-      // restore) a moment to settle so the tour opens on a calm screen.
-      await Future<void>.delayed(const Duration(milliseconds: 900));
+      if (!isComplete) {
+        _releaseHomeTab();
+        return;
+      }
+      // The ACCOUNT decides whether the tour was ever seen. Anything but an
+      // explicit "launch" (already seen, or state unknown because the server
+      // could not be reached) keeps the tour away: a one-time tour that shows
+      // up twice is worse than one that never shows up.
+      final decision = await OnboardingIntroService.instance
+          .decideCoreTourLaunch(userId: userId);
+      if (decision != CoreTourLaunchDecision.launch) {
+        debugPrint(
+          '[MainNavigation] Onboarding intro not launched ($decision)',
+        );
+        _releaseHomeTab();
+        return;
+      }
       if (!mounted) return;
       // Claim the single auto-launch synchronously: this section has no
       // awaits, so a racing State instance cannot slip past it.
-      if (_didLaunchOnboardingIntro) return;
-      if (_onboardingAutoLaunchedUserIds.contains(launchKey)) return;
+      if (_didLaunchOnboardingIntro) {
+        _releaseHomeTab();
+        return;
+      }
+      if (_onboardingAutoLaunchedUserIds.contains(launchKey)) {
+        _releaseHomeTab();
+        return;
+      }
       _didLaunchOnboardingIntro = true;
       _onboardingAutoLaunchedUserIds.add(launchKey);
-      // Persist the consumption now — this auto-launch IS the one time. Even
-      // if the tour is dismissed by a system pop or the app is killed
-      // mid-tour, it must not auto-launch again. Storage failure must not
-      // block the launch itself.
-      try {
-        await OnboardingIntroService.instance.markIntroSeen(userId: userId);
-      } catch (_) {}
+      // Give the startup transition (please-wait dialog hide, pending route
+      // restore) a moment to settle so the tour opens on a calm screen.
+      await Future<void>.delayed(const Duration(milliseconds: 900));
       if (!mounted) return;
       await Navigator.of(context).push(
         MaterialPageRoute(
@@ -653,6 +710,9 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
       );
     } catch (e) {
       debugPrint('[MainNavigation] Onboarding intro launch failed: $e');
+    } finally {
+      // The tour is done (or was never coming): the member reaches Home.
+      _releaseHomeTab();
     }
   }
 
@@ -807,6 +867,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _activityTimer?.cancel();
+    _onboardingIntroGraceTimer?.cancel();
     for (final controller in _tabScrollControllers) {
       controller.dispose();
     }
@@ -1112,7 +1173,11 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
     final List<Widget> screens = [
       PrimaryScrollController(
         controller: _tabScrollControllers[0],
-        child: const HomeScreen(),
+        // Held back while the one-time intro tour decision is pending, so
+        // the tour comes before the member's first Home screen.
+        child: _onboardingIntroPending
+            ? const StartupLoaderScaffold()
+            : const HomeScreen(),
       ),
       PrimaryScrollController(
         controller: _tabScrollControllers[1],

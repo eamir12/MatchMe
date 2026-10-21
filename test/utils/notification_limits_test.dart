@@ -36,12 +36,18 @@ void main() {
     });
 
     test('maskFullName mirrors mask_full_name ("John S.")', () {
-      expect(maskFullName('John Smith'), 'John S.');
-      expect(maskFullName('John Michael Smith'), 'John S.');
-      expect(maskFullName('Prince'), 'Prince');
+      // The masked name carries the directional mark of its own script, so
+      // its trailing period stays glued to the initial in a Hebrew UI too.
+      // The marks are invisible, so only they differ from the SQL output.
+      expect(maskFullName('John Smith'), '‎John S.‎');
+      expect(maskFullName('John Michael Smith'), '‎John S.‎');
+      expect(maskFullName('Prince'), '‎Prince‎');
       expect(maskFullName(''), 'Someone');
       // Idempotent: already-masked server/RPC titles pass through unchanged.
-      expect(maskFullName('John S.'), 'John S.');
+      expect(maskFullName('John S.'), '‎John S.‎');
+      expect(maskFullName('‎John S.‎'), '‎John S.‎');
+      // A Hebrew name is marked with the right-to-left mark instead.
+      expect(maskFullName('דוד ליאור'), '‏דוד ל.‏');
     });
 
     test('enforceTitleBody caps queue sizes', () {

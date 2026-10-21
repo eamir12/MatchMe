@@ -197,7 +197,7 @@ void main() {
   );
 
   testWidgets(
-    'match card spells out "Verified" next to a verified profile',
+    'match card spells out "Primary Photo Verified" next to a verified profile',
     (tester) async {
       final now = DateTime.now();
       final match = MatchModel(
@@ -274,8 +274,8 @@ void main() {
       await tester.pump();
 
       // The word is the status mark: the photo no longer carries its own
-      // check, and the label rides the age/gender line instead of the name.
-      expect(find.text('Verified'), findsOneWidget);
+      // check, and the label rides the status band under the identity block.
+      expect(find.text('Primary Photo Verified'), findsOneWidget);
       expect(find.byIcon(Icons.verified), findsWidgets);
       expect(find.byIcon(Icons.check_rounded), findsNothing);
 
@@ -287,25 +287,31 @@ void main() {
       );
       expect(ageFinder, findsOneWidget, reason: 'expected an age on the card');
 
-      Wrap? metaWrap;
-      tester.element(ageFinder).visitAncestorElements((ancestor) {
-        if (ancestor.widget is Wrap) {
-          metaWrap = ancestor.widget as Wrap;
-          return false;
-        }
-        return true;
-      });
-      expect(metaWrap, isNotNull, reason: 'the age sits inside a wrap');
+      // The status chips share one band (a Wrap) of their own, below the
+      // identity block — they no longer ride the age/gender line.
+      Wrap? statusWrap;
+      tester
+          .element(find.text('Primary Photo Verified'))
+          .visitAncestorElements((ancestor) {
+            if (ancestor.widget is Wrap) {
+              statusWrap = ancestor.widget as Wrap;
+              return false;
+            }
+            return true;
+          });
+      expect(statusWrap, isNotNull, reason: 'the status chip sits inside a wrap');
       expect(
         find.descendant(
-          of: find.byWidget(metaWrap!),
-          matching: find.text('Verified'),
+          of: find.byWidget(statusWrap!),
+          matching: find.text('Primary Photo Verified'),
         ),
         findsOneWidget,
-        reason: 'Verified must share the age/gender line',
+        reason: 'the status chip lives in the shared status band',
       );
 
-      final verifiedText = tester.widget<Text>(find.text('Verified'));
+      final verifiedText = tester.widget<Text>(
+        find.text('Primary Photo Verified'),
+      );
       expect(verifiedText.style?.fontSize, greaterThanOrEqualTo(12));
       expect(tester.takeException(), isNull);
 
@@ -404,8 +410,10 @@ void main() {
         reason: 'badges must wrap below the age/gender text, not squeeze it '
             'into a one-character-wide column',
       );
-      expect(find.text('Verified'), findsOneWidget);
-      expect(find.text('Complete'), findsOneWidget);
+      // Every status chip spells itself out, and they all sit in the same
+      // band under the identity block.
+      expect(find.text('Primary Photo Verified'), findsOneWidget);
+      expect(find.text('Profile Complete'), findsOneWidget);
       expect(tester.takeException(), isNull);
 
       await tester.pump(const Duration(seconds: 11));

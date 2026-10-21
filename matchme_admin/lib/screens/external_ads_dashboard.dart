@@ -13,7 +13,7 @@ import 'package:matchme_admin/widgets/safe_text.dart';
 
 // Type definitions
 typedef AdminTextLookup =
-    String Function(String key, {Map<String, String>? params});
+    String Function(String key, {Map<String, String>? params, String? pluralParam});
 
 typedef ConfigPayload = Map<String, dynamic>;
 
@@ -37,8 +37,8 @@ class AdminExternalAdsDashboard extends StatefulWidget {
 
 class _AdminExternalAdsDashboardState extends State<AdminExternalAdsDashboard>
     with TickerProviderStateMixin, AutomaticKeepAliveClientMixin {
-  String t(String key, {Map<String, String>? params}) =>
-      widget.t(key, params: params);
+  String t(String key, {Map<String, String>? params, String? pluralParam}) =>
+      widget.t(key, params: params, pluralParam: pluralParam);
   static const _tabCount = 3;
 
   TabController? _tabController;
