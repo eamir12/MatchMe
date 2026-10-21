@@ -54,6 +54,7 @@ import 'package:matchme/screens/location_share/location_share_map_screen.dart';
 import 'package:matchme/screens/location_share/location_share_duration_dialog.dart';
 import 'package:matchme/widgets/location_share_banner.dart';
 import 'package:matchme/widgets/safe_text.dart';
+import 'package:matchme/widgets/word_clipped_text.dart';
 import 'package:matchme/services/location_service.dart';
 
 SupabaseClient get supabase => Supabase.instance.client;
@@ -2979,11 +2980,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                           }
                         },
                         child: messagesAsyncValue.when(
+                          // Keep the rendered conversation on screen while the
+                          // provider recomputes in the background. Without
+                          // this a rebuild dropped the whole list back onto
+                          // the "loading messages" spinner for the duration of
+                          // the rebuild, which is what the user perceives as
+                          // "the chat takes a few seconds to open".
+                          //
+                          // skipLoadingOnReload covers rebuilds caused by a
+                          // watched dependency changing, skipLoadingOnRefresh
+                          // covers explicit invalidations.
+                          skipLoadingOnReload: true,
+                          skipLoadingOnRefresh: true,
+                          skipError: true,
                           data: (messages) {
                             if (messages.isEmpty) {
-                              return Center(
-                                child: Text(l10n.getString('chatSayHello')),
-                              );
+                              return _buildEmptyConversationState(l10n);
                             }
                             // Build flat item list with date separators inserted
                             final items = <dynamic>[];
@@ -3271,6 +3283,42 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     );
   }
 
+  /// Renders the state of a conversation that has no messages yet.
+  ///
+  /// An empty conversation and a conversation that is still being downloaded
+  /// look identical from the data alone, so the in-flight flag of the sync
+  /// service decides which one is shown. This keeps the user from seeing
+  /// "say hello" in a chat that actually has messages on the server, while
+  /// still not blocking the screen with a full-screen spinner.
+  Widget _buildEmptyConversationState(LocalizationState l10n) {
+    final syncService = ref.read(chatSyncProvider(widget.matchId));
+    return ValueListenableBuilder<bool>(
+      valueListenable: syncService.isSyncing,
+      builder: (context, isSyncing, _) {
+        if (!isSyncing) {
+          return Center(child: Text(l10n.getString('chatSayHello')));
+        }
+        return Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                l10n.getString('chatLoadingMessages'),
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   Widget _buildMessageInputArea() {
     final l10n = ref.read(localizationProvider);
     return Container(
@@ -3360,17 +3408,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                                   Theme.of(context).textTheme.bodyMedium ??
                                       const TextStyle(),
                                 );
-                                return Text.rich(
-                                  TextSpan(
-                                    children: emojiAwareSpans(
-                                      ensureEmojiPresentation(
-                                        _replyingToSnippet ?? '',
-                                      ),
-                                      base,
+                                return WordClippedText(
+                                  spans: emojiAwareSpans(
+                                    ensureEmojiPresentation(
+                                      _replyingToSnippet ?? '',
                                     ),
+                                    base,
                                   ),
+                                  style: base,
                                   maxLines: 2,
-                                  overflow: TextOverflow.visible,
+                                  textAlign: TextAlign.start,
                                 );
                               },
                             ),
@@ -3817,10 +3864,10 @@ class _MessageBubble extends ConsumerWidget {
                           : FontStyle.normal,
                     ),
               );
-              return Text.rich(
-                TextSpan(children: emojiAwareSpans(primaryText, base)),
+              return WordClippedText(
+                spans: emojiAwareSpans(primaryText, base),
+                style: base,
                 maxLines: 2,
-                overflow: TextOverflow.visible,
                 textAlign: TextAlign.start,
                 textDirection: primaryRtl
                     ? ui.TextDirection.rtl
@@ -3845,10 +3892,10 @@ class _MessageBubble extends ConsumerWidget {
                         fontStyle: FontStyle.italic,
                       ),
                 );
-                return Text.rich(
-                  TextSpan(children: emojiAwareSpans(secondaryText, base)),
+                return WordClippedText(
+                  spans: emojiAwareSpans(secondaryText, base),
+                  style: base,
                   maxLines: 2,
-                  overflow: TextOverflow.visible,
                   textAlign: TextAlign.start,
                   textDirection: _isRtl(secondaryText)
                       ? ui.TextDirection.rtl

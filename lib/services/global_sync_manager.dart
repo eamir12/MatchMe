@@ -16,6 +16,7 @@ import 'package:matchme/services/storage_helper.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/providers/auth_provider.dart';
 import 'package:matchme/providers/chat_key_provider.dart';
+import 'package:matchme/providers/notification_inbox_provider.dart';
 import 'package:matchme/models/user_chat_key_model.dart';
 import 'package:matchme/services/chat_key_service.dart';
 import 'package:matchme/services/user_activity_service.dart';
@@ -75,6 +76,13 @@ class GlobalHomeSyncManager {
 
   // Fingerprint cache: skips save when server data hasn't changed
   static final Map<String, String> _lastSyncFingerprints = {};
+
+  // PostgREST caps a single response page (normally at 1,000 rows).
+  static const int _chatHistoryPageSize = 1000;
+
+  // Conversations whose history pass is currently running, so two overlapping
+  // full syncs never download the same conversation twice at once.
+  final Set<String> _chatHistorySyncsInFlight = {};
 
   GlobalHomeSyncManager(this._ref) {
     // Load config values asynchronously
@@ -334,6 +342,19 @@ class GlobalHomeSyncManager {
       bool isBenignSyncFailure(Object e) =>
           isExpectedOfflineFailure(e) || isAuthRateLimitFailure(e);
 
+      // Runs one sync task and records whether it failed, so a single
+      // failing task never aborts the rest of the cycle.
+      Future<void> runTask(String label, Future<void> task) async {
+        try {
+          await task;
+        } catch (e) {
+          if (!isBenignSyncFailure(e)) {
+            debugPrint('⚠️ [SYNC] $label failed: $e');
+            anyTaskFailed = true;
+          }
+        }
+      }
+
       // Replay queued offline mutations (e.g. chat-translation toggles made
       // while offline) BEFORE pulling server state. syncChatsNow treats the
       // server row as canonical and would otherwise overwrite the local
@@ -349,41 +370,25 @@ class GlobalHomeSyncManager {
         // the next sync cycle.
       }
 
+      // The chat list is fetched first and the conversation prefetch waits for
+      // it: the prefetch orders the conversations by recency using that list,
+      // so the conversation the user is most likely to open is downloaded
+      // first.
+      final chatListSync = runTask('Chats sync', syncChatsNow(userId));
+
       final syncTasks = [
-        _syncMatches(userId).catchError((e) {
-          if (!isBenignSyncFailure(e)) {
-            debugPrint('⚠️ [SYNC] Matches sync failed: $e');
-          }
-          if (!isBenignSyncFailure(e)) anyTaskFailed = true;
-        }),
-        syncChatsNow(userId).catchError((e) {
-          if (!isBenignSyncFailure(e)) {
-            debugPrint('⚠️ [SYNC] Chats sync failed: $e');
-          }
-          if (!isBenignSyncFailure(e)) anyTaskFailed = true;
-        }),
-        _syncAllChatHistories(userId).catchError((e) {
-          if (!isBenignSyncFailure(e)) {
-            debugPrint('⚠️ [SYNC] Chat histories sync failed: $e');
-          }
-          if (!isBenignSyncFailure(e)) anyTaskFailed = true;
-        }),
-        _syncUserEvents(userId).catchError((e) {
-          if (!isBenignSyncFailure(e)) {
-            debugPrint('⚠️ [SYNC] User events sync failed: $e');
-          }
-          if (!isBenignSyncFailure(e)) anyTaskFailed = true;
-        }),
+        runTask('Matches sync', _syncMatches(userId)),
+        chatListSync,
+        runTask(
+          'Chat histories sync',
+          _syncAllChatHistories(userId, chatListReady: chatListSync),
+        ),
+        runTask('User events sync', _syncUserEvents(userId)),
         _syncPendingMutations().catchError((e) {
           debugPrint('⚠️ [SYNC] Pending mutations sync failed: $e');
           // Don't mark as failed - mutations can be retried
         }),
-        _syncUserSettings(userId).catchError((e) {
-          if (!isBenignSyncFailure(e)) {
-            debugPrint('⚠️ [SYNC] User settings sync failed: $e');
-          }
-          if (!isBenignSyncFailure(e)) anyTaskFailed = true;
-        }),
+        runTask('User settings sync', _syncUserSettings(userId)),
       ];
 
       await Future.wait(syncTasks, eagerError: false);
@@ -405,6 +410,54 @@ class GlobalHomeSyncManager {
       }
     } finally {
       _syncInProgress = false;
+    }
+  }
+
+  /// Background prefetch of everything the app needs from the server.
+  ///
+  /// Called once the home screen is on display, so it never delays the home
+  /// screen (or any other screen) from being shown. When it has finished,
+  /// every screen the user can open - a chat, a match profile, the events
+  /// list - renders from the local cache instead of waiting for the network.
+  ///
+  /// The chat list is fetched first because the conversation prefetch orders
+  /// the conversations by recency using that list: the conversation the user
+  /// is most likely to open is downloaded first, so opening it is instant.
+  Future<void> prefetchAll(String userId) async {
+    if (userId.isEmpty) return;
+    if (_disposed) return;
+    if (supabase.auth.currentUser?.id != userId) return;
+    if (shouldSkipSupabaseCalls()) return;
+
+    final sw = Stopwatch()..start();
+    try {
+      // The notification inbox is only built when something reads it. Build
+      // it now so the inbox screen opens with its rows already on disk
+      // instead of a spinner.
+      try {
+        _ref.read(notificationInboxProvider);
+      } catch (_) {
+        // Best effort: the inbox still loads when the user opens it.
+      }
+      // The chat list is needed for the recency ordering below. Only force a
+      // refresh when the list is not on the device yet: a forced call
+      // bypasses the cooldown, so forcing it every time would duplicate the
+      // request the home sync has just made.
+      var chatListOnDevice = false;
+      try {
+        final cachedChats = await _ref.read(localDbProvider).loadChats(userId);
+        chatListOnDevice = cachedChats != null && cachedChats.isNotEmpty;
+      } catch (_) {}
+      await syncChatsNow(userId, force: !chatListOnDevice);
+      await _runFullSync(userId, checkConnectivity: true, skipCooldown: true);
+      debugPrint(
+        '✅ [PREFETCH] Background prefetch finished in ${sw.elapsedMilliseconds}ms',
+      );
+    } catch (e) {
+      debugPrint(
+        '⚠️ [PREFETCH] Background prefetch failed after '
+        '${sw.elapsedMilliseconds}ms: $e',
+      );
     }
   }
 
@@ -1782,7 +1835,28 @@ class GlobalHomeSyncManager {
   // ---
   // --- UPDATED: This function now performs an incremental sync for messages
   // ---
-  Future<void> _syncAllChatHistories(String userId) async {
+  /// Downloads every conversation the user is part of into the local cache.
+  ///
+  /// This is the prefetch that makes opening a chat instant: by the time the
+  /// user taps a conversation the whole history is already on disk and the
+  /// chat screen renders it without a single network round trip.
+  ///
+  /// Two properties matter here:
+  ///
+  /// - **Recency first.** The conversations are ordered by their last message
+  ///   time, so the chat the user is most likely to open is downloaded first.
+  ///   Opening the most recent chat while the rest is still downloading no
+  ///   longer costs the user a wait.
+  /// - **Bounded concurrency.** Every conversation used to be fetched in one
+  ///   big parallel fan-out, which is a lot of simultaneous requests for a
+  ///   user with many matches. The work is now processed in small waves.
+  ///
+  /// Only conversations whose local cache is empty are downloaded in full; the
+  /// rest are refreshed incrementally from the newest cached message.
+  Future<void> _syncAllChatHistories(
+    String userId, {
+    Future<void>? chatListReady,
+  }) async {
     if (shouldSkipSupabaseCalls()) {
       debugPrint(
         '⏸️ [SYNC] _syncAllChatHistories: Skipped - Supabase communication paused',
@@ -1795,7 +1869,7 @@ class GlobalHomeSyncManager {
 
       // 1. Get all match IDs the user is currently in. Page this query too,
       // since users with a long history can exceed the REST response limit.
-      const pageSize = 1000;
+      const pageSize = _chatHistoryPageSize;
       final allMatchIds = <String>[];
       var matchOffset = 0;
       while (true) {
@@ -1816,88 +1890,215 @@ class GlobalHomeSyncManager {
 
       if (allMatchIds.isEmpty) return;
 
-      // 2. Create a separate sync task for each match
-      final syncTasks = allMatchIds.map((matchId) async {
+      // 2. Order the conversations by recency so the ones the user is most
+      // likely to open are downloaded first. The cached chat list already
+      // carries the last message time for every conversation, but it is
+      // written by the chat-list sync, so wait for that to land first.
+      if (chatListReady != null) {
         try {
-          // 3. Get the timestamp of the last message we have
-          final latestTimestamp = await localDb.getLatestMessageTimestamp(
-            matchId,
-          );
-
-          // Supabase/PostgREST limits each response page. Fetch every page so
-          // long-running conversations are fully available from local storage.
-          var offset = 0;
-          while (true) {
-            var query = supabase
-                .from('chat_messages')
-                .select(
-                  'id, match_id, sender_id, created_at, edited_at, delivered_at, read_at, '
-                  'reaction_summary, reply_to_message_id, '
-                  'encryption_scheme, sender_key_id, recipient_key_id, recipient_id, '
-                  'content_original_encrypted, content_original_nonce, '
-                  'content_translated_encrypted, content_translated_nonce, '
-                  'wrapped_keys, translation_capable, detected_source_language, translated_target_language',
-                )
-                .eq('match_id', matchId);
-
-            // Re-fetch the newest cached timestamp too, so messages sharing
-            // that timestamp are not skipped; localDb deduplicates by ID.
-            if (latestTimestamp != null) {
-              query = query.gte('created_at', latestTimestamp);
-            }
-
-            final newMessages = await query
-                .order('created_at', ascending: true)
-                .order('id', ascending: true)
-                .range(offset, offset + pageSize - 1);
-
-            if (newMessages.isEmpty) break;
-            final messagesToDeliver = await localDb.addMessages(
-              matchId,
-              newMessages.cast<Map<String, dynamic>>(),
-              currentUserId: userId,
-            );
-
-            if (messagesToDeliver.isNotEmpty) {
-              debugPrint(
-                '🔄 GLOBAL_SYNC: Marking ${messagesToDeliver.length} messages as delivered for match $matchId',
-              );
-              unawaited(
-                Future.wait(
-                  messagesToDeliver.map(
-                    (msgId) => supabase
-                        .rpc(
-                          'mark_message_delivered',
-                          params: {'p_message_id': msgId},
-                        )
-                        .then((_) {
-                          debugPrint(
-                            '✅ GLOBAL_SYNC: Message $msgId marked as delivered',
-                          );
-                        })
-                        .catchError((e) {
-                          debugPrint(
-                            '❌ GLOBAL_SYNC: Failed to mark $msgId as delivered: $e',
-                          );
-                        }),
-                  ),
-                  eagerError: false,
-                ),
-              );
-            }
-
-            if (newMessages.length < pageSize) break;
-            offset += pageSize;
-          }
+          await chatListReady;
         } catch (_) {
-          // suppressed error logging per-match to avoid noisy logs
+          // A failed chat-list sync only means the recency order is unknown.
         }
-      }).toList();
+      }
+      final orderedMatchIds = await _orderMatchIdsByRecency(
+        localDb,
+        userId,
+        allMatchIds,
+      );
 
-      // 7. Run all sync tasks in parallel
-      await Future.wait(syncTasks);
+      // 3. Download the conversations in small waves. A wave is only started
+      // once the previous one finished, so a user with dozens of
+      // conversations does not fire dozens of simultaneous requests.
+      //
+      // The most recent conversations are also decrypted right away: the
+      // downloaded rows are still encrypted, and decrypting them here means
+      // the chat shows its text the moment the user opens it instead of
+      // rendering empty bubbles first. Decrypting is CPU work, so it is
+      // limited to the conversations the user is most likely to open next.
+      const waveSize = 4;
+      const decryptWarmLimit = 3;
+      final warmDecryptIds = orderedMatchIds.take(decryptWarmLimit).toSet();
+      for (var i = 0; i < orderedMatchIds.length; i += waveSize) {
+        if (shouldSkipSupabaseCalls()) return;
+        final wave = orderedMatchIds.skip(i).take(waveSize);
+        await Future.wait(
+          wave.map((matchId) async {
+            await _syncChatHistory(matchId, userId, localDb);
+            if (!warmDecryptIds.contains(matchId)) return;
+            try {
+              await _awaitChatKeyReadiness(userId);
+              await _ref
+                  .read(chatSyncProvider(matchId))
+                  .warmDecryptedContent(matchId);
+            } catch (_) {
+              // Best effort: the chat decrypts the conversation on open.
+            }
+          }),
+        );
+      }
     } catch (_) {
       // suppressed error logging
+    }
+  }
+
+  /// Orders [matchIds] by the time of their last message, newest first.
+  ///
+  /// Conversations that are not in the cached chat list (no messages yet, or
+  /// the chat list has not been synced) keep their original order and are
+  /// treated as the least recent.
+  Future<List<String>> _orderMatchIdsByRecency(
+    LocalDbService localDb,
+    String userId,
+    List<String> matchIds,
+  ) async {
+    final lastMessageAtByMatchId = <String, DateTime>{};
+    try {
+      final chats = await localDb.loadChats(userId);
+      for (final chat in chats ?? const <Map<String, dynamic>>[]) {
+        final matchId = (chat['match_id'] ?? '').toString().trim();
+        if (matchId.isEmpty) continue;
+        final raw = chat['last_message_at']?.toString();
+        if (raw == null || raw.isEmpty) continue;
+        final parsed = DateTime.tryParse(raw);
+        if (parsed == null) continue;
+        lastMessageAtByMatchId[matchId] = parsed.toUtc();
+      }
+    } catch (_) {
+      // Without the chat list every conversation is treated equally.
+    }
+
+    if (lastMessageAtByMatchId.isEmpty) return matchIds;
+
+    final indexById = <String, int>{
+      for (var i = 0; i < matchIds.length; i++) matchIds[i]: i,
+    };
+    final sorted = matchIds.toList()
+      ..sort((a, b) {
+        final aTime = lastMessageAtByMatchId[a];
+        final bTime = lastMessageAtByMatchId[b];
+        if (aTime == null && bTime == null) {
+          return (indexById[a] ?? 0).compareTo(indexById[b] ?? 0);
+        }
+        if (aTime == null) return 1;
+        if (bTime == null) return -1;
+        final byTime = bTime.compareTo(aTime);
+        if (byTime != 0) return byTime;
+        return (indexById[a] ?? 0).compareTo(indexById[b] ?? 0);
+      });
+    return sorted;
+  }
+
+  /// Downloads one conversation into the local cache.
+  Future<void> _syncChatHistory(
+    String matchId,
+    String userId,
+    LocalDbService localDb,
+  ) async {
+    // Two full syncs can overlap (the post-login prefetch plus a periodic or
+    // app-resume sync). Downloading the same conversation twice at once only
+    // duplicates requests; the pass already running fills the cache.
+    if (!_chatHistorySyncsInFlight.add(matchId)) return;
+    try {
+      // Deciding between a full download and an incremental one must not rely
+      // on "the cache has at least one row": a truncated cache (only the
+      // newest message survived a lost write) would then be topped up from its
+      // own newest timestamp and stay truncated forever. The completeness
+      // marker says whether this cache was ever downloaded in full, and its
+      // recorded row count catches a cache that shrank since.
+      final syncState = await localDb.getMessagesSyncState(matchId);
+      final localCount = syncState == null
+          ? 0
+          : (await localDb.getMessagesSnapshot(matchId)).length;
+      final cacheIsComplete =
+          syncState != null && localCount >= syncState.count;
+      final latestTimestamp = cacheIsComplete
+          ? await localDb.getLatestMessageTimestamp(matchId)
+          : null;
+
+      // Supabase/PostgREST limits each response page. Fetch every page so
+      // long-running conversations are fully available from local storage.
+      const pageSize = _chatHistoryPageSize;
+      var offset = 0;
+      while (true) {
+        var query = supabase
+            .from('chat_messages')
+            .select(
+              'id, match_id, sender_id, created_at, edited_at, delivered_at, read_at, '
+              'reaction_summary, reply_to_message_id, '
+              'encryption_scheme, sender_key_id, recipient_key_id, recipient_id, '
+              'content_original_encrypted, content_original_nonce, '
+              'content_translated_encrypted, content_translated_nonce, '
+              'wrapped_keys, translation_capable, detected_source_language, translated_target_language',
+            )
+            .eq('match_id', matchId);
+
+        // Re-fetch the newest cached timestamp too, so messages sharing
+        // that timestamp are not skipped; localDb deduplicates by ID.
+        if (latestTimestamp != null) {
+          query = query.gte('created_at', latestTimestamp);
+        }
+
+        final newMessages = await query
+            .order('created_at', ascending: true)
+            .order('id', ascending: true)
+            .range(offset, offset + pageSize - 1);
+
+        if (newMessages.isEmpty) break;
+        final messagesToDeliver = await localDb.addMessages(
+          matchId,
+          newMessages.cast<Map<String, dynamic>>(),
+          currentUserId: userId,
+        );
+
+        if (messagesToDeliver.isNotEmpty) {
+          debugPrint(
+            '🔄 GLOBAL_SYNC: Marking ${messagesToDeliver.length} messages as delivered for match $matchId',
+          );
+          unawaited(
+            Future.wait(
+              messagesToDeliver.map(
+                (msgId) => supabase
+                    .rpc(
+                      'mark_message_delivered',
+                      params: {'p_message_id': msgId},
+                    )
+                    .then((_) {
+                      debugPrint(
+                        '✅ GLOBAL_SYNC: Message $msgId marked as delivered',
+                      );
+                    })
+                    .catchError((e) {
+                      debugPrint(
+                        '❌ GLOBAL_SYNC: Failed to mark $msgId as delivered: $e',
+                      );
+                    }),
+              ),
+              eagerError: false,
+            ),
+          );
+        }
+
+        if (newMessages.length < pageSize) break;
+        offset += pageSize;
+      }
+
+      // The local copy now mirrors the server for this conversation. Recording
+      // that lets the chat screen skip re-downloading the whole history when
+      // the user opens the chat. After a full download the exact row count is
+      // recorded; an incremental pass only adds rows, so the previously
+      // recorded count stays a valid lower bound and no blob re-decode is
+      // needed just to count it.
+      await localDb.markMessagesSynced(
+        matchId,
+        messageCount: cacheIsComplete
+            ? null
+            : (await localDb.getMessagesSnapshot(matchId)).length,
+      );
+    } catch (_) {
+      // suppressed error logging per-match to avoid noisy logs
+    } finally {
+      _chatHistorySyncsInFlight.remove(matchId);
     }
   }
 

@@ -11391,15 +11391,6 @@ class ReligionWizardPage extends ConsumerStatefulWidget {
 }
 
 class _ReligionWizardPageState extends ConsumerState<ReligionWizardPage> {
-  /// Practice frequency options, ordered from least often to most often.
-  static const List<String> _practiceFrequencyOrder = <String>[
-    'rarely_or_never',
-    'few_times_a_year',
-    'monthly',
-    'weekly',
-    'daily',
-  ];
-
   String? _religion;
   String? _denomination;
   String? _practice;
@@ -11554,55 +11545,7 @@ class _ReligionWizardPageState extends ConsumerState<ReligionWizardPage> {
     String fieldKey,
     List<AppProfileOption> options,
   ) {
-    final decorated = <(int, AppProfileOption)>[
-      for (var i = 0; i < options.length; i++) (i, options[i]),
-    ];
-    decorated.sort((a, b) {
-      if (fieldKey == 'practice') {
-        final byFrequency = _comparePracticeFrequency(a.$2, b.$2);
-        if (byFrequency != 0) return byFrequency;
-      }
-      final bySortOrder = a.$2.profileSortOrder.compareTo(
-        b.$2.profileSortOrder,
-      );
-      return bySortOrder != 0 ? bySortOrder : a.$1.compareTo(b.$1);
-    });
-
-    final regular = <AppProfileOption>[];
-    final catchAll = <AppProfileOption>[];
-    for (final entry in decorated) {
-      (_isCatchAllOption(entry.$2) ? catchAll : regular).add(entry.$2);
-    }
-    return [...regular, ...catchAll];
-  }
-
-  /// "Other" is the catch-all option of a field (e.g. `other` for religion,
-  /// `christianity__other` for a denomination).
-  bool _isCatchAllOption(AppProfileOption option) {
-    final key = option.optionKey.toLowerCase();
-    if (key == 'other' || key.endsWith('__other')) return true;
-    return option.profileDisplayKey.toLowerCase().endsWith('other');
-  }
-
-  /// Compares two practice options on the "least often → most often" scale.
-  /// Options that are not part of the known scale are listed after it.
-  int _comparePracticeFrequency(AppProfileOption a, AppProfileOption b) {
-    final aIndex = _practiceFrequencyIndex(a);
-    final bIndex = _practiceFrequencyIndex(b);
-    if (aIndex < 0 && bIndex < 0) return 0;
-    if (aIndex < 0) return 1;
-    if (bIndex < 0) return -1;
-    return aIndex.compareTo(bIndex);
-  }
-
-  int _practiceFrequencyIndex(AppProfileOption option) {
-    final index = _practiceFrequencyOrder.indexOf(
-      option.optionKey.toLowerCase(),
-    );
-    if (index >= 0) return index;
-    return _practiceFrequencyOrder.indexOf(
-      (option.profileValue ?? '').toLowerCase(),
-    );
+    return orderBeliefOptions(options, fieldKey: fieldKey);
   }
 
   Future<void> _showOptionDescriptions({
@@ -12717,7 +12660,7 @@ class _UnifiedMatchPreferencesWizardPageState
             .asData
             ?.value ??
         [];
-    return opts.map((o) {
+    return orderBeliefOptions(opts, fieldKey: fieldKey).map((o) {
       final key = o.filterDisplayKey.isNotEmpty
           ? o.filterDisplayKey
           : o.profileDisplayKey;

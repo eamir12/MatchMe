@@ -542,8 +542,6 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  // Rating kept top-right but quiet, so the name stays primary.
-                  _RatingSummaryWidget(otherUserId: widget.match.otherUserId),
                   MatchProfileNavigationCue(
                     textDirection: textDir,
                     label: l10n.getString('viewMatch'),
@@ -587,8 +585,12 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
   /// never collides with the age. The status chips live in their own band
   /// below this column (see [_buildStatusPills]) so all three of them always
   /// share one location. The avatar stays clean: the status is spelled out in
-  /// words instead of stamped on the photo. Rating sits top-right of the
-  /// card (rendered by the caller).
+  /// words instead of stamped on the photo.
+  ///
+  /// The rating rides on the meta line, not next to the name: it used to sit
+  /// at the top-right of the card and took ~60px of the name's column, so a
+  /// name that was not one short word wrapped onto a second line. The meta
+  /// line is two short tokens, so it has room to spare.
   Widget _buildContentColumn(
     BuildContext context,
     WidgetRef ref,
@@ -639,20 +641,29 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
             ),
           ],
         ),
-        if (metaParts.isNotEmpty) ...[
-          const SizedBox(height: 1),
-          SafeText(
-            metaParts.join('  ·  '),
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w400,
-              color: Theme.of(context).colorScheme.onSurface.withValues(
-                alpha: 0.55,
-              ),
-            ),
-            textAlign: TextAlign.start,
-          ),
-        ],
+        const SizedBox(height: 1),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            if (metaParts.isNotEmpty)
+              Expanded(
+                child: SafeText(
+                  metaParts.join('  ·  '),
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w400,
+                    color: Theme.of(context).colorScheme.onSurface.withValues(
+                      alpha: 0.55,
+                    ),
+                  ),
+                  textAlign: TextAlign.start,
+                ),
+              )
+            else
+              const Spacer(),
+            _RatingSummaryWidget(otherUserId: widget.match.otherUserId),
+          ],
+        ),
       ],
     );
   }
@@ -1342,7 +1353,8 @@ class _RatingSummaryWidget extends ConsumerWidget {
         return Semantics(
           label: '$ratingText. $countText',
           child: Padding(
-            padding: const EdgeInsetsDirectional.only(start: 4.0),
+            // The gap towards the meta text it now shares its line with.
+            padding: const EdgeInsetsDirectional.only(start: 8.0),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [

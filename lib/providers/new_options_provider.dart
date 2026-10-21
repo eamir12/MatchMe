@@ -576,6 +576,79 @@ class AppProfileOption {
   }
 }
 
+/// Practice frequency options, ordered from least often to most often.
+const List<String> kPracticeFrequencyOrder = <String>[
+  'rarely_or_never',
+  'few_times_a_year',
+  'monthly',
+  'weekly',
+  'daily',
+];
+
+/// The belief fields whose options are ordered by [orderBeliefOptions].
+bool isBeliefFieldKey(String fieldKey) =>
+    fieldKey == 'religion' ||
+    fieldKey == 'denomination' ||
+    fieldKey == 'practice';
+
+/// Orders the options of a belief field so the list always reads the same way,
+/// in the profile wizard and in the religion filter screens alike:
+///  * the catch-all "Other" option is always last, because it is the choice
+///    for people who do not want any of the options listed above it;
+///  * the practice frequency runs from least often to most often.
+List<AppProfileOption> orderBeliefOptions(
+  List<AppProfileOption> options, {
+  required String fieldKey,
+}) {
+  if (!isBeliefFieldKey(fieldKey)) return options;
+
+  final decorated = <(int, AppProfileOption)>[
+    for (var i = 0; i < options.length; i++) (i, options[i]),
+  ];
+  decorated.sort((a, b) {
+    if (fieldKey == 'practice') {
+      final byFrequency = _comparePracticeFrequency(a.$2, b.$2);
+      if (byFrequency != 0) return byFrequency;
+    }
+    final bySortOrder = a.$2.profileSortOrder.compareTo(b.$2.profileSortOrder);
+    return bySortOrder != 0 ? bySortOrder : a.$1.compareTo(b.$1);
+  });
+
+  final regular = <AppProfileOption>[];
+  final catchAll = <AppProfileOption>[];
+  for (final entry in decorated) {
+    (_isCatchAllOption(entry.$2) ? catchAll : regular).add(entry.$2);
+  }
+  return [...regular, ...catchAll];
+}
+
+/// "Other" is the catch-all option of a field (e.g. `other` for religion,
+/// `christianity__other` for a denomination).
+bool _isCatchAllOption(AppProfileOption option) {
+  final key = option.optionKey.toLowerCase();
+  if (key == 'other' || key.endsWith('__other')) return true;
+  return option.profileDisplayKey.toLowerCase().endsWith('other');
+}
+
+/// Compares two practice options on the "least often → most often" scale.
+/// Options that are not part of the known scale are listed after it.
+int _comparePracticeFrequency(AppProfileOption a, AppProfileOption b) {
+  final aIndex = _practiceFrequencyIndex(a);
+  final bIndex = _practiceFrequencyIndex(b);
+  if (aIndex < 0 && bIndex < 0) return 0;
+  if (aIndex < 0) return 1;
+  if (bIndex < 0) return -1;
+  return aIndex.compareTo(bIndex);
+}
+
+int _practiceFrequencyIndex(AppProfileOption option) {
+  final index = kPracticeFrequencyOrder.indexOf(option.optionKey.toLowerCase());
+  if (index >= 0) return index;
+  return kPracticeFrequencyOrder.indexOf(
+    (option.profileValue ?? '').toLowerCase(),
+  );
+}
+
 /// All profile option rows, fetched from app_profile_options table.
 /// Cache-first (memory + Hive): returns local cache instantly on UI startup,
 /// refreshes from Supabase in background.

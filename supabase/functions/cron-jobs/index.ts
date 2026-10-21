@@ -484,6 +484,17 @@ async function sendFcmV1({
                 notificationPriority: 'PRIORITY_HIGH',
                 defaultSound: soundEnabled,
                 defaultVibrateTimings: vibrateEnabled,
+                // Android has no global badge API: when FCM draws this card
+                // while the app is not running, `notification_count` is the
+                // only way to publish an explicit count. 0 is omitted on
+                // purpose - FCM treats a zero/unspecified count as "unset" and
+                // the launcher falls back to counting cards instead of
+                // clearing the badge. Launchers without an OEM badge API still
+                // render only a dot; the app's own badge carrier takes over
+                // once it runs.
+                ...(resolvedBadge > 0
+                  ? { notification_count: resolvedBadge }
+                  : {}),
               },
             }
           : {
@@ -492,6 +503,9 @@ async function sendFcmV1({
                 notificationPriority: 'PRIORITY_HIGH',
                 defaultSound: soundEnabled,
                 defaultVibrateTimings: vibrateEnabled,
+                ...(resolvedBadge > 0
+                  ? { notification_count: resolvedBadge }
+                  : {}),
               },
             }),
       },

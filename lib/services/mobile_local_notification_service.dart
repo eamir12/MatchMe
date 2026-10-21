@@ -291,6 +291,11 @@ class MobileLocalNotificationService {
         showWhen: true,
         playSound: soundEnabled,
         enableVibration: vibrationEnabled,
+        // Publishes the current unread count on the card itself. This is a
+        // supplement to the app-icon badge (the carrier notification and the
+        // OEM launcher APIs own that), for launchers that read the number off
+        // the newest notification.
+        number: _badgeNumber(),
         // Same tag the server push and the native background-service dedup
         // key on: the Kotlin poller checks the tray for "new_match_<id>"
         // before posting its own fallback card, so this foreground card must
@@ -382,6 +387,7 @@ class MobileLocalNotificationService {
         showWhen: true,
         playSound: soundEnabled,
         enableVibration: vibrationEnabled,
+        number: _badgeNumber(),
       ),
       iOS: DarwinNotificationDetails(
         presentAlert: true,
@@ -513,6 +519,7 @@ class MobileLocalNotificationService {
         showWhen: true,
         playSound: shouldAlert && soundEnabled,
         enableVibration: shouldAlert && vibrationEnabled,
+        number: _badgeNumber(),
       ),
       iOS: DarwinNotificationDetails(
         presentAlert: shouldAlert,
@@ -658,6 +665,17 @@ class MobileLocalNotificationService {
     }
   }
 
+  /// Unread count published on the notification itself.
+  ///
+  /// `null` leaves the number to the launcher (its default is the number of
+  /// active notifications). Whenever the inbox has reported a count, the card
+  /// carries the same value the app-icon badge uses, so a launcher that reads
+  /// the number off the newest notification cannot disagree with the badge.
+  static int? _badgeNumber() {
+    final count = AppBadgeService.currentCount;
+    return count > 0 ? count : null;
+  }
+
   /// Check if chat notifications should be shown
   static bool _shouldShowChatNotification() {
     final notifs = _getNotifs();
@@ -759,6 +777,7 @@ class MobileLocalNotificationService {
         showWhen: true,
         playSound: soundEnabled,
         enableVibration: vibrationEnabled,
+        number: _badgeNumber(),
       ),
       iOS: DarwinNotificationDetails(
         presentAlert: true,
@@ -825,6 +844,7 @@ class MobileLocalNotificationService {
         showWhen: true,
         playSound: soundEnabled,
         enableVibration: vibrationEnabled,
+        number: _badgeNumber(),
       ),
       iOS: DarwinNotificationDetails(
         presentAlert: true,

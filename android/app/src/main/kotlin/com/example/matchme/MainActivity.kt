@@ -29,6 +29,8 @@ import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
@@ -42,6 +44,15 @@ class MainActivity : FlutterFragmentActivity() {
         private const val AUTHENTICATOR_LAUNCHER_CHANNEL = "matchme/authenticator_launcher"
         private const val PHOTO_MODERATION_CHANNEL = "matchme/photo_moderation"
         private const val PHOTO_PRESCREEN_CHANNEL = "matchme/photo_prescreen"
+
+        /**
+         * Single worker for the app-icon badge writes, shared by every
+         * activity instance for the lifetime of the process.
+         */
+        private val BADGE_EXECUTOR: ExecutorService =
+            Executors.newSingleThreadExecutor { runnable ->
+                Thread(runnable, "matchme-badge").apply { isDaemon = true }
+            }
 
         // Native libraries that may be missing from third-party plugins.
         // These are logged as warnings instead of crashing the app.
@@ -404,13 +415,39 @@ class MainActivity : FlutterFragmentActivity() {
             }
         }
 
-        // App-icon badge: Android launchers derive badges from the tray, so
-        // there is no global badge API. Accept set/clear so shared Dart code
-        // stays platform-agnostic (iOS applies the count, Android no-ops).
+        // App-icon badge. Android has no global badge API (iOS does): the
+        // count is published as a silent badge-carrying notification and,
+        // best effort, through the launcher's own badge API. See
+        // MatchMeBadgeController / MatchMeOemBadge.
         badgeChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "matchme/badge")
         badgeChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
-                "setBadgeCount", "clearBadge" -> result.success(null)
+                "setBadgeCount" -> {
+                    val count = call.argument<Int>("count") ?: 0
+                    val body = call.argument<String>("body")
+                    // The launcher badge APIs are cross-process provider /
+                    // broadcast calls: never run them on the main thread.
+                    // Single-thread executor so a set and a clear that race
+                    // cannot be applied out of order.
+                    BADGE_EXECUTOR.execute {
+                        try {
+                            MatchMeBadgeController.applyCount(applicationContext, count, body)
+                        } catch (error: Throwable) {
+                            Log.e(TAG, "Could not apply app-icon badge", error)
+                        }
+                        runOnUiThread { result.success(null) }
+                    }
+                }
+                "clearBadge" -> {
+                    BADGE_EXECUTOR.execute {
+                        try {
+                            MatchMeBadgeController.clear(applicationContext)
+                        } catch (error: Throwable) {
+                            Log.e(TAG, "Could not clear app-icon badge", error)
+                        }
+                        runOnUiThread { result.success(null) }
+                    }
+                }
                 else -> result.notImplemented()
             }
         }

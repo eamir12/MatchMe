@@ -391,15 +391,20 @@ final initialHomeSyncProvider = FutureProvider.autoDispose.family<void, String>(
     unawaited(
       Future<void>.delayed(const Duration(seconds: 2)).then((_) async {
         if (!ref.mounted) return;
-        await Future.wait([
-          syncService.syncMatchesNow(userId),
-          syncService.syncChatsNow(userId, force: true),
+        // The user's own profile is refreshed in parallel with the prefetch
+        // below, so it is not held up by the conversation downloads.
+        unawaited(
           profileSync.syncProfile(userId, source: 'warm-home-refresh'),
-        ]).then((_) {
-          // Warm matched-user caches (profiles + ratings + photos) so the
-          // next startup renders instantly from memory + local storage.
-          unawaited(_warmMatchedUsersAfterHomeSync(ref, userId));
-        });
+        );
+        // Background prefetch: everything the app can show that is not on
+        // the device yet is downloaded here - the chat list, every
+        // conversation, the matches and the user's own settings. Once this
+        // has finished, opening a chat or a match profile renders from the
+        // local cache instead of waiting for the network.
+        await syncService.prefetchAll(userId);
+        // Warm matched-user caches (profiles + ratings + photos) so the
+        // next startup renders instantly from memory + local storage.
+        unawaited(_warmMatchedUsersAfterHomeSync(ref, userId));
       }),
     );
     // Warm from the existing local cache shortly after first frames — this
@@ -429,6 +434,10 @@ final initialHomeSyncProvider = FutureProvider.autoDispose.family<void, String>(
     ]).timeout(const Duration(seconds: 30));
     // Cold start with fresh server data: warm matched-user caches now.
     unawaited(_warmMatchedUsersAfterHomeSync(ref, userId));
+    // The home screen is on display, so the rest of the data can be
+    // downloaded in the background. Every conversation the user can open is
+    // prefetched (most recent first), so opening one of them is instant.
+    unawaited(syncService.prefetchAll(userId));
   } on TimeoutException {
     debugPrint(
       '⏳ [HOME_READY] Initial home sync timed out for $userId — showing cached data',
@@ -539,10 +548,61 @@ Future<void> _warmMatchedUsersAfterHomeSync(Ref ref, String userId) async {
         );
       }
     } catch (_) {}
+
+    // Intent-specific profile snapshots (bio, sub-intents, interests): the
+    // match profile screen reads them from disk first, but the cache is only
+    // written the first time that screen is opened. Warming them here means
+    // opening a match profile renders from disk instead of showing a
+    // spinner while the snapshot is downloaded.
+    try {
+      if (shouldSkipSupabaseCalls()) return;
+      for (final match in matches) {
+        final u1 = (match['user1_id'] ?? '').toString().trim();
+        final u2 = (match['user2_id'] ?? '').toString().trim();
+        final other = u1 == userId ? u2 : (u2 == userId ? u1 : '');
+        if (other.isEmpty) continue;
+        final intent = (match['matched_intent'] ?? '').toString().trim();
+        if (intent.isEmpty) continue;
+        unawaited(_warmSpecificProfileCache(localDb, other, intent));
+      }
+    } catch (_) {}
   } catch (_) {
   } finally {
     _matchedUsersWarmInProgress.remove(userId);
   }
+}
+
+/// Downloads the intent-specific profile snapshot (bio, sub-intents,
+/// interests) for a matched user into the local cache.
+///
+/// The match profile screen reads this cache first, so a warm cache turns a
+/// full-screen spinner into an instant render. Best effort: never throws.
+Future<void> _warmSpecificProfileCache(
+  LocalDbService localDb,
+  String userId,
+  String intentType,
+) async {
+  if (userId.isEmpty || intentType.isEmpty) return;
+  try {
+    final cached = await localDb.getCachedSpecificProfile(userId, intentType);
+    if (cached != null && cached.isNotEmpty) return;
+  } catch (_) {
+    // Fall through and fetch it.
+  }
+  try {
+    if (shouldSkipSupabaseCalls()) return;
+    final response = await supabase
+        .from('user_profiles')
+        .select('bio, sub_intents, personal_interests, business_interests')
+        .eq('user_id', userId)
+        .maybeSingle();
+    if (response == null) return;
+    await localDb.saveCachedSpecificProfile(
+      userId,
+      intentType,
+      Map<String, dynamic>.from(response),
+    );
+  } catch (_) {}
 }
 
 // Tracks the last time the user-data channel was kicked into a "reconnect

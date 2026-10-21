@@ -91,6 +91,40 @@ String formatDateAndTimeOfDateTimeWithPrefs(
   return '$dateStr · $timeStr';
 }
 
+/// Compact timestamp for chat-list rows.
+///
+/// The full stamp used elsewhere ("21 באוקטובר 2026 · 3:27 אחר הצהריים")
+/// is ~200px wide in Hebrew, which starves whatever sits next to it inside
+/// a narrow list row. Lists show the time for today and the date for
+/// anything older - the convention every chat app follows - so the row
+/// keeps one short token that can never crowd out the name.
+///
+/// The month is always spelled out in full ("21 באוקטובר" / "October 21"):
+/// nothing here is abbreviated, an abbreviated month is a different word in
+/// every language and reads like a code.
+String formatCompactListTimestamp(
+  BuildContext context,
+  WidgetRef ref,
+  LocalizationState l10n,
+  DateTime dateTime,
+) {
+  final local = dateTime.toLocal();
+  final now = DateTime.now();
+  final isToday =
+      local.year == now.year &&
+      local.month == now.month &&
+      local.day == now.day;
+  if (isToday) {
+    return formatTimeOfDateTimeWithPrefs(context, ref, l10n, local);
+  }
+  final locale = l10n.currentLocale.toLanguageTag();
+  // Same year -> "21 באוקטובר" / "October 21"; older -> "21 באוקטובר 2026" /
+  // "October 21, 2026".
+  return local.year == now.year
+      ? DateFormat.MMMMd(locale).format(local)
+      : DateFormat.yMMMMd(locale).format(local);
+}
+
 /// Compute age in years from a birth date, considering month/day so it is accurate
 /// around birthdays. An optional [now] parameter can be supplied for testing.
 int calculateAgeFromDate(DateTime birthDate, {DateTime? now}) {

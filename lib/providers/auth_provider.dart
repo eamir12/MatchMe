@@ -65,6 +65,13 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
   bool accountExistenceChecked = false;
   DateTime? lastAccountExistenceCheckAt;
 
+  // The `auth.forced_sign_out_days` policy is checked once per launch. It is
+  // deliberately NOT tied to a specific SDK auth event: the duplicate
+  // `initialSession` suppression below returns early for every SDK event
+  // after the first one, which used to make the policy unreachable in
+  // practice (the app only ever reached the login screen through accidents).
+  bool forcedSignOutChecked = false;
+
   Future<void> runAccountExistenceCheck(String source, {bool force = false}) async {
     if (disposed) return;
     final now = DateTime.now();
@@ -99,6 +106,35 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
       if (kDebugMode) {
         debugPrint('[AUTH] Account existence check failed (suppressed): $e');
       }
+    }
+  }
+
+  /// When connectivity returns, try to renew a session that was only
+  /// restored offline (expired access token, spent refresh token).
+  ///
+  /// The native background service rotates the refresh token on its own
+  /// schedule, so by the time the network is back the newest stored token
+  /// may be exchangeable again. This NEVER signs the user out: a failed
+  /// renewal simply leaves the cached session in place.
+  Future<void> tryRenewSessionOnResume() async {
+    if (disposed) return;
+    final session = auth.currentSession;
+    if (session == null) return;
+    if (!session.isExpired) return;
+    try {
+      final renewed = await SessionService.safeRefreshSession(
+        timeout: const Duration(seconds: 8),
+      );
+      if (!disposed && renewed && auth.currentSession != null) {
+        controller.add(
+          AuthState(AuthChangeEvent.tokenRefreshed, auth.currentSession),
+        );
+        debugPrint(
+          '🔄 [AUTH] Session renewed after connectivity was restored',
+        );
+      }
+    } catch (_) {
+      // Keep the cached session — a failed renewal is never a logout.
     }
   }
 
@@ -240,6 +276,13 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
   }
 
   Future<void> checkForcedSignOut() async {
+    if (forcedSignOutChecked) return;
+    // Nothing to sign out while there is no session. Do NOT mark the check as
+    // done here: the policy must still be evaluated as soon as a session
+    // exists, and the countdown must start from the session's creation, not
+    // from the first app launch on a fresh install.
+    if (auth.currentSession == null) return;
+    forcedSignOutChecked = true;
     try {
       final duration = await appConfigService.getForcedSignOutDuration();
       if (duration == Duration.zero) return;
@@ -247,7 +290,8 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
       if (createdAt == null) {
         // Legacy session from before the forced-sign-out timer existed, or
         // snapshot restored without a timestamp: start the timer now rather
-        // than never enforcing the policy.
+        // than never enforcing the policy. The timestamp is persisted, so the
+        // countdown keeps running across launches instead of restarting.
         await SessionService.setSessionCreatedAt();
         createdAt = await SessionService.getSessionCreatedAt();
         if (createdAt == null) return;
@@ -260,8 +304,52 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
         ),
       );
       SessionService.markExplicitUserSignOut();
+      // The forced sign-out ends the session for good: drop the persisted
+      // snapshot and the native credentials too, so the next launch starts
+      // on the login screen.
+      unawaited(SessionService.clearPersistedSupabaseSessionSnapshot());
       unawaited(auth.signOut(scope: SignOutScope.local).catchError((_) {}));
     } catch (_) {}
+  }
+
+  /// Emits the best session we can offer after an auth-stream error.
+  ///
+  /// A stream error is NOT a logout. If the SDK dropped its in-memory
+  /// session (it does that whenever a refresh fails), the persisted snapshot
+  /// is put back before anything is emitted — emitting a null session here
+  /// would route the user to the login screen because of a network blip.
+  ///
+  /// Returns true when a state was emitted, false when the caller should
+  /// keep the previous state (a session exists on disk but could not be
+  /// restored, so nothing may be emitted yet).
+  Future<bool> emitBestAvailableSession({
+    required String logPrefix,
+  }) async {
+    var session = auth.currentSession;
+    if (session == null) {
+      try {
+        await SessionService.restorePersistedSessionOfflineOnly();
+        session = auth.currentSession;
+      } catch (_) {}
+    }
+    if (session == null) {
+      try {
+        final hasPersisted = await SessionService.hasAnyPersistedSession();
+        if (hasPersisted) {
+          debugPrint(
+            '$logPrefix — a persisted session exists but could not be restored; keeping the current state instead of logging out',
+          );
+          return false;
+        }
+      } catch (_) {}
+    }
+    controller.add(AuthState(AuthChangeEvent.initialSession, session));
+    if (session == null) {
+      debugPrint(
+        '$logPrefix — no session available, user will see the unauthenticated state',
+      );
+    }
+    return true;
   }
 
   Future<void> emitInitialEvent() async {
@@ -280,6 +368,13 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
           );
         } catch (_) {}
       }
+      if (auth.currentSession == null) {
+        // Second chance, strictly offline: put the persisted session back
+        // without any network IO.
+        try {
+          await SessionService.restorePersistedSessionOfflineOnly();
+        } catch (_) {}
+      }
       if (initialEventEmitted || disposed) return;
 
       initialEventEmitted = true;
@@ -293,9 +388,32 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
         '🔄 [AUTH] Emitting initial auth state from cache (offline fallback) - session: ${currentSession != null}, user: ${currentUser != null}',
       );
 
+      if (currentSession == null) {
+        // The SDK can emit an `initialSession` with a null session before its
+        // own storage restoration completes. Emitting null there routes the
+        // user to the login screen even though this device still holds a
+        // valid session, so double-check before giving up.
+        try {
+          final hasPersisted = await SessionService.hasAnyPersistedSession();
+          if (hasPersisted && !disposed) {
+            // A snapshot exists but could not be turned into a usable
+            // session. Record why, but still unblock the UI: an endless
+            // splash is worse than the login screen.
+            unawaited(
+              SessionService.persistSignOutReason(
+                reason:
+                    'A persisted session snapshot exists but could not be restored',
+                source: 'emitInitialEvent',
+              ),
+            );
+          }
+        } catch (_) {}
+      }
+
       // Always emit an event, even if session is null
       // This unblocks the UI from the loading state
       controller.add(AuthState(AuthChangeEvent.initialSession, currentSession));
+      unawaited(checkForcedSignOut());
     } finally {
       initialEventFallbackInProgress = false;
     }
@@ -310,6 +428,9 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
         AuthState(AuthChangeEvent.initialSession, auth.currentSession),
       );
     }
+    // The `auth.forced_sign_out_days` policy is evaluated once per launch
+    // (see [forcedSignOutChecked]).
+    unawaited(checkForcedSignOut());
     // Deleted-account probe: skipped while offline, so re-arm it for when
     // connectivity returns — that may be the first chance this launch gets
     // to learn the account no longer exists.
@@ -340,6 +461,10 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
         return;
       }
       if (authState.session != null) {
+        if (authState.event == AuthChangeEvent.signedIn) {
+          // A new session invalidates any pending "the user signed out" flag.
+          SessionService.clearExplicitUserSignOutFlag();
+        }
         unawaited(SessionService.persistCurrentSupabaseSessionSnapshot());
         controller.add(authState);
       }
@@ -362,6 +487,14 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
     }());
     return controller.stream;
   }
+
+  // Ladder reentrancy guard: each failed refresh attempt inside the
+  // non-explicit-signedOut ladder below makes the SDK emit yet another
+  // `signedOut` event. That event re-enters this listener while the ladder
+  // is still awaiting its own recovery/refresh steps (8s timeouts each), so
+  // without this guard the ladders stack and multiply the refresh storm on
+  // the same single-use token. The in-flight ladder owns the decision.
+  var nonExplicitSignedOutLadderInFlight = false;
 
   sub = auth.onAuthStateChange.listen(
     (authState) async {
@@ -422,84 +555,118 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
         if (SessionService.consumeExplicitUserSignOutFlag()) {
           unawaited(SessionService.clearPersistedSupabaseSessionSnapshot());
         } else {
-          // POLICY: non-explicit signedOut events must NEVER log the user
-          // out. The Supabase SDK fires signedOut on its own when its
-          // background token refresh fails (expired access token after the
-          // app was closed, or a refresh_token_already_used race with the
-          // native background service which shares the single-use rotating
-          // refresh token). The SDK clears the in-memory session before
-          // firing. We restore the persisted session and re-emit it so the
-          // UI stays logged in. Only auth.forced_sign_out_days or an
-          // explicit UI logout may clear the session.
-          if (auth.currentSession == null) {
-            final recovered =
-                await SessionService.recoverPersistedSupabaseSession(
-                  timeout: const Duration(seconds: 3),
-                );
-            if (!disposed && recovered && auth.currentSession != null) {
-              effectiveAuthState = AuthState(
-                AuthChangeEvent.initialSession,
-                auth.currentSession,
-              );
-              debugPrint(
-                '🔄 [AUTH] Recovered session after non-explicit sign-out',
-              );
-            } else if (!disposed && auth.currentSession == null) {
-              // Recovery failed (cooldown, dead refresh token, or attempted
-              // within 10s of the previous try). Re-seed the last known
-              // session offline WITHOUT network IO and stop auto-refresh to
-              // break the refresh-fail → signedOut loop. The user stays
-              // logged in with cached data.
-              final offlineRestored =
-                  await SessionService.restorePersistedSessionOfflineOnly();
-              if (!disposed && offlineRestored && auth.currentSession != null) {
+          if (nonExplicitSignedOutLadderInFlight) {
+            debugPrint(
+              '🔄 [AUTH] Suppressing re-entrant non-explicit signedOut — ladder already in flight',
+            );
+            return;
+          }
+          nonExplicitSignedOutLadderInFlight = true;
+          try {
+            // POLICY (unchanged, now enforced): a non-explicit `signedOut`
+            // event must NEVER log the user out. The Supabase SDK fires
+            // signedOut on its own when its background token refresh fails
+            // (expired access token after the app was closed, or a
+            // refresh_token_already_used race with the native background
+            // service, which shares the single-use rotating refresh token).
+            // The SDK clears the in-memory session before firing. We restore
+            // the persisted session and re-emit it so the UI stays logged in.
+            //
+            // The only legitimate automatic sign-outs are:
+            //   * `auth.forced_sign_out_days` (app config) -> checkForcedSignOut
+            //   * the account was deleted on the server -> runAccountExistenceCheck
+            //   * the session family was revoked server-side (the app's session
+            //     rotation limit) -> probeRefreshTokenHealth reports `dead`
+            if (auth.currentSession == null) {
+              final recovered =
+                  await SessionService.recoverPersistedSupabaseSession(
+                    timeout: const Duration(seconds: 3),
+                  );
+              if (!disposed && recovered && auth.currentSession != null) {
                 effectiveAuthState = AuthState(
                   AuthChangeEvent.initialSession,
                   auth.currentSession,
                 );
                 debugPrint(
-                  '🔄 [AUTH] Restored persisted session offline after non-explicit sign-out (staying logged in)',
+                  '🔄 [AUTH] Recovered session after non-explicit sign-out',
                 );
               } else if (!disposed && auth.currentSession == null) {
-                // Only forward a null session when nothing is persisted
-                // anywhere (genuinely logged out, e.g. fresh install). If a
-                // snapshot exists we keep suppressing: emitting null here
-                // would log the user out, violating the session policy.
-                final hasPersisted =
-                    await SessionService.hasAnyPersistedSession();
-                if (!disposed && hasPersisted) {
-                  debugPrint(
-                    '🔄 [AUTH] Suppressing non-explicit sign-out — persisted snapshot exists, staying logged in until it can be re-seeded',
+                // Recovery failed (cooldown, dead refresh token, or attempted
+                // within 10s of the previous try). Re-seed the last known
+                // session offline WITHOUT network IO and stop auto-refresh to
+                // break the refresh-fail → signedOut loop. The user stays
+                // logged in with cached data.
+                final offlineRestored =
+                    await SessionService.restorePersistedSessionOfflineOnly();
+                if (!disposed && offlineRestored && auth.currentSession != null) {
+                  effectiveAuthState = AuthState(
+                    AuthChangeEvent.initialSession,
+                    auth.currentSession,
                   );
-                  // Re-emit the signedOut as an initialSession with a null
-                  // session would still route to AuthScreen, so instead hold
-                  // the last event: skip emitting this signedOut entirely
-                  // and wait for the offline restore / next SDK event.
-                  // Mark handled by returning early without controller.add.
-                  return;
+                  debugPrint(
+                    '🔄 [AUTH] Restored persisted session offline after non-explicit sign-out (staying logged in)',
+                  );
+                } else if (!disposed && auth.currentSession == null) {
+                  // Nothing could be restored. Before routing to the login
+                  // screen, find out WHY: a rotation race (some other process
+                  // spent the token) must never log the user out, while a
+                  // refresh token the server does not know any more means the
+                  // session family was revoked server-side — the app's session
+                  // rotation limit — which IS a legitimate sign-out.
+                  final health = await SessionService.probeRefreshTokenHealth();
+                  if (!disposed && auth.currentSession != null) {
+                    // The probe renewed the session (a stored copy of the
+                    // refresh token still worked). Keep the user logged in.
+                    effectiveAuthState = AuthState(
+                      AuthChangeEvent.initialSession,
+                      auth.currentSession,
+                    );
+                    debugPrint(
+                      '🔄 [AUTH] Session renewed by the refresh-token probe — staying logged in',
+                    );
+                  } else if (!disposed && health == RefreshTokenHealth.dead) {
+                    await SessionService.signOutSessionRotationLimitReached();
+                  } else if (!disposed) {
+                    // Either a rotation race, an unreachable server, or
+                    // genuinely nothing stored on this device (fresh install).
+                    // Only the last one may show the login screen.
+                    final hasPersisted =
+                        await SessionService.hasAnyPersistedSession();
+                    if (!disposed && hasPersisted) {
+                      debugPrint(
+                        '🔄 [AUTH] Suppressing non-explicit sign-out (health=$health) — persisted snapshot exists, staying logged in',
+                      );
+                      return;
+                    }
+                    debugPrint(
+                      '🔄 [AUTH] Non-explicit sign-out with nothing persisted (health=$health) — routing to login',
+                    );
+                  }
                 }
               }
+            } else {
+              effectiveAuthState = AuthState(
+                AuthChangeEvent.initialSession,
+                auth.currentSession,
+              );
+              debugPrint(
+                '🔄 [AUTH] Suppressed non-explicit sign-out — keeping recovered session',
+              );
             }
-          } else {
-            effectiveAuthState = AuthState(
-              AuthChangeEvent.initialSession,
-              auth.currentSession,
+            // The SDK only fires signedOut on its own when its background
+            // token refresh failed. Most causes are tolerated races, but an
+            // account deleted on the server (admin or self-delete on another
+            // device) produces the same event. Probe the server once so a
+            // deleted account lands on the login screen instead of an
+            // error-ridden home screen. Debounced inside the check.
+            unawaited(
+              Future<void>.delayed(const Duration(seconds: 2), () {
+                runAccountExistenceCheck('nonExplicitSignedOut', force: true);
+              }),
             );
-            debugPrint(
-              '🔄 [AUTH] Suppressed non-explicit sign-out — keeping recovered session',
-            );
+          } finally {
+            nonExplicitSignedOutLadderInFlight = false;
           }
-          // The SDK only fires signedOut on its own when its background
-          // token refresh failed. Most causes are tolerated races, but an
-          // account deleted on the server (admin or self-delete on another
-          // device) produces the same event. Probe the server once so a
-          // deleted account lands on the login screen instead of an
-          // error-ridden home screen. Debounced inside the check.
-          unawaited(
-            Future<void>.delayed(const Duration(seconds: 2), () {
-              runAccountExistenceCheck('nonExplicitSignedOut', force: true);
-            }),
-          );
         }
       } else if (effectiveAuthState.session != null) {
         unawaited(SessionService.persistCurrentSupabaseSessionSnapshot());
@@ -518,6 +685,9 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
 
       if (effectiveAuthState.event == AuthChangeEvent.signedIn &&
           effectiveAuthState.session != null) {
+        // A new session invalidates any pending "the user signed out" flag:
+        // from here on, a signedOut event is NOT the user's decision.
+        SessionService.clearExplicitUserSignOutFlag();
         unawaited(SessionService.setSessionCreatedAt());
       }
 
@@ -528,7 +698,7 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
 
       controller.add(effectiveAuthState);
     },
-    onError: (Object error, StackTrace stackTrace) {
+    onError: (Object error, StackTrace stackTrace) async {
       if (disposed) return;
 
       if (isPkceCodeVerifierError(error)) {
@@ -574,14 +744,9 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
         // guard instead of flipping the entire app offline on one DNS blip.
         offlineCacheManager.setSupabaseAvailability(false);
         try {
-          final session = auth.currentSession;
-          final user = auth.currentUser;
-          controller.add(AuthState(AuthChangeEvent.initialSession, session));
-          if ((user == null && session == null) && shouldLog) {
-            debugPrint(
-              '[AUTH] No cached session available, user will see unauthenticated state',
-            );
-          }
+          await emitBestAvailableSession(
+            logPrefix: '[AUTH] Offline mode - using cached session (auth refresh unreachable, will retry)',
+          );
         } catch (e) {
           debugPrint('[AUTH] Failed to emit cached state: $e');
         }
@@ -595,14 +760,9 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
       // the SDK may emit transient errors).
       debugPrint('⚠️ [AUTH] Non-fatal auth stream error (suppressed): $error');
       try {
-        final session = auth.currentSession;
-        final user = auth.currentUser;
-        controller.add(AuthState(AuthChangeEvent.initialSession, session));
-        if (user == null && session == null) {
-          debugPrint(
-            '📋 [AUTH] No cached session available — user sees unauthenticated state',
-          );
-        }
+        await emitBestAvailableSession(
+          logPrefix: '📋 [AUTH] Auth stream error — falling back to the cached session',
+        );
       } catch (e) {
         debugPrint('❌ [AUTH] Failed to emit cached state after error: $e');
       }
@@ -636,6 +796,10 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
     );
   }
 
+  // The `auth.forced_sign_out_days` policy is evaluated once per launch,
+  // independently of the SDK's auth events (see [forcedSignOutChecked]).
+  unawaited(checkForcedSignOut());
+
   // Deleted-account probe: shortly after startup (deferred so it never
   // delays the cold-start paint), and re-armed on every connectivity
   // restore — a cold start that began offline learns about a deleted
@@ -650,6 +814,12 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
       if (!accountExistenceChecked) {
         unawaited(runAccountExistenceCheck('connectivityRestored'));
       }
+      // A session that was recovered offline (expired access token, spent
+      // refresh token) can usually be renewed once the network is back:
+      // the native background service may have rotated the token in the
+      // meantime. Try again so the app returns to full online mode instead
+      // of limping along with cached data.
+      unawaited(tryRenewSessionOnResume());
     }),
   );
 

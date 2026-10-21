@@ -145,22 +145,45 @@ class SensitiveSessionStore {
     } catch (_) {}
   }
 
-  Future<String> readRefreshToken() async {
+  /// Every refresh-token copy this device knows about, freshest first.
+  ///
+  /// GoTrue refresh tokens are single-use and rotate on every refresh. The
+  /// Android background service refreshes on its own schedule and writes the
+  /// rotated token into the NATIVE encrypted store, but it never updates the
+  /// Dart-side copy. The native copy is therefore always at least as new as
+  /// the Dart copy, so it MUST be read first — reading the Dart copy first
+  /// made the app retry a refresh with the token that had already been
+  /// spent, which fails with `refresh_token_already_used` and (because the
+  /// access token was expired) made the SDK drop the session entirely.
+  ///
+  /// Order: native encrypted store → Dart SecureStorage → legacy plaintext
+  /// SharedPreferences (upgrade fallback).
+  Future<List<String>> readRefreshTokenCandidates() async {
+    final out = <String>[];
+    void add(String? v) {
+      final t = v?.trim() ?? '';
+      if (t.isNotEmpty && !out.contains(t)) out.add(t);
+    }
+
+    // Native encrypted store first: the background service rotates here.
     try {
-      final v = await _secure.read(_kRefreshToken);
-      if (v != null && v.isNotEmpty) return v.trim();
+      add(await NativeSecureStore.getString(_kRefreshToken));
     } catch (_) {}
-    // Native encrypted store fallback (Android background-refresh rotation).
     try {
-      final v = await NativeSecureStore.getString(_kRefreshToken);
-      if (v != null && v.isNotEmpty) return v.trim();
+      add(await _secure.read(_kRefreshToken));
     } catch (_) {}
     try {
       final prefs = await SharedPreferences.getInstance();
-      return prefs.getString(_kRefreshToken)?.trim() ?? '';
-    } catch (_) {
-      return '';
-    }
+      add(prefs.getString(_kRefreshToken));
+    } catch (_) {}
+    return out;
+  }
+
+  /// The freshest refresh token this device knows about (see
+  /// [readRefreshTokenCandidates] for why the native copy comes first).
+  Future<String> readRefreshToken() async {
+    final candidates = await readRefreshTokenCandidates();
+    return candidates.isEmpty ? '' : candidates.first;
   }
 
   Future<void> clearAuthTokens() async {

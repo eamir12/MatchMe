@@ -83,4 +83,25 @@ class AppInfoService {
       return true;
     }
   }
+
+  /// Snapshot of the iOS push configuration, for diagnosing "no notifications
+  /// arrive". Returns an empty map on platforms without the concept.
+  ///
+  /// Keys (iOS only):
+  /// * `hasApsEnvironment` — the app was signed with the push entitlement.
+  /// * `apsEnvironment` — `development` / `production`.
+  /// * `apnsTokenRegistered` — APNs handed us a device token.
+  /// * `apnsRegistrationError` — why registration failed, when it did.
+  static Future<Map<String, dynamic>> getPushDiagnostics() async {
+    if (kIsWeb) return const {};
+
+    try {
+      final map = await _channel.invokeMapMethod<String, dynamic>(
+        'getPushDiagnostics',
+      );
+      return map ?? const {};
+    } catch (_) {
+      return const {};
+    }
+  }
 }

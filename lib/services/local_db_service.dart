@@ -1049,6 +1049,16 @@ class LocalDbService {
   Future<void> clearCachedTranslationsForMessages(
     String matchId,
     List<String> messageIds,
+  ) {
+    return _withMessagesWrite(
+      matchId,
+      () => _clearCachedTranslationsForMessagesUnlocked(matchId, messageIds),
+    );
+  }
+
+  Future<void> _clearCachedTranslationsForMessagesUnlocked(
+    String matchId,
+    List<String> messageIds,
   ) async {
     if (messageIds.isEmpty) return;
 
@@ -1110,6 +1120,19 @@ class LocalDbService {
   /// Clear any cached translations for a given match (messages and recent chat entries).
   /// If [userId] is provided, it will also clear the per-user recent chats key (`recent_chats_$userId`).
   Future<void> clearCachedTranslationsForMatch(
+    String matchId, {
+    String? userId,
+  }) {
+    return _withMessagesWrite(
+      matchId,
+      () => _clearCachedTranslationsForMatchUnlocked(
+        matchId,
+        userId: userId,
+      ),
+    );
+  }
+
+  Future<void> _clearCachedTranslationsForMatchUnlocked(
     String matchId, {
     String? userId,
   }) async {
@@ -1191,12 +1214,24 @@ class LocalDbService {
     }
   }
 
-  Future<void> deleteMessages(String matchId) async {
-    final box = await _getMessagesBox();
-    await box.delete(matchId);
+  Future<void> deleteMessages(String matchId) {
+    return _withMessagesWrite(matchId, () async {
+      final box = await _getMessagesBox();
+      await box.delete(matchId);
+    });
   }
 
-  Future<void> deleteMessage(String matchId, String messageId) async {
+  Future<void> deleteMessage(String matchId, String messageId) {
+    return _withMessagesWrite(
+      matchId,
+      () => _deleteMessageUnlocked(matchId, messageId),
+    );
+  }
+
+  Future<void> _deleteMessageUnlocked(
+    String matchId,
+    String messageId,
+  ) async {
     final box = await _getMessagesBox();
     final messages = await getMessages(matchId);
     final updatedMessages = messages
@@ -1880,6 +1915,37 @@ class LocalDbService {
   }
 
   // --- Chat Message Methods ---
+
+  /// Tail of the serialized write chain per match.
+  ///
+  /// Every write to the messages box is a read-modify-write cycle: the whole
+  /// conversation blob is decoded, mutated and written back. Two of those
+  /// running at the same time (a realtime insert while the background prefetch
+  /// appends a page, Phase 2 persisting decrypted text while a full sync
+  /// replaces the blob, a reaction while the opening sync runs) interleave at
+  /// their awaits: both read the same rows, and whichever writes last wins.
+  /// The rows only the other cycle added are then silently lost — which is how
+  /// a conversation could end up holding nothing but its newest message.
+  /// Chaining the cycles per match makes each one atomic with respect to the
+  /// others.
+  final Map<String, Future<void>> _messagesWriteChains = {};
+
+  /// Runs [action] after every previously queued write for [matchId].
+  Future<T> _withMessagesWrite<T>(
+    String matchId,
+    Future<T> Function() action,
+  ) {
+    final previous = _messagesWriteChains[matchId] ?? Future<void>.value();
+    final gate = Completer<void>();
+    _messagesWriteChains[matchId] = gate.future;
+    return previous.then((_) => action()).whenComplete(() {
+      if (!gate.isCompleted) gate.complete();
+      if (identical(_messagesWriteChains[matchId], gate.future)) {
+        _messagesWriteChains.remove(matchId);
+      }
+    });
+  }
+
   Future<List<Map<String, dynamic>>> getMessages(String matchId) async {
     final box = await _getMessagesBox();
     final currentMessages = box.get(matchId);
@@ -2128,6 +2194,90 @@ class LocalDbService {
     return messages.first['created_at'] as String?;
   }
 
+  /// Prefix of the settings key that records when a conversation was last
+  /// downloaded *in full* from the server.
+  static const String messagesSyncedAtKeyPrefix = 'messages_synced_at_';
+
+  /// Records that the local cache for [matchId] is a complete copy of the
+  /// server-side conversation.
+  ///
+  /// The background prefetch downloads every conversation right after sign-in
+  /// so the user never has to wait when opening a chat. This marker lets the
+  /// chat screen know that the copy it is about to show is already the full
+  /// conversation, so it does not have to download the whole history again.
+  ///
+  /// [messageCount] is the number of messages that download produced. It is
+  /// stored alongside the time so a later reader can verify that the cache
+  /// still holds at least that many rows: a cache that shrank (a lost write, a
+  /// cleared box) is no longer trusted and is downloaded again in full instead
+  /// of spending another incremental pass on top of a truncated history. Pass
+  /// `null` to keep the previously recorded count.
+  Future<void> markMessagesSynced(
+    String matchId, {
+    DateTime? at,
+    int? messageCount,
+  }) async {
+    if (matchId.isEmpty) return;
+    try {
+      final box = await _getSettingsBox();
+      final key = '$messagesSyncedAtKeyPrefix$matchId';
+      final count =
+          messageCount ?? _parseMessagesSyncState(box.get(key))?.count ?? 0;
+      await box.put(
+        key,
+        jsonEncode({
+          'at': (at ?? DateTime.now()).toUtc().toIso8601String(),
+          'count': count,
+        }),
+      );
+    } catch (_) {
+      // Best effort: a missing marker only costs one extra download.
+    }
+  }
+
+  /// When the conversation for [matchId] was last downloaded in full, or
+  /// `null` when it is unknown (or was cleared).
+  Future<DateTime?> getMessagesSyncedAt(String matchId) async =>
+      (await getMessagesSyncState(matchId))?.at;
+
+  /// The completeness marker of the local cache for [matchId]: when it was
+  /// last downloaded in full and how many messages that download produced.
+  Future<({DateTime at, int count})?> getMessagesSyncState(
+    String matchId,
+  ) async {
+    if (matchId.isEmpty) return null;
+    try {
+      final box = await _getSettingsBox();
+      return _parseMessagesSyncState(
+        box.get('$messagesSyncedAtKeyPrefix$matchId'),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static ({DateTime at, int count})? _parseMessagesSyncState(dynamic raw) {
+    if (raw == null) return null;
+    final text = raw.toString();
+    if (text.isEmpty || text == 'null') return null;
+    try {
+      final decoded = jsonDecode(text);
+      if (decoded is Map) {
+        final at = DateTime.tryParse(decoded['at']?.toString() ?? '');
+        if (at == null) return null;
+        final countRaw = decoded['count'];
+        final count = countRaw is int
+            ? countRaw
+            : int.tryParse(countRaw?.toString() ?? '') ?? 0;
+        return (at: at.toUtc(), count: count);
+      }
+    } catch (_) {
+      // Older markers stored the timestamp on its own.
+    }
+    final at = DateTime.tryParse(text);
+    return at == null ? null : (at: at.toUtc(), count: 0);
+  }
+
   Future<Map<String, dynamic>?> getMessageById(
     String matchId,
     String messageId,
@@ -2186,6 +2336,23 @@ class LocalDbService {
     String messageId,
     String reaction,
     List<Map<String, dynamic>> reactors,
+  ) {
+    return _withMessagesWrite(
+      matchId,
+      () => _saveCachedReactorsUnlocked(
+        matchId,
+        messageId,
+        reaction,
+        reactors,
+      ),
+    );
+  }
+
+  Future<void> _saveCachedReactorsUnlocked(
+    String matchId,
+    String messageId,
+    String reaction,
+    List<Map<String, dynamic>> reactors,
   ) async {
     final box = await _getMessagesBox();
     final messages = await getMessages(matchId);
@@ -2216,6 +2383,16 @@ class LocalDbService {
   Future<void> clearMessageReactorCache(
     String matchId,
     String messageId,
+  ) {
+    return _withMessagesWrite(
+      matchId,
+      () => _clearMessageReactorCacheUnlocked(matchId, messageId),
+    );
+  }
+
+  Future<void> _clearMessageReactorCacheUnlocked(
+    String matchId,
+    String messageId,
   ) async {
     final box = await _getMessagesBox();
     final messages = await getMessages(matchId);
@@ -2232,6 +2409,21 @@ class LocalDbService {
   /// Adds new messages to local cache and marks them as delivered locally.
   /// Returns list of message IDs that should have their delivery status synced to the server.
   Future<List<String>> addMessages(
+    String matchId,
+    List<Map<String, dynamic>> newMessages, {
+    String? currentUserId,
+  }) {
+    return _withMessagesWrite(
+      matchId,
+      () => _addMessagesUnlocked(
+        matchId,
+        newMessages,
+        currentUserId: currentUserId,
+      ),
+    );
+  }
+
+  Future<List<String>> _addMessagesUnlocked(
     String matchId,
     List<Map<String, dynamic>> newMessages, {
     String? currentUserId,
@@ -2332,6 +2524,17 @@ class LocalDbService {
     String matchId,
     String tempId,
     Map<String, dynamic> realMessage,
+  ) {
+    return _withMessagesWrite(
+      matchId,
+      () => _replaceMessageUnlocked(matchId, tempId, realMessage),
+    );
+  }
+
+  Future<void> _replaceMessageUnlocked(
+    String matchId,
+    String tempId,
+    Map<String, dynamic> realMessage,
   ) async {
     final box = await _getMessagesBox();
     final messages = await getMessages(matchId);
@@ -2343,7 +2546,7 @@ class LocalDbService {
       await box.put(matchId, jsonEncode(messages));
     } else {
       // Ignore returned delivery messages for replaceMessage
-      await addMessages(matchId, [realMessage]);
+      await _addMessagesUnlocked(matchId, [realMessage]);
     }
   }
 
@@ -2361,6 +2564,33 @@ class LocalDbService {
   /// [clearMyReaction] = true to explicitly remove the local `my_reaction`
   /// marker.
   Future<void> mergeMessageStatus(
+    String matchId,
+    String messageId, {
+    String? deliveredAt,
+    String? readAt,
+    Map? reactionSummary,
+    String? myReaction,
+    bool clearMyReaction = false,
+    String? editedAt,
+    String? contentOriginal,
+  }) {
+    return _withMessagesWrite(
+      matchId,
+      () => _mergeMessageStatusUnlocked(
+        matchId,
+        messageId,
+        deliveredAt: deliveredAt,
+        readAt: readAt,
+        reactionSummary: reactionSummary,
+        myReaction: myReaction,
+        clearMyReaction: clearMyReaction,
+        editedAt: editedAt,
+        contentOriginal: contentOriginal,
+      ),
+    );
+  }
+
+  Future<void> _mergeMessageStatusUnlocked(
     String matchId,
     String messageId, {
     String? deliveredAt,
@@ -2441,6 +2671,16 @@ class LocalDbService {
   Future<void> mergeMessageStatuses(
     String matchId,
     List<Map<String, dynamic>> statuses,
+  ) {
+    return _withMessagesWrite(
+      matchId,
+      () => _mergeMessageStatusesUnlocked(matchId, statuses),
+    );
+  }
+
+  Future<void> _mergeMessageStatusesUnlocked(
+    String matchId,
+    List<Map<String, dynamic>> statuses,
   ) async {
     if (matchId.isEmpty || statuses.isEmpty) return;
     try {
@@ -2499,6 +2739,16 @@ class LocalDbService {
   }
 
   Future<void> mergeMessages(
+    String matchId,
+    List<Map<String, dynamic>> incomingMessages,
+  ) {
+    return _withMessagesWrite(
+      matchId,
+      () => _mergeMessagesUnlocked(matchId, incomingMessages),
+    );
+  }
+
+  Future<void> _mergeMessagesUnlocked(
     String matchId,
     List<Map<String, dynamic>> incomingMessages,
   ) async {
@@ -2845,6 +3095,16 @@ class LocalDbService {
   }
 
   Future<void> saveMessages(
+    String matchId,
+    List<Map<String, dynamic>> messages,
+  ) {
+    return _withMessagesWrite(
+      matchId,
+      () => _saveMessagesUnlocked(matchId, messages),
+    );
+  }
+
+  Future<void> _saveMessagesUnlocked(
     String matchId,
     List<Map<String, dynamic>> messages,
   ) async {
@@ -3196,6 +3456,23 @@ class LocalDbService {
     String messageId,
     String translation,
     String targetLang,
+  ) {
+    return _withMessagesWrite(
+      matchId,
+      () => _saveTranslationUnlocked(
+        matchId,
+        messageId,
+        translation,
+        targetLang,
+      ),
+    );
+  }
+
+  Future<void> _saveTranslationUnlocked(
+    String matchId,
+    String messageId,
+    String translation,
+    String targetLang,
   ) async {
     final box = await _getMessagesBox();
     final messages = await getMessages(matchId);
@@ -3230,6 +3507,21 @@ class LocalDbService {
     String matchId,
     String quotingMessageId,
     String translatedPreview,
+  ) {
+    return _withMessagesWrite(
+      matchId,
+      () => _saveReplyTranslationUnlocked(
+        matchId,
+        quotingMessageId,
+        translatedPreview,
+      ),
+    );
+  }
+
+  Future<void> _saveReplyTranslationUnlocked(
+    String matchId,
+    String quotingMessageId,
+    String translatedPreview,
   ) async {
     if (translatedPreview.isEmpty) return;
     try {
@@ -3250,7 +3542,10 @@ class LocalDbService {
   Stream<List<Map<String, dynamic>>> watchMessages(String matchId) async* {
     try {
       final box = await _getMessagesBox();
-      final initialMessages = await getMessages(matchId);
+      // The snapshot variant reuses the decoded rows when the stored blob did
+      // not change, so re-entering a chat does not pay a full jsonDecode of
+      // the whole conversation again.
+      final initialMessages = await getMessagesSnapshot(matchId);
       yield initialMessages;
 
       yield* box.watch(key: matchId).asyncMap((event) async {
@@ -3546,7 +3841,8 @@ class LocalDbService {
       final value = key.toString();
       if (value.endsWith('_$trimmedId') ||
           value.startsWith('${trimmedId}_') ||
-          value.startsWith('match_minimap_')) {
+          value.startsWith('match_minimap_') ||
+          value.startsWith(LocalDbService.messagesSyncedAtKeyPrefix)) {
         await settingsBox.delete(key);
       }
     }
@@ -4925,10 +5221,12 @@ class LocalDbService {
   }
 
   /// Clear all messages for a specific chat
-  Future<void> clearChatMessages(String matchId) async {
-    final box = await _getMessagesBox();
-    await box.delete(matchId);
-    // print('🗑️ Cleared all messages for chat $matchId');
+  Future<void> clearChatMessages(String matchId) {
+    return _withMessagesWrite(matchId, () async {
+      final box = await _getMessagesBox();
+      await box.delete(matchId);
+      // print('??? Cleared all messages for chat $matchId');
+    });
   }
 
   /// Reset translation settings for a chat to defaults when syncing from server

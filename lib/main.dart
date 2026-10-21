@@ -382,7 +382,13 @@ void _mainSync() {
         !lower.contains('[settings]') &&
         !lower.contains('profilesyncservice') &&
         !lower.contains('cache_warm') &&
-        !lower.contains('connectivity')) {
+        !lower.contains('connectivity') &&
+        // Session/auth diagnostics: these decide whether the user ends up on
+        // the login screen, so they must survive a release build. They were
+        // filtered out before, which made a "logged out at startup"
+        // incident impossible to diagnose from the device log.
+        !lower.contains('[auth]') &&
+        !lower.contains('[session]')) {
       return;
     }
     originalDebugPrint(message, wrapWidth: wrapWidth);
@@ -1195,6 +1201,33 @@ Future<String?> _ensureFcmRegistered() async {
   }
 }
 
+/// Prints the iOS push route for diagnostics.
+///
+/// The FID is delivered asynchronously through `onRegistered`, and the APNs
+/// device token only exists once APNs registration succeeded — which is
+/// exactly what fails when the app is signed without the `aps-environment`
+/// entitlement. Both are polled for a short while so the log shows the
+/// settled state rather than a premature "none".
+Future<void> _reportIosPushRoute() async {
+  String? apns;
+  for (var attempt = 0; attempt < 6; attempt++) {
+    try {
+      final token = await FirebaseMessaging.instance.getAPNSToken();
+      if (token != null && token.isNotEmpty) {
+        apns = token;
+      }
+    } catch (_) {}
+    if (apns != null && _lastFcmRegistrationId != null) break;
+    await Future<void>.delayed(const Duration(seconds: 2));
+  }
+  try {
+    debugPrint(
+      '🔔 [FCM] iOS push route — FID: ${_lastFcmRegistrationId ?? '(none yet)'}, '
+      'APNs token: ${apns == null ? '(none — push cannot be delivered)' : '${apns.substring(0, apns.length < 12 ? apns.length : 12)}…'}',
+    );
+  } catch (_) {}
+}
+
 Future<void> _initializeFcmForCurrentUser() async {
   if (!_isFcmSupportedPlatform()) return;
 
@@ -1234,12 +1267,51 @@ Future<void> _initializeFcmForCurrentUser() async {
         hasApsEntitlement = await AppInfoService.hasApsEnvironmentEntitlement();
       } catch (_) {}
 
+      // Push diagnostics: the entitlement decides whether APNs registration
+      // can succeed at all, and the registration result decides whether FCM
+      // can deliver anything. Logging both here makes "no notifications"
+      // diagnosable from a single device run.
       try {
-        if (hasApsEntitlement) {
-          await FirebaseMessaging.instance.requestPermission(
-            alert: true,
-            badge: true,
-            sound: true,
+        final pushDiag = await AppInfoService.getPushDiagnostics();
+        if (pushDiag.isNotEmpty) {
+          debugPrint('🔔 [FCM] iOS push diagnostics: $pushDiag');
+        }
+        final attempted = pushDiag['apnsRegistrationAttempted'] == true;
+        final registered = pushDiag['apnsTokenRegistered'] == true;
+        final error = pushDiag['apnsRegistrationError']?.toString();
+        if (attempted && !registered) {
+          debugPrint(
+            '🔔 [FCM] APNs REJECTED the registration: ${error ?? 'unknown error'}. '
+            'The app is signed without a usable push entitlement — check '
+            'ios/Runner/Runner.sideload.entitlements (aps-environment) and '
+            'ios/Flutter/Signing.xcconfig. Push cannot be delivered.',
+          );
+        } else if (!attempted) {
+          debugPrint(
+            '🔔 [FCM] APNs registration has not completed yet '
+            '(normal on the first seconds after launch).',
+          );
+        }
+      } catch (_) {}
+
+      try {
+        // Always ask: notification authorization is what local notifications
+        // need too, and it is independent of the push entitlement. The
+        // entitlement only decides whether APNs can deliver a *remote*
+        // notification to this build, so gating the prompt on it used to
+        // leave the app with no notification permission at all on builds
+        // whose entitlement check failed.
+        await FirebaseMessaging.instance.requestPermission(
+          alert: true,
+          badge: true,
+          sound: true,
+        );
+        if (!hasApsEntitlement) {
+          debugPrint(
+            '🔔 [FCM] iOS app is NOT signed with the aps-environment '
+            'entitlement — push notifications cannot be delivered. '
+            'Check ios/Runner/Runner.sideload.entitlements and '
+            'ios/Flutter/Signing.xcconfig.',
           );
         }
       } catch (_) {}
@@ -1604,6 +1676,19 @@ Future<void> _initializeFcmForCurrentUser() async {
           source: 'fcm-token-refresh',
         );
       });
+    } catch (_) {}
+    try {
+      // Diagnostic only: the raw APNs device token proves that APNs has a
+      // route to this device. Without it FCM cannot deliver anything to
+      // iOS, no matter how correct the FID is.
+      //
+      // The deprecated `onTokenRefresh` stream is deliberately NOT used:
+      // Google warns against mixing the Installation ID APIs with the
+      // deprecated registration-token APIs, and the FID above is the push
+      // target.
+      if (defaultTargetPlatform == TargetPlatform.iOS) {
+        unawaited(_reportIosPushRoute());
+      }
     } catch (_) {}
     // Periodic FCM resync: the FID is stable per install, but re-asserting it
     // every 6h while UI is alive keeps user_session correct after a reinstall
@@ -3754,6 +3839,20 @@ Future<void> _runBackgroundSessionValidation(
     if (!validationDone) {
       debugPrint('⚠️ [BOOTSTRAP] Validation loop ended without result');
     }
+
+    // SAFETY NET: the Supabase SDK drops its in-memory session whenever a
+    // refresh fails on an expired session (that is what gotrue does for
+    // `refresh_token_already_used`). Put the persisted session back so the
+    // app keeps a usable (cached) session instead of drifting into a
+    // "logged in but no token" state — and never into the login screen.
+    try {
+      if (Supabase.instance.client.auth.currentSession == null) {
+        final restored = await SessionService.restorePersistedSessionOfflineOnly();
+        debugPrint(
+          '⏱️ [BOOTSTRAP] Post-validation session restore: restored=$restored',
+        );
+      }
+    } catch (_) {}
   } catch (e, st) {
     debugPrint('⏱️ [BOOTSTRAP] Background session validation error: $e');
     debugPrintStack(
@@ -4221,7 +4320,14 @@ Future<void> _runDeferredTasks({
       }
 
       if (userId == null) {
-        debugPrint('⏱️ [AUTH] Signed out — resetting chat key provider');
+        // A non-explicit signedOut means the SDK dropped the session because
+        // a refresh failed — the user is STILL logged in and their cached
+        // data must not be erased (that would empty the app the moment the
+        // network hiccups). Only a real sign-out may wipe it.
+        final isExplicitSignOut = SessionService.isExplicitUserSignOutPending;
+        debugPrint(
+          '⏱️ [AUTH] Signed out (explicit=$isExplicitSignOut) — resetting chat key provider',
+        );
         var signedOutUserId = authKeyInitializedUserId;
         authKeyInitializedUserId = null;
         if (signedOutUserId == null || signedOutUserId.isEmpty) {
@@ -4231,6 +4337,10 @@ Future<void> _runDeferredTasks({
           } catch (error) {
             debugPrint('[AUTH] Could not read cached outgoing user ID: $error');
           }
+        }
+        if (!isExplicitSignOut) {
+          // Not a logout: keep the user's caches and providers intact.
+          continue;
         }
         clearUserScopedHomeMemoryCaches();
         clearUserScopedChatMemoryCaches();
@@ -4515,14 +4625,32 @@ Future<void> _deferredBackgroundInit({
           unawaited(_initializeFcmForCurrentUser());
         }
         if (event.event == AuthChangeEvent.signedOut) {
-          UserActivityService.instance.stopHeartbeat();
+          final isExplicitSignOut = SessionService.isExplicitUserSignOutPending;
+          if (isExplicitSignOut) {
+            UserActivityService.instance.stopHeartbeat();
+          }
           try {
-            await BackgroundService.updateToken(null, refreshToken: null);
+            // Only wipe the native credentials for an EXPLICIT sign-out.
+            //
+            // A non-explicit signedOut means the SDK dropped the session
+            // because a refresh failed (expired token / rotation race). The
+            // native store holds the FRESHEST rotated refresh token, and
+            // passing null here deleted it exactly when it was the only
+            // token that could still renew the session.
+            if (isExplicitSignOut) {
+              await BackgroundService.updateToken(null, refreshToken: null);
+            } else {
+              debugPrint(
+                '⏱️ [AUTH] Non-explicit sign-out — keeping the native refresh-token copy and the background service for recovery',
+              );
+            }
           } catch (_) {}
-          try {
-            await BackgroundService.stop();
-          } catch (_) {}
-          if (kIsWeb) {
+          if (isExplicitSignOut) {
+            try {
+              await BackgroundService.stop();
+            } catch (_) {}
+          }
+          if (kIsWeb && isExplicitSignOut) {
             try {
               WebNotificationService.clearServiceWorkerUserId();
             } catch (_) {}
@@ -5206,6 +5334,21 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
     super.dispose();
   }
 
+  /// Tray text for the Android badge carrier notification ("3 unread").
+  ///
+  /// The badge *number* is published by the platform; this string is only the
+  /// informational body of the carrier notification, so it must never be
+  /// treated as the source of truth for the count.
+  String _badgeCarrierBody(int count) {
+    try {
+      return ref
+          .read(localizationProvider)
+          .getString('inboxUnreadCount', params: {'count': '$count'});
+    } catch (_) {
+      return '$count';
+    }
+  }
+
   /// Recreate the stream-based realtime subscriptions (supabase .stream()).
   /// The vendored realtime client does not rejoin their channels after a
   /// socket disconnect, so after a real offline they must be rebuilt.
@@ -5277,7 +5420,12 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
       // plain app open — the exact bug where the red dot never went away.
       final currentBadge = ref.read(iconBadgeCountProvider);
       if (currentBadge != null) {
-        unawaited(AppBadgeService.setCount(currentBadge));
+        unawaited(
+          AppBadgeService.setCount(
+            currentBadge,
+            body: _badgeCarrierBody(currentBadge),
+          ),
+        );
       }
       // Dump the native background service's event log BEFORE telling it the
       // UI is foreground again, so the snapshot reflects the background period.
@@ -5451,7 +5599,9 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
     // red badge forever.
     ref.listen<int?>(iconBadgeCountProvider, (previous, next) {
       if (next == null) return;
-      unawaited(AppBadgeService.setCount(next));
+      unawaited(
+        AppBadgeService.setCount(next, body: _badgeCarrierBody(next)),
+      );
     });
     // One-shot: a listener only fires on *changes*, so if inbox data is
     // already cached at first build (value never transitions through null)
@@ -5462,7 +5612,12 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
         if (!mounted) return;
         final initialBadge = ref.read(iconBadgeCountProvider);
         if (initialBadge != null) {
-          unawaited(AppBadgeService.setCount(initialBadge));
+          unawaited(
+            AppBadgeService.setCount(
+              initialBadge,
+              body: _badgeCarrierBody(initialBadge),
+            ),
+          );
         }
       });
     }

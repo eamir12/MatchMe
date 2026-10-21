@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
+import 'package:matchme/services/encrypted_cache_service.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/offline_image_cache.dart';
 
@@ -147,6 +148,93 @@ void main() {
     expect(cachedChats.single['other_user_name'], 'Alex Example');
     expect(cachedChats.single['other_user_photos'], ['cached-photo.jpg']);
   });
+
+  test(
+    'overlapping message writes never drop rows from the conversation',
+    () async {
+      final history = <Map<String, dynamic>>[
+        for (var i = 0; i < 20; i++)
+          {
+            'id': 'history-$i',
+            'match_id': 'write-race-match',
+            'sender_id': 'peer',
+            'created_at': '2026-10-08T08:${i.toString().padLeft(2, '0')}:00Z',
+            'content_original': 'message $i',
+            'content_original_encrypted': 'cipher $i',
+          },
+      ];
+      await db.saveMessages('write-race-match', history);
+
+      // After login the cache key is loaded, so merging decrypted rows back
+      // performs async encryption between reading and writing the blob.
+      await EncryptedCacheService.instance.initialize('write-race-user');
+      addTearDown(
+        () => EncryptedCacheService.instance.clearMemoryCache(
+          userId: 'write-race-user',
+        ),
+      );
+
+      // A realtime insert and two decryption results land at the same time.
+      // Each of them reads the whole blob, mutates it and writes it back, so
+      // without serialization the last writer wins and the rows only the
+      // others added disappear - which is how a conversation used to end up
+      // holding just its newest message.
+      await Future.wait([
+        db.addMessages('write-race-match', [
+          {
+            'id': 'newest-message',
+            'match_id': 'write-race-match',
+            'sender_id': 'peer',
+            'created_at': '2026-10-08T09:00:00Z',
+            'content_original': 'newest',
+          },
+        ]),
+        db.mergeMessages('write-race-match', [
+          {
+            'id': 'history-3',
+            'content_original': 'message 3 decrypted',
+            'content_original_encrypted': 'cipher 3',
+          },
+        ]),
+        db.mergeMessages('write-race-match', [
+          {
+            'id': 'history-7',
+            'content_original': 'message 7 decrypted',
+            'content_original_encrypted': 'cipher 7',
+          },
+        ]),
+      ]);
+
+      final cached = await db.getMessages('write-race-match');
+      expect(cached, hasLength(21));
+      expect(
+        cached.firstWhere((m) => m['id'] == 'history-3')['content_original'],
+        'message 3 decrypted',
+      );
+      expect(
+        cached.firstWhere((m) => m['id'] == 'history-7')['content_original'],
+        'message 7 decrypted',
+      );
+      expect(cached.any((m) => m['id'] == 'newest-message'), isTrue);
+    },
+  );
+
+  test(
+    'sync marker keeps its message count when only the time is updated',
+    () async {
+      await db.markMessagesSynced('marker-match', messageCount: 5);
+
+      final state = await db.getMessagesSyncState('marker-match');
+      expect(state, isNotNull);
+      expect(state!.count, 5);
+      expect(await db.getMessagesSyncedAt('marker-match'), isNotNull);
+
+      await db.markMessagesSynced('marker-match');
+
+      final refreshed = await db.getMessagesSyncState('marker-match');
+      expect(refreshed!.count, 5);
+    },
+  );
 
   test(
     'notification snapshot remains available offline',

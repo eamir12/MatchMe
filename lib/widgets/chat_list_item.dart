@@ -15,7 +15,9 @@ import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/utils/translation_edit_marker.dart';
 import 'package:matchme/widgets/multi_select.dart';
+import 'package:matchme/widgets/safe_text.dart';
 import 'package:matchme/widgets/signed_image.dart';
+import 'package:matchme/widgets/word_clipped_text.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/screens/chats/chat_screen.dart';
 
@@ -223,6 +225,13 @@ class ChatListItem extends ConsumerWidget {
         : (listPreviewText.isRtl()
               ? ui.TextDirection.rtl
               : ui.TextDirection.ltr);
+    // The typing line mixes the name with the localized "is typing" verb, so
+    // its paragraph direction follows the first strong character it carries —
+    // the same rule the preview line uses.
+    final ui.TextDirection typingDir =
+        RegExp(r'[a-zA-Z]').hasMatch(typingMessage)
+        ? ui.TextDirection.ltr
+        : (typingMessage.isRtl() ? ui.TextDirection.rtl : ui.TextDirection.ltr);
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -318,28 +327,95 @@ class ChatListItem extends ConsumerWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // The name owns the whole width of the content column.
+                      // It used to share its line with the timestamp, whose
+                      // full "21 באוקטובר 2026 · 3:27 אחר הצהריים" stamp took
+                      // ~200px and left the name ~35px: every name that was
+                      // not one short word spilled onto a second line, and a
+                      // longer one painted over the line below it. The name
+                      // is the row's primary identifier, so it wraps only
+                      // when it truly does not fit - never because something
+                      // else took the space.
+                      SafeText(
+                        formattedName,
+                        style: TextStyle(
+                          fontWeight: showUnreadIndicators
+                              ? FontWeight.w700
+                              : FontWeight.w600,
+                          fontSize: 16,
+                          color: Theme.of(context).colorScheme.onSurface,
+                        ),
+                        textAlign: nameLayout.textAlign,
+                        textDirection: nameLayout.textDirection,
+                      ),
+                      const SizedBox(height: 2),
+                      // Metadata band: age/gender on the leading side, the
+                      // timestamp pinned to the trailing edge so it lines up
+                      // across rows instead of ragging with the name length.
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
-                          Expanded(
-                            child: Text(
-                              formattedName,
-                              maxLines: 2,
-                              overflow: TextOverflow.visible,
-                              style: TextStyle(
-                                fontWeight: showUnreadIndicators
-                                    ? FontWeight.w700
-                                    : FontWeight.w600,
-                                fontSize: 16,
-                                color: Theme.of(context).colorScheme.onSurface,
+                          if (ageGender.isNotEmpty)
+                            Expanded(
+                              child: SafeText(
+                                ageGender,
+                                textAlign: textDir == ui.TextDirection.rtl
+                                    ? TextAlign.right
+                                    : TextAlign.left,
+                                style: Theme.of(context).textTheme.bodySmall
+                                    ?.copyWith(
+                                      fontSize: 10,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurface
+                                          .withValues(alpha: 0.7),
+                                    ),
                               ),
-                              textAlign: nameLayout.textAlign,
-                              textDirection: nameLayout.textDirection,
+                            )
+                          else
+                            const Spacer(),
+                          // Unread count rides on the age/gender line
+                          // (trailing edge) instead of owning a row under
+                          // the timestamp — the common chat-app pattern of
+                          // pairing the badge with the row's secondary text.
+                          if (showUnreadIndicators) ...[
+                            const SizedBox(width: 8),
+                            Semantics(
+                              container: true,
+                              label: l10n.getString(
+                                'chatsUnreadMessages',
+                                params: {
+                                  'count': chat.unreadCount.toString(),
+                                },
+                              ),
+                              excludeSemantics: true,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.primary,
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Text(
+                                  chat.unreadCount.toString(),
+                                  style: TextStyle(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onPrimary,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
                             ),
-                          ),
+                          ],
                           const SizedBox(width: 8),
                           Text(
-                            formatDateAndTimeOfDateTimeWithPrefs(
+                            formatCompactListTimestamp(
                               context,
                               ref,
                               l10n,
@@ -353,97 +429,26 @@ class ChatListItem extends ConsumerWidget {
                           ),
                         ],
                       ),
-                      if (ageGender.isNotEmpty ||
-                          isOtherTyping ||
-                          showUnreadIndicators) ...[
-                        const SizedBox(height: 2),
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
-                            if (ageGender.isNotEmpty)
-                              Expanded(
-                                child: Text(
-                                  ageGender,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.visible,
-                                  textAlign: textDir == ui.TextDirection.rtl
-                                      ? TextAlign.right
-                                      : TextAlign.left,
-                                  style: Theme.of(context).textTheme.bodySmall
-                                      ?.copyWith(
-                                        fontSize: 10,
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .onSurface
-                                            .withValues(alpha: 0.7),
-                                      ),
-                                ),
-                              )
-                            else
-                              const Spacer(),
-                            if (isOtherTyping) ...[
-                              const SizedBox(width: 8),
-                              Flexible(
-                                child: Text(
-                                  typingMessage,
-                                  textAlign: TextAlign.end,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.visible,
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.primary,
-                                    fontWeight: FontWeight.w500,
-                                    fontStyle: FontStyle.italic,
-                                  ),
-                                ),
-                              ),
-                            ],
-                            // Unread count rides on the age/gender line
-                            // (trailing edge) instead of owning a row under
-                            // the timestamp — the common chat-app pattern of
-                            // pairing the badge with the row's secondary text.
-                            if (showUnreadIndicators) ...[
-                              const SizedBox(width: 8),
-                              Semantics(
-                                container: true,
-                                label: l10n.getString(
-                                  'chatsUnreadMessages',
-                                  params: {
-                                    'count': chat.unreadCount.toString(),
-                                  },
-                                ),
-                                excludeSemantics: true,
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 8,
-                                    vertical: 2,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.primary,
-                                    borderRadius: BorderRadius.circular(10),
-                                  ),
-                                  child: Text(
-                                    chat.unreadCount.toString(),
-                                    style: TextStyle(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.onPrimary,
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                      ],
                       const SizedBox(height: 4),
-                      if (listPreviewText.isNotEmpty)
+                      // While the other side is typing, the indicator takes
+                      // the preview's place (the usual chat-list convention).
+                      // The band above already carries the age/gender and the
+                      // timestamp, so it has no room left for a third
+                      // string, and the preview would only compete with the
+                      // indicator for the same line.
+                      if (isOtherTyping)
+                        SafeText(
+                          typingMessage,
+                          textAlign: TextAlign.start,
+                          textDirection: typingDir,
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: Theme.of(context).colorScheme.primary,
+                            fontWeight: FontWeight.w500,
+                            fontStyle: FontStyle.italic,
+                          ),
+                        )
+                      else if (listPreviewText.isNotEmpty)
                         Builder(
                           builder: (context) {
                             // Unread preview stays w500 for text, but emoji
@@ -504,12 +509,12 @@ class ChatListItem extends ConsumerWidget {
                                 base,
                               );
                             }
-                            return Text.rich(
-                              TextSpan(children: previewSpans),
-                              textDirection: messageDir,
-                              textAlign: TextAlign.start,
+                            return WordClippedText(
+                              spans: previewSpans,
+                              style: base,
                               maxLines: 2,
-                              overflow: TextOverflow.visible,
+                              textAlign: TextAlign.start,
+                              textDirection: messageDir,
                             );
                           },
                         ),

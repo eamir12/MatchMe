@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/services/local_db_service.dart';
@@ -88,8 +89,18 @@ class BackgroundService {
 
   /// Returns the last permission issue reported by the native background service (if any),
   /// and clears it so it won't show repeatedly.
+  ///
+  /// Cross-platform: Android records these codes natively (foreground-service
+  /// permission blocks); iOS records `location_always` when the app only has
+  /// "While Using the App" authorization, which silently disables background
+  /// location once the UI is closed.
   static Future<String?> consumeNativePermissionIssueCode() async {
-    if (kIsWeb || !Platform.isAndroid) return null;
+    if (kIsWeb ||
+        Platform.isLinux ||
+        Platform.isWindows ||
+        Platform.isMacOS) {
+      return null;
+    }
     try {
       final result = await _channel.invokeMethod('consumePermissionIssue');
       final code = result?.toString().trim();
@@ -101,11 +112,43 @@ class BackgroundService {
 
   /// Record a permission issue so it can be surfaced as a dialog next time the UI is active.
   static Future<void> setNativePermissionIssueCode(String code) async {
-    if (kIsWeb || !Platform.isAndroid) return;
+    if (kIsWeb ||
+        Platform.isLinux ||
+        Platform.isWindows ||
+        Platform.isMacOS) {
+      return;
+    }
     try {
       await _channel.invokeMethod('setPermissionIssue', {'code': code});
     } catch (e) {
       // print('Failed to set native permission issue code: $e');
+    }
+  }
+
+  /// The native layer's view of the location authorization status.
+  ///
+  /// Returns one of `notDetermined`, `restricted`, `denied`, `always`,
+  /// `whenInUse`, `unknown`, or `null` when the platform has no such
+  /// concept / the channel call failed.
+  ///
+  /// This is the authoritative answer on iOS: `geolocator` maps
+  /// `notDetermined` to `.denied` and cannot distinguish "Always" from
+  /// "While Using" on its own, while the native layer can.
+  static Future<String?> getNativeLocationAuthorizationStatus() async {
+    if (kIsWeb ||
+        Platform.isLinux ||
+        Platform.isWindows ||
+        Platform.isMacOS) {
+      return null;
+    }
+    try {
+      final result = await _channel.invokeMethod(
+        'getLocationAuthorizationStatus',
+      );
+      final status = result?.toString().trim();
+      return (status == null || status.isEmpty) ? null : status;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -461,6 +504,13 @@ class BackgroundService {
         debugPrint(
           '🔍 [BG] BackgroundService.start: invoking native startService interval=$gpsInterval throttling=$smartThrottlingEnabled',
         );
+        // Report the real UI state instead of assuming foreground: on iOS
+        // `start()` can run while the app is already backgrounded (delayed
+        // post-frame callback, background relaunch). A hardcoded `true` would
+        // make the native service release the GPS immediately.
+        final lifecycle = WidgetsBinding.instance.lifecycleState;
+        final appInForeground =
+            lifecycle == null || lifecycle == AppLifecycleState.resumed;
         final _ = await _channel.invokeMethod('startService', {
           'userId': _userId,
           'supabaseUrl': httpsUrl,
@@ -472,9 +522,11 @@ class BackgroundService {
           'isOnline': isOnline,
           'gpsInterval': gpsInterval,
           'smartThrottlingEnabled': smartThrottlingEnabled,
-          // Inform native code that the UI is currently open. This allows the service to
-          // avoid leaving the persistent foreground notification visible after cold starts.
-          'appInForeground': true,
+          // Inform native code whether the UI is currently open. This allows
+          // the service to avoid leaving the persistent foreground
+          // notification visible after cold starts, and tells iOS whether to
+          // hand GPS over to the native layer.
+          'appInForeground': appInForeground,
         });
 
         // Immediately dump what the native service logged during startup so the
@@ -515,7 +567,13 @@ class BackgroundService {
 
   /// Stop the background service
   static Future<void> stop() async {
-    final shouldAttemptNativeStop = !kIsWeb && Platform.isAndroid;
+    // iOS must also be told to stop: its native service persists its state
+    // and auto-restarts on the next process launch. Skipping the native stop
+    // (the old Android-only gate) meant a sign-out could leave the previous
+    // user id/token behind and the service would keep heartbeating as that
+    // user after the app was reopened or relaunched in the background.
+    final shouldAttemptNativeStop =
+        !kIsWeb && (Platform.isAndroid || Platform.isIOS);
     if (!_isRunning && !shouldAttemptNativeStop) return;
 
     // Cancel any pending debounced updates

@@ -241,6 +241,161 @@ void main() {
   const leakedBlob =
       'cjFa3e0sBTRmfbIsI3+KQjIucTxiZilNIMLVbSdx3peeLUf04vAd6Krj3QcOa4PULKyKDxgFOoOBVN3HzXcIaZlHZ8=';
 
+  // Regression: the name used to share its line with the timestamp, whose
+  // full "21 באוקטובר 2026 · 3:27 אחר הצהריים" stamp took most of the row
+  // and left the name a sliver — every name that was not one short word
+  // spilled onto a second line, and a longer one painted over the line
+  // below it. The name now owns its own band, so it can never be squeezed
+  // by the timestamp.
+  testWidgets('the name owns its own band and never shares a line with the timestamp', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final chat = ChatModel(
+      matchId: 'match-long-name',
+      otherUserId: 'other-user-long-name',
+      otherUserName: 'Aleksandra Konstantinova V.',
+      lastMessage: 'Hey',
+      lastMessageId: 'message-long-name',
+      lastMessageAt: DateTime(2015, 3, 15),
+      unreadCount: 0,
+    );
+    final l10n = LocalizationState(
+      currentLocale: const Locale('en'),
+      textDirection: TextDirection.ltr,
+      strings: const {},
+      supportedLanguages: const [],
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          localizationProvider.overrideWithValue(l10n),
+          otherUserProfileProvider(chat.otherUserId).overrideWith(
+            (ref) => Future<UserProfile?>.value(
+              UserProfile.fromMap({
+                'id': chat.otherUserId,
+                'name': 'Aleksandra Konstantinova V.',
+                'dateOfBirth': '2000-01-01',
+              }),
+            ),
+          ),
+        ],
+        child: MaterialApp(
+          home: Scaffold(body: ChatListItem(chat: chat)),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final nameFinder = find.textContaining('Aleksandra Konstantinova V.');
+    expect(nameFinder, findsOneWidget);
+
+    // The timestamp lives in the metadata band below the name, so the two
+    // can never overlap horizontally.
+    final stampFinder = find.text('March 15, 2015');
+    expect(stampFinder, findsOneWidget);
+    final nameRect = tester.getRect(nameFinder);
+    final stampRect = tester.getRect(stampFinder);
+    expect(nameRect.overlaps(stampRect), isFalse);
+
+    // And the name is not squeezed into a sliver: it owns the content
+    // column next to the avatar.
+    expect(nameRect.width, greaterThan(200));
+
+    // The metadata band (age/gender + timestamp) sits below the name, so a
+    // name that needs more than one line can never paint over it.
+    final ageRect = tester.getRect(find.textContaining('Age:'));
+    expect(nameRect.overlaps(ageRect), isFalse);
+
+    expect(tester.takeException(), isNull);
+  });
+
+  // Regression: a long last message used to be painted with `maxLines: 2`
+  // and `overflow: visible`, so its third line and beyond spilled over the
+  // card below it. The preview is now cut at a word boundary and marked
+  // with an ellipsis.
+  testWidgets('a long preview is cut at a word boundary and stays in its two lines', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    const longMessage =
+        'one two three four five six seven eight nine ten eleven twelve';
+    final l10n = LocalizationState(
+      currentLocale: const Locale('en'),
+      textDirection: TextDirection.ltr,
+      strings: const {},
+      supportedLanguages: const [],
+    );
+
+    ChatModel chatWith(String message, String id) => ChatModel(
+      matchId: id,
+      otherUserId: 'other-user-$id',
+      otherUserName: 'Alex M.',
+      lastMessage: message,
+      lastMessageId: 'message-$id',
+      lastMessageAt: DateTime(2015, 3, 15),
+      unreadCount: 0,
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          localizationProvider.overrideWithValue(l10n),
+          otherUserProfileProvider('other-user-short').overrideWith(
+            (ref) => Future<UserProfile?>.value(null),
+          ),
+          otherUserProfileProvider('other-user-long').overrideWith(
+            (ref) => Future<UserProfile?>.value(null),
+          ),
+        ],
+        child: MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                ChatListItem(chat: chatWith('Short', 'short')),
+                ChatListItem(chat: chatWith(longMessage, 'long')),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final shortPreview = find.byWidgetPredicate(
+      (w) => w is RichText && w.text.toPlainText() == 'Short',
+    );
+    final longPreview = find.byWidgetPredicate(
+      (w) => w is RichText && w.text.toPlainText().contains('…'),
+    );
+    expect(shortPreview, findsOneWidget);
+    expect(longPreview, findsOneWidget);
+    final shortHeight = tester.getSize(shortPreview).height;
+
+    final plain = tester.widget<RichText>(longPreview).text.toPlainText();
+    expect(plain, endsWith('…'));
+
+    // The cut lands on a word boundary: what is kept is a prefix of the
+    // message, and the next character in the original is a space.
+    final kept = plain.replaceAll('…', '').trim();
+    expect(longMessage.startsWith(kept), isTrue);
+    if (kept.length < longMessage.length) {
+      expect(longMessage[kept.length], ' ');
+    }
+
+    // And the preview never grows past its two lines.
+    final longHeight = tester.getSize(longPreview).height;
+    expect(longHeight, lessThanOrEqualTo(shortHeight * 2 + 0.5));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('never renders an undecrypted translation preview', (
     tester,
   ) async {

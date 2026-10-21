@@ -11,6 +11,7 @@ import 'package:matchme/services/pinned_location_gate.dart';
 import 'package:matchme/utils/permission_manager.dart';
 import 'package:matchme/services/user_activity_service.dart';
 import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/services/background_service.dart';
 import 'package:matchme/services/windows_location_channel.dart';
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:matchme/services/offline_trail_service.dart';
@@ -282,6 +283,44 @@ class MobileLocationService implements LocationService {
     }
   }
 
+  /// Best-effort escalation from "While Using the App" to "Always" on iOS.
+  ///
+  /// iOS only ever presents the "Allow While Using / Change to Always"
+  /// upgrade prompt ONCE per install. If the user declines it there, the OS
+  /// will never ask again and the only recovery path is the Settings app —
+  /// which is why PermissionCoordinator shows a deep link when this fails.
+  ///
+  /// Safe to call repeatedly: `requestAlwaysAuthorization` is a no-op once
+  /// the prompt has been used up, and it never throws.
+  Future<void> _requestIosAlwaysAuthorizationIfNeeded() async {
+    try {
+      // iOS refuses to show the "Always" upgrade prompt before "While Using"
+      // has been granted (permission_handler raises
+      // MISSING_WHENINUSE_PERMISSION). Ask for the foreground permission
+      // only if the app already has it — the normal foreground flow is
+      // responsible for the very first prompt.
+      final whenInUse = await Permission.locationWhenInUse.status;
+      if (!whenInUse.isGranted) return;
+
+      final current = await WindowsLocationChannel.checkPermission();
+      if (current != LocationPermission.whileInUse) return;
+
+      final status = await Permission.locationAlways.request();
+      if (status.isGranted || status.isLimited) {
+        print('[MobileLoc] iOS background location: "Always" granted');
+      } else {
+        print(
+          '[MobileLoc] iOS background location: "Always" not granted — '
+          'background location needs Settings > Privacy > Location > Always',
+        );
+        // Let the native layer know so it can flag the issue for the UI.
+        await BackgroundService.setNativePermissionIssueCode('location_always');
+      }
+    } catch (e) {
+      print('[MobileLoc] iOS background location permission error: $e');
+    }
+  }
+
   @override
   Future<bool> handleLocationPermission() async {
     bool serviceEnabled;
@@ -293,6 +332,23 @@ class MobileLocationService implements LocationService {
     }
 
     permission = await WindowsLocationChannel.checkPermission();
+
+    // For iOS we need "Always" authorization for background location.
+    //
+    // This MUST run before the early return below. It used to sit at the
+    // bottom of this method, behind `if (permission == whileInUse) return true`,
+    // which made it unreachable on every launch after the first: iOS only
+    // offers the "Allow While Using / Change to Always" upgrade prompt once
+    // per install, so a user who picked "While Using" was stuck with
+    // `authorizedWhenInUse` forever — the OS then suspends the app as soon as
+    // the UI closes and no background location ever arrives.
+    //
+    // The upgrade request itself is best-effort: iOS silently ignores it if
+    // it has already shown the prompt. The recovery path for those users is
+    // the Settings deep link surfaced by PermissionCoordinator.
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      await _requestIosAlwaysAuthorizationIfNeeded();
+    }
 
     // If permission is already granted, return true
     if (permission == LocationPermission.whileInUse ||
@@ -321,32 +377,14 @@ class MobileLocationService implements LocationService {
       }
     }
 
-    // For iOS, we need always authorization for background location sharing
-    // Geolocator.requestPermission() returns .authorizedWhenInUse by default on iOS
-    // We need to explicitly request .authorizedAlways for background location
+    // For iOS, we need always authorization for background location sharing.
+    // (The upgrade attempt itself now happens at the top of this method via
+    // `_requestIosAlwaysAuthorizationIfNeeded`, before the early return for an
+    // already-granted permission. This second call covers the fresh-install
+    // flow, where "While Using" was only just granted above and iOS will
+    // now show the one-time "Change to Always" prompt.)
     if (defaultTargetPlatform == TargetPlatform.iOS) {
-      try {
-        // On iOS, check if we have always permission
-        // If user granted when-in-use, we need to request always for background location
-        final currentPermission = await WindowsLocationChannel.checkPermission();
-        if (currentPermission == LocationPermission.whileInUse) {
-          // Request always authorization for background location sharing
-          // Use Permission API directly for iOS always permission
-          final PermissionStatus alwaysStatus = await Permission.locationAlways
-              .request();
-
-          if (alwaysStatus.isGranted || alwaysStatus.isLimited) {
-            // Always permission granted or limited
-          } else {
-            // Always permission not granted - background location may not work
-            // But allow sharing to proceed since the user has granted when-in-use
-            // The native code will handle permission checks
-          }
-        }
-      } catch (e) {
-        // Silently ignore iOS background location permission check errors
-        print('[MobileLoc] iOS background location permission error: $e');
-      }
+      await _requestIosAlwaysAuthorizationIfNeeded();
     }
 
     // For Android 10+ (API 29+), we also need background location permission

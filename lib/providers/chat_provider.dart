@@ -390,6 +390,22 @@ int seedTranslationCacheFromMessages({
 // gap; the local stream will replace it as soon as fresh data arrives.
 final Map<String, List<ChatMessageModel>> _lastEmittedMessages = {};
 
+/// How long a "the local cache is a complete copy of the conversation"
+/// marker stays trustworthy.
+///
+/// The marker is written by the background prefetch and by a full download.
+/// Within this window a chat can be opened with an incremental catch-up
+/// fetch instead of re-downloading the whole history.
+const Duration _completeCacheFreshnessWindow = Duration(minutes: 10);
+
+/// How far before the recorded sync time an incremental fetch starts.
+///
+/// Message `created_at` values are assigned by the server while the marker is
+/// written from the device clock, so a device clock running even slightly
+/// ahead would otherwise step over messages inserted right after the download.
+/// The window only costs a few extra (already known) rows.
+const Duration _incrementalSyncSafetyMargin = Duration(minutes: 2);
+
 /// Drops process-lifetime chat content and timers when an account session ends.
 void clearUserScopedChatMemoryCaches() {
   for (final timer in _reactionDebouncer.values) {
@@ -406,11 +422,43 @@ void clearUserScopedChatMemoryCaches() {
 // --- ChatSyncService (Modified to take localDb as parameter) ---
 class ChatSyncService {
   final LocalDbService localDb;
-  ChatSyncService(this.localDb);
+  final Ref _ref;
+  ChatSyncService(this.localDb, this._ref);
 
-  Future<void> syncMessages(String matchId) async {
+  int _inFlightSyncs = 0;
+
+  /// Whether a download for this conversation is currently running.
+  ///
+  /// The chat screen uses this to tell "this conversation is empty" apart
+  /// from "the conversation is still arriving", so it can show a quiet
+  /// placeholder instead of an empty chat while the first download runs.
+  final ValueNotifier<bool> isSyncing = ValueNotifier<bool>(false);
+
+  void _beginSync() {
+    _inFlightSyncs++;
+    if (!isSyncing.value) isSyncing.value = true;
+  }
+
+  void _endSync() {
+    if (_inFlightSyncs > 0) _inFlightSyncs--;
+    if (_inFlightSyncs == 0 && isSyncing.value) isSyncing.value = false;
+  }
+
+  /// Downloads the conversation for [matchId] into the local cache.
+  ///
+  /// Without [since] the whole conversation is fetched and the local cache is
+  /// replaced with the server state (which also prunes messages that were
+  /// deleted on another device).
+  ///
+  /// With [since] only the rows created at or after that instant are fetched
+  /// and *merged* into the cache. That keeps the already-downloaded older
+  /// messages in place, so the catch-up pass that runs once the realtime
+  /// subscription is live no longer re-downloads the entire conversation on
+  /// every single chat open.
+  Future<void> syncMessages(String matchId, {DateTime? since}) async {
     if (matchId.isEmpty) return;
     final syncStartedAt = DateTime.now();
+    _beginSync();
     try {
       // debugPrint('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
       // debugPrint('ðŸ”„ SYNC START: syncMessages called for matchId=$matchId');
@@ -423,19 +471,14 @@ class ChatSyncService {
       final data = <Map<String, dynamic>>[];
       var offset = 0;
       while (true) {
-        final page = await supabase
+        var query = supabase
             .from('chat_messages')
-            .select(
-              'id, match_id, sender_id, created_at, edited_at, delivered_at, read_at, '
-              'reaction_summary, reply_to_message_id, '
-              'detected_source_language, translated_target_language, '
-              'translated_source_edited_at, '
-              'encryption_scheme, sender_key_id, recipient_key_id, recipient_id, '
-              'content_original_encrypted, content_original_nonce, '
-              'content_translated_encrypted, content_translated_nonce, '
-              'wrapped_keys, translation_capable',
-            )
-            .eq('match_id', matchId)
+            .select(_chatMessageColumns)
+            .eq('match_id', matchId);
+        if (since != null) {
+          query = query.gte('created_at', since.toUtc().toIso8601String());
+        }
+        final page = await query
             .order('created_at', ascending: true)
             .order('id', ascending: true)
             .range(offset, offset + pageSize - 1);
@@ -447,7 +490,8 @@ class ChatSyncService {
 
       debugPrint(
         '[CHAT_SYNC] fetched ${data.length} messages in '
-        '${DateTime.now().difference(syncStartedAt).inMilliseconds}ms',
+        '${DateTime.now().difference(syncStartedAt).inMilliseconds}ms'
+        '${since == null ? '' : ' (incremental)'}',
       );
 
       // Pre-warm peer public keys to persistent disk cache while online
@@ -462,15 +506,42 @@ class ChatSyncService {
         unawaited(ChatKeyService.instance.warmPeerKeys(keyIds));
       }
 
-      // Replace all messages for this match with the current database state
-      // This ensures deleted messages are removed from local cache
-      await localDb.saveMessages(matchId, data);
+      final currentUserId = supabase.auth.currentUser?.id;
+
+      if (since == null) {
+        // Replace all messages for this match with the current database state
+        // This ensures deleted messages are removed from local cache
+        await localDb.saveMessages(matchId, data);
+        // The local cache now mirrors the server exactly.
+        await localDb.markMessagesSynced(
+          matchId,
+          messageCount: data.length,
+        );
+      } else {
+        // Catch-up pass: only rows that landed after [since] are present, so
+        // merge them into the cache instead of replacing it (replacing would
+        // drop every older message that was not part of this window).
+        if (data.isNotEmpty) {
+          await localDb.addMessages(
+            matchId,
+            data,
+            currentUserId: currentUserId,
+          );
+        }
+        // A message that was edited keeps its original created_at, so the
+        // window above does not contain it. Fetch the rows that were edited
+        // inside the window separately and merge them, so a cross-device edit
+        // is not lost by the incremental path.
+        final editedRows = await _fetchRowsEditedSince(matchId, since);
+        if (editedRows.isNotEmpty) {
+          await localDb.mergeMessages(matchId, editedRows);
+        }
+      }
 
       // debugPrint('ðŸ”„ SYNC: Saved ${data.length} messages to local database');
 
       // Mark undelivered messages from the other user as delivered
       // (This user just received them by syncing)
-      final currentUserId = supabase.auth.currentUser?.id;
       // debugPrint('ðŸ”„ SYNC: currentUserId=$currentUserId');
 
       if (currentUserId != null && data.isNotEmpty) {
@@ -542,10 +613,153 @@ class ChatSyncService {
         '[CHAT_SYNC] fetch/save failed after '
         '${DateTime.now().difference(syncStartedAt).inMilliseconds}ms: $e',
       );
+    } finally {
+      _endSync();
     }
     // debugPrint('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
     // debugPrint('ðŸ”„ SYNC END: syncMessages completed');
     // debugPrint('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
+  }
+
+  /// Columns read for a chat message row.
+  static const String _chatMessageColumns =
+      'id, match_id, sender_id, created_at, edited_at, delivered_at, read_at, '
+      'reaction_summary, reply_to_message_id, '
+      'detected_source_language, translated_target_language, '
+      'translated_source_edited_at, '
+      'encryption_scheme, sender_key_id, recipient_key_id, recipient_id, '
+      'content_original_encrypted, content_original_nonce, '
+      'content_translated_encrypted, content_translated_nonce, '
+      'wrapped_keys, translation_capable';
+
+  /// Fetches the rows of a conversation that were edited at or after [since].
+  ///
+  /// An edit keeps the original `created_at`, so a window on `created_at`
+  /// alone never contains edited rows. Returns an empty list on any failure.
+  Future<List<Map<String, dynamic>>> _fetchRowsEditedSince(
+    String matchId,
+    DateTime since,
+  ) async {
+    try {
+      final rows = await supabase
+          .from('chat_messages')
+          .select(_chatMessageColumns)
+          .eq('match_id', matchId)
+          .gte('edited_at', since.toUtc().toIso8601String())
+          .limit(200);
+      return rows.cast<Map<String, dynamic>>();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// Decrypts the cached conversation for [matchId] and writes the plaintext
+  /// back into the local cache.
+  ///
+  /// The background prefetch downloads a conversation, but the rows it stores
+  /// are still encrypted. Without this the chat screen would first render the
+  /// bubbles with an empty body and only fill in the text once its own
+  /// decryption pass ran. Doing it here means the text is already there when
+  /// the user opens the chat.
+  ///
+  /// Best effort: never throws. A failure simply leaves the chat to decrypt
+  /// the conversation itself when it is opened.
+  Future<void> warmDecryptedContent(String matchId) async {
+    if (matchId.isEmpty) return;
+    if (shouldSkipSupabaseCalls()) return;
+    final userId = supabase.auth.currentUser?.id;
+    if (userId == null) return;
+
+    Uint8List? privateKey;
+    try {
+      privateKey = _ref.read(chatKeyProvider).privateKeyBytes;
+    } catch (_) {}
+    if (privateKey == null) return;
+
+    try {
+      final rows = await localDb.getMessages(matchId);
+      if (rows.isEmpty) return;
+
+      final pending = <ChatMessageModel>[];
+      for (final row in rows) {
+        if ((row['content_original'] ?? '').toString().isNotEmpty) continue;
+        if ((row['content_original_encrypted'] ?? '').toString().isEmpty) {
+          continue;
+        }
+        try {
+          final model = ChatMessageModel.fromJson(row);
+          if (model.encryptionScheme != 'v1') continue;
+          if (model.senderKeyId == null || model.senderKeyId!.isEmpty) continue;
+          if (model.recipientKeyId == null || model.recipientKeyId!.isEmpty) {
+            continue;
+          }
+          if (model.contentOriginalNonce == null ||
+              model.contentOriginalNonce!.isEmpty) {
+            continue;
+          }
+          if (model.wrappedKeys == null) continue;
+          pending.add(model);
+        } catch (_) {}
+      }
+      if (pending.isEmpty) return;
+
+      // The peer's public key is needed to derive the shared secret.
+      final keyIds = <String>{};
+      for (final m in pending) {
+        if (m.senderKeyId != null && m.senderKeyId!.isNotEmpty) {
+          keyIds.add(m.senderKeyId!);
+        }
+        if (m.recipientKeyId != null && m.recipientKeyId!.isNotEmpty) {
+          keyIds.add(m.recipientKeyId!);
+        }
+      }
+      if (keyIds.isNotEmpty) {
+        await ChatKeyService.instance.warmPeerKeys(keyIds);
+      }
+
+      final chatKeyService = ChatKeyService.instance;
+      final updates = <Map<String, dynamic>>[];
+      // Decrypt in small batches so a long conversation does not queue
+      // hundreds of pending crypto operations at once.
+      const batchSize = 25;
+      for (var i = 0; i < pending.length; i += batchSize) {
+        final batch = pending.skip(i).take(batchSize);
+        await Future.wait(
+          batch.map((m) async {
+            try {
+              final plaintext = await chatKeyService.decryptMessageContent(
+                currentUserId: userId,
+                currentUserPrivateKey: privateKey!,
+                messageId: m.id,
+                matchId: m.matchId,
+                senderId: m.senderId,
+                senderKeyId: m.senderKeyId!,
+                recipientKeyId: m.recipientKeyId!,
+                contentOriginalEncryptedBase64: m.contentOriginalEncrypted!,
+                contentOriginalNonceBase64: m.contentOriginalNonce!,
+                wrappedKeys: m.wrappedKeys!,
+                recipientId:
+                    (m.recipientId != null && m.recipientId!.isNotEmpty)
+                    ? m.recipientId
+                    : null,
+              );
+              if (plaintext != null && plaintext.isNotEmpty) {
+                updates.add({'id': m.id, 'content_original': plaintext});
+              }
+            } catch (_) {}
+          }),
+        );
+      }
+
+      if (updates.isNotEmpty) {
+        await localDb.mergeMessages(matchId, updates);
+        debugPrint(
+          '[CHAT_WARM] Decrypted ${updates.length} message(s) for $matchId',
+        );
+      }
+    } catch (_) {
+      // Best effort: the chat decrypts the conversation itself on open.
+    }
   }
 
   Future<void> syncMessageStatuses(String matchId) async {
@@ -597,7 +811,7 @@ class ChatSyncService {
 }
 
 final chatSyncProvider = Provider.family<ChatSyncService, String>(
-  (ref, matchId) => ChatSyncService(ref.read(localDbProvider)),
+  (ref, matchId) => ChatSyncService(ref.read(localDbProvider), ref),
 );
 
 // --- UPDATED: chatMessagesProvider (Fixes bugs & uses local DB + realtime)
@@ -622,40 +836,52 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
     resetKeepAlive();
 
     final localDb = ref.watch(localDbProvider);
-    ref.watch(chatKeyProvider.select((s) => s.privateKeyBytes));
+
+    // The chat key is deliberately NOT watched here.
+    //
+    // Watching it rebuilt this whole provider every time the key finished
+    // loading, which dropped the chat back onto its "loading messages"
+    // spinner for the entire key handshake (a couple of seconds right after
+    // sign-in, when the key is fetched from the server) and re-registered the
+    // realtime channel plus the opening sync on every rebuild. The key is
+    // only needed to decrypt message *bodies*, so we listen for it below and
+    // re-run just the decryption pass — the message list stays on screen for
+    // the whole time.
+    final localStream = localDb.watchMessages(matchId);
+
     // After a user switch on the same device the chatKeyProvider singleton
     // may still hold the previous user's private key (the onAuthStateChange
     // stream is not guaranteed to reach its listener on every platform).
     // Re-initialize it for the currently authenticated user so Phase 2
-    // decryption below uses the correct key (this also purges the previous
-    // user's in-memory decryption caches via user-change detection in _init).
-    final currentAuthUserId = supabase.auth.currentUser?.id;
-    if (currentAuthUserId != null) {
+    // decryption uses the correct key (this also purges the previous user's
+    // in-memory decryption caches via user-change detection in _init).
+    void ensureChatKeyForCurrentUser() {
+      final currentAuthUserId = supabase.auth.currentUser?.id;
+      if (currentAuthUserId == null) return;
       final keyNotifier = ref.read(chatKeyProvider.notifier);
-      // Never fire a key refresh from build while offline: _init() would
-      // early-return without progress, emit a new privateKeyBytes instance,
-      // rebuild this provider (loading -> data), and loop. Offline boot now
-      // also sets initializedUserId, so this is a second guard.
-      if (keyNotifier.initializedUserId != currentAuthUserId &&
-          !shouldSkipSupabaseCalls()) {
-        debugPrint(
-          '🔑 [chatMessagesProvider] Key initialized for user=${keyNotifier.initializedUserId} but current user=$currentAuthUserId — re-initializing chat key provider',
-        );
-        unawaited(() async {
-          try {
-            await keyNotifier.refresh();
-            debugPrint(
-              '✅ [chatMessagesProvider] Chat key provider refreshed for $currentAuthUserId',
-            );
-          } catch (e, st) {
-            debugPrint(
-              '⚠️ [chatMessagesProvider] Chat key refresh failed: $e\n$st',
-            );
-          }
-        }());
-      }
+      if (keyNotifier.initializedUserId == currentAuthUserId) return;
+      // Never fire a key refresh while offline: _init() would early-return
+      // without progress and the account switch would never be healed.
+      if (shouldSkipSupabaseCalls()) return;
+      debugPrint(
+        '🔑 [chatMessagesProvider] Key initialized for user=${keyNotifier.initializedUserId} but current user=$currentAuthUserId — re-initializing chat key provider',
+      );
+      unawaited(() async {
+        try {
+          await keyNotifier.refresh();
+          debugPrint(
+            '✅ [chatMessagesProvider] Chat key provider refreshed for $currentAuthUserId',
+          );
+        } catch (e, st) {
+          debugPrint(
+            '⚠️ [chatMessagesProvider] Chat key refresh failed: $e\n$st',
+          );
+        }
+      }());
     }
-    final localStream = localDb.watchMessages(matchId);
+
+    // Heal an account switch that happened before this provider was built.
+    ensureChatKeyForCurrentUser();
 
     final StreamController<List<ChatMessageModel>> streamController =
         StreamController<List<ChatMessageModel>>.broadcast();
@@ -666,6 +892,13 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
     // Debounce the cross-device auto-heal trigger to avoid infinite loops
     // if the underlying issue is something other than a stale local key.
     DateTime? lastAutoHealTriggeredAt;
+    // Latest decrypted-input snapshot, kept so the decryption pass can be
+    // re-run on its own (e.g. when the chat key lands after the list was
+    // already rendered) without waiting for the next local-cache write.
+    List<ChatMessageModel> latestModels = const <ChatMessageModel>[];
+    List<Map<String, dynamic>> latestRawRows = const <Map<String, dynamic>>[];
+    bool phase2InFlight = false;
+    bool phase2RerunRequested = false;
     // Emit the last-known list of messages immediately on provider build
     // so the chat screen is never stuck on its loading spinner if the
     // user navigates back into a chat they were just viewing.  The local
@@ -724,6 +957,506 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
         }
       });
     }
+
+    // Phase 2 - Decrypt v1 encrypted messages in the background
+    // and re-emit when done.
+    //
+    // Extracted into its own function so it can be re-run on its own when
+    // the chat key finishes loading (see the chatKeyProvider listener)
+    // without rebuilding - and therefore re-spinning - the whole provider.
+    Future<void> runPhase2(
+      List<ChatMessageModel> models,
+      List<Map<String, dynamic>> normalized,
+    ) async {
+      // Phase 2 — Decrypt v1 encrypted messages in the background
+      // and re-emit when done.
+      try {
+        debugPrint(
+          '🔓 [Phase2] Starting decryption for ${models.length} messages',
+        );
+        final chatKeyState = ref.read(chatKeyProvider);
+        final currentUserId = supabase.auth.currentUser?.id;
+        final chatKeyService = ChatKeyService.instance;
+        final decryptedUpdates = <Map<String, dynamic>>[];
+        final cleanupTranslations = <String>[];
+        if (currentUserId != null) {
+          final locale = ref.read(localizationProvider);
+          final uiLang = locale.currentLocale.languageCode;
+          final normalizedTarget = normalizeLanguageCode(uiLang);
+
+          // Pre-warm peer public keys from disk / memory / network upfront
+          final keyIds = <String>{};
+          for (final m in models) {
+            if (m.senderKeyId != null && m.senderKeyId!.isNotEmpty) {
+              keyIds.add(m.senderKeyId!);
+            }
+            if (m.recipientKeyId != null && m.recipientKeyId!.isNotEmpty) {
+              keyIds.add(m.recipientKeyId!);
+            }
+          }
+          if (keyIds.isNotEmpty) {
+            await chatKeyService.warmPeerKeys(keyIds);
+          }
+
+          // Phase 2 — Decrypt all v1 encrypted messages IN PARALLEL so
+          // N messages take ~per_msg_time instead of N × per_msg_time.
+          final results = await Future.wait(
+            List.generate(models.length, (i) async {
+              final m = models[i];
+              String? decryptedOriginal;
+              String? decryptedTranslated;
+              bool attemptedDecryption = false;
+
+              if (m.encryptionScheme == 'v1' &&
+                  m.contentOriginalEncrypted != null &&
+                  m.contentOriginalEncrypted!.isNotEmpty &&
+                  m.contentOriginalNonce != null &&
+                  m.wrappedKeys != null &&
+                  m.contentOriginal.isEmpty) {
+                if (chatKeyState.privateKeyBytes != null) {
+                  attemptedDecryption = true;
+                  try {
+                    decryptedOriginal = await chatKeyService
+                        .decryptMessageContent(
+                          currentUserId: currentUserId,
+                          currentUserPrivateKey:
+                              chatKeyState.privateKeyBytes!,
+                          messageId: m.id,
+                          matchId: m.matchId,
+                          senderId: m.senderId,
+                          senderKeyId: m.senderKeyId!,
+                          recipientKeyId: m.recipientKeyId!,
+                          contentOriginalEncryptedBase64:
+                              m.contentOriginalEncrypted!,
+                          contentOriginalNonceBase64: m.contentOriginalNonce!,
+                          wrappedKeys: m.wrappedKeys!,
+                          recipientId:
+                              m.recipientId != null &&
+                                  m.recipientId!.isNotEmpty
+                              ? m.recipientId
+                              : null,
+                        );
+                    if (decryptedOriginal == null) {
+                      debugPrint(
+                        '❌ [Phase2] decryptMessageContent returned null for msg=${m.id} sender=${m.senderId} senderKey=${m.senderKeyId} recipientKey=${m.recipientKeyId} — likely AAD/shared-secret/wrap mismatch',
+                      );
+                    }
+                  } catch (decErr) {
+                    debugPrint(
+                      '❌ [Phase2] decryptMessageContent threw for msg=${m.id} sender=${m.senderId} senderKey=${m.senderKeyId} recipientKey=${m.recipientKeyId} error=$decErr',
+                    );
+                  }
+                } else {
+                  debugPrint(
+                    '⚠️ [Phase2] No private key for msg=${m.id} sender=${m.senderId} — message will stay as "Loading..."',
+                  );
+                }
+                if (decryptedOriginal == null) {
+                  try {
+                    final cached =
+                        normalized[i]['content_original_encrypted_cache']
+                            as String?;
+                    if (cached != null && cached.isNotEmpty) {
+                      decryptedOriginal = await EncryptedCacheService.instance
+                          .decryptFromCache(cached);
+                    }
+                  } catch (_) {}
+                }
+              }
+
+              if (m.encryptionScheme == 'v1' &&
+                  m.contentTranslatedEncrypted != null &&
+                  m.contentTranslatedEncrypted!.isNotEmpty &&
+                  m.contentTranslatedNonce != null &&
+                  m.wrappedKeys != null &&
+                  (m.contentTranslated == null ||
+                      m.contentTranslated!.isEmpty)) {
+                if (chatKeyState.privateKeyBytes != null) {
+                  final sourceLang = m.detectedSourceLanguage;
+                  final storedTarget = m.translatedTargetLanguage;
+                  if (sourceLang != null &&
+                      sourceLang.isNotEmpty &&
+                      isValidLanguageCode(sourceLang) &&
+                      storedTarget != null &&
+                      storedTarget.isNotEmpty &&
+                      normalizeLanguageCode(storedTarget) ==
+                          normalizedTarget) {
+                    try {
+                      decryptedTranslated = await chatKeyService
+                          .decryptMessageTranslatedContent(
+                            currentUserId: currentUserId,
+                            currentUserPrivateKey:
+                                chatKeyState.privateKeyBytes!,
+                            messageId: m.id,
+                            matchId: m.matchId,
+                            senderId: m.senderId,
+                            senderKeyId: m.senderKeyId!,
+                            recipientKeyId: m.recipientKeyId!,
+                            contentTranslatedEncryptedBase64:
+                                m.contentTranslatedEncrypted!,
+                            contentTranslatedNonceBase64:
+                                m.contentTranslatedNonce!,
+                            wrappedKeys: m.wrappedKeys!,
+                            detectedSourceLanguage: sourceLang,
+                            targetLanguage: normalizedTarget,
+                            recipientId:
+                                m.recipientId != null &&
+                                    m.recipientId!.isNotEmpty
+                                ? m.recipientId
+                                : null,
+                          );
+                    } catch (e) {
+                      debugPrint(
+                        '[chatMessagesProvider] decryptMessageTranslatedContent failed: $e',
+                      );
+                      debugPrint(
+                        '  MID: ${m.id} src=$sourceLang tgt=$normalizedTarget storedTarget=$storedTarget sender=${m.senderId}',
+                      );
+                    }
+                  }
+                }
+                if (decryptedTranslated == null) {
+                  try {
+                    final cached =
+                        normalized[i]['content_translated_encrypted_cache']
+                            as String?;
+                    if (cached != null && cached.isNotEmpty) {
+                      decryptedTranslated = await EncryptedCacheService
+                          .instance
+                          .decryptFromCache(cached);
+                    }
+                  } catch (e) {
+                    debugPrint(
+                      '[chatMessagesProvider] cache fallback failed: $e',
+                    );
+                  }
+                }
+              }
+              return {
+                'i': i,
+                'original': decryptedOriginal,
+                'translated': decryptedTranslated,
+                'attempted': attemptedDecryption,
+                'failed': attemptedDecryption && decryptedOriginal == null,
+              };
+            }),
+          );
+          for (final result in results) {
+            final model = models[result['i'] as int];
+            _logIncomingMessageTrace(
+              matchId,
+              model.id,
+              'decryption_complete',
+              detail:
+                  'attempted=${result['attempted']} failed=${result['failed']}',
+            );
+          }
+
+          // Apply all decrypted content to models and collect DB writes.
+          for (final r in results) {
+            final idx = r['i'] as int;
+            final decryptedOriginal = r['original'] as String?;
+            final decryptedTranslated = r['translated'] as String?;
+            final m = models[idx];
+            // Only add to DB write if the original content was empty (prevents infinite loops)
+            if (decryptedOriginal != null &&
+                decryptedOriginal.isNotEmpty &&
+                m.contentOriginal.isEmpty) {
+              models[idx] = m.copyWith(contentOriginal: decryptedOriginal);
+              decryptedUpdates.add({
+                'id': m.id,
+                'content_original': decryptedOriginal,
+              });
+            }
+            if (decryptedTranslated != null &&
+                decryptedTranslated.isNotEmpty &&
+                (m.contentTranslated == null ||
+                    m.contentTranslated!.isEmpty)) {
+              models[idx] = m.copyWith(
+                contentTranslated: decryptedTranslated,
+                translatedText: decryptedTranslated,
+              );
+              decryptedUpdates.add({
+                'id': m.id,
+                'content_translated': decryptedTranslated,
+              });
+              // Propagate this message's translation to any locally cached
+              // reply that quotes it, so reply previews render translated
+              // immediately (memory + local storage) and survive restarts
+              // even when Supabase is unreachable. The final byId
+              // resolution below also covers the in-memory emit; this
+              // persists it to Hive for cold-start offline display.
+              for (int j = 0; j < models.length; j++) {
+                if (j == idx) continue;
+                final quoting = models[j];
+                if (quoting.replyToMessageId == null ||
+                    quoting.replyToMessageId != m.id) {
+                  continue;
+                }
+                if (quoting.replyToContentTranslated == null ||
+                    quoting.replyToContentTranslated!.isEmpty) {
+                  models[j] = quoting.copyWith(
+                    replyToContentTranslated: decryptedTranslated,
+                  );
+                  decryptedUpdates.add({
+                    'id': quoting.id,
+                    'reply_to_content_translated': decryptedTranslated,
+                  });
+                }
+              }
+            } else if (chatKeyState.privateKeyBytes != null &&
+                m.contentTranslatedEncrypted != null &&
+                m.encryptionScheme == 'v1') {
+              cleanupTranslations.add(m.id);
+            }
+          }
+
+          // If a v1-encrypted message sent by the current user (cross-device
+          // send) failed to decrypt, the most likely cause is a stale or
+          // missing local key. Trigger a key-provider refresh which will
+          // re-run the auto-heal: stale-key detection for an existing local
+          // key, or key recovery/rotation when no key is present.
+          // Guarded: only count messages where decryption was actually
+          // attempted (i.e. plaintext was empty) to avoid false positives
+          // for the sender's own optimistic messages that already carry
+          // plaintext in the local row. Also debounced to prevent
+          // infinite-loop thrash if the underlying issue is something else.
+          final crossDeviceFailures = results
+              .where((r) => r['failed'] == true)
+              .length;
+          final now = DateTime.now();
+          final shouldTrigger =
+              crossDeviceFailures > 0 &&
+              chatKeyState.isLoaded &&
+              (lastAutoHealTriggeredAt == null ||
+                  now.difference(lastAutoHealTriggeredAt!) >
+                      const Duration(seconds: 30));
+          if (shouldTrigger) {
+            lastAutoHealTriggeredAt = now;
+            debugPrint(
+              '🔁 [Phase2] $crossDeviceFailures cross-device message(s) failed to decrypt — refreshing chat key provider (likely stale local key)',
+            );
+            try {
+              // Defer to avoid mutating providers mid-Phase-2.
+              Future.microtask(() async {
+                try {
+                  await ref.read(chatKeyProvider.notifier).refresh();
+                  debugPrint(
+                    '✅ [Phase2] Chat key provider refreshed after cross-device failure',
+                  );
+                } catch (e) {
+                  debugPrint(
+                    '⚠️ [Phase2] Chat key provider refresh failed: $e',
+                  );
+                }
+              });
+            } catch (_) {}
+          } else if (crossDeviceFailures > 0) {
+            debugPrint(
+              '⏸️ [Phase2] $crossDeviceFailures cross-device failure(s) detected, but auto-heal debounced (last=${lastAutoHealTriggeredAt?.toIso8601String()})',
+            );
+          }
+        }
+
+        // Persist all decrypted content — single batch write.
+        // ENABLED with guard: Only write when content changes from empty to non-empty.
+        // This prevents infinite watch loops while ensuring decrypted content persists
+        // across stream re-emissions. The guard in the loop above ensures we only
+        // write when the original DB value was empty.
+        if (decryptedUpdates.isNotEmpty) {
+          try {
+            await localDb.mergeMessages(matchId, decryptedUpdates);
+          } catch (_) {}
+          // Mirror translations to local-storage prefs as well (secondary
+          // fallback for cold-start offline display when Hive is slow).
+          // Values are stored encrypted (see _persistTranslation) — the
+          // shared helper keeps the format consistent.
+          try {
+            String? prefsTarget;
+            try {
+              prefsTarget = normalizeLanguageCode(
+                ref.read(localizationProvider).currentLocale.languageCode,
+              );
+            } catch (_) {}
+            if (prefsTarget != null && prefsTarget.isNotEmpty) {
+              final modelsById = <String, ChatMessageModel>{
+                for (final m in models) m.id: m,
+              };
+              for (final u in decryptedUpdates) {
+                final mid = u['id']?.toString();
+                final tr = u['content_translated']?.toString();
+                if (mid != null &&
+                    mid.isNotEmpty &&
+                    tr != null &&
+                    tr.isNotEmpty) {
+                  unawaited(_persistTranslation(mid, prefsTarget, tr));
+                  final originalText = modelsById[mid]?.contentOriginal ?? '';
+                  _translationResultCache['$mid|$prefsTarget'] =
+                      _TranslationCacheEntry(
+                        tr,
+                        ref.read(translationVersionProvider),
+                        contentFingerprint: originalText.isEmpty
+                            ? null
+                            : originalText,
+                      );
+                }
+              }
+            }
+          } catch (_) {}
+        }
+
+        // Clean up translations that failed to decrypt — DISABLED for same reason.
+        // Translation cleanup writes also trigger the watch loop. These encrypted
+        // translations will simply remain in the DB and be skipped during Phase 2
+        // decryption (no harm, just unused data).
+        //
+        // for (final mid in cleanupTranslations) {
+        //   try {
+        //     await localDb.mergeMessages(matchId, [{
+        //       'id': mid,
+        //       'content_translated_encrypted': null,
+        //       'content_translated_nonce': null,
+        //     }]);
+        //   } catch (_) {}
+        // }
+
+        // Update the chats-box last-message preview is also commented out to avoid
+        // triggering additional DB writes during Phase 2. The preview will be updated
+        // by the sendMessage flow (after INSERT) and by sync operations, which is
+        // sufficient for keeping the chat list current.
+        //
+        // if (currentUserId != null) {
+        //   try {
+        //     await localDb.recomputeChatLastMessagePreviewFromMessages(
+        //       currentUserId,
+        //       matchId,
+        //     );
+        //   } catch (_) {}
+        // }
+
+        final byId = <String, ChatMessageModel>{};
+        for (final m in models) {
+          byId[m.id] = m;
+        }
+        final resolved = models.map((m) {
+          final replyId = m.replyToMessageId;
+          if (replyId == null) return m;
+          final original = byId[replyId];
+          if (original == null) return m;
+          final originalText = original.contentOriginal.isNotEmpty
+              ? original.contentOriginal
+              : m.replyToContent;
+          final originalTrans = replyQuotedTranslatedText(original);
+          return m.copyWith(
+            replyToSenderId: (original.senderId.isNotEmpty)
+                ? original.senderId
+                : m.replyToSenderId,
+            replyToContent: (originalText != null && originalText.isNotEmpty)
+                ? originalText
+                : m.replyToContent,
+            replyToContentTranslated:
+                (originalTrans != null && originalTrans.isNotEmpty)
+                ? originalTrans
+                : m.replyToContentTranslated,
+          );
+        }).toList();
+
+        // A newer local emission arrived while this pass was running, so the
+        // list this pass decrypted is no longer the newest one (and this pass
+        // has already been re-queued with the newer list). Emitting it here
+        // would shrink the conversation back to the rows it started with -
+        // visible as the chat collapsing to its last message(s) until the
+        // re-run finishes. Only the DB writes above are still applied.
+        if (identical(models, latestModels)) {
+          debouncedEmit(
+            resolved,
+            traceStage: 'phase2_ui_emit',
+            finishTraces: true,
+          );
+        }
+        // Persist resolved reply previews to Hive (best-effort, no await)
+        // so incoming reply quotes survive app restarts and render
+        // immediately offline. Only writes rows that gained a preview.
+        try {
+          final replyWrites = <Map<String, dynamic>>[];
+          // Need the pre-resolution rows to diff against; re-read cheaply
+          // from the already-loaded normalized cache.
+          for (final r in resolved) {
+            if (r.replyToMessageId == null) continue;
+            final hasPreview =
+                (r.replyToContent != null && r.replyToContent!.isNotEmpty) ||
+                (r.replyToContentTranslated != null &&
+                    r.replyToContentTranslated!.isNotEmpty);
+            if (!hasPreview) continue;
+            replyWrites.add({
+              'id': r.id,
+              'reply_to_sender_id': r.replyToSenderId,
+              'reply_to_content': r.replyToContent,
+              if (r.replyToContentTranslated != null &&
+                  r.replyToContentTranslated!.isNotEmpty)
+                'reply_to_content_translated': r.replyToContentTranslated,
+            });
+          }
+          if (replyWrites.isNotEmpty) {
+            unawaited(
+              localDb.mergeMessages(matchId, replyWrites).catchError((_) {}),
+            );
+          }
+        } catch (_) {}
+        debugPrint(
+          '🔓 [Phase2] Completed - emitted ${resolved.length} messages (${decryptedUpdates.length} decrypted)',
+        );
+      } catch (_) {
+        // Phase 2 best-effort; Phase 1 emission already happened.
+      }
+    }
+
+    /// Runs the decryption pass, coalescing overlapping requests so a key
+    /// arrival during a running pass is never dropped.
+    Future<void> schedulePhase2(
+      List<ChatMessageModel> models,
+      List<Map<String, dynamic>> normalized,
+    ) async {
+      if (disposed || streamController.isClosed) return;
+      latestModels = models;
+      latestRawRows = normalized;
+      if (phase2InFlight) {
+        phase2RerunRequested = true;
+        return;
+      }
+      phase2InFlight = true;
+      try {
+        await runPhase2(models, normalized);
+      } finally {
+        phase2InFlight = false;
+        if (phase2RerunRequested) {
+          phase2RerunRequested = false;
+          if (latestModels.isNotEmpty) {
+            unawaited(schedulePhase2(latestModels, latestRawRows));
+          }
+        }
+      }
+    }
+
+    // The chat key arrives asynchronously (it is fetched from the server on
+    // the first sign-in of a session). When it lands we re-run the
+    // decryption pass so the message bodies become readable. Listening
+    // instead of watching keeps the already-rendered list on screen: no
+    // spinner, no re-registration of the realtime channel, no second
+    // opening sync.
+    ref.listen<ChatKeyState>(chatKeyProvider, (previous, next) {
+      if (disposed || !ref.mounted) return;
+      ensureChatKeyForCurrentUser();
+      final key = next.privateKeyBytes;
+      if (key == null) return;
+      if (identical(previous?.privateKeyBytes, key)) return;
+      if (latestModels.isEmpty) return;
+      debugPrint(
+        '🔑 [chatMessagesProvider] Chat key available - decrypting '
+        '${latestModels.length} message(s)',
+      );
+      unawaited(schedulePhase2(latestModels, latestRawRows));
+    });
 
     // Use syncService for an initial full sync once we subscribe
     ChatSyncService? syncService;
@@ -822,439 +1555,9 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
         );
         debouncedEmit(resolvedPhase1, traceStage: 'phase1_ui_emit');
 
-        // Phase 2 — Decrypt v1 encrypted messages in the background
+        // Phase 2 - Decrypt v1 encrypted messages in the background
         // and re-emit when done.
-        try {
-          debugPrint(
-            '🔓 [Phase2] Starting decryption for ${models.length} messages',
-          );
-          final chatKeyState = ref.read(chatKeyProvider);
-          final currentUserId = supabase.auth.currentUser?.id;
-          final chatKeyService = ChatKeyService.instance;
-          final decryptedUpdates = <Map<String, dynamic>>[];
-          final cleanupTranslations = <String>[];
-          if (currentUserId != null) {
-            final locale = ref.read(localizationProvider);
-            final uiLang = locale.currentLocale.languageCode;
-            final normalizedTarget = normalizeLanguageCode(uiLang);
-
-            // Pre-warm peer public keys from disk / memory / network upfront
-            final keyIds = <String>{};
-            for (final m in models) {
-              if (m.senderKeyId != null && m.senderKeyId!.isNotEmpty) {
-                keyIds.add(m.senderKeyId!);
-              }
-              if (m.recipientKeyId != null && m.recipientKeyId!.isNotEmpty) {
-                keyIds.add(m.recipientKeyId!);
-              }
-            }
-            if (keyIds.isNotEmpty) {
-              await chatKeyService.warmPeerKeys(keyIds);
-            }
-
-            // Phase 2 — Decrypt all v1 encrypted messages IN PARALLEL so
-            // N messages take ~per_msg_time instead of N × per_msg_time.
-            final results = await Future.wait(
-              List.generate(models.length, (i) async {
-                final m = models[i];
-                String? decryptedOriginal;
-                String? decryptedTranslated;
-                bool attemptedDecryption = false;
-
-                if (m.encryptionScheme == 'v1' &&
-                    m.contentOriginalEncrypted != null &&
-                    m.contentOriginalEncrypted!.isNotEmpty &&
-                    m.contentOriginalNonce != null &&
-                    m.wrappedKeys != null &&
-                    m.contentOriginal.isEmpty) {
-                  if (chatKeyState.privateKeyBytes != null) {
-                    attemptedDecryption = true;
-                    try {
-                      decryptedOriginal = await chatKeyService
-                          .decryptMessageContent(
-                            currentUserId: currentUserId,
-                            currentUserPrivateKey:
-                                chatKeyState.privateKeyBytes!,
-                            messageId: m.id,
-                            matchId: m.matchId,
-                            senderId: m.senderId,
-                            senderKeyId: m.senderKeyId!,
-                            recipientKeyId: m.recipientKeyId!,
-                            contentOriginalEncryptedBase64:
-                                m.contentOriginalEncrypted!,
-                            contentOriginalNonceBase64: m.contentOriginalNonce!,
-                            wrappedKeys: m.wrappedKeys!,
-                            recipientId:
-                                m.recipientId != null &&
-                                    m.recipientId!.isNotEmpty
-                                ? m.recipientId
-                                : null,
-                          );
-                      if (decryptedOriginal == null) {
-                        debugPrint(
-                          '❌ [Phase2] decryptMessageContent returned null for msg=${m.id} sender=${m.senderId} senderKey=${m.senderKeyId} recipientKey=${m.recipientKeyId} — likely AAD/shared-secret/wrap mismatch',
-                        );
-                      }
-                    } catch (decErr) {
-                      debugPrint(
-                        '❌ [Phase2] decryptMessageContent threw for msg=${m.id} sender=${m.senderId} senderKey=${m.senderKeyId} recipientKey=${m.recipientKeyId} error=$decErr',
-                      );
-                    }
-                  } else {
-                    debugPrint(
-                      '⚠️ [Phase2] No private key for msg=${m.id} sender=${m.senderId} — message will stay as "Loading..."',
-                    );
-                  }
-                  if (decryptedOriginal == null) {
-                    try {
-                      final cached =
-                          normalized[i]['content_original_encrypted_cache']
-                              as String?;
-                      if (cached != null && cached.isNotEmpty) {
-                        decryptedOriginal = await EncryptedCacheService.instance
-                            .decryptFromCache(cached);
-                      }
-                    } catch (_) {}
-                  }
-                }
-
-                if (m.encryptionScheme == 'v1' &&
-                    m.contentTranslatedEncrypted != null &&
-                    m.contentTranslatedEncrypted!.isNotEmpty &&
-                    m.contentTranslatedNonce != null &&
-                    m.wrappedKeys != null &&
-                    (m.contentTranslated == null ||
-                        m.contentTranslated!.isEmpty)) {
-                  if (chatKeyState.privateKeyBytes != null) {
-                    final sourceLang = m.detectedSourceLanguage;
-                    final storedTarget = m.translatedTargetLanguage;
-                    if (sourceLang != null &&
-                        sourceLang.isNotEmpty &&
-                        isValidLanguageCode(sourceLang) &&
-                        storedTarget != null &&
-                        storedTarget.isNotEmpty &&
-                        normalizeLanguageCode(storedTarget) ==
-                            normalizedTarget) {
-                      try {
-                        decryptedTranslated = await chatKeyService
-                            .decryptMessageTranslatedContent(
-                              currentUserId: currentUserId,
-                              currentUserPrivateKey:
-                                  chatKeyState.privateKeyBytes!,
-                              messageId: m.id,
-                              matchId: m.matchId,
-                              senderId: m.senderId,
-                              senderKeyId: m.senderKeyId!,
-                              recipientKeyId: m.recipientKeyId!,
-                              contentTranslatedEncryptedBase64:
-                                  m.contentTranslatedEncrypted!,
-                              contentTranslatedNonceBase64:
-                                  m.contentTranslatedNonce!,
-                              wrappedKeys: m.wrappedKeys!,
-                              detectedSourceLanguage: sourceLang,
-                              targetLanguage: normalizedTarget,
-                              recipientId:
-                                  m.recipientId != null &&
-                                      m.recipientId!.isNotEmpty
-                                  ? m.recipientId
-                                  : null,
-                            );
-                      } catch (e) {
-                        debugPrint(
-                          '[chatMessagesProvider] decryptMessageTranslatedContent failed: $e',
-                        );
-                        debugPrint(
-                          '  MID: ${m.id} src=$sourceLang tgt=$normalizedTarget storedTarget=$storedTarget sender=${m.senderId}',
-                        );
-                      }
-                    }
-                  }
-                  if (decryptedTranslated == null) {
-                    try {
-                      final cached =
-                          normalized[i]['content_translated_encrypted_cache']
-                              as String?;
-                      if (cached != null && cached.isNotEmpty) {
-                        decryptedTranslated = await EncryptedCacheService
-                            .instance
-                            .decryptFromCache(cached);
-                      }
-                    } catch (e) {
-                      debugPrint(
-                        '[chatMessagesProvider] cache fallback failed: $e',
-                      );
-                    }
-                  }
-                }
-                return {
-                  'i': i,
-                  'original': decryptedOriginal,
-                  'translated': decryptedTranslated,
-                  'attempted': attemptedDecryption,
-                  'failed': attemptedDecryption && decryptedOriginal == null,
-                };
-              }),
-            );
-            for (final result in results) {
-              final model = models[result['i'] as int];
-              _logIncomingMessageTrace(
-                matchId,
-                model.id,
-                'decryption_complete',
-                detail:
-                    'attempted=${result['attempted']} failed=${result['failed']}',
-              );
-            }
-
-            // Apply all decrypted content to models and collect DB writes.
-            for (final r in results) {
-              final idx = r['i'] as int;
-              final decryptedOriginal = r['original'] as String?;
-              final decryptedTranslated = r['translated'] as String?;
-              final m = models[idx];
-              // Only add to DB write if the original content was empty (prevents infinite loops)
-              if (decryptedOriginal != null &&
-                  decryptedOriginal.isNotEmpty &&
-                  m.contentOriginal.isEmpty) {
-                models[idx] = m.copyWith(contentOriginal: decryptedOriginal);
-                decryptedUpdates.add({
-                  'id': m.id,
-                  'content_original': decryptedOriginal,
-                });
-              }
-              if (decryptedTranslated != null &&
-                  decryptedTranslated.isNotEmpty &&
-                  (m.contentTranslated == null ||
-                      m.contentTranslated!.isEmpty)) {
-                models[idx] = m.copyWith(
-                  contentTranslated: decryptedTranslated,
-                  translatedText: decryptedTranslated,
-                );
-                decryptedUpdates.add({
-                  'id': m.id,
-                  'content_translated': decryptedTranslated,
-                });
-                // Propagate this message's translation to any locally cached
-                // reply that quotes it, so reply previews render translated
-                // immediately (memory + local storage) and survive restarts
-                // even when Supabase is unreachable. The final byId
-                // resolution below also covers the in-memory emit; this
-                // persists it to Hive for cold-start offline display.
-                for (int j = 0; j < models.length; j++) {
-                  if (j == idx) continue;
-                  final quoting = models[j];
-                  if (quoting.replyToMessageId == null ||
-                      quoting.replyToMessageId != m.id) {
-                    continue;
-                  }
-                  if (quoting.replyToContentTranslated == null ||
-                      quoting.replyToContentTranslated!.isEmpty) {
-                    models[j] = quoting.copyWith(
-                      replyToContentTranslated: decryptedTranslated,
-                    );
-                    decryptedUpdates.add({
-                      'id': quoting.id,
-                      'reply_to_content_translated': decryptedTranslated,
-                    });
-                  }
-                }
-              } else if (chatKeyState.privateKeyBytes != null &&
-                  m.contentTranslatedEncrypted != null &&
-                  m.encryptionScheme == 'v1') {
-                cleanupTranslations.add(m.id);
-              }
-            }
-
-            // If a v1-encrypted message sent by the current user (cross-device
-            // send) failed to decrypt, the most likely cause is a stale or
-            // missing local key. Trigger a key-provider refresh which will
-            // re-run the auto-heal: stale-key detection for an existing local
-            // key, or key recovery/rotation when no key is present.
-            // Guarded: only count messages where decryption was actually
-            // attempted (i.e. plaintext was empty) to avoid false positives
-            // for the sender's own optimistic messages that already carry
-            // plaintext in the local row. Also debounced to prevent
-            // infinite-loop thrash if the underlying issue is something else.
-            final crossDeviceFailures = results
-                .where((r) => r['failed'] == true)
-                .length;
-            final now = DateTime.now();
-            final shouldTrigger =
-                crossDeviceFailures > 0 &&
-                chatKeyState.isLoaded &&
-                (lastAutoHealTriggeredAt == null ||
-                    now.difference(lastAutoHealTriggeredAt!) >
-                        const Duration(seconds: 30));
-            if (shouldTrigger) {
-              lastAutoHealTriggeredAt = now;
-              debugPrint(
-                '🔁 [Phase2] $crossDeviceFailures cross-device message(s) failed to decrypt — refreshing chat key provider (likely stale local key)',
-              );
-              try {
-                // Defer to avoid mutating providers mid-Phase-2.
-                Future.microtask(() async {
-                  try {
-                    await ref.read(chatKeyProvider.notifier).refresh();
-                    debugPrint(
-                      '✅ [Phase2] Chat key provider refreshed after cross-device failure',
-                    );
-                  } catch (e) {
-                    debugPrint(
-                      '⚠️ [Phase2] Chat key provider refresh failed: $e',
-                    );
-                  }
-                });
-              } catch (_) {}
-            } else if (crossDeviceFailures > 0) {
-              debugPrint(
-                '⏸️ [Phase2] $crossDeviceFailures cross-device failure(s) detected, but auto-heal debounced (last=${lastAutoHealTriggeredAt?.toIso8601String()})',
-              );
-            }
-          }
-
-          // Persist all decrypted content — single batch write.
-          // ENABLED with guard: Only write when content changes from empty to non-empty.
-          // This prevents infinite watch loops while ensuring decrypted content persists
-          // across stream re-emissions. The guard in the loop above ensures we only
-          // write when the original DB value was empty.
-          if (decryptedUpdates.isNotEmpty) {
-            try {
-              await localDb.mergeMessages(matchId, decryptedUpdates);
-            } catch (_) {}
-            // Mirror translations to local-storage prefs as well (secondary
-            // fallback for cold-start offline display when Hive is slow).
-            // Values are stored encrypted (see _persistTranslation) — the
-            // shared helper keeps the format consistent.
-            try {
-              String? prefsTarget;
-              try {
-                prefsTarget = normalizeLanguageCode(
-                  ref.read(localizationProvider).currentLocale.languageCode,
-                );
-              } catch (_) {}
-              if (prefsTarget != null && prefsTarget.isNotEmpty) {
-                final modelsById = <String, ChatMessageModel>{
-                  for (final m in models) m.id: m,
-                };
-                for (final u in decryptedUpdates) {
-                  final mid = u['id']?.toString();
-                  final tr = u['content_translated']?.toString();
-                  if (mid != null &&
-                      mid.isNotEmpty &&
-                      tr != null &&
-                      tr.isNotEmpty) {
-                    unawaited(_persistTranslation(mid, prefsTarget, tr));
-                    final originalText = modelsById[mid]?.contentOriginal ?? '';
-                    _translationResultCache['$mid|$prefsTarget'] =
-                        _TranslationCacheEntry(
-                          tr,
-                          ref.read(translationVersionProvider),
-                          contentFingerprint: originalText.isEmpty
-                              ? null
-                              : originalText,
-                        );
-                  }
-                }
-              }
-            } catch (_) {}
-          }
-
-          // Clean up translations that failed to decrypt — DISABLED for same reason.
-          // Translation cleanup writes also trigger the watch loop. These encrypted
-          // translations will simply remain in the DB and be skipped during Phase 2
-          // decryption (no harm, just unused data).
-          //
-          // for (final mid in cleanupTranslations) {
-          //   try {
-          //     await localDb.mergeMessages(matchId, [{
-          //       'id': mid,
-          //       'content_translated_encrypted': null,
-          //       'content_translated_nonce': null,
-          //     }]);
-          //   } catch (_) {}
-          // }
-
-          // Update the chats-box last-message preview is also commented out to avoid
-          // triggering additional DB writes during Phase 2. The preview will be updated
-          // by the sendMessage flow (after INSERT) and by sync operations, which is
-          // sufficient for keeping the chat list current.
-          //
-          // if (currentUserId != null) {
-          //   try {
-          //     await localDb.recomputeChatLastMessagePreviewFromMessages(
-          //       currentUserId,
-          //       matchId,
-          //     );
-          //   } catch (_) {}
-          // }
-
-          final byId = <String, ChatMessageModel>{};
-          for (final m in models) {
-            byId[m.id] = m;
-          }
-          final resolved = models.map((m) {
-            final replyId = m.replyToMessageId;
-            if (replyId == null) return m;
-            final original = byId[replyId];
-            if (original == null) return m;
-            final originalText = original.contentOriginal.isNotEmpty
-                ? original.contentOriginal
-                : m.replyToContent;
-            final originalTrans = replyQuotedTranslatedText(original);
-            return m.copyWith(
-              replyToSenderId: (original.senderId.isNotEmpty)
-                  ? original.senderId
-                  : m.replyToSenderId,
-              replyToContent: (originalText != null && originalText.isNotEmpty)
-                  ? originalText
-                  : m.replyToContent,
-              replyToContentTranslated:
-                  (originalTrans != null && originalTrans.isNotEmpty)
-                  ? originalTrans
-                  : m.replyToContentTranslated,
-            );
-          }).toList();
-
-          debouncedEmit(
-            resolved,
-            traceStage: 'phase2_ui_emit',
-            finishTraces: true,
-          );
-          // Persist resolved reply previews to Hive (best-effort, no await)
-          // so incoming reply quotes survive app restarts and render
-          // immediately offline. Only writes rows that gained a preview.
-          try {
-            final replyWrites = <Map<String, dynamic>>[];
-            // Need the pre-resolution rows to diff against; re-read cheaply
-            // from the already-loaded normalized cache.
-            for (final r in resolved) {
-              if (r.replyToMessageId == null) continue;
-              final hasPreview =
-                  (r.replyToContent != null && r.replyToContent!.isNotEmpty) ||
-                  (r.replyToContentTranslated != null &&
-                      r.replyToContentTranslated!.isNotEmpty);
-              if (!hasPreview) continue;
-              replyWrites.add({
-                'id': r.id,
-                'reply_to_sender_id': r.replyToSenderId,
-                'reply_to_content': r.replyToContent,
-                if (r.replyToContentTranslated != null &&
-                    r.replyToContentTranslated!.isNotEmpty)
-                  'reply_to_content_translated': r.replyToContentTranslated,
-              });
-            }
-            if (replyWrites.isNotEmpty) {
-              unawaited(
-                localDb.mergeMessages(matchId, replyWrites).catchError((_) {}),
-              );
-            }
-          } catch (_) {}
-          debugPrint(
-            '🔓 [Phase2] Completed - emitted ${resolved.length} messages (${decryptedUpdates.length} decrypted)',
-          );
-        } catch (_) {
-          // Phase 2 best-effort; Phase 1 emission already happened.
-        }
+        await schedulePhase2(models, normalized);
 
         // If there are no messages locally and we haven't scheduled an initial recovery sync,
         // schedule a few background sync attempts to cover intermittent failures (e.g., slow IndexedDB).
@@ -1960,6 +2263,52 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
       });
     }
 
+    // Instant the opening fetch started. The realtime catch-up pass only needs
+    // the rows created after this point.
+    final openingSyncStartedAt = DateTime.now().toUtc();
+
+    // Reconciles the local cache with the server when the chat is opened.
+    //
+    // The background prefetch downloads every conversation right after
+    // sign-in, so the local cache usually already *is* the full conversation.
+    // Downloading it again on every chat open was the single biggest source of
+    // "the chat takes a few seconds to open": the whole (base64-encrypted)
+    // history travelled over the network, the Hive entry was rewritten and
+    // every message had to be decrypted again. When the prefetch marker says
+    // the cache is complete we therefore only fetch the rows that landed
+    // since then.
+    Future<void> runOpeningSync() async {
+      final service = syncService;
+      if (service == null) return;
+      // The marker is only trusted while it is fresh *and* the cache still
+      // holds at least the number of rows that download produced. A cache
+      // that shrank since then is not a complete conversation, no matter how
+      // recent the marker is, so it is downloaded again in full - an
+      // incremental fetch would only ever add rows on top of the truncated
+      // history and the missing messages would never come back.
+      DateTime? syncedAt;
+      var cacheIsComplete = false;
+      try {
+        final state = await localDb.getMessagesSyncState(matchId);
+        if (state != null) {
+          final localCount = (await localDb.getMessagesSnapshot(matchId)).length;
+          cacheIsComplete =
+              localCount >= state.count &&
+              DateTime.now().toUtc().difference(state.at) <
+                  _completeCacheFreshnessWindow;
+          if (cacheIsComplete) syncedAt = state.at;
+        }
+      } catch (_) {}
+      if (cacheIsComplete && syncedAt != null) {
+        await service.syncMessages(
+          matchId,
+          since: syncedAt.subtract(_incrementalSyncSafetyMargin),
+        );
+      } else {
+        await service.syncMessages(matchId);
+      }
+    }
+
     Future<void> openingSync = Future<void>.value();
     SupabaseRealtimeManager.instance.register(channelName, () {
       channel = supabase.channel(channelName);
@@ -1986,12 +2335,22 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
               // handshake. Wait for it, then do a second catch-up after the
               // subscription is live so inserts that landed during the
               // opening fetch cannot be missed.
+              //
+              // The catch-up only asks for the rows created since the opening
+              // fetch started. Asking for the whole conversation again would
+              // re-download every (encrypted) row of a long chat and rewrite
+              // the entire local cache on every single chat open.
               try {
                 final service = syncService;
                 if (service != null) {
                   await openingSync;
                   if (disposed || !ref.mounted) return;
-                  await service.syncMessages(matchId);
+                  await service.syncMessages(
+                    matchId,
+                    since: openingSyncStartedAt.subtract(
+                      _incrementalSyncSafetyMargin,
+                    ),
+                  );
                 }
               } catch (e) {
                 // debugPrint('Error syncing messages on subscribe for $matchId: $e');
@@ -2010,7 +2369,7 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
     // before fetching the missing rows. The callback above performs a second
     // reconciliation once realtime is active to close the fetch/subscribe gap.
     if (syncService != null && !shouldSkipSupabaseCalls()) {
-      openingSync = syncService.syncMessages(matchId);
+      openingSync = runOpeningSync();
       unawaited(openingSync);
     }
 
@@ -2796,18 +3155,10 @@ class ChatService {
       return;
     }
 
-    final msg = Map<String, dynamic>.from(messages[idx]);
-
-    // Update my_reaction
-    if (reaction == null) {
-      msg.remove('my_reaction');
-    } else {
-      msg['my_reaction'] = reaction;
-    }
-
     // Update reaction_summary counts optimistically
-    final Map<String, dynamic> summary = (msg['reaction_summary'] is Map)
-        ? Map<String, dynamic>.from(msg['reaction_summary'])
+    final existingSummary = messages[idx]['reaction_summary'];
+    final Map<String, dynamic> summary = (existingSummary is Map)
+        ? Map<String, dynamic>.from(existingSummary)
         : {};
     final prev = messages[idx]['my_reaction'] as String?;
 
@@ -2827,9 +3178,17 @@ class ChatService {
       summary[reaction] = cur + 1;
     }
 
-    msg['reaction_summary'] = summary;
-    messages[idx] = msg;
-    await localDb.saveMessages(matchId, messages);
+    // A single-row status write instead of re-saving the whole conversation:
+    // the row list read above can be stale by the time a full replace lands,
+    // and replacing the blob with it would drop any message that arrived in
+    // between.
+    await localDb.mergeMessageStatus(
+      matchId,
+      messageId,
+      reactionSummary: summary,
+      myReaction: reaction,
+      clearMyReaction: reaction == null,
+    );
 
     // debugPrint('applyOptimisticUpdate DONE for message $messageId -> summary: ${summary.toString()} prev: ${prev ?? 'none'}');
 

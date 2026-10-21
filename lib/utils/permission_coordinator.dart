@@ -54,46 +54,15 @@ class PermissionCoordinator {
       // If native side recorded a permission issue (e.g. after reboot), prioritize it.
       await handleOnResume(context, ref);
 
-      // 1) Background location (Android). Needed for post-reboot GPS updates.
+      // 1) Background location.
+      //
+      //    Android needs ACCESS_BACKGROUND_LOCATION (API 29+); iOS needs
+      //    "Always" authorization (CLAuthorizationStatus.authorizedAlways).
+      //    Both are required for the app to keep transmitting coordinates
+      //    while the UI is closed, so both are audited here.
       if (!kIsWeb && Platform.isAndroid) {
-        // Ensure basic location is granted first.
-        final locStatus = await Permission.location.status;
+        await _ensureAndroidBackgroundLocation(context, ref);
         if (!context.mounted) return;
-        var hasForegroundLocation = locStatus.isGranted;
-        if (!hasForegroundLocation) {
-          final requested = await Permission.location.request();
-          if (!context.mounted) return;
-          hasForegroundLocation = requested.isGranted;
-          if (!hasForegroundLocation) {
-            if (!context.mounted) return;
-            await _showDialog(
-              context,
-              ref,
-              titleKey: 'permLocationAlwaysTitle',
-              bodyKey: 'permLocationWhileInUseBody',
-              onPrimary: () => openAppSettings(),
-            );
-          }
-        }
-
-        if (hasForegroundLocation) {
-          final alwaysStatus = await Permission.locationAlways.status;
-          if (!context.mounted) return;
-          if (!alwaysStatus.isGranted) {
-            final requested = await Permission.locationAlways.request();
-            if (!context.mounted) return;
-            if (!requested.isGranted) {
-              if (!context.mounted) return;
-              await _showDialog(
-                context,
-                ref,
-                titleKey: 'permLocationAlwaysTitle',
-                bodyKey: 'permLocationAlwaysBody',
-                onPrimary: () => openAppSettings(),
-              );
-            }
-          }
-        }
 
         // 2) Notifications (Android 13+). Important for "always on" UX.
         final notifStatus = await Permission.notification.status;
@@ -128,10 +97,115 @@ class PermissionCoordinator {
                 BackgroundService.requestIgnoreBatteryOptimizations(),
           );
         }
+      } else if (!kIsWeb && Platform.isIOS) {
+        await _ensureIosBackgroundLocation(context, ref);
       }
     } finally {
       _promptInProgress = false;
     }
+  }
+
+  /// Android: foreground location + ACCESS_BACKGROUND_LOCATION.
+  static Future<void> _ensureAndroidBackgroundLocation(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    // Ensure basic location is granted first.
+    final locStatus = await Permission.location.status;
+    if (!context.mounted) return;
+    var hasForegroundLocation = locStatus.isGranted;
+    if (!hasForegroundLocation) {
+      final requested = await Permission.location.request();
+      if (!context.mounted) return;
+      hasForegroundLocation = requested.isGranted;
+      if (!hasForegroundLocation) {
+        if (!context.mounted) return;
+        await _showDialog(
+          context,
+          ref,
+          titleKey: 'permLocationAlwaysTitle',
+          bodyKey: 'permLocationWhileInUseBody',
+          onPrimary: () => openAppSettings(),
+        );
+        return;
+      }
+    }
+
+    if (!hasForegroundLocation) return;
+    final alwaysStatus = await Permission.locationAlways.status;
+    if (!context.mounted) return;
+    if (!alwaysStatus.isGranted) {
+      final requested = await Permission.locationAlways.request();
+      if (!context.mounted) return;
+      if (!requested.isGranted) {
+        if (!context.mounted) return;
+        await _showDialog(
+          context,
+          ref,
+          titleKey: 'permLocationAlwaysTitle',
+          bodyKey: 'permLocationAlwaysBody',
+          onPrimary: () => openAppSettings(),
+        );
+      }
+    }
+  }
+
+  /// iOS: "Always" authorization.
+  ///
+  /// iOS only presents the "Allow While Using / Change to Always" upgrade
+  /// prompt once per install. When the user declines it, the OS never asks
+  /// again and the app keeps running with `authorizedWhenInUse`, which means
+  /// the system suspends the app as soon as the UI is closed — no background
+  /// location, no presence heartbeat, and the user silently disappears from
+  /// the online/visible counts.
+  ///
+  /// The Settings deep link is therefore the only reliable recovery path, so
+  /// it is what the dialog offers.
+  static Future<void> _ensureIosBackgroundLocation(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    // iOS refuses to show the "Always" upgrade prompt before "While Using"
+    // has been granted (permission_handler raises
+    // MISSING_WHENINUSE_PERMISSION), so the foreground permission comes
+    // first — exactly like the Android branch above.
+    final whenInUse = await Permission.locationWhenInUse.status;
+    if (!context.mounted) return;
+    if (!whenInUse.isGranted) {
+      final requested = await Permission.location.request();
+      if (!context.mounted) return;
+      if (!requested.isGranted) {
+        if (!context.mounted) return;
+        await _showDialog(
+          context,
+          ref,
+          titleKey: 'permLocationAlwaysTitle',
+          bodyKey: 'permLocationWhileInUseBody',
+          onPrimary: () => openAppSettings(),
+        );
+        return;
+      }
+    }
+
+    final alwaysStatus = await Permission.locationAlways.status;
+    if (!context.mounted) return;
+    if (alwaysStatus.isGranted || alwaysStatus.isLimited) return;
+
+    // Try the in-app upgrade once. iOS silently ignores this if the prompt
+    // has already been used up, which is exactly the case the dialog below
+    // is for.
+    final requested = await Permission.locationAlways.request();
+    if (!context.mounted) return;
+    if (requested.isGranted || requested.isLimited) return;
+
+    if (!context.mounted) return;
+    await _showDialog(
+      context,
+      ref,
+      titleKey: 'permLocationAlwaysTitle',
+      bodyKey: 'permLocationAlwaysBody',
+      onPrimary: () => openAppSettings(),
+    );
   }
 
   /// Failure-driven handler. Call this on app resume to surface permission issues recorded
@@ -160,21 +234,100 @@ class PermissionCoordinator {
     }
   }
 
-  /// Check if background location permission is granted (needed for Android 14+ foreground service)
+  /// Check if background location permission is granted.
+  ///
+  /// Android 14+ needs it for the foreground service; iOS needs "Always"
+  /// authorization, otherwise the OS suspends the app as soon as the UI is
+  /// closed and no background location is ever delivered.
   static Future<bool> hasBackgroundLocationPermission() async {
-    if (kIsWeb || !Platform.isAndroid) return true;
+    if (kIsWeb ||
+        Platform.isLinux ||
+        Platform.isWindows ||
+        Platform.isMacOS) {
+      return true;
+    }
     final alwaysStatus = await Permission.locationAlways.status;
-    return alwaysStatus.isGranted;
+    return alwaysStatus.isGranted || alwaysStatus.isLimited;
   }
 
-  /// Request background location permission proactively (needed for Android 14+ foreground service in background)
-  /// Returns true if permission is granted, false otherwise
+  /// Request background location permission proactively.
+  ///
+  /// Android 14+ needs it for the foreground service; iOS needs "Always"
+  /// authorization or the OS suspends the app as soon as the UI closes.
+  /// Returns true if permission is granted, false otherwise.
   static Future<bool> requestBackgroundLocationPermission(
     BuildContext context,
     WidgetRef ref,
   ) async {
-    if (kIsWeb || !Platform.isAndroid) return true;
+    if (kIsWeb ||
+        Platform.isLinux ||
+        Platform.isWindows ||
+        Platform.isMacOS) {
+      return true;
+    }
     if (!context.mounted) return false;
+
+    // On iOS the foreground/background split is a single authorization
+    // ("Always"), so there is no separate foreground step to perform.
+    if (Platform.isIOS) {
+      // iOS will not show the "Always" upgrade prompt before "While Using"
+      // has been granted.
+      final whenInUse = await Permission.locationWhenInUse.status;
+      if (!context.mounted) return false;
+      if (!whenInUse.isGranted) {
+        final requested = await Permission.location.request();
+        if (!context.mounted) return false;
+        if (!requested.isGranted) {
+          await ref
+              .read(userPreferencesProvider.notifier)
+              .setPendingBackgroundMatchingEnable(true);
+          if (!context.mounted) return false;
+          await _showDialog(
+            context,
+            ref,
+            titleKey: 'permLocationAlwaysTitle',
+            bodyKey: 'permLocationWhileInUseBody',
+            onPrimary: () => openAppSettings(),
+          );
+          return false;
+        }
+      }
+
+      final current = await Permission.locationAlways.status;
+      if (!context.mounted) return false;
+      if (current.isGranted || current.isLimited) return true;
+
+      await Permission.locationAlways.request();
+      if (!context.mounted) return false;
+      await Future.delayed(const Duration(milliseconds: 200));
+      final afterPrompt = await Permission.locationAlways.status;
+      if (!context.mounted) return false;
+      if (afterPrompt.isGranted || afterPrompt.isLimited) {
+        await ref
+            .read(userPreferencesProvider.notifier)
+            .setPendingBackgroundMatchingEnable(false);
+        return true;
+      }
+
+      // iOS will not show the upgrade prompt again — the Settings deep link
+      // is the only remaining way to grant it.
+      await ref
+          .read(userPreferencesProvider.notifier)
+          .setPendingBackgroundMatchingEnable(true);
+      if (!context.mounted) return false;
+      await _showDialog(
+        context,
+        ref,
+        titleKey: 'permLocationAlwaysTitle',
+        bodyKey: 'permLocationAlwaysBody',
+        onPrimary: () => openAppSettings(),
+      );
+      if (!context.mounted) return false;
+      await Future.delayed(const Duration(milliseconds: 200));
+      final settingsStatus = await Permission.locationAlways.status;
+      if (!context.mounted) return false;
+      return settingsStatus.isGranted || settingsStatus.isLimited;
+    }
 
     // Ensure basic location is granted first
     final locStatus = await Permission.location.status;

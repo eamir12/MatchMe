@@ -1181,18 +1181,46 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
     return DateTime.now().difference(pausedAt) >= _resumeFullSyncThreshold;
   }
 
+  /// Validates that the platform's background-location prerequisite is still
+  /// satisfied while Background Matching Mode is on.
+  ///
+  /// Android: ACCESS_BACKGROUND_LOCATION was revoked → the foreground
+  /// service cannot legally run, so the mode is switched off.
+  ///
+  /// iOS: "Always" authorization was never granted (or was revoked). The
+  /// mode is NOT switched off — the user explicitly asked for it and iOS
+  /// only ever offers the upgrade prompt once. Instead we raise a native
+  /// permission issue so the coordinator can show a dialog with a deep link
+  /// to Settings, which is the only way to grant it.
   Future<void> validateBackgroundMatchingPermission() async {
-    if (kIsWeb || !state.backgroundMatchingMode || !Platform.isAndroid) return;
+    if (kIsWeb ||
+        Platform.isLinux ||
+        Platform.isWindows ||
+        Platform.isMacOS) {
+      return;
+    }
+    if (!state.backgroundMatchingMode) return;
 
     try {
       final hasBackgroundLocation =
           await PermissionCoordinator.hasBackgroundLocationPermission();
-      if (!hasBackgroundLocation) {
+      if (hasBackgroundLocation) return;
+
+      if (Platform.isIOS) {
         print(
-          'Background location permission revoked, disabling Background Matching Mode',
+          'iOS background location is not authorized for "Always" — '
+          'raising a permission issue so the user can fix it in Settings',
         );
-        await setBackgroundMatchingMode(false);
+        await BackgroundService.setNativePermissionIssueCode(
+          'location_always',
+        );
+        return;
       }
+
+      print(
+        'Background location permission revoked, disabling Background Matching Mode',
+      );
+      await setBackgroundMatchingMode(false);
     } catch (e) {
       print('Error validating Background Matching Mode permission: $e');
     }

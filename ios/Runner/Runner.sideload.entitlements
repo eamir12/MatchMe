@@ -2,5 +2,20 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Push notifications (APNs).
+	     This file is the entitlements target used by every build
+	     configuration (CODE_SIGN_ENTITLEMENTS = $(MM_CODE_SIGN_ENTITLEMENTS_FILE)
+	     -> Runner/Runner.sideload.entitlements, see ios/Flutter/Signing.xcconfig).
+
+	     It MUST keep the aps-environment key, otherwise the app is signed
+	     without push capability: registerForRemoteNotifications() never
+	     returns a device token and FCM cannot deliver a single notification
+	     on iOS (the FID still registers, which makes the failure silent).
+
+	     $(APS_ENVIRONMENT) resolves per build configuration from
+	     ios/Runner.xcodeproj/project.pbxproj (development for Debug/Profile,
+	     production for Release) and must match the provisioning profile. -->
+	<key>aps-environment</key>
+	<string>$(APS_ENVIRONMENT)</string>
 </dict>
 </plist>

@@ -1145,13 +1145,15 @@ class _MatchPreferencesScreenState
   }
 
   List<AppProfileOption> _filterOptionData(String fieldKey) {
-    return ref
+    final opts =
+        ref
             .watch(
               fieldOptionsProvider((fieldKey: fieldKey, context: 'filter')),
             )
             .asData
             ?.value ??
         const [];
+    return orderBeliefOptions(opts, fieldKey: fieldKey);
   }
 
   String _filterOptionLabel(LocalizationState l10n, AppProfileOption o) {

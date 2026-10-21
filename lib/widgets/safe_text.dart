@@ -23,6 +23,14 @@
 // If neither fits (e.g. a one-line design that cannot shrink and
 // cannot grow), the design is wrong — change the design to scroll,
 // wrap, or shrink. Do not reintroduce ellipsis.
+//
+// ONE DOCUMENTED EXCEPTION: a chat preview (the last message of a
+// conversation, shown as a teaser under the name) is clipped at a word
+// boundary with an ellipsis — see [WordClippedText] in
+// `word_clipped_text.dart`. A preview is not an identifier: clipping it
+// is what every chat app does, and it is the only way to keep a long
+// message from spilling over the row below it. Identities — names,
+// titles, labels, ages — are never clipped.
 
 import 'package:auto_size_text/auto_size_text.dart';
 import 'package:flutter/material.dart';

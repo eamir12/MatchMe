@@ -26,6 +26,21 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'package:matchme/utils/offline_utils.dart';
 
+/// Whether a refresh-token failure is a benign rotation race or a genuinely
+/// dead session.
+///
+/// * [RefreshTokenHealth.healthy] — the token still works; the session can be
+///   renewed and the user stays online.
+/// * [RefreshTokenHealth.race] — `refresh_token_already_used`: another process
+///   (the Android background service) already spent this token. Recoverable by
+///   trying another stored copy; NEVER a reason to sign the user out.
+/// * [RefreshTokenHealth.dead] — the server no longer knows this token
+///   (`Invalid Refresh Token` / `refresh_token_not_found`). The session family
+///   was revoked server-side: the app's session-rotation limit was reached
+///   and the user has to sign in again.
+/// * [RefreshTokenHealth.unknown] — the probe could not reach the server.
+enum RefreshTokenHealth { healthy, race, dead, unknown }
+
 class SessionService {
   static final DeviceInfoPlugin _deviceInfo = DeviceInfoPlugin();
   static const String _prefsFcmTokenKey = 'fcm_token';
@@ -206,7 +221,21 @@ class SessionService {
     try {
       final session = Supabase.instance.client.auth.currentSession;
       if (session == null) {
-        await clearPersistedSupabaseSessionSnapshot();
+        // NEVER delete the persisted snapshot here.
+        //
+        // The Supabase SDK clears its in-memory session whenever a refresh
+        // fails (that is exactly what gotrue does for
+        // `refresh_token_already_used` on an expired session). Deleting the
+        // snapshot at that moment destroyed the only material the recovery
+        // ladder had left, so `hasAnyPersistedSession()` then reported
+        // "nothing persisted" and the app fell through to the login screen
+        // even though the user had never logged out.
+        //
+        // Snapshots are removed ONLY by an explicit sign-out or a confirmed
+        // account deletion (see [clearPersistedSupabaseSessionSnapshot]).
+        debugPrint(
+          '🔐 [SESSION] persist skipped: no in-memory session (snapshot kept for recovery)',
+        );
         return;
       }
 
@@ -233,10 +262,10 @@ class SessionService {
     } catch (_) {}
   }
 
-  static bool _explicitUserSignOut = false;
+  static DateTime? _explicitUserSignOutAt;
 
   static void markExplicitUserSignOut() {
-    _explicitUserSignOut = true;
+    _explicitUserSignOutAt = DateTime.now();
     // A fresh sign-in after this must always register a session, even when it
     // is the same account inside the 60s per-user cooldown window. The
     // cooldown only exists to coalesce duplicate registrations for the same
@@ -250,12 +279,30 @@ class SessionService {
     // No longer signed in — stop the visibility-independent heartbeat so it
     // cannot ping a stale userId.
     UserActivityService.instance.stopHeartbeat();
+    cancelStaleSessionRenewal();
   }
 
+  /// Whether the current sign-out was the user's own decision.
+  ///
+  /// The flag is STICKY: it stays set until the next successful sign-in
+  /// ([clearExplicitUserSignOutFlag]). Several listeners need to know "was
+  /// this the user's decision?" — the auth router (does the app go to the
+  /// login screen?), the native background service (may its credentials be
+  /// wiped?) and the cache cleanup (may the user's offline data be erased?).
+  /// A one-shot flag could only be read by one of them, and the readers run
+  /// in an unspecified order.
   static bool consumeExplicitUserSignOutFlag() {
-    final val = _explicitUserSignOut;
-    _explicitUserSignOut = false;
-    return val;
+    return _explicitUserSignOutAt != null;
+  }
+
+  /// Same question as [consumeExplicitUserSignOutFlag], but explicitly
+  /// non-destructive.
+  static bool get isExplicitUserSignOutPending => _explicitUserSignOutAt != null;
+
+  /// Called when a new session is established: the previous sign-out (if any)
+  /// is no longer relevant.
+  static void clearExplicitUserSignOutFlag() {
+    _explicitUserSignOutAt = null;
   }
 
   static const String _prefsSignOutReasonKey = 'last_sign_out_reason';
@@ -369,10 +416,33 @@ class SessionService {
   static int _alreadyUsedRetryCount = 0;
   static const int _maxAlreadyUsedRetries = 3;
 
+  /// Bookkeeping after a successful renew.
+  ///
+  /// * Restores the SDK's scheduled auto-refresh lifecycle: gotrue stops the
+  ///   timer on every failed refresh (`stopAutoRefresh` in `_doRefresh`) and
+  ///   offline restores keep it stopped by design — without this, the app
+  ///   would rely on per-call lazy refreshes for the rest of the launch.
+  /// * If the app is currently flagged offline, ping the restore
+  ///   coordinator: a completed refresh is itself proof that Supabase is
+  ///   reachable, so the offline→online transition must fire even if the
+  ///   transport-probe state never changes.
+  static void _onSessionRefreshSuccess() {
+    try {
+      Supabase.instance.client.auth.startAutoRefresh();
+    } catch (_) {}
+    try {
+      if (shouldSkipSupabaseCalls()) {
+        notifySupabaseResumed();
+      }
+    } catch (_) {}
+  }
+
   /// Serialize refreshSession calls and handle `refresh_token_already_used`
   /// races where the native background service (Android/iOS) may have already
   /// rotated the token in `flutter.refresh_token`. On `already_used` we retry
-  /// with the latest native token with exponential backoff.
+  /// with every refresh-token copy this device knows about (the native
+  /// encrypted store first — it holds the freshest rotated token), with
+  /// exponential backoff.
   static Future<bool> safeRefreshSession({
     Duration timeout = const Duration(milliseconds: 1500),
   }) async {
@@ -386,6 +456,16 @@ class SessionService {
 
     _refreshCompleter = Completer<void>();
     try {
+      // Remember the token we are about to spend so the retry below never
+      // re-uses the very token the server just rejected.
+      final tokenBeingSpent = Supabase
+          .instance
+          .client
+          .auth
+          .currentSession
+          ?.refreshToken
+          ?.trim() ??
+          '';
       try {
         _lastRefreshStopwatch.start();
         await Supabase.instance.client.auth.refreshSession().timeout(timeout);
@@ -424,20 +504,23 @@ class SessionService {
             final backoffMs = 50 * (1 << (_alreadyUsedRetryCount - 1));
             await Future.delayed(Duration(milliseconds: backoffMs));
 
-            final flutterRt = await SensitiveSessionStore.instance
-                .readRefreshToken();
-            final currentRt =
-                Supabase.instance.client.auth.currentSession?.refreshToken
-                    ?.trim() ??
-                '';
-
-            if (flutterRt.isNotEmpty && flutterRt != currentRt) {
+            // NOTE: the SDK drops the in-memory session when a refresh fails,
+            // so `currentSession?.refreshToken` is EMPTY at this point and
+            // cannot be used to detect "this is the token we just spent".
+            // Compare against every copy we know about instead, and try them
+            // all (native store first: the background service rotates the
+            // token there, so that copy is the freshest one).
+            final candidates = await SensitiveSessionStore.instance
+                .readRefreshTokenCandidates();
+            for (final candidate in candidates) {
+              if (candidate.isEmpty) continue;
+              if (candidate == tokenBeingSpent) continue;
               debugPrint(
-                '🔐 [SESSION] safeRefresh: retrying with native flutter.refresh_token (attempt $_alreadyUsedRetryCount/$_maxAlreadyUsedRetries) after already_used',
+                '🔐 [SESSION] safeRefresh: retrying with a stored refresh-token copy (attempt $_alreadyUsedRetryCount/$_maxAlreadyUsedRetries) after already_used',
               );
               try {
                 await Supabase.instance.client.auth
-                    .refreshSession(flutterRt)
+                    .refreshSession(candidate)
                     .timeout(timeout);
                 await persistCurrentSupabaseSessionSnapshot();
 
@@ -458,9 +541,10 @@ class SessionService {
                   }
                 } catch (_) {}
                 _alreadyUsedRetryCount = 0; // Reset on success
+                _onSessionRefreshSuccess();
                 return Supabase.instance.client.auth.currentSession != null;
               } catch (_) {
-                // Fall through to rethrow original
+                // This copy is spent too - try the next one.
               }
             }
           } catch (_) {}
@@ -482,6 +566,7 @@ class SessionService {
           await prefs.setBool('flutter.auth_permanently_failed', false);
         }
       } catch (_) {}
+      _onSessionRefreshSuccess();
       return true;
     } catch (e) {
       if (e is TimeoutException || _isTransientSupabaseNetworkFailure(e)) {
@@ -500,7 +585,9 @@ class SessionService {
   /// Cooldown guard: prevents re-entry when [setInitialSession] triggers SDK
   /// token refresh which fails and fires a follow-up [signedOut] event,
   /// creating an infinite recovery loop.
-  static DateTime? _lastRecoveryAttempt;  /// Gather persisted session snapshots, encrypted stores first (this
+  static DateTime? _lastRecoveryAttempt;
+
+  /// Gather persisted session snapshots, encrypted stores first (this
   /// release), then legacy plaintext keys for upgrade migration.
   static Future<List<String>> _gatherPersistedSessionCandidates() async {
     final candidates = <String>[];
@@ -548,67 +635,164 @@ class SessionService {
     return candidates;
   }
 
-  /// Definitive "this account / session family no longer exists on the
-  /// server" signatures. Deliberately narrow: transient network failures and
-  /// the ambiguous refresh_token_already_used race (the native background
-  /// service rotating the token concurrently) must NOT land here — those are
-  /// tolerated by the permissive session policy and recover on their own.
+  /// Definitive "this account no longer exists on the server" signatures.
+  ///
+  /// Deliberately narrow. A refresh-token failure NEVER proves the account
+  /// was deleted: it only proves that THIS token can no longer be exchanged.
+  /// Treating "invalid refresh token" as "account gone" made the app hard-sign
+  /// the user out on a rotation race (the native background service had
+  /// already spent the token), which is exactly the failure this policy is
+  /// meant to prevent.
+  ///
+  /// Only the auth server's "this user does not exist" answers qualify.
   static bool isAccountGoneAuthError(Object error) {
     if (_isTransientSupabaseNetworkFailure(error)) return false;
     final text = error.toString().toLowerCase();
-    if (text.contains('already used') || text.contains('already_used')) {
+
+    // Token/session-level failures prove nothing about the account.
+    if (text.contains('refresh_token') ||
+        text.contains('refresh token') ||
+        text.contains('invalid_grant') ||
+        text.contains('already used') ||
+        text.contains('session not found') ||
+        text.contains('session missing') ||
+        text.contains('authsessionmissing') ||
+        text.contains('invalid jwt') ||
+        text.contains('jwt expired') ||
+        text.contains('jwt is expired') ||
+        text.contains('token is expired') ||
+        text.contains('invalid token') ||
+        text.contains('unauthorized') ||
+        text.contains('statuscode: 401') ||
+        text.contains('statuscode: 403')) {
       return false;
     }
+
     return text.contains('user from sub claim') ||
         text.contains('user not found') ||
-        text.contains('invalid refresh token') ||
-        text.contains('refresh token not found') ||
-        text.contains('refresh_token_not_found') ||
-        text.contains('session not found') ||
+        text.contains('user does not exist') ||
         text.contains('invalid claim');
+  }
+
+  /// Whether a refresh-token failure is a benign rotation race or a genuinely
+  /// dead session.
+  ///
+  /// * [RefreshTokenHealth.healthy] — the token still works; the session can
+  ///   be renewed and the user stays online.
+  /// * [RefreshTokenHealth.race] — `refresh_token_already_used`: another
+  ///   process (the Android background service) already spent this token.
+  ///   Recoverable by trying another stored copy; NEVER a reason to sign out.
+  /// * [RefreshTokenHealth.dead] — the server no longer knows this token
+  ///   (`Invalid Refresh Token` / `refresh_token_not_found`). The session
+  ///   family was revoked server-side: this is the app's session-rotation
+  ///   limit being reached and the only legitimate automatic sign-out.
+  /// * [RefreshTokenHealth.unknown] — the probe could not reach the server.
+  static Future<RefreshTokenHealth> probeRefreshTokenHealth() async {
+    final auth = Supabase.instance.client.auth;
+    final candidates = await SensitiveSessionStore.instance
+        .readRefreshTokenCandidates();
+    if (candidates.isEmpty) return RefreshTokenHealth.unknown;
+
+    var sawRace = false;
+    var sawDead = false;
+    for (final candidate in candidates) {
+      try {
+        await auth.refreshSession(candidate).timeout(
+          const Duration(seconds: 8),
+        );
+        // A refresh succeeded: the session family is alive.
+        try {
+          await persistCurrentSupabaseSessionSnapshot();
+        } catch (_) {}
+        _onSessionRefreshSuccess();
+        return RefreshTokenHealth.healthy;
+      } catch (e) {
+        if (_isTransientSupabaseNetworkFailure(e)) {
+          return RefreshTokenHealth.unknown;
+        }
+        final text = e.toString().toLowerCase();
+        final isRace =
+            text.contains('already used') ||
+            text.contains('already_used') ||
+            text.contains('refresh_token_already_used');
+        final isDead =
+            text.contains('refresh_token_not_found') ||
+            text.contains('invalid refresh token') ||
+            text.contains('refresh token not found') ||
+            text.contains('invalid_grant');
+        if (isRace) {
+          // Another process spent this token. Ambiguous: another copy may
+          // still work, so this must never lead to a sign-out.
+          sawRace = true;
+          continue;
+        }
+        if (isDead) {
+          sawDead = true;
+          continue;
+        }
+        return RefreshTokenHealth.unknown;
+      }
+    }
+    // A race on ANY copy outranks a dead copy: "someone else spent this
+    // token" is ambiguous, while "dead" only means the server does not know
+    // this particular token any more. Only when every copy is dead (and
+    // none of them was merely spent) is the session really over.
+    if (sawRace) return RefreshTokenHealth.race;
+    if (sawDead) return RefreshTokenHealth.dead;
+    return RefreshTokenHealth.unknown;
+  }
+
+  /// Ends a session the server no longer knows about.
+  ///
+  /// This is the app's session-rotation limit: the session family was
+  /// revoked server-side (long-lived session, admin revocation, or a server
+  /// side session reset), so the session cannot be renewed any more and the
+  /// user has to sign in again. It is one of the few legitimate reasons to
+  /// show the login screen.
+  static Future<void> signOutSessionRotationLimitReached() async {
+    debugPrint(
+      '🔐 [SESSION] Session rotation limit reached — the refresh token is no longer valid server-side. Signing out.',
+    );
+    try {
+      await persistSignOutReason(
+        reason:
+            'The refresh token is no longer valid server-side (session rotation limit reached)',
+        source: 'sessionRotationLimit',
+      );
+    } catch (_) {}
+    markExplicitUserSignOut();
+    await clearPersistedSupabaseSessionSnapshot();
+    try {
+      await Supabase.instance.client.auth.signOut(scope: SignOutScope.local);
+    } catch (_) {}
   }
 
   /// Asks the server whether the currently signed-in account still exists.
   ///
-  /// Probe 1 calls getUser() with the in-memory access token. If that fails
-  /// with an ambiguous error (expired JWT, transient network), probe 2
-  /// refreshes with the newest refresh token the native layer holds — the
-  /// same guard safeRefreshSession uses against the rotation race. Only when
-  /// BOTH paths fail with a definitive account-gone signature do we conclude
-  /// the account was deleted (by the admin or by the user on another device).
-  /// Returns true only for a confirmed deletion; ambiguity keeps the user
-  /// signed in per the permissive session policy.
+  /// ONLY a `getUser()` that comes back with a definitive "this user does not
+  /// exist" answer proves a deletion (admin delete, or self-delete on another
+  /// device). Every other failure — expired JWT, network blip, a dead or
+  /// spent refresh token — is ambiguous and keeps the user signed in.
+  ///
+  /// A refresh-token failure used to be accepted as proof of deletion, which
+  /// hard-signed the user out on a rotation race. That check now lives in
+  /// [probeRefreshTokenHealth] and is reported separately as the
+  /// session-rotation-limit case.
   static Future<bool> confirmAccountDeleted() async {
     final auth = Supabase.instance.client.auth;
     if (auth.currentSession == null) return false;
 
-    var definitiveGone = false;
     try {
       await auth.getUser().timeout(const Duration(seconds: 8));
-      return false;
+      return false; // the account still exists
     } catch (e) {
       if (isAccountGoneAuthError(e)) {
-        definitiveGone = true;
+        return true; // definitive: the auth user is gone
       }
-      // Ambiguous (expired JWT, network blip): fall through to the refresh
-      // probe, which exercises the path the SDK refresh loop actually uses.
+      // Ambiguous (expired JWT, network blip, token problems): not proof of
+      // deletion. Keep the user signed in.
+      return false;
     }
-
-    try {
-      final rt = await SensitiveSessionStore.instance.readRefreshToken();
-      if (rt.isNotEmpty) {
-        await auth.refreshSession(rt).timeout(const Duration(seconds: 8));
-        // A refresh succeeded — the session family is alive, so the account
-        // exists. Persist the rotated tokens for the native layer.
-        try {
-          await persistCurrentSupabaseSessionSnapshot();
-        } catch (_) {}
-        return false;
-      }
-    } catch (e) {
-      if (isAccountGoneAuthError(e)) definitiveGone = true;
-    }
-    return definitiveGone;
   }
 
   /// Clears every local trace of the deleted account and routes the UI to
@@ -660,27 +844,54 @@ class SessionService {
       for (final raw in candidates) {
         if (raw.isEmpty) continue;
 
-        final normalizedPayload = _normalizePersistedSupabaseSessionPayload(
-          raw,
-        );
         final sessionJson = _extractSupabaseSessionJson(raw);
-        if (normalizedPayload == null || sessionJson == null) {
+        if (sessionJson == null) {
           continue;
         }
 
+        // STEP 1 — restore OFFLINE first.
+        //
+        // `setInitialSession` performs no network I/O, so it can never make
+        // the SDK sign the user out and it never deletes the SDK's own
+        // persisted session. It puts the last known-good session back into
+        // memory, which is all the permissive session policy needs to keep
+        // the user logged in.
+        var restored = false;
         try {
           await Supabase.instance.client.auth
-              .recoverSession(normalizedPayload)
+              .setInitialSession(sessionJson)
+              .timeout(const Duration(seconds: 2));
+          restored =
+              Supabase.instance.client.auth.currentSession != null;
+        } catch (_) {}
+
+        // STEP 2 — if the restored session is still usable we are done.
+        if (restored) {
+          final s = Supabase.instance.client.auth.currentSession;
+          if (s != null && !s.isExpired) {
+            _recoveredPersistedSessionThisLaunch = true;
+            await persistCurrentSupabaseSessionSnapshot();
+            debugPrint('🔐 [SESSION] Session recovered (still valid)');
+            return true;
+          }
+        }
+
+        // STEP 3 — the access token expired: ask the server for a fresh one.
+        //
+        // `recoverSession` is given the BARE session JSON. Passing our own
+        // wrapper shape (`{"currentSession": {...}, "expiresAt": N}`) made
+        // gotrue's `Session.fromJson` return null, and gotrue answers that
+        // with `_signOut(scope: local)` — an extra spurious sign-out that
+        // also wiped the SDK's persisted session, on every single recovery
+        // attempt.
+        try {
+          await Supabase.instance.client.auth
+              .recoverSession(sessionJson)
               .timeout(timeout);
         } catch (_) {
-          // When offline and the access token is expired, recoverSession may try
-          // to refresh and fail. Seed the local session anyway so the app can
-          // enter its offline-authenticated flow.
-          try {
-            await Supabase.instance.client.auth
-                .setInitialSession(sessionJson)
-                .timeout(const Duration(seconds: 1));
-          } catch (_) {}
+          // Offline, or the refresh token was already spent. The session
+          // restored in step 1 stays in memory; the caller decides what to
+          // do with it.
         }
 
         final recoveredSession = Supabase.instance.client.auth.currentSession;
@@ -699,6 +910,7 @@ class SessionService {
           );
         }
 
+        scheduleStaleSessionRenewalIfNeeded();
         return true;
       }
 
@@ -736,36 +948,6 @@ class SessionService {
     }
   }
 
-  static String? _normalizePersistedSupabaseSessionPayload(String raw) {
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is! Map<String, dynamic>) return null;
-
-      final currentSession = decoded['currentSession'];
-      final expiresAt = decoded['expiresAt'];
-      if (currentSession is Map<String, dynamic>) {
-        final normalizedExpiresAt = expiresAt is int
-            ? expiresAt
-            : int.tryParse(expiresAt?.toString() ?? '');
-        return jsonEncode({
-          'currentSession': currentSession,
-          'expiresAt':
-              normalizedExpiresAt ??
-              Session.fromJson(currentSession)?.expiresAt,
-        });
-      }
-
-      final session = Session.fromJson(decoded);
-      if (session == null) return null;
-      return jsonEncode({
-        'currentSession': session.toJson(),
-        'expiresAt': session.expiresAt,
-      });
-    } catch (_) {
-      return null;
-    }
-  }
-
   static String? _extractSupabaseSessionJson(String raw) {
     try {
       final decoded = jsonDecode(raw);
@@ -782,6 +964,100 @@ class SessionService {
     } catch (_) {
       return null;
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scheduled renewal of a stale (expired) in-memory session.
+  //
+  // The SDK stops its auto-refresh timer whenever a refresh fails, and an
+  // offline restore deliberately keeps it stopped to break refresh-fail
+  // loops. Left alone, such a session is only renewed lazily by the next
+  // Supabase call - and when that per-call refresh keeps failing (spent
+  // refresh token, flagged-offline app), the app can sit on Home with a dead
+  // session and failing calls indefinitely. This schedule actively runs
+  // [safeRefreshSession], whose retry loop is the only path that consumes a
+  // FRESH token copy from the native store (rotated by the background
+  // service). It never signs the user out; declaring the session dead and
+  // routing to the login screen remains the auth router's ladder decision.
+  // ---------------------------------------------------------------------------
+
+  static Timer? _staleSessionRenewalTimer;
+  static bool _staleSessionRenewalInFlight = false;
+  static int _staleSessionRenewalAttempts = 0;
+  static DateTime? _staleSessionRenewalDisabledUntil;
+  static const int _maxStaleSessionRenewalAttempts = 3;
+  static const Duration _staleSessionRenewalRetryDelay = Duration(minutes: 2);
+  static const Duration _staleSessionRenewalCooldown = Duration(minutes: 10);
+
+  /// Arms one bounded bundle of renewal attempts ([_maxStaleSessionRenewalAttempts])
+  /// when the in-memory session is expired. Re-arming while a bundle is
+  /// running or inside the cooldown after give-up is a no-op, so re-entrant
+  /// callers (the sign-out ladder on every SDK refresh failure) cannot turn
+  /// this into an infinite refresh storm.
+  static void scheduleStaleSessionRenewalIfNeeded() {
+    try {
+      final s = Supabase.instance.client.auth.currentSession;
+      if (s == null || !s.isExpired) return;
+    } catch (_) {
+      return;
+    }
+    if (_staleSessionRenewalTimer != null) return;
+    if (_staleSessionRenewalInFlight) return;
+    final now = DateTime.now();
+    if (_staleSessionRenewalDisabledUntil != null &&
+        now.isBefore(_staleSessionRenewalDisabledUntil!)) {
+      return;
+    }
+    _staleSessionRenewalAttempts = 0;
+    _runStaleSessionRenewalAttempt();
+  }
+
+  static void _runStaleSessionRenewalAttempt() {
+    _staleSessionRenewalTimer = Timer(
+      _staleSessionRenewalAttempts == 0
+          ? const Duration(seconds: 2)
+          : _staleSessionRenewalRetryDelay,
+      () async {
+        _staleSessionRenewalTimer = null;
+        try {
+          final before = Supabase.instance.client.auth.currentSession;
+          if (before == null || !before.isExpired) return;
+          if (isExplicitUserSignOutPending) return;
+          _staleSessionRenewalInFlight = true;
+          try {
+            await safeRefreshSession(timeout: const Duration(seconds: 8));
+          } finally {
+            _staleSessionRenewalInFlight = false;
+          }
+        } catch (_) {
+          // A failed renewal is never a logout; the ladder keeps the user
+          // signed in on the cached session.
+        }
+        bool stillStale = false;
+        try {
+          final after = Supabase.instance.client.auth.currentSession;
+          stillStale = after != null && after.isExpired;
+        } catch (_) {}
+        if (stillStale &&
+            ++_staleSessionRenewalAttempts < _maxStaleSessionRenewalAttempts) {
+          _runStaleSessionRenewalAttempt();
+          return;
+        }
+        if (stillStale) {
+          // Give the policy a quiet period: either a future DB call, a
+          // connectivity transition, or a later re-arm retries this again.
+          // Keeps a definitively spent token from hammering the auth server.
+          _staleSessionRenewalDisabledUntil = DateTime.now().add(
+            _staleSessionRenewalCooldown,
+          );
+        }
+      },
+    );
+  }
+
+  static void cancelStaleSessionRenewal() {
+    _staleSessionRenewalTimer?.cancel();
+    _staleSessionRenewalTimer = null;
   }
 
   /// Restores the persisted session into memory WITHOUT any network call.
@@ -814,11 +1090,19 @@ class SessionService {
           try {
             Supabase.instance.client.auth.stopAutoRefresh();
           } catch (_) {}
+          // Keep the snapshot in sync with what we just restored so a later
+          // launch has the same (or a fresher) session to fall back on.
+          try {
+            await persistCurrentSupabaseSessionSnapshot();
+          } catch (_) {}
+          scheduleStaleSessionRenewalIfNeeded();
           return true;
         }
       }
+      scheduleStaleSessionRenewalIfNeeded();
       return Supabase.instance.client.auth.currentSession != null;
     } catch (_) {
+      scheduleStaleSessionRenewalIfNeeded();
       return Supabase.instance.client.auth.currentSession != null;
     }
   }
@@ -868,6 +1152,7 @@ class SessionService {
           debugPrint(
             '🔐 [SESSION] Seeded session from local storage (bootstrap fast path)',
           );
+          scheduleStaleSessionRenewalIfNeeded();
           return true;
         }
       }

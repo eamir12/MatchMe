@@ -3,12 +3,19 @@ import FirebaseCore
 import ImageIO
 import UIKit
 import Vision
+import Darwin
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var mainActivityChannel: FlutterMethodChannel?
   private var pendingInitialRoute: [String: Any]?
   private var appInfoChannel: FlutterMethodChannel?
+
+  /// APNs registration outcome, surfaced through `getPushDiagnostics` so the
+  /// field can tell "push is broken" apart from "push was never configured".
+  private var apnsRegistrationAttempted = false
+  private var apnsTokenRegistered = false
+  private var apnsRegistrationError: String?
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
@@ -50,6 +57,74 @@ import Vision
     return true
   }
 
+  // MARK: - APNs registration diagnostics
+  //
+  // Firebase's messaging plugin swizzles these callbacks, so the super call
+  // keeps FCM working while we add visibility into what APNs actually did.
+  // A missing `aps-environment` entitlement shows up here as a registration
+  // failure — which is the difference between "push is broken" and "push was
+  // never configured".
+
+  override func application(
+    _ application: UIApplication,
+    didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+  ) {
+    super.application(
+      application,
+      didRegisterForRemoteNotificationsWithDeviceToken: deviceToken
+    )
+    apnsRegistrationAttempted = true
+    apnsTokenRegistered = true
+    apnsRegistrationError = nil
+    let token = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
+    print("[MatchMe] ✅ APNs device token registered (prefix: \(token.prefix(12)))")
+  }
+
+  override func application(
+    _ application: UIApplication,
+    didFailToRegisterForRemoteNotificationsWithError error: Error
+  ) {
+    super.application(
+      application,
+      didFailToRegisterForRemoteNotificationsWithError: error
+    )
+    apnsRegistrationAttempted = true
+    apnsTokenRegistered = false
+    apnsRegistrationError = error.localizedDescription
+    print(
+      "[MatchMe] ❌ APNs registration FAILED: \(error.localizedDescription) — "
+        + "the app is most likely signed without the 'aps-environment' entitlement"
+    )
+  }
+
+  /// Snapshot of everything needed to diagnose "no notifications arrive":
+  ///
+  /// * `hasApsEnvironment` — whether the app is signed with the push
+  ///   entitlement. Without it APNs registration can never succeed.
+  /// * `apsEnvironment` — the environment the entitlement points at
+  ///   (`development` / `production`), when it can be read.
+  /// * `apnsRegistrationAttempted` — whether APNs has answered yet.
+  /// * `apnsTokenRegistered` — APNs handed us a device token.
+  /// * `apnsRegistrationError` — why registration failed, when it did.
+  ///
+  /// `apnsTokenRegistered` is `false` while the registration is still
+  /// pending; check `apnsRegistrationAttempted` to tell "not yet" from
+  /// "rejected".
+  private func pushDiagnostics() -> [String: Any] {
+    // Optionals are boxed explicitly as `NSNull`: a bare `String?` in an
+    // `[String: Any]` is an `Optional` value, which the standard method-codec
+    // is not guaranteed to encode (it expects a real object).
+    let environment: Any = signedApsEnvironmentValue() ?? NSNull()
+    let registrationError: Any = apnsRegistrationError ?? NSNull()
+    return [
+      "hasApsEnvironment": hasApsEnvironmentEntitlement(),
+      "apsEnvironment": environment,
+      "apnsRegistrationAttempted": apnsRegistrationAttempted,
+      "apnsTokenRegistered": apnsTokenRegistered,
+      "apnsRegistrationError": registrationError,
+    ]
+  }
+
   private func configureChannels(binaryMessenger: FlutterBinaryMessenger) {
     let mainChannel = FlutterMethodChannel(name: "matchme/main_activity", binaryMessenger: binaryMessenger)
     self.mainActivityChannel = mainChannel
@@ -81,6 +156,8 @@ import Vision
         ])
       case "hasApsEnvironmentEntitlement":
         result(self.hasApsEnvironmentEntitlement())
+      case "getPushDiagnostics":
+        result(self.pushDiagnostics())
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -130,7 +207,37 @@ import Vision
     }
   }
 
+  /// Whether the app is signed with a usable push entitlement.
+  ///
+  /// The original implementation scanned the embedded provisioning profile
+  /// for `<key>aps-environment</key>`. That was wrong in the exact case that
+  /// matters: the profile advertises push, but the app can still be signed
+  /// with an entitlements file that omits `aps-environment` (which is what
+  /// happened here — `CODE_SIGN_ENTITLEMENTS` pointed at an empty file).
+  /// The result was that the app believed push was configured, asked for
+  /// notification permission, registered an FCM installation ID — and never
+  /// received a single notification, because APNs had no device token.
+  ///
+  /// Three signals are combined, strongest first:
+  ///
+  /// 1. The entitlement of the running (signed) task, when the platform
+  ///    exposes it.
+  /// 2. The outcome of the real APNs registration: a rejection proves the
+  ///    signed app has no usable push entitlement, whatever the profile
+  ///    says — and a success proves the opposite.
+  /// 3. The provisioning profile scan (fallback for unsigned / sideloaded
+  ///    builds, where there is no signed task to inspect).
   private func hasApsEnvironmentEntitlement() -> Bool {
+    // 1. Ground truth from the signed task.
+    if let signedValue = signedApsEnvironment() {
+      return signedValue
+    }
+    // 2. The APNs registration result is the more reliable signal on iOS:
+    //    it is what actually decides whether a push can be delivered.
+    if apnsRegistrationAttempted {
+      return apnsTokenRegistered
+    }
+    // 3. Fallback: unsigned / sideloaded build — scan the profile.
     guard let path = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision") else {
       return false
     }
@@ -139,6 +246,103 @@ import Vision
       return false
     }
     return profile.contains("<key>aps-environment</key>")
+  }
+
+  // MARK: - Signed entitlement inspection
+  //
+  // `SecTaskCreateFromSelf` / `SecTaskCopyValueForEntitlement` are declared
+  // for macOS / Mac Catalyst rather than for a plain iOS build, so the
+  // symbols are resolved with `dlsym` at runtime instead of being imported
+  // directly: a direct import would break the whole build if a future SDK
+  // ever removed them. When the symbols are unavailable the inspection is
+  // simply skipped and the caller falls back to the APNs registration
+  // result, which is the more reliable signal anyway.
+
+  // `Unmanaged` makes the +1 ownership explicit: both SecTask entry points
+  // follow the CoreFoundation "Create"/"Copy" rule, so the caller owns the
+  // returned reference. Relying on the implicit convention of a raw
+  // `@convention(c)` function pointer would either leak or over-release.
+  private typealias SecTaskCreateFromSelfFn = @convention(c) (
+    AnyObject?
+  ) -> Unmanaged<AnyObject>?
+  private typealias SecTaskCopyValueForEntitlementFn = @convention(c) (
+    AnyObject?,
+    CFString,
+    UnsafeMutablePointer<Unmanaged<CFError>?>?
+  ) -> Unmanaged<AnyObject>?
+
+  /// Resolved once at class initialisation.
+  private static let secTaskSymbols: (
+    create: SecTaskCreateFromSelfFn,
+    copy: SecTaskCopyValueForEntitlementFn
+  )? = {
+    guard
+      let createSymbol = dlsym(RTLD_DEFAULT, "SecTaskCreateFromSelf"),
+      let copySymbol = dlsym(RTLD_DEFAULT, "SecTaskCopyValueForEntitlement")
+    else {
+      return nil
+    }
+    return (
+      create: unsafeBitCast(createSymbol, to: SecTaskCreateFromSelfFn.self),
+      copy: unsafeBitCast(copySymbol, to: SecTaskCopyValueForEntitlementFn.self)
+    )
+  }()
+
+  /// `errSecCSMissingEntitlement` — the Security framework's way of saying
+  /// "this app does not carry that entitlement". Declared as a literal
+  /// because the constant is not exposed to Swift on every SDK.
+  private static let errSecCSMissingEntitlement: CFIndex = -67030
+
+  /// Whether the signed app carries `aps-environment`.
+  ///
+  /// * `true`  — the entitlement is present.
+  /// * `false` — the entitlement is definitely absent.
+  /// * `nil`   — the platform does not let us inspect the signed task, so
+  ///             the caller has to use another signal.
+  private func signedApsEnvironment() -> Bool? {
+    guard let symbols = Self.secTaskSymbols else { return nil }
+    guard let taskRef = symbols.create(nil) else { return nil }
+    // `SecTaskCreateFromSelf` is a "Create" function: consuming the +1 here
+    // keeps Swift from leaking the task on every call.
+    let task = taskRef.takeRetainedValue()
+    var error: Unmanaged<CFError>?
+    guard let valueRef = symbols.copy(task, "aps-environment" as CFString, &error) else {
+      // A NULL value with no error means the entitlement is simply not
+      // there. The Security framework reports a missing entitlement as
+      // `errSecCSMissingEntitlement` (-67030) in some OS versions, which is
+      // also "absent" rather than "unknown". Any other error means we could
+      // not tell.
+      if let cfError = error?.takeRetainedValue() {
+        let code = CFErrorGetCode(cfError)
+        if code == Self.errSecCSMissingEntitlement { return false }
+        return nil
+      }
+      return false
+    }
+    // "...CopyValue..." follows the Copy rule as well.
+    let value = valueRef.takeRetainedValue()
+    if let env = value as? String {
+      return !env.isEmpty
+    }
+    if let envs = value as? [String] {
+      return envs.contains { !$0.isEmpty }
+    }
+    // The key exists but carries an unexpected type: treat it as present.
+    return true
+  }
+
+  /// The raw `aps-environment` value of the signed app, for diagnostics.
+  private func signedApsEnvironmentValue() -> String? {
+    guard let symbols = Self.secTaskSymbols else { return nil }
+    guard let taskRef = symbols.create(nil) else { return nil }
+    let task = taskRef.takeRetainedValue()
+    guard let valueRef = symbols.copy(task, "aps-environment" as CFString, nil) else {
+      return nil
+    }
+    let value = valueRef.takeRetainedValue()
+    if let env = value as? String { return env }
+    if let envs = value as? [String] { return envs.joined(separator: ",") }
+    return nil
   }
 
   /// Expands a normalized Vision box by `fraction` of its own size on every
