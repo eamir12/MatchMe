@@ -271,14 +271,19 @@ import Darwin
     UnsafeMutablePointer<Unmanaged<CFError>?>?
   ) -> Unmanaged<AnyObject>?
 
+  // The iOS SDK does not expose the `RTLD_DEFAULT` macro to Swift, so the
+  // Darwin pseudo-handle for "search the global symbol scope" is spelled out.
+  // Its value is ABI-stable (-2) across Darwin platforms.
+  private static let rtldDefault = UnsafeMutableRawPointer(bitPattern: -2)
+
   /// Resolved once at class initialisation.
   private static let secTaskSymbols: (
     create: SecTaskCreateFromSelfFn,
     copy: SecTaskCopyValueForEntitlementFn
   )? = {
     guard
-      let createSymbol = dlsym(RTLD_DEFAULT, "SecTaskCreateFromSelf"),
-      let copySymbol = dlsym(RTLD_DEFAULT, "SecTaskCopyValueForEntitlement")
+      let createSymbol = dlsym(AppDelegate.rtldDefault, "SecTaskCreateFromSelf"),
+      let copySymbol = dlsym(AppDelegate.rtldDefault, "SecTaskCopyValueForEntitlement")
     else {
       return nil
     }
