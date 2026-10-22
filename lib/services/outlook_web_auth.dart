@@ -178,10 +178,17 @@ class OutlookWebAuth {
     }
   }
 
+  /// Signs in through MSAL in the browser.
+  ///
+  /// [forceAccountSelection] asks Microsoft for its account picker, so the
+  /// user can pick an account other than the one already signed into the
+  /// browser. [forceConsent] instead asks for the consent screen again.
+  /// Account selection wins when both are requested.
   Future<String?> signIn({
     List<String>? scopes,
     bool useRedirect = false,
     bool forceConsent = false,
+    bool forceAccountSelection = false,
     String? loginHint,
   }) async {
     if (!_isInitialized || _msalInstance == null) {
@@ -195,7 +202,9 @@ class OutlookWebAuth {
           {
                 'scopes':
                     scopes ?? ['User.Read', 'Calendars.Read', 'offline_access'],
-                'prompt': forceConsent ? 'consent' : 'select_account',
+                'prompt': forceConsent && !forceAccountSelection
+                    ? 'consent'
+                    : 'select_account',
                 if (loginHint != null && loginHint.trim().isNotEmpty)
                   'loginHint': loginHint.trim(),
               }.jsify()

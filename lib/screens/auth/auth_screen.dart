@@ -1054,6 +1054,23 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
     _ => null,
   };
 
+  /// Extra query parameters forwarded to the OAuth provider.
+  ///
+  /// Both Microsoft and Google reuse the account that is already signed into
+  /// the system browser and sign the user straight in, so there is no way to
+  /// pick a different account. `prompt=select_account` makes the provider
+  /// show its account picker instead, which also offers "Use another
+  /// account".
+  ///
+  /// This only affects the browser-redirect flow. Google signs in through the
+  /// native SDK wherever that exists, and that SDK has its own chooser.
+  Map<String, String>? _oauthQueryParamsFor(OAuthProvider provider) {
+    if (provider == OAuthProvider.azure || provider == OAuthProvider.google) {
+      return const {'prompt': 'select_account'};
+    }
+    return null;
+  }
+
   /// Desktop sign-in: open the system browser against a loopback redirect the
   /// app owns, then exchange the returned PKCE code for a session.
   ///
@@ -1125,6 +1142,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
         provider,
         redirectTo: redirectUri.toString(),
         scopes: _oauthScopesFor(provider),
+        queryParams: _oauthQueryParamsFor(provider),
         authScreenLaunchMode: LaunchMode.externalApplication,
       );
       if (!launched) {
@@ -1297,6 +1315,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
             provider,
             redirectTo: redirectTo,
             scopes: scopes,
+            queryParams: _oauthQueryParamsFor(provider),
             authScreenLaunchMode: LaunchMode.platformDefault,
           )
           .timeout(const Duration(seconds: 90));
@@ -1353,6 +1372,9 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
   /// Signs in with Google using the native SDK (popup on web, native UI on mobile).
   /// No Chrome window is opened — the credential is exchanged with Supabase via
   /// signInWithIdToken directly.
+  ///
+  /// Google's own account chooser is always shown, so the user can sign in
+  /// with a different account than the one they used last time.
   Future<void> _signInWithGoogle() async {
     if (!mounted) return;
     print('🔵 [GoogleSignIn] _signInWithGoogle started');
@@ -1417,27 +1439,14 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
             serverClientId: serverClientId,
           );
 
-      // iOS (and macOS) render Google's consent page on every interactive
-      // sign-in — GoogleSignIn-iOS always sends include_granted_scopes=true,
-      // so the "already has some access" page comes back even when nothing
-      // new is requested. When the keychain still holds a Google session,
-      // restore it silently and skip Google's UI entirely.
-      if (!kIsWeb &&
-          (defaultTargetPlatform == TargetPlatform.iOS ||
-              defaultTargetPlatform == TargetPlatform.macOS)) {
-        final silentResponse = await _trySilentGoogleSignIn(googleNonce);
-        if (silentResponse != null) {
-          print(
-            '🔵 [GoogleSignIn] silent sign-in succeeded. User: ${silentResponse.user?.id}, Session: ${silentResponse.session != null}',
-          );
-          // Leave the spinner visible so onAuthStateChange owns navigation.
-          _authSucceeded = true;
-          return;
-        }
-      }
-
-      // Open native Google sign-in (popup on web, system UI on mobile).
-      // The native UI auto-closes after account selection — no Chrome tab.
+      // Always go through Google's own account chooser, on every platform.
+      //
+      // A silent restore of the Google session still held in the keychain
+      // would sign the user straight back in as the account they used last
+      // time, which is exactly what the account chooser exists to prevent.
+      // The price is that iOS/macOS show Google's consent page again
+      // (GoogleSignIn-iOS always sends include_granted_scopes=true), but a
+      // login screen that cannot be pointed at a different account is worse.
       print('🔵 [GoogleSignIn] Calling authenticate()...');
       final googleUser = await GoogleSignIn.instance.authenticate();
       print('🔵 [GoogleSignIn] authenticate() returned successfully');
@@ -1534,64 +1543,6 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
           _isLoading = false;
         });
       }
-    }
-  }
-
-  /// Attempts a fully silent Google sign-in using the keychain session.
-  ///
-  /// Returns null when there is no restorable session, the restored ID token
-  /// can't be validated by Supabase, or Supabase rejects it. The caller then
-  /// falls back to the interactive flow.
-  ///
-  /// This exists to avoid Google's consent page on iOS: GoogleSignIn-iOS
-  /// re-renders it on every interactive sign-in (it always sends
-  /// `include_granted_scopes=true`), even when no new access is requested.
-  Future<AuthResponse?> _trySilentGoogleSignIn(String rawNonce) async {
-    try {
-      final googleUser =
-          await GoogleSignIn.instance.attemptLightweightAuthentication();
-      if (googleUser == null) {
-        print('🔵 [GoogleSignIn] no restorable Google session');
-        return null;
-      }
-
-      final idToken = googleUser.authentication.idToken;
-      if (idToken == null) {
-        print('🔵 [GoogleSignIn] restored session has no ID token');
-        return null;
-      }
-
-      final nonceState = WebCalendarService.googleIdTokenNonceState(
-        idToken,
-        rawNonce,
-      );
-      if (nonceState == GoogleIdTokenNonce.mismatch) {
-        print(
-          '🔵 [GoogleSignIn] restored ID token carries a stale nonce; falling back to interactive',
-        );
-        return null;
-      }
-
-      // Access token is optional for Supabase (it only uses it to validate
-      // at_hash), but request it so the exchange stays equivalent to the
-      // interactive flow. Returns null instead of prompting when the
-      // authorization was not previously granted.
-      final authorization = await googleUser.authorizationClient
-          .authorizationForScopes(const ['openid']);
-      final accessToken = authorization?.accessToken;
-
-      print('🔵 [GoogleSignIn] Calling signInWithIdToken (silent)...');
-      return await supabase.auth.signInWithIdToken(
-        provider: OAuthProvider.google,
-        idToken: idToken,
-        accessToken: accessToken,
-        // A token with no nonce claim must be sent with no nonce parameter
-        // either — Supabase requires the two to agree.
-        nonce: nonceState == GoogleIdTokenNonce.match ? rawNonce : null,
-      );
-    } catch (e) {
-      print('🟡 [GoogleSignIn] silent sign-in unavailable: $e');
-      return null;
     }
   }
 

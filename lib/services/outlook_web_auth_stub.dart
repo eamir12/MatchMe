@@ -27,6 +27,7 @@ class OutlookWebAuth {
     List<String>? scopes,
     bool useRedirect = false,
     bool forceConsent = false,
+    bool forceAccountSelection = false,
     String? loginHint,
   }) async {
     throw UnsupportedError('OutlookWebAuth is only available on web platform');

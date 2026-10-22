@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'dart:developer' as developer;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/models/chat_model.dart';
 import 'package:matchme/models/match_model.dart';
@@ -21,6 +22,7 @@ import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/utils/directional_icons.dart';
 import 'package:matchme/utils/greeting_utils.dart';
 import 'package:matchme/utils/home_refresh_utils.dart';
+import 'package:matchme/utils/scroll_anchor.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/providers/profile_provider.dart';
@@ -396,6 +398,34 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// swaps for a [SelectionHeaderBar], and a [SelectionBottomBar] offers the
   /// bulk archive action.
   final SelectionController _chatsSelection = SelectionController();
+
+  // ── Scroll anchoring ──
+  //
+  // The Home list is scrolled with the tab's primary scroll controller (see
+  // `main_navigation_screen.dart`). Visibility changes add/remove a block of
+  // content at the top of that list (the pinned-location card), which shifts
+  // every row below it while the pixel offset stays the same — the screen
+  // appears to jump away from whatever the user was reading.
+  //
+  // The anchor cancels that shift out, so the visible rows stay put.
+  final ScrollAnchor _listAnchor = ScrollAnchor();
+
+  /// The Home list's scroll controller. Taken from the ambient
+  /// [PrimaryScrollController] because the list itself is declared with
+  /// `primary: true`.
+  ScrollController? _homeScrollController;
+
+  /// Whether the user is visible right now. Kept in sync with the provider
+  /// so the pinned card's presence can be predicted before the list is
+  /// rebuilt.
+  bool _currentVisibility = false;
+
+  /// Whether the user has an active pin in the last build.
+  bool _pinnedLocationActive = false;
+
+  /// Whether the pinned-location card is accounted for in the scroll offset.
+  /// `null` until the list has been built once.
+  bool? _anchoredCardInList;
 
   static const List<ListSortOption> _matchSortOptions = [
     ListSortOption.recent,
@@ -894,6 +924,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
+  /// Predicts that the pinned-location card will be part of the list (or
+  /// will not be) and moves the scroll offset accordingly, so that the rows
+  /// the user is looking at do not move when the list is rebuilt.
+  ///
+  /// Called from the provider listeners, i.e. before the list is rebuilt.
+  void _predictPinnedCardPresence(bool willBePresent) {
+    final anchored = _anchoredCardInList;
+    if (anchored == null) {
+      _anchoredCardInList = willBePresent;
+      return;
+    }
+    _listAnchor.anchor(
+      controller: _homeScrollController,
+      wasPresent: anchored,
+      willBePresent: willBePresent,
+    );
+    _anchoredCardInList = willBePresent;
+  }
+
   void _logRenderedHomeStats(String label, Map<String, int?> stats) {
     final online = stats['online'];
     final nearby = stats['nearby'] ?? 0;
@@ -943,6 +992,50 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         body: Center(child: Text(l10n.getString('generalError'))),
       );
     }
+
+    // The Home list scrolls with the ambient primary controller.
+    _homeScrollController = PrimaryScrollController.maybeOf(context);
+
+    // Whether the pinned-location card is part of the list. The card is the
+    // only visibility-dependent block above the viewport, so it is what makes
+    // the list shift when visibility is toggled.
+    final pinnedLocationActive =
+        pinnedLocationState.initialized && pinnedLocationState.isActive;
+    final pinnedCardInList = isVisible && pinnedLocationActive;
+
+    // Keep the list anchored while the card is added/removed. These listeners
+    // run before the next frame is built, which is early enough to move the
+    // scroll offset without the list ever visibly jumping.
+    ref.listen(isVisibleProvider, (previous, next) {
+      _currentVisibility = next;
+      _predictPinnedCardPresence(next && _pinnedLocationActive);
+    });
+    ref.listen(pinnedLocationProvider, (previous, next) {
+      _pinnedLocationActive = next.initialized && next.isActive;
+      _predictPinnedCardPresence(
+        _currentVisibility && _pinnedLocationActive,
+      );
+    });
+
+    // Match the anchor with the card's real presence once the list has been
+    // rebuilt. A prediction can fail when the change is overruled further
+    // down the line (an invisibility rule or an incomplete profile can force
+    // the effective visibility back off).
+    final anchored = _anchoredCardInList;
+    if (anchored == null) {
+      _anchoredCardInList = pinnedCardInList;
+    } else if (anchored != pinnedCardInList) {
+      _listAnchor.reconcile(
+        controller: _homeScrollController,
+        wasPresent: anchored,
+        willBePresent: pinnedCardInList,
+      );
+      _anchoredCardInList = pinnedCardInList;
+    }
+
+    _pinnedLocationActive = pinnedLocationActive;
+    _currentVisibility = isVisible;
+
     // Account switch reusing this State: drop the previous account's intent
     // filters so the new account starts unfiltered, like a cold start.
     // (Assignment during build is safe here — build is already in progress
@@ -1045,16 +1138,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         // must be invalidated explicitly or pull-to-refresh shows stale stars.
         ref.invalidate(userRatingSummaryProvider);
       },
-      // The ListView is wrapped in Column + Expanded so the Recent Chats
+      // The scroll view is wrapped in Column + Expanded so the Recent Chats
       // SelectionBottomBar can sit pinned at the bottom of the Home area
       // (above the main bottom nav) instead of scrolling away with the list.
       child: Column(
         children: [
           Expanded(
-            child: ListView(
+            // The whole header (including the visibility-dependent pinned
+            // card) is a sliver ahead of the lazy list. Slivers before the
+            // list are laid out on every frame, so their height is always
+            // current. A child of the lazy list instead keeps the offset it
+            // was last laid out at: toggling something above the materialised
+            // range then shifts the content by an amount that depends on the
+            // average child extent, not on the real height of what changed.
+            // That is what made the screen jump even when the scroll offset
+            // was corrected.
+            child: CustomScrollView(
               primary: true,
               physics: const AlwaysScrollableScrollPhysics(),
-              children: [
+              slivers: [
+                SliverToBoxAdapter(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
           Padding(
             padding: const EdgeInsets.only(
               left: 16.0,
@@ -1104,8 +1210,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           // others. While invisible nothing is broadcast, so it is
           // irrelevant and stays hidden. Full pin management (extend/unpin)
           // remains available in Matching settings.
+          //
+          // The size reporter remembers how tall the card is so the scroll
+          // offset can be corrected when the card is added or removed.
           if (isVisible)
-            _buildPinnedLocationCard(context, ref, l10n, pinnedLocationState),
+            _SizeReporter(
+              onSize: (size) => _listAnchor.setBlockHeight(size.height),
+              child: _buildPinnedLocationCard(
+                context,
+                ref,
+                l10n,
+                pinnedLocationState,
+              ),
+            ),
           // Any active live-location share (outgoing, incoming or mutual)
           // surfaces here with a one-tap entry into the shared map.
           const _LiveLocationShareCard(),
@@ -1249,6 +1366,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ],
             ),
           ),
+                    ],
+                  ),
+                ),
+                SliverList(
+                  delegate: SliverChildListDelegate([
           recentMatchesAsync.when(
             data: (matches) {
               // Filter expired without chat. NOTE: do NOT watch matchExpiryNowProvider
@@ -1846,6 +1968,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             },
           ),
           const SizedBox(height: 20),
+                  ]),
+                ),
               ],
             ),
           ),
@@ -1891,5 +2015,48 @@ bool? connectivityProviderChecker(WidgetRef ref) {
     return ref.watch(connectivityProvider).value;
   } catch (_) {
     return true;
+  }
+}
+
+/// Reports the size of its child once it has been laid out.
+///
+/// Used to remember how tall a block of the Home list is, so that a later
+/// change to that block's presence can be cancelled out of the scroll
+/// position instead of shifting the whole list.
+///
+/// The callback runs during layout, so it must not trigger a rebuild.
+class _SizeReporter extends SingleChildRenderObjectWidget {
+  const _SizeReporter({required this.onSize, required super.child});
+
+  final ValueChanged<Size> onSize;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderSizeReporter(onSize);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderSizeReporter renderObject,
+  ) {
+    renderObject.onSize = onSize;
+  }
+}
+
+class _RenderSizeReporter extends RenderProxyBox {
+  _RenderSizeReporter(this._onSize);
+
+  ValueChanged<Size> _onSize;
+  Size? _lastReportedSize;
+
+  set onSize(ValueChanged<Size> value) => _onSize = value;
+
+  @override
+  void performLayout() {
+    super.performLayout();
+    if (_lastReportedSize != size) {
+      _lastReportedSize = size;
+      _onSize(size);
+    }
   }
 }

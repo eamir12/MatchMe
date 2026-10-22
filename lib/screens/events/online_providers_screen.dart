@@ -1143,7 +1143,7 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
                 assetPath: 'assets/images/providers/microsoft.png',
                 onPressed: () {
                   Navigator.of(dialogContext).pop();
-                  _addOutlookAccount();
+                  _addOutlookAccount(forceAccountSelection: true);
                 },
               ),
               const SizedBox(height: 12),

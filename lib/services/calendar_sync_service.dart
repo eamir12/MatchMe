@@ -1608,7 +1608,10 @@ class CalendarSyncService {
     );
   }
 
-  Future<Map<String, dynamic>?> _ensureAzureProviderSessionPayload() async {
+  Future<Map<String, dynamic>?> _ensureAzureProviderSessionPayload({
+    bool forceAccountSelection = false,
+    String? loginHint,
+  }) async {
     // Android only: the MSAL path below is built from AndroidConfig. Desktop
     // uses the Supabase + loopback flow, which works on every platform.
     if (!kIsWeb && !_useLoopbackOutlookOAuth) {
@@ -1622,6 +1625,16 @@ class CalendarSyncService {
       await _startSupabaseOAuth(
         provider: OAuthProvider.azure,
         scopes: 'openid email profile offline_access User.Read Calendars.Read',
+        // Without the prompt, Microsoft signs the user straight back in with
+        // the account that is already signed into the browser, and there is
+        // no way to pick a different one. The hint keeps a refresh tied to
+        // the account the calendar was connected with, instead of the account
+        // the browser happens to have signed in.
+        queryParams: {
+          if (forceAccountSelection) 'prompt': 'select_account',
+          if (loginHint != null && loginHint.trim().isNotEmpty)
+            'login_hint': loginHint.trim(),
+        },
       );
     } catch (e) {
       _trace('CalendarSyncService OAuth start error: $e');
@@ -1682,6 +1695,7 @@ class CalendarSyncService {
           try {
             final nativePayload = await _ensureOutlookNativeSessionPayload(
               forceInteractive: true,
+              forceAccountSelection: true,
             );
             if (nativePayload != null) {
               await CalendarSyncService.cacheOutlookImportToken(
@@ -1737,7 +1751,7 @@ class CalendarSyncService {
       }
       await signInOutlook(
         allowNonWeb: true,
-        forceConsent: forceAccountSelection,
+        forceAccountSelection: forceAccountSelection,
         loginHint: preferredEmail,
       );
       final fallbackPayload = await _getCachedOutlookImportPayload();
@@ -1774,9 +1788,17 @@ class CalendarSyncService {
       _outlookImportUserEmail = null;
       await signInOutlook(
         allowNonWeb: allowNonWeb,
-        forceConsent: false,
+        forceAccountSelection: true,
         loginHint: preferredEmail,
       );
+      // The sign-in above already produced a token for the account the user
+      // picked. Return it instead of falling through to the provider-token
+      // lookup below, which belongs to the account the user signed in to
+      // MatchMe with - and would ask Microsoft to sign in a second time.
+      final selectedPayload = await _getCachedOutlookImportPayload();
+      if (selectedPayload != null) {
+        return selectedPayload;
+      }
     } else if (preferredEmail != null && preferredEmail.isNotEmpty) {
       final targetedPayload = await _tryAuthenticateOutlookPreferredAccount(
         preferredEmail,
@@ -1792,7 +1814,10 @@ class CalendarSyncService {
       }
     }
 
-    final payload = await _ensureAzureProviderSessionPayload();
+    final payload = await _ensureAzureProviderSessionPayload(
+      forceAccountSelection: forceAccountSelection,
+      loginHint: preferredEmail,
+    );
     if (payload == null) {
       return null;
     }
@@ -1813,6 +1838,8 @@ class CalendarSyncService {
 
   Future<Map<String, dynamic>?> _ensureOutlookNativeSessionPayload({
     bool forceInteractive = false,
+    bool forceAccountSelection = false,
+    String? loginHint,
   }) async {
     await _loadOutlookImportTokenFromCache();
     final cachedPayload = forceInteractive
@@ -1825,6 +1852,8 @@ class CalendarSyncService {
     }
     final token = await _getOutlookNativeToken(
       forceInteractive: forceInteractive,
+      forceAccountSelection: forceAccountSelection,
+      loginHint: loginHint,
     );
     if (token != null) {
       final expiry =
@@ -1988,6 +2017,8 @@ class CalendarSyncService {
 
   Future<String?> _getOutlookNativeToken({
     bool forceInteractive = false,
+    bool forceAccountSelection = false,
+    String? loginHint,
   }) async {
     if (!forceInteractive &&
         _outlookNativeAccessToken != null &&
@@ -2023,8 +2054,29 @@ class CalendarSyncService {
 
     try {
       final client = await _getOutlookNativeClient();
+      if (forceAccountSelection) {
+        // MSAL's single-account mode only accepts an interactive sign-in for
+        // the account it already has: picking a different one in the chooser
+        // fails with "current_account_mismatch". Dropping the current account
+        // first is MSAL's own way to switch accounts - the account the user
+        // picks then becomes the current one.
+        try {
+          await client.signOut();
+          _trace('_getOutlookNativeToken signed out before account selection');
+        } catch (e) {
+          _trace('_getOutlookNativeToken sign-out before account selection failed: $e');
+        }
+      }
       final result = await client.acquireToken(
         scopes: _outlookNativeMsalScopes,
+        // SELECT_ACCOUNT makes Microsoft show its account picker instead of
+        // reusing the account that is already signed in on the device.
+        prompt: forceAccountSelection
+            ? Prompt.selectAccount
+            : Prompt.whenRequired,
+        // Keeps a refresh tied to the account the calendar was connected
+        // with, instead of the device's default Microsoft account.
+        loginHint: loginHint,
       );
       final accessToken = result.accessToken;
       final expiresOn = result.expiresOn;
@@ -2308,6 +2360,8 @@ class CalendarSyncService {
     required String tenant,
     required String clientId,
     required String redirectUri,
+    String? prompt,
+    String? loginHint,
   }) {
     return Config(
       tenant: tenant,
@@ -2316,6 +2370,12 @@ class CalendarSyncService {
       redirectUri: redirectUri,
       navigatorKey: navigatorKey,
       webUseRedirect: false,
+      // `select_account` makes Microsoft show its account picker, so the user
+      // can pick an account other than the one already signed in.
+      prompt: prompt,
+      // Keeps a refresh tied to the account the calendar was connected with,
+      // instead of the device's default Microsoft account.
+      loginHint: loginHint,
     );
   }
 
@@ -2403,7 +2463,10 @@ class CalendarSyncService {
         _resolveOutlookAndroidRedirectUri().isNotEmpty;
   }
 
-  Config _buildOutlookConfig() {
+  Config _buildOutlookConfig({
+    bool forceAccountSelection = false,
+    String? loginHint,
+  }) {
     final tenant = _resolveOutlookTenantId();
     final clientId = _resolveOutlookClientId();
     final redirectUri = kIsWeb
@@ -2423,6 +2486,8 @@ class CalendarSyncService {
       tenant: tenant,
       clientId: clientId,
       redirectUri: redirectUri,
+      prompt: forceAccountSelection ? 'select_account' : null,
+      loginHint: loginHint,
     );
   }
 
@@ -2550,7 +2615,11 @@ class CalendarSyncService {
     );
   }
 
-  Future<void> _ensureOutlookOAuth({bool allowNonWeb = false}) async {
+  Future<void> _ensureOutlookOAuth({
+    bool allowNonWeb = false,
+    bool forceAccountSelection = false,
+    String? loginHint,
+  }) async {
     if (kIsWeb) {
       if (!OutlookWebAuth.instance.isInitialized) {
         final config = _buildOutlookConfigWithValues(
@@ -2583,7 +2652,20 @@ class CalendarSyncService {
           userMessage: 'calendarSyncOutlookMobileOnly',
         );
       }
-      _outlookOAuth ??= AadOAuth(_buildOutlookConfig());
+      if (forceAccountSelection) {
+        // The cached client was built without a prompt, so it would sign the
+        // user back in with the account already signed in on the device.
+        _outlookOAuth = AadOAuth(
+          _buildOutlookConfig(
+            forceAccountSelection: true,
+            loginHint: loginHint,
+          ),
+        );
+      } else {
+        _outlookOAuth ??= AadOAuth(
+          _buildOutlookConfig(loginHint: loginHint),
+        );
+      }
     }
   }
 
@@ -2652,6 +2734,7 @@ class CalendarSyncService {
   Future<String?> _signInOutlook({
     bool allowNonWeb = false,
     bool forceConsent = false,
+    bool forceAccountSelection = false,
     String? loginHint,
   }) async {
     try {
@@ -2659,6 +2742,7 @@ class CalendarSyncService {
         await _ensureOutlookOAuth(allowNonWeb: allowNonWeb);
         final token = await _signInOutlookWebWithFallback(
           forceConsent: forceConsent,
+          forceAccountSelection: forceAccountSelection,
           loginHint: loginHint,
         );
         if (token != null) {
@@ -2684,7 +2768,10 @@ class CalendarSyncService {
         // which Windows/Linux/macOS do not have. Supabase mediates the provider
         // exchange for us over the loopback redirect instead.
         if (_useLoopbackOutlookOAuth) {
-          final payload = await _ensureAzureProviderSessionPayload();
+          final payload = await _ensureAzureProviderSessionPayload(
+            forceAccountSelection: forceAccountSelection,
+            loginHint: loginHint,
+          );
           final accessToken = (payload?['token'] as String?)?.trim();
           if (accessToken == null || accessToken.isEmpty) {
             return null;
@@ -2713,6 +2800,8 @@ class CalendarSyncService {
           try {
             final payload = await _ensureOutlookNativeSessionPayload(
               forceInteractive: true,
+              forceAccountSelection: forceAccountSelection,
+              loginHint: loginHint,
             );
             if (payload != null) {
               final accessToken = (payload['token'] as String?)?.trim();
@@ -2750,7 +2839,11 @@ class CalendarSyncService {
             return null;
           }
         }
-        await _ensureOutlookOAuth(allowNonWeb: allowNonWeb);
+        await _ensureOutlookOAuth(
+          allowNonWeb: allowNonWeb,
+          forceAccountSelection: forceAccountSelection,
+          loginHint: loginHint,
+        );
         final result = await _outlookOAuth!.login();
         return await result.fold((l) => null, (r) async {
           final accessToken = r.accessToken?.trim();
@@ -2793,6 +2886,7 @@ class CalendarSyncService {
 
   Future<String?> _signInOutlookWebWithFallback({
     required bool forceConsent,
+    bool forceAccountSelection = false,
     String? loginHint,
   }) async {
     final candidates = _buildOutlookWebConfigCandidates();
@@ -2811,6 +2905,7 @@ class CalendarSyncService {
           scopes: _outlookMsalScopes,
           useRedirect: false,
           forceConsent: forceConsent,
+          forceAccountSelection: forceAccountSelection,
           loginHint: loginHint,
         );
         if (token != null && token.trim().isNotEmpty) {
@@ -2828,6 +2923,7 @@ class CalendarSyncService {
           scopes: _outlookMsalScopes,
           useRedirect: true,
           forceConsent: forceConsent,
+          forceAccountSelection: forceAccountSelection,
           loginHint: loginHint,
         );
         return null;
@@ -2849,6 +2945,7 @@ class CalendarSyncService {
             scopes: _outlookMsalScopes,
             useRedirect: true,
             forceConsent: forceConsent,
+            forceAccountSelection: forceAccountSelection,
             loginHint: loginHint,
           );
           return null;
@@ -2868,11 +2965,13 @@ class CalendarSyncService {
   Future<String?> signInOutlook({
     bool allowNonWeb = false,
     bool forceConsent = false,
+    bool forceAccountSelection = false,
     String? loginHint,
   }) {
     return _signInOutlook(
       allowNonWeb: allowNonWeb,
       forceConsent: forceConsent,
+      forceAccountSelection: forceAccountSelection,
       loginHint: loginHint,
     );
   }
