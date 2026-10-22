@@ -7,7 +7,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/providers/profile_provider.dart';
+import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/offline_cache_manager.dart';
+import 'package:matchme/services/storage_helper.dart';
 import 'package:matchme/services/translation_text_cache.dart';
 import 'package:matchme/services/verification_service.dart';
 import 'package:matchme/services/voice_guidance_service.dart';
@@ -426,8 +428,9 @@ class _ComparisonPhotoState extends State<_ComparisonPhoto> {
                     shape: const CircleBorder(),
                     child: IconButton(
                       icon: const Icon(Icons.close, color: Colors.white),
-                      tooltip: MaterialLocalizations.of(dialogContext)
-                          .closeButtonTooltip,
+                      tooltip: MaterialLocalizations.of(
+                        dialogContext,
+                      ).closeButtonTooltip,
                       onPressed: () => Navigator.of(dialogContext).maybePop(),
                     ),
                   ),
@@ -829,7 +832,8 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
         );
         if (bytes != null && mounted) {
           if (VoiceGuidanceService.instance.isSpeaking) {
-            await VoiceGuidanceService.instance.waitUntilCurrentSpeechFinished();
+            await VoiceGuidanceService.instance
+                .waitUntilCurrentSpeechFinished();
           }
           if (!mounted) return;
           setState(() {
@@ -990,6 +994,37 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
     return fallbackStatus;
   }
 
+  /// Warms the encrypted image cache for the two photos the rejection card
+  /// compares: the user's primary profile photo and the verification selfie.
+  /// Both then render from local bytes when opened offline.
+  Future<void> _prefetchComparisonPhotos(
+    String userId,
+    Map<String, dynamic>? statusData,
+  ) async {
+    try {
+      final verificationPath = statusData?['verification_photo_path']
+          ?.toString()
+          .trim();
+      if (verificationPath != null && verificationPath.isNotEmpty) {
+        unawaited(
+          StorageHelper.prefetchImageSource(
+            verificationPath,
+            bucket: 'verification-photos',
+          ),
+        );
+      }
+      final localDb = await LocalDbService.instance;
+      final localProfile = await localDb.getLocalProfile(userId);
+      final photos = localProfile?['photos'];
+      if (photos is List && photos.isNotEmpty) {
+        final primary = photos.first.toString().trim();
+        if (primary.isNotEmpty) {
+          unawaited(StorageHelper.prefetchImageSource(primary));
+        }
+      }
+    } catch (_) {}
+  }
+
   /// Loads the verification status for the signed-in user.
   ///
   /// The on-device copy of the payload is applied first, so re-entering the
@@ -1017,6 +1052,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
           _statusData = cached;
           _isLoadingStatus = false;
         });
+        unawaited(_prefetchComparisonPhotos(userId, cached));
       }
     }
 
@@ -1046,6 +1082,9 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
       }
       _isLoadingStatus = false;
     });
+    if (fresh != null) {
+      unawaited(_prefetchComparisonPhotos(userId, fresh));
+    }
   }
 
   Future<void> _handleRequestManualReview() async {
@@ -1663,8 +1702,9 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
     required TranslationService translationService,
   }) {
     final comparisonErrorColor = Theme.of(context).colorScheme.error;
-    final labelStyle = Theme.of(context).textTheme.labelSmall
-        ?.copyWith(fontWeight: FontWeight.w600);
+    final labelStyle = Theme.of(
+      context,
+    ).textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w600);
     final profileLabel = l10n.getString(
       'verificationComparisonProfilePhotoLabel',
     );
@@ -2075,10 +2115,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
   }
 
   Widget _buildGestureReferencePreview(VerificationGesture gesture) {
-    final base = gesture.code.replaceFirst(
-      RegExp(r'_(LEFT|RIGHT)_HAND$'),
-      '',
-    );
+    final base = gesture.code.replaceFirst(RegExp(r'_(LEFT|RIGHT)_HAND$'), '');
     final asset = _verificationGestureAssetByBase[base];
     // Pin the bundled Fluent Emoji artwork so the icon's handedness never
     // depends on the platform's emoji font: see [_gestureGlyphNeedsMirror].
@@ -2242,7 +2279,10 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
                 try {
                   ref
                       .read(profileSyncProvider)
-                      .syncProfile(userId, source: 'verification-screen-refresh');
+                      .syncProfile(
+                        userId,
+                        source: 'verification-screen-refresh',
+                      );
                 } catch (_) {}
               });
             }

@@ -1,10 +1,12 @@
 // lib/services/verification_service.dart
 // Service for handling user verification via photo upload
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/public_reference_data_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -75,8 +77,15 @@ class VerificationService {
         await _supabase.storage
             .from('verification-photos')
             .uploadBinary(fileName, photoBytes);
+        StorageHelper.evictImageCache(fileName, bucket: 'verification-photos');
+        unawaited(
+          StorageHelper.prefetchImageSource(
+            fileName,
+            bucket: 'verification-photos',
+          ),
+        );
         print(
-          '✅ VERIFICATION: Upload to verification-photos bucket successful',
+          '? VERIFICATION: Upload to verification-photos bucket successful',
         );
       } catch (uploadError) {
         print(
@@ -178,6 +187,7 @@ class VerificationService {
 
       if (response != null) {
         await cacheVerificationStatus(userId, response);
+        unawaited(_prefetchVerificationMedia(userId, response));
       }
 
       return response;
@@ -185,6 +195,37 @@ class VerificationService {
       print('Error getting verification status: $e');
       return null;
     }
+  }
+
+  /// Downloads the verification selfie and the primary profile photo that the
+  /// rejection comparison renders, so both are available offline even if the
+  /// verification screen was never opened while online.
+  Future<void> _prefetchVerificationMedia(
+    String userId,
+    Map<String, dynamic> statusData,
+  ) async {
+    try {
+      final verificationPath = statusData['verification_photo_path']
+          ?.toString()
+          .trim();
+      if (verificationPath != null && verificationPath.isNotEmpty) {
+        unawaited(
+          StorageHelper.prefetchImageSource(
+            verificationPath,
+            bucket: 'verification-photos',
+          ),
+        );
+      }
+      final localDb = await LocalDbService.instance;
+      final profile = await localDb.getLocalProfile(userId);
+      final photos = profile?['photos'];
+      if (photos is List && photos.isNotEmpty) {
+        final primary = photos.first.toString().trim();
+        if (primary.isNotEmpty) {
+          unawaited(StorageHelper.prefetchImageSource(primary));
+        }
+      }
+    } catch (_) {}
   }
 
   /// Returns the last verification status payload that was read from the
@@ -196,13 +237,35 @@ class VerificationService {
   Future<Map<String, dynamic>?> getCachedVerificationStatus(
     String userId,
   ) async {
+    LocalDbService? localDb;
+    try {
+      if (LocalDbService.isInitialized) {
+        localDb = LocalDbService.shared;
+        final cached = await localDb.getVerificationStatus(userId);
+        if (cached != null) return cached;
+      }
+    } catch (e) {
+      // Hive not ready/available (e.g. very early startup); the legacy
+      // plaintext fallback below still preserves first-paint behavior.
+      print('Error reading encrypted verification status: $e');
+    }
+
+    // One-time migration: older builds stored this payload in plaintext
+    // SharedPreferences. Move it into the encrypted box and delete the
+    // plaintext copy so rejection/AI details do not linger on disk.
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString('$_statusCachePrefix$userId');
+      final legacyKey = '$_statusCachePrefix$userId';
+      final raw = prefs.getString(legacyKey);
       if (raw == null || raw.isEmpty) return null;
       final decoded = jsonDecode(raw);
       if (decoded is! Map) return null;
-      return Map<String, dynamic>.from(decoded);
+      final data = Map<String, dynamic>.from(decoded);
+      if (localDb != null) {
+        await localDb.saveVerificationStatus(userId, data);
+        await prefs.remove(legacyKey);
+      }
+      return data;
     } catch (e) {
       print('Error reading cached verification status: $e');
       return null;
@@ -217,11 +280,22 @@ class VerificationService {
   ) async {
     if (data == null || data.isEmpty) return;
     try {
+      if (!LocalDbService.isInitialized) {
+        // First-paint reads must not block on Hive; persist as soon as the
+        // encrypted boxes finish opening.
+        unawaited(
+          LocalDbService.instance
+              .then((db) => db.saveVerificationStatus(userId, data))
+              .catchError((Object error) {
+                print('Error caching verification status: $error');
+              }),
+        );
+        return;
+      }
+      final localDb = LocalDbService.shared;
+      await localDb.saveVerificationStatus(userId, data);
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(
-        '$_statusCachePrefix$userId',
-        jsonEncode(data),
-      );
+      await prefs.remove('$_statusCachePrefix$userId');
     } catch (e) {
       print('Error caching verification status: $e');
     }
@@ -298,8 +372,9 @@ class VerificationService {
       if (normalized == null || normalized.isEmpty) return;
 
       await _supabase.storage.from('verification-photos').remove([normalized]);
+      StorageHelper.evictImageCache(normalized, bucket: 'verification-photos');
       print(
-        '✅ VERIFICATION: Deleted verification photo from verification-photos bucket: $normalized',
+        '? VERIFICATION: Deleted verification photo from verification-photos bucket: $normalized',
       );
     } catch (e) {
       print('Error deleting verification photo: $e');

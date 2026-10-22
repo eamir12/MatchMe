@@ -61,7 +61,10 @@ class BackgroundService {
       await prefs.setString('bgNotificationTitle', title);
       await prefs.setString('bgNotificationText', text);
       if (genericBody != null && genericBody.isNotEmpty) {
-        await prefs.setString('notifications_generic_message_body', genericBody);
+        await prefs.setString(
+          'notifications_generic_message_body',
+          genericBody,
+        );
       }
     } catch (_) {}
     try {
@@ -95,10 +98,7 @@ class BackgroundService {
   /// "While Using the App" authorization, which silently disables background
   /// location once the UI is closed.
   static Future<String?> consumeNativePermissionIssueCode() async {
-    if (kIsWeb ||
-        Platform.isLinux ||
-        Platform.isWindows ||
-        Platform.isMacOS) {
+    if (kIsWeb || Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
       return null;
     }
     try {
@@ -112,10 +112,7 @@ class BackgroundService {
 
   /// Record a permission issue so it can be surfaced as a dialog next time the UI is active.
   static Future<void> setNativePermissionIssueCode(String code) async {
-    if (kIsWeb ||
-        Platform.isLinux ||
-        Platform.isWindows ||
-        Platform.isMacOS) {
+    if (kIsWeb || Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
       return;
     }
     try {
@@ -135,10 +132,7 @@ class BackgroundService {
   /// `notDetermined` to `.denied` and cannot distinguish "Always" from
   /// "While Using" on its own, while the native layer can.
   static Future<String?> getNativeLocationAuthorizationStatus() async {
-    if (kIsWeb ||
-        Platform.isLinux ||
-        Platform.isWindows ||
-        Platform.isMacOS) {
+    if (kIsWeb || Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
       return null;
     }
     try {
@@ -205,6 +199,7 @@ class BackgroundService {
   static StreamSubscription<ConnectivityHealth>? _connectivitySubscription;
   static int? _lastSentGpsInterval;
   static bool? _lastSentSmartThrottlingEnabled;
+  static Future<void>? _stopFuture;
 
   // Debouncing for rapid visibility/foreground changes to prevent service restart loops
   static Timer? _visibilityDebounceTimer;
@@ -565,8 +560,27 @@ class BackgroundService {
     }
   }
 
-  /// Stop the background service
-  static Future<void> stop() async {
+  /// Stop the background service.
+  ///
+  /// This is intentionally LOCAL-ONLY. Remote session revocation/presence
+  /// updates require the still-valid user JWT, so they must happen before
+  /// `auth.signOut()` and are owned by the logout screen. Running them here
+  /// would execute after the auth listener fires and fail as `anon`.
+  static Future<void> stop() {
+    final existing = _stopFuture;
+    if (existing != null) return existing;
+
+    late final Future<void> tracked;
+    tracked = _stopInternal().whenComplete(() {
+      if (identical(_stopFuture, tracked)) {
+        _stopFuture = null;
+      }
+    });
+    _stopFuture = tracked;
+    return tracked;
+  }
+
+  static Future<void> _stopInternal() async {
     // iOS must also be told to stop: its native service persists its state
     // and auto-restarts on the next process launch. Skipping the native stop
     // (the old Android-only gate) meant a sign-out could leave the previous
@@ -583,36 +597,6 @@ class BackgroundService {
     _foregroundDebounceTimer?.cancel();
     _foregroundDebounceTimer = null;
     _pendingForegroundUpdate = null;
-
-    // Use RPC to mark the user offline; do NOT modify the user's manual visibility setting here
-    try {
-      final targetUserId =
-          _userId ?? Supabase.instance.client.auth.currentUser?.id;
-      if (targetUserId != null) {
-        // print('BackgroundService.stop: marking user offline via RPC for $targetUserId');
-      }
-    } catch (e) {
-      // print('BackgroundService.stop: failed to mark offline (RPC may handle this): $e');
-    }
-
-    // Also try to mark the user's presence offline immediately via RPC.
-    // stop() is only invoked on explicit sign-out (auth signedOut event,
-    // visibility onLogout), so p_clear_pinned: true drops any active
-    // home-base pin — otherwise a logged-out user stays "online" via
-    // is_pinned_location_active() until the pin expires.
-    try {
-      final targetUserId =
-          _userId ?? Supabase.instance.client.auth.currentUser?.id;
-      if (targetUserId != null) {
-        await Supabase.instance.client.rpc(
-          'set_user_offline',
-          params: {'p_user_id': targetUserId, 'p_clear_pinned': true},
-        );
-        // print('BackgroundService.stop: set_user_offline RPC called for $targetUserId');
-      }
-    } catch (e) {
-      // print('BackgroundService.stop: set_user_offline RPC failed: $e');
-    }
 
     try {
       if (kIsWeb ||
@@ -633,14 +617,13 @@ class BackgroundService {
       _syncTimer = null;
       _connectivitySubscription = null;
 
-      // Clear sensitive memory
+      // Clear sensitive memory. Do this only after the native stop call so
+      // the native side still has the credentials it needs during teardown.
       _userId = null;
       _userToken = null;
       _refreshToken = null;
       _supabaseUrl = null;
       _supabaseKey = null;
-
-      // print('Background service stopped and cleaned up');
     } catch (e) {
       // print('Failed to stop background service: $e');
       _stopFallbackService();

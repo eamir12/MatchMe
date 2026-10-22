@@ -51,6 +51,7 @@ class IsVisible extends _$IsVisible {
   static bool?
   _cachedManualVisibility; // survives provider rebuilds for sync access
   bool? _manualVisibility;
+  Future<void>? _manualVisibilityLoadFuture;
   String? _lastRestoredUserId;
   late Future<void> _initializationFuture;
   bool? _lastConnectivityOnline;
@@ -105,6 +106,10 @@ class IsVisible extends _$IsVisible {
     // Keep this provider alive even if not listened to, as it manages
     // background visibility/location state which must persist.
     ref.keepAlive();
+    // Reuse the previous load immediately on rebuilds. On the very first
+    // build _updateEffectiveVisibility() awaits the async load instead of
+    // treating a null preference as a real value.
+    _manualVisibility ??= _cachedManualVisibility;
     if (kDebugMode) {
       debugPrint(
         '[${DateTime.now().toIso8601String()}] 👁️ [IsVisible] build: manual=$_manualVisibility kIsWeb=$kIsWeb',
@@ -315,13 +320,12 @@ class IsVisible extends _$IsVisible {
               if (state) {
                 try {
                   final l10n = ref.read(localizationProvider);
-                  final msg = l10n
-                      .getPluralString(
-                        'gpsThrottledLowBattery',
-                        _batteryThrottleInterval,
-                        countParam: 'interval',
-                        params: {'threshold': _batteryLowThreshold.toString()},
-                      );
+                  final msg = l10n.getPluralString(
+                    'gpsThrottledLowBattery',
+                    _batteryThrottleInterval,
+                    countParam: 'interval',
+                    params: {'threshold': _batteryLowThreshold.toString()},
+                  );
                   ref
                       .read(systemNotificationProvider.notifier)
                       .notify(
@@ -542,9 +546,6 @@ class IsVisible extends _$IsVisible {
 
     // Use cached value from previous load if available — avoids flash on login.
     // Falls back to true only for the very first app launch (no cache yet).
-    if (_manualVisibility == null && _cachedManualVisibility != null) {
-      _manualVisibility = _cachedManualVisibility;
-    }
     final defaultVal = _manualVisibility ?? true;
     if (kDebugMode) {
       debugPrint(
@@ -972,7 +973,21 @@ class IsVisible extends _$IsVisible {
     }
   }
 
-  Future<void> loadManualVisibility() async {
+  Future<void> loadManualVisibility() {
+    final existing = _manualVisibilityLoadFuture;
+    if (existing != null) return existing;
+
+    late final Future<void> tracked;
+    tracked = _loadManualVisibilityInternal().whenComplete(() {
+      if (identical(_manualVisibilityLoadFuture, tracked)) {
+        _manualVisibilityLoadFuture = null;
+      }
+    });
+    _manualVisibilityLoadFuture = tracked;
+    return tracked;
+  }
+
+  Future<void> _loadManualVisibilityInternal() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       // Check for old key first
@@ -1008,10 +1023,11 @@ class IsVisible extends _$IsVisible {
     // Check mounted state before proceeding with any provider reads
     // The provider might be disposed while awaiting async operations
     if (_manualVisibility == null) {
-      print(
-        '🟡 [IsVisible] _updateEffectiveVisibility: manualVisibility not loaded yet',
-      );
-      return;
+      // First launch: the provider can be asked to evaluate rules before the
+      // async preference read finishes. Await the shared load instead of
+      // treating null as "visible" or emitting repeated warnings.
+      await loadManualVisibility();
+      if (_manualVisibility == null) return;
     }
 
     try {
@@ -1344,10 +1360,12 @@ class IsVisible extends _$IsVisible {
         ),
       );
     });
-    _visibilityResyncSubscription =
-        MyUserRealtimeService.instance.resyncRequests.listen((_) {
+    _visibilityResyncSubscription = MyUserRealtimeService
+        .instance
+        .resyncRequests
+        .listen((_) {
           unawaited(_syncVisibilityFromRemote());
-    });
+        });
   }
 
   Future<void> _syncVisibilityFromRemote({String? userId}) async {
@@ -1618,8 +1636,9 @@ class IsVisible extends _$IsVisible {
       // Record what is ACTUALLY running, not what was requested: a parked
       // (pinned) or failed start runs no GPS timer, and recording the
       // interval anyway would make later updates skip the restart forever.
-      _currentAppliedInterval =
-          (_locationService?.isGpsTimerRunning ?? true) ? gpsInterval : null;
+      _currentAppliedInterval = (_locationService?.isGpsTimerRunning ?? true)
+          ? gpsInterval
+          : null;
     }
   }
 
@@ -2055,28 +2074,13 @@ class IsVisible extends _$IsVisible {
     await _clearPersistedVisibilityForLogout();
     print('🔴 [IsVisible] onLogout: state set to false');
 
-    // Ensure background service and DB reflect offline state immediately
+    // Local teardown only. Remote presence/session revocation is performed
+    // by the logout screen while the JWT is still valid. Calling it here can
+    // run after auth.signOut() and fail as `anon`.
     try {
       await BackgroundService.stop();
     } catch (e) {
       print('onLogout: BackgroundService.stop failed: $e');
-    }
-
-    // Immediately mark the user offline on the server (clear presence).
-    // p_clear_pinned: true drops any active home-base pin so a logged-out user
-    // is not counted online via is_pinned_location_active() — critical on
-    // shared devices where the next account replaces this one.
-    try {
-      final userId = Supabase.instance.client.auth.currentUser?.id;
-      if (userId != null) {
-        await Supabase.instance.client.rpc(
-          'set_user_offline',
-          params: {'p_user_id': userId, 'p_clear_pinned': true},
-        );
-        print('onLogout: set_user_offline RPC called');
-      }
-    } catch (e) {
-      print('onLogout: set_user_offline RPC failed: $e');
     }
   }
 
@@ -2193,4 +2197,3 @@ class _VisibilityLifecycleObserver extends Object with WidgetsBindingObserver {
     _onChanged(state);
   }
 }
-

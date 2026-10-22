@@ -69,6 +69,8 @@ import 'package:matchme/services/offline_trail_service.dart';
 import 'package:matchme/services/storage_helper.dart'; // Persisted photo URL warmup
 import 'package:matchme/services/startup_cache_warmer.dart';
 import 'package:matchme/services/offline_image_cache.dart';
+import 'package:matchme/services/offline_api_cache.dart';
+import 'package:matchme/services/offline_http_client.dart';
 import 'package:matchme/services/encrypted_cache_service.dart';
 import 'package:matchme/providers/chat_key_provider.dart';
 import 'package:matchme/services/chat_key_service.dart';
@@ -1484,7 +1486,8 @@ Future<void> _initializeFcmForCurrentUser() async {
           if (!kIsWeb) {
             unawaited(
               MobileLocalNotificationService.showAdminBroadcastNotification(
-                broadcastId: 'ai_quota:${(data['metric'] ?? data['provider'] ?? 'alert').toString()}',
+                broadcastId:
+                    'ai_quota:${(data['metric'] ?? data['provider'] ?? 'alert').toString()}',
                 title: title,
                 body: body,
               ),
@@ -1949,8 +1952,10 @@ Future<void> _registerWindowsWnsChannel() async {
     }
     final userId = supabase.auth.currentUser?.id;
     if (userId == null || userId.isEmpty) {
-      debugPrint('[BOOTSTRAP] [WNS] Channel fetched before auth; session '
-          'registration will attach it');
+      debugPrint(
+        '[BOOTSTRAP] [WNS] Channel fetched before auth; session '
+        'registration will attach it',
+      );
       return;
     }
     SessionRegistrationCoordinator.instance.scheduleImmediate(
@@ -1996,8 +2001,8 @@ Future<void> _setupDeepLinkHandler() async {
         // Windows cold-start via toast activation: the matchme:// URI arrives
         // in the process command line (app_links cannot see it), so the
         // native push channel reads it directly.
-        final windowsLaunch = await WindowsPushChannelService
-            .getInitialLaunchPayload();
+        final windowsLaunch =
+            await WindowsPushChannelService.getInitialLaunchPayload();
         if (windowsLaunch != null) {
           debugPrint(
             '[BOOTSTRAP] [DeepLink] Windows launch URI: $windowsLaunch',
@@ -3083,12 +3088,23 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
         .then((_) => OfflineImageCache.instance.warmup())
         .then(
           (_) => debugPrint(
-            '⏱️ [BOOTSTRAP] OfflineImageCache box opened at ${DateTime.now().millisecondsSinceEpoch}',
+            '?? [BOOTSTRAP] OfflineImageCache box opened at ${DateTime.now().millisecondsSinceEpoch}',
           ),
         )
         .catchError((e, st) {
           _reportNonFatal(e, st);
         }),
+  );
+
+  // Open the encrypted REST response cache in parallel for the same reason:
+  // the first offline read should not pay the Hive box-open cost.
+  unawaited(
+    hiveInitFuture.then((_) => OfflineApiCache.instance.warmup()).catchError((
+      e,
+      st,
+    ) {
+      _reportNonFatal(e, st);
+    }),
   );
 
   final dotenvFuture = dotenv.load(fileName: 'assets/.env').catchError((e, st) {
@@ -3150,6 +3166,9 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
         Supabase.initialize(
           url: supabaseUrl,
           publishableKey: supabaseAnonKey,
+          // Read-through encrypted cache for every GET /rest/v1 request:
+          // online responses refresh it, offline reads are served from disk.
+          httpClient: OfflineSupabaseHttpClient(),
           // Security: persist the SDK session (access + refresh tokens) in secure
           // storage (Keychain / EncryptedSharedPreferences) instead of the default
           // plaintext SharedPreferences / localStorage.
@@ -3284,10 +3303,7 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
   var sessionSeeded = false;
   try {
     sessionSeeded = await (sessionSeedFuture ?? Future<bool>.value(false))
-        .timeout(
-      const Duration(milliseconds: 3000),
-      onTimeout: () => false,
-    );
+        .timeout(const Duration(milliseconds: 3000), onTimeout: () => false);
   } catch (_) {}
   traceBootstrap('fast_path_session_seed_done seeded=$sessionSeeded');
 
@@ -3378,8 +3394,7 @@ Future<String?> _runPostSupabaseInitBackground(
     if (!kIsWeb) {
       try {
         final prefs = await SharedPreferences.getInstance();
-        final pending =
-            prefs.getString('pending_oauth_provider')?.trim() ?? '';
+        final pending = prefs.getString('pending_oauth_provider')?.trim() ?? '';
         if (pending.isNotEmpty) {
           await prefs.remove('pending_oauth_provider');
           debugPrint(
@@ -3436,7 +3451,9 @@ Future<String?> _runPostSupabaseInitBackground(
     final recoveredSession = Supabase.instance.client.auth.currentSession;
     _traceBootstrap('session_check hasSession=${recoveredSession != null}');
     if (recoveredSession != null) {
-      debugPrint('⏱️ [BOOTSTRAP] Session recovered, deferring JWT validation off the startup path');
+      debugPrint(
+        '⏱️ [BOOTSTRAP] Session recovered, deferring JWT validation off the startup path',
+      );
       unawaited(_runBackgroundSessionValidation(recoveredSession, container));
     }
 
@@ -3718,9 +3735,15 @@ Future<void> _runBackgroundSessionValidation(
           // loaded backend during cold start (DNS + TLS + a slow first
           // response), which produced false "network/timeout" failures from
           // background validation that runs in parallel with the monitor.
-          await SessionService.safeRefreshSession(
+          final refreshed = await SessionService.safeRefreshSession(
             timeout: const Duration(milliseconds: 4000),
           ).timeout(const Duration(milliseconds: 4000));
+          if (!refreshed) {
+            debugPrint(
+              '⚠️ [BOOTSTRAP] Token refresh skipped or did not renew the session',
+            );
+            break;
+          }
           debugPrint('✅ [BOOTSTRAP] Token refreshed successfully');
           refreshSucceeded = true;
           // Invalidate critical providers so they re-init with the fresh token.
@@ -3768,7 +3791,9 @@ Future<void> _runBackgroundSessionValidation(
         }
       }
       if (!refreshSucceeded && !offlineCacheManager.isSupabaseAvailable) {
-        debugPrint('⏱️ [BOOTSTRAP] Skipping getUser due to offline after refresh');
+        debugPrint(
+          '⏱️ [BOOTSTRAP] Skipping getUser due to offline after refresh',
+        );
         return;
       }
     }
@@ -3796,8 +3821,7 @@ Future<void> _runBackgroundSessionValidation(
         validationDone = true;
         break;
       } catch (e) {
-        final isNetwork =
-            e is TimeoutException || isExpectedOfflineFailure(e);
+        final isNetwork = e is TimeoutException || isExpectedOfflineFailure(e);
         if (isNetwork) {
           debugPrint(
             '⚠️ [BOOTSTRAP] getUser attempt $attempt failed (network/timeout): $e',
@@ -3847,7 +3871,8 @@ Future<void> _runBackgroundSessionValidation(
     // "logged in but no token" state — and never into the login screen.
     try {
       if (Supabase.instance.client.auth.currentSession == null) {
-        final restored = await SessionService.restorePersistedSessionOfflineOnly();
+        final restored =
+            await SessionService.restorePersistedSessionOfflineOnly();
         debugPrint(
           '⏱️ [BOOTSTRAP] Post-validation session restore: restored=$restored',
         );
@@ -4241,9 +4266,9 @@ Future<void> _runDeferredTasks({
       // drops anything without a whitelisted keyword.
       print('[MapTiles] deferred minimap warm firing (+6s)');
       unawaited(
-        MapTileCacheService.instance
-            .warmCachedMatchMinimaps()
-            .catchError((_) {}),
+        MapTileCacheService.instance.warmCachedMatchMinimaps().catchError(
+          (_) {},
+        ),
       );
     }),
   );
@@ -4254,9 +4279,7 @@ Future<void> _runDeferredTasks({
   unawaited(
     Future.delayed(const Duration(milliseconds: 9000), () {
       unawaited(
-        OfflineTrailService.instance
-            .uploadPendingTrail()
-            .catchError((_) => 0),
+        OfflineTrailService.instance.uploadPendingTrail().catchError((_) => 0),
       );
     }),
   );
@@ -4332,8 +4355,9 @@ Future<void> _runDeferredTasks({
         authKeyInitializedUserId = null;
         if (signedOutUserId == null || signedOutUserId.isEmpty) {
           try {
-            signedOutUserId = (await SharedPreferences.getInstance())
-                .getString('user_id');
+            signedOutUserId = (await SharedPreferences.getInstance()).getString(
+              'user_id',
+            );
           } catch (error) {
             debugPrint('[AUTH] Could not read cached outgoing user ID: $error');
           }
@@ -4702,7 +4726,9 @@ class MissingSupabaseKeyApp extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: ShrinkText(LocalizationState.defaultTranslation('configRequired')),
+        title: ShrinkText(
+          LocalizationState.defaultTranslation('configRequired'),
+        ),
       ),
       body: Padding(
         padding: const EdgeInsets.all(20.0),
@@ -5000,30 +5026,54 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
         } catch (_) {}
       }
 
-      // Mark user as offline when page is closed (beforeunload for modern browsers)
+      // Update presence when this page closes. The RPC is session-aware: it
+      // only marks the account offline when no other device has an active
+      // session, so closing a tab on one device never hides a user who is
+      // still signed in (and heartbeating) elsewhere.
+      DateTime? lastOfflinePresenceAt;
       void markOfflineOnClose(_) {
-        final userId = supabase.auth.currentUser?.id;
-        if (userId != null) {
-          debugPrint('🔌 [Web] Page closing - marking user as offline');
-          // Use sendBeacon for reliable delivery during page unload
-          final offlineData = jsonEncode({'p_user_id': userId});
-          final supabaseUrl = runtimeSupabaseUrl!;
-          final beaconUrl = '$supabaseUrl/rest/v1/rpc/set_user_offline';
-          final beaconSent = html.sendOfflineBeacon(beaconUrl, offlineData);
+        // beforeunload and pagehide both fire for the same close. Coalesce
+        // them without permanently disabling the handler (the page can be
+        // restored from bfcache and closed again later).
+        final now = DateTime.now();
+        if (lastOfflinePresenceAt != null &&
+            now.difference(lastOfflinePresenceAt!) <
+                const Duration(seconds: 2)) {
+          return;
+        }
+        final session = supabase.auth.currentSession;
+        final userId = session?.user.id;
+        final accessToken = session?.accessToken;
+        final anonKey = runtimeSupabaseAnonKey;
+        if (userId == null || accessToken == null || anonKey == null) return;
+        lastOfflinePresenceAt = now;
+        debugPrint('?? [Web] Page closing - marking user as offline');
+        final offlineData = jsonEncode({
+          'p_user_id': userId,
+          'p_clear_pinned': false,
+        });
+        final supabaseUrl = runtimeSupabaseUrl;
+        if (supabaseUrl == null) return;
+        final beaconUrl = '$supabaseUrl/rest/v1/rpc/set_user_offline';
+        final beaconSent = html.sendAuthenticatedOfflineBeacon(
+          beaconUrl,
+          offlineData,
+          accessToken,
+          anonKey,
+        );
 
-          if (beaconSent) {
-            debugPrint('✅ [Web] Offline beacon sent successfully');
-          } else {
-            debugPrint('⚠️ [Web] Beacon failed, falling back to RPC');
-            // Fall back to regular RPC call
-            supabase
-                .rpc('set_user_offline', params: {'p_user_id': userId})
-                .catchError((e) {
-                  debugPrint(
-                    '⚠️ [Web] Failed to set user offline on close: $e',
-                  );
-                });
-          }
+        if (beaconSent) {
+          debugPrint('? [Web] Authenticated offline beacon queued');
+        } else {
+          debugPrint('?? [Web] Beacon failed, falling back to RPC');
+          supabase
+              .rpc(
+                'set_user_offline',
+                params: {'p_user_id': userId, 'p_clear_pinned': false},
+              )
+              .catchError((e) {
+                debugPrint('?? [Web] Failed to set user offline on close: $e');
+              });
         }
       }
 
@@ -5587,9 +5637,7 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
 
   @override
   Widget build(BuildContext context) {
-    print(
-      '⏱️ [MatchMeApp] build at ${DateTime.now().millisecondsSinceEpoch}',
-    );
+    print('⏱️ [MatchMeApp] build at ${DateTime.now().millisecondsSinceEpoch}');
     final localization = ref.watch(localizationProvider);
     final authState = ref.watch(authStateProvider);
 
@@ -5599,9 +5647,7 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
     // red badge forever.
     ref.listen<int?>(iconBadgeCountProvider, (previous, next) {
       if (next == null) return;
-      unawaited(
-        AppBadgeService.setCount(next, body: _badgeCarrierBody(next)),
-      );
+      unawaited(AppBadgeService.setCount(next, body: _badgeCarrierBody(next)));
     });
     // One-shot: a listener only fires on *changes*, so if inbox data is
     // already cached at first build (value never transitions through null)
@@ -6106,7 +6152,10 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
                           left: 0,
                           right: 0,
                           top: 0,
-                          child: Container(height: padding.top, color: barColor),
+                          child: Container(
+                            height: padding.top,
+                            color: barColor,
+                          ),
                         ),
                       if (isAndroid && padding.bottom > 0)
                         Positioned(
@@ -6123,17 +6172,25 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
                           left: 0,
                           top: 0,
                           bottom: 0,
-                          child: Container(width: padding.left, color: barColor),
+                          child: Container(
+                            width: padding.left,
+                            color: barColor,
+                          ),
                         ),
                       if (isAndroid && padding.right > 0)
                         Positioned(
                           right: 0,
                           top: 0,
                           bottom: 0,
-                          child: Container(width: padding.right, color: barColor),
+                          child: Container(
+                            width: padding.right,
+                            color: barColor,
+                          ),
                         ),
                       Positioned.fill(
-                        child: BirthdayOverlay(isBirthdayToday: isBirthdayToday),
+                        child: BirthdayOverlay(
+                          isBirthdayToday: isBirthdayToday,
+                        ),
                       ),
                     ],
                   );
@@ -6175,10 +6232,7 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
             if (anchor != null &&
                 anchor.id == AuthTransitionGuard.anchorUserId) {
               // Keep showing the account the user is really signed in as.
-              return ProfileCheckScreen(
-                key: ValueKey(anchor.id),
-                user: anchor,
-              );
+              return ProfileCheckScreen(key: ValueKey(anchor.id), user: anchor);
             }
             // No usable anchor (cold start mid-transition): hold a neutral
             // screen rather than switching to the provider account.

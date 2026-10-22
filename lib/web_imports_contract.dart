@@ -187,8 +187,13 @@ class Window {
   void removeEventListener(String type, Function? listener) {}
 }
 
-/// Beacon delivery is unsupported off the web.
-bool sendOfflineBeacon(String url, String data) => false;
+/// Authenticated keepalive delivery is unsupported off the web.
+bool sendAuthenticatedOfflineBeacon(
+  String url,
+  String data,
+  String accessToken,
+  String anonKey,
+) => false;
 
 /// Vibration is a no-op off the web.
 void safeVibrate(Object pattern) {}

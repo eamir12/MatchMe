@@ -43,6 +43,7 @@ class StorageHelper {
   static final Map<String, DateTime> _missingUntil = {};
   static final Map<String, int> _cacheBustVersions = {};
   static final Set<String> _knownImageCacheKeys = {};
+  static final Set<String> _prefetchedImageKeys = {};
   static const String _bucket = 'profile-photos';
   static const Duration _missingTtl = Duration(minutes: 10);
 
@@ -67,6 +68,7 @@ class StorageHelper {
       }
     }
     _knownImageCacheKeys.clear();
+    _prefetchedImageKeys.clear();
     _cacheBustVersions.clear();
     _persistWarmupStarted = false;
     _persistWarmupFuture = null;
@@ -318,15 +320,18 @@ class StorageHelper {
   /// Example:
   ///  - https://.../storage/v1/object/public/profile-photos/userId/file.jpg -> userId/file.jpg
   ///  - https://.../storage/v1/object/public/profile-photos/folder/sub/file.jpg -> folder/sub/file.jpg
-  static String? _extractObjectPathFromUrl(String input) {
+  static String? _extractObjectPathFromUrl(String input, {String? bucket}) {
     try {
+      final bucketName = (bucket == null || bucket.trim().isEmpty)
+          ? _bucket
+          : bucket.trim();
       final uri = Uri.parse(input);
       // Look for the bucket segment in the path segments
       final segments = uri.pathSegments;
       if (segments.isEmpty) return null;
 
       // Find the first index of the bucket name in the segments (case sensitive match)
-      final idx = segments.indexOf(_bucket);
+      final idx = segments.indexOf(bucketName);
       if (idx >= 0 && idx < segments.length - 1) {
         final remainder = segments.sublist(idx + 1);
         if (remainder.isEmpty) return '';
@@ -338,7 +343,7 @@ class StorageHelper {
       final pubIdx = segments.indexOf('public');
       if (pubIdx >= 0 &&
           pubIdx + 1 < segments.length &&
-          segments[pubIdx + 1] == _bucket &&
+          segments[pubIdx + 1] == bucketName &&
           pubIdx + 2 < segments.length) {
         return segments.sublist(pubIdx + 2).join('/');
       }
@@ -354,12 +359,16 @@ class StorageHelper {
   /// - If input is a full URL, attempt to extract objectPath.
   /// - If input contains the bucket prefix (profile-photos/...), strip it.
   /// - Return null if normalization fails.
-  static String? _normalizeToObjectPath(String input) {
+  static String? _normalizeToObjectPath(String input, {String? bucket}) {
     if (input.isEmpty) return null;
+
+    final bucketName = (bucket == null || bucket.trim().isEmpty)
+        ? _bucket
+        : bucket.trim();
 
     // If it's a full URL, try to extract
     if (input.startsWith('http://') || input.startsWith('https://')) {
-      final extracted = _extractObjectPathFromUrl(input);
+      final extracted = _extractObjectPathFromUrl(input, bucket: bucketName);
       if (extracted != null && extracted.isNotEmpty) return extracted;
       // If extraction returned empty string or null, we can't normalize - return null to signal failure.
       if (extracted == '') return '';
@@ -370,8 +379,8 @@ class StorageHelper {
     var candidate = input.startsWith('/') ? input.substring(1) : input;
 
     // If candidate starts with the bucket prefix, strip it
-    if (candidate.startsWith('$_bucket/')) {
-      candidate = candidate.substring('$_bucket/'.length);
+    if (candidate.startsWith('$bucketName/')) {
+      candidate = candidate.substring('$bucketName/'.length);
     }
 
     return candidate;
@@ -382,11 +391,14 @@ class StorageHelper {
   /// This is intended for disk image caching so that:
   /// - Different signed URLs (different tokens) still map to the same cached bytes.
   /// - Public URLs map to the same key as the object path.
+  /// - The same object path in two buckets does not collide (verification
+  ///   photos live in `verification-photos`, profile photos in the default
+  ///   `profile-photos` bucket).
   ///
   /// If normalization fails, we fall back to a URL without query/fragment (when possible).
-  static String cacheKeyForSource(String urlOrPath) {
+  static String cacheKeyForSource(String urlOrPath, {String? bucket}) {
     if (urlOrPath.isEmpty) return '';
-    final raw = _cacheBaseKeyRaw(urlOrPath);
+    final raw = _cacheBaseKeyRaw(urlOrPath, bucket: bucket);
     if (raw.isEmpty) return '';
     _knownImageCacheKeys.add(raw);
     final baseKey = _sanitizeCacheKey(raw);
@@ -395,25 +407,30 @@ class StorageHelper {
     return '${baseKey}_v$version';
   }
 
-  static String _cacheBaseKeyRaw(String urlOrPath) {
-    final normalized = _normalizeToObjectPath(urlOrPath);
+  static String _cacheBaseKeyRaw(String urlOrPath, {String? bucket}) {
+    final bucketName = (bucket == null || bucket.trim().isEmpty)
+        ? _bucket
+        : bucket.trim();
+    final normalized = _normalizeToObjectPath(urlOrPath, bucket: bucketName);
+    String base;
     if (normalized != null && normalized.isNotEmpty) {
-      return normalized;
+      base = normalized;
+    } else {
+      try {
+        final uri = Uri.parse(urlOrPath);
+        final withoutQuery = uri.replace(query: '', fragment: '');
+        final s = withoutQuery.toString();
+        base = s.isNotEmpty ? s : urlOrPath;
+      } catch (_) {
+        base = urlOrPath;
+      }
     }
-
-    try {
-      final uri = Uri.parse(urlOrPath);
-      final withoutQuery = uri.replace(query: '', fragment: '');
-      final s = withoutQuery.toString();
-      return s.isNotEmpty ? s : urlOrPath;
-    } catch (_) {
-      return urlOrPath;
-    }
+    return bucketName == _bucket ? base : '$bucketName::$base';
   }
 
-  static void evictImageCache(String urlOrPath) {
+  static void evictImageCache(String urlOrPath, {String? bucket}) {
     if (urlOrPath.isEmpty) return;
-    final raw = _cacheBaseKeyRaw(urlOrPath);
+    final raw = _cacheBaseKeyRaw(urlOrPath, bucket: bucket);
     if (raw.isEmpty) {
       evict(urlOrPath);
       return;
@@ -425,6 +442,7 @@ class StorageHelper {
     );
     final oldKey =
         _sanitizeCacheKey(raw) + (oldVersion > 0 ? '_v$oldVersion' : '');
+    _prefetchedImageKeys.remove(oldKey);
     // Always evict the persisted byte cache (the layer SignedImage paints
     // from) so a photo change takes effect on every platform.
     unawaited(
@@ -449,8 +467,8 @@ class StorageHelper {
   /// platform). Deduplicates concurrent fetches of the same URL so widgets
   /// and the startup warmer share a single request.
   ///
-  /// Entries larger than 1MB (full-screen originals) are returned but not
-  /// persisted, so the byte cache stays avatar/chat-photo sized.
+  /// Full-resolution originals are persisted too; OfflineImageCache applies
+  /// its own per-entry and total-size bounds.
   static final Map<String, Future<Uint8List?>> _imageFetches = {};
 
   static Future<Uint8List?> fetchImageBytesFromUrl(
@@ -506,7 +524,7 @@ class StorageHelper {
         return null;
       }
       final bytes = Uint8List.fromList(response.bodyBytes);
-      if (cacheKey != null && cacheKey.isNotEmpty && bytes.length <= 1024 * 1024) {
+      if (cacheKey != null && cacheKey.isNotEmpty) {
         await OfflineImageCache.instance.write(cacheKey, bytes);
       }
       return bytes;
@@ -515,9 +533,66 @@ class StorageHelper {
     }
   }
 
+  /// Offline-first loader used by full-screen viewers.
+  ///
+  /// Order: encrypted byte cache -> signed/public URL -> persist bytes.
+  /// Returns null when the image has never been cached and Supabase is not
+  /// reachable, so callers can show their normal load-failure state without
+  /// waiting on a doomed network request.
+  static Future<Uint8List?> loadImageBytes(
+    String urlOrObjectPath, {
+    String? bucket,
+  }) async {
+    final source = urlOrObjectPath.trim();
+    if (source.isEmpty) return null;
+    final cacheKey = cacheKeyForSource(source, bucket: bucket);
+    if (cacheKey.isNotEmpty) {
+      final cached = await OfflineImageCache.instance.read(cacheKey);
+      if (cached != null && cached.isNotEmpty) return cached;
+    }
+    if (shouldSkipSupabaseCalls()) return null;
+    try {
+      final request = await resolveImageRequest(source, bucket: bucket);
+      if (request != null && request.url.isNotEmpty) {
+        final bytes = await fetchImageBytesFromUrl(
+          request.url,
+          headers: request.headers,
+          cacheKey: cacheKey.isNotEmpty ? cacheKey : request.url,
+          objectPath: source,
+        );
+        if (bytes != null && bytes.isNotEmpty) return bytes;
+      }
+      final headers = buildAuthHeaders();
+      if (headers != null) {
+        final direct = buildAuthenticatedObjectUrl(source, bucket: bucket);
+        if (direct != null) {
+          final bytes = await fetchImageBytesFromUrl(
+            direct,
+            headers: headers,
+            cacheKey: cacheKey.isNotEmpty ? cacheKey : direct,
+            objectPath: source,
+          );
+          if (bytes != null && bytes.isNotEmpty) return bytes;
+        }
+      }
+      final publicUrl = buildPublicObjectUrl(source, bucket: bucket);
+      if (publicUrl == null || publicUrl.isEmpty) return null;
+      return await fetchImageBytesFromUrl(
+        publicUrl,
+        cacheKey: cacheKey.isNotEmpty ? cacheKey : publicUrl,
+        objectPath: source,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Whether the request that fetched [url] carried credentials (signed-URL
   /// token or Authorization header), i.e. a 404 response is authoritative.
-  static bool _isAuthorizedImageRequest(String url, Map<String, String>? headers) {
+  static bool _isAuthorizedImageRequest(
+    String url,
+    Map<String, String>? headers,
+  ) {
     if (headers != null) {
       for (final key in headers.keys) {
         if (key.toLowerCase() == 'authorization') return true;
@@ -536,22 +611,35 @@ class StorageHelper {
   }) async {
     if (urlOrObjectPath.trim().isEmpty) return;
     try {
-      final cacheKey = cacheKeyForSource(urlOrObjectPath);
+      final cacheKey = cacheKeyForSource(urlOrObjectPath, bucket: bucket);
+      if (cacheKey.isNotEmpty && _prefetchedImageKeys.contains(cacheKey)) {
+        return;
+      }
       if (cacheKey.isNotEmpty) {
         final existing = await OfflineImageCache.instance.read(cacheKey);
-        if (existing != null && existing.isNotEmpty) return;
+        if (existing != null && existing.isNotEmpty) {
+          _prefetchedImageKeys.add(cacheKey);
+          return;
+        }
       }
+      // Offline: the byte cache is the only usable source. Never make a
+      // doomed signed-URL/download attempt just to warm an empty entry.
+      if (shouldSkipSupabaseCalls()) return;
       final request = await resolveImageRequest(
         urlOrObjectPath,
         bucket: bucket,
       );
       if (request == null || request.url.isEmpty) return;
-      await fetchImageBytesFromUrl(
+      final effectiveKey = cacheKey.isNotEmpty ? cacheKey : request.url;
+      final bytes = await fetchImageBytesFromUrl(
         request.url,
         headers: request.headers,
-        cacheKey: cacheKey.isNotEmpty ? cacheKey : request.url,
+        cacheKey: effectiveKey,
         objectPath: urlOrObjectPath,
       );
+      if (bytes != null && bytes.isNotEmpty) {
+        _prefetchedImageKeys.add(effectiveKey);
+      }
     } catch (_) {}
   }
 
@@ -559,7 +647,7 @@ class StorageHelper {
   /// a signed-URL round trip plus a download; running them one-by-one made a
   /// 7-avatar warm take ~16s on a slow network. A small cap keeps the wall
   /// clock low without bursting the connection.
-  static const int _prefetchConcurrency = 4;
+  static const int _prefetchConcurrency = 6;
 
   /// Prefetches [sources] into the OfflineImageCache, up to
   /// [_prefetchConcurrency] at a time. Individual failures are swallowed
@@ -584,9 +672,10 @@ class StorageHelper {
         if (!it.moveNext()) return;
         source = it.current;
         try {
-          await prefetchImageSource(source, bucket: bucket).timeout(
-            const Duration(seconds: 12),
-          );
+          await prefetchImageSource(
+            source,
+            bucket: bucket,
+          ).timeout(const Duration(seconds: 8));
         } on TimeoutException {
           // Skip this image; let the rest of the batch continue.
         } catch (_) {}
@@ -642,7 +731,12 @@ class StorageHelper {
     String? bucket,
   }) {
     if (urlOrObjectPath.isEmpty) return null;
-    final normalized = _normalizeToObjectPath(urlOrObjectPath);
+    final bucketName = (bucket ?? _bucket).trim();
+    if (bucketName.isEmpty) return null;
+    final normalized = _normalizeToObjectPath(
+      urlOrObjectPath,
+      bucket: bucketName,
+    );
     if (normalized == null || normalized.isEmpty) {
       if (urlOrObjectPath.startsWith('http://') ||
           urlOrObjectPath.startsWith('https://')) {
@@ -650,9 +744,6 @@ class StorageHelper {
       }
       return null;
     }
-
-    final bucketName = (bucket ?? _bucket).trim();
-    if (bucketName.isEmpty) return null;
 
     try {
       return _client.storage.from(bucketName).getPublicUrl(normalized);
@@ -679,10 +770,10 @@ class StorageHelper {
     String urlOrObjectPath, {
     String? bucket,
   }) {
-    final normalized = _normalizeToObjectPath(urlOrObjectPath);
-    if (normalized == null || normalized.trim().isEmpty) return null;
     final b = (bucket ?? _bucket).trim();
     if (b.isEmpty) return null;
+    final normalized = _normalizeToObjectPath(urlOrObjectPath, bucket: b);
+    if (normalized == null || normalized.trim().isEmpty) return null;
     final supabaseUrl = runtimeSupabaseUrl;
     if (supabaseUrl == null || supabaseUrl.isEmpty) return null;
     return '$supabaseUrl/storage/v1/object/$b/$normalized';

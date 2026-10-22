@@ -109,7 +109,12 @@ void main() {
         isFalse,
       );
       expect(
-        sendOfflineBeacon('https://example.test/', '{"type":"ping"}'),
+        sendAuthenticatedOfflineBeacon(
+          'https://example.test/',
+          '{"type":"ping"}',
+          'access-token',
+          'anon-key',
+        ),
         isFalse,
       );
     });

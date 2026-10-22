@@ -337,10 +337,7 @@ Widget _mainNavVisibilityDetailWidget(
       decoration: BoxDecoration(
         color: scheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(16.0),
-        border: Border.all(
-          color: scheme.outlineVariant,
-          width: 1,
-        ),
+        border: Border.all(color: scheme.outlineVariant, width: 1),
       ),
       clipBehavior: Clip.hardEdge,
       child: Text(
@@ -569,9 +566,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
   /// How long the Home tab waits for the intro-tour decision before it is
   /// released anyway. The tour has to come first, but a slow or unreachable
   /// server must never keep the member staring at a splash screen.
-  static const Duration _onboardingIntroDecisionGrace = Duration(
-    seconds: 3,
-  );
+  static const Duration _onboardingIntroDecisionGrace = Duration(seconds: 3);
 
   /// Releases the Home tab if the intro-tour decision takes too long.
   Timer? _onboardingIntroGraceTimer;
@@ -974,36 +969,40 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
       } catch (_) {}
     }
 
-    // Stop any active live location sharing (best-effort; the peer sees our
-    // share stop and our DB signal is cleaned up). The local teardown inside
-    // stopSharing() is instant; only the remote signal/broadcast is bounded.
-    final locationShare = ref.read(locationShareProvider);
-    // This cleanup needs the active session to authenticate, so it must run
-    // BEFORE sign-out. It is bounded and never awaited when offline.
-    final authBoundCleanup = <Future<void>>[
-      if (locationShare != null)
-        quiet(() => ref.read(locationShareProvider.notifier).stopSharing()),
-      // Immediately mark the user offline on the server BEFORE the session is
-      // invalidated, so the online count drops right away. This is a direct,
-      // trigger-independent backup to revoke_all_user_sessions (the
-      // session-change trigger normally flips is_online via that RPC, but the
-      // heartbeat in update_user_activity must never resurrect a logged-out
-      // user — see migration 20260814000000_only_mark_online_with_active_session).
-      if (canReachServer && outgoingUserId != null) ...[
-        quiet(
-          () => supabase.rpc(
-            'set_user_offline',
-            params: {'p_user_id': outgoingUserId, 'p_clear_pinned': true},
+    // These cleanups need the active JWT, so they run BEFORE sign-out and are
+    // skipped entirely offline. In particular, never fire them without
+    // awaiting: a late RPC would execute as `anon` after the local sign-out.
+    if (canReachServer) {
+      final locationShare = ref.read(locationShareProvider);
+      final authBoundCleanup = <Future<void>>[
+        // Stop any active live location sharing (best-effort; the peer sees
+        // our share stop and our DB signal is cleaned up).
+        if (locationShare != null)
+          quiet(() => ref.read(locationShareProvider.notifier).stopSharing()),
+        // End ONLY this device's session. A user may be signed in on several
+        // devices at once: the server keeps them online (and visible/pinned as
+        // configured) while another non-revoked session still exists. The RPC
+        // also marks the account offline when this was the last active device.
+        // Never call revoke_all_user_sessions here - that signs every other
+        // device out too.
+        if (outgoingUserId != null)
+          quiet(
+            () => SessionService.logoutCurrentDevice(
+              userId: outgoingUserId,
+              clearPinnedLocation: true,
+              timeout: const Duration(seconds: 2),
+            ),
           ),
-        ),
-        quiet(
-          () => supabase.rpc(
-            'revoke_all_user_sessions',
-            params: {'p_user_id': outgoingUserId},
-          ),
-        ),
-      ],
-    ];
+      ];
+
+      try {
+        // The helper bounds itself below this outer budget, so it cannot keep
+        // running after auth is torn down.
+        await Future.wait(
+          authBoundCleanup,
+        ).timeout(const Duration(seconds: 3), onTimeout: () => const []);
+      } catch (_) {}
+    }
 
     // Clear this device's FCM token mapping so the next account that logs in
     // here doesn't inherit pushes meant for the signed-out user.
@@ -1011,20 +1010,6 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
     // half: rotate the token + drop the cached copy. It does not need the
     // session and is pure best-effort, so it never blocks the critical path.
     unawaited(quiet(SessionService.deleteFcmToken));
-
-    if (canReachServer) {
-      // Bounded: if the backend is slow, move on and let sign-out proceed.
-      try {
-        await Future.wait(
-          authBoundCleanup,
-        ).timeout(const Duration(seconds: 3), onTimeout: () => const []);
-      } catch (_) {}
-    } else {
-      // Offline: never wait on the network. Fire the cleanup and log out now.
-      for (final future in authBoundCleanup) {
-        unawaited(future);
-      }
-    }
 
     // LOCAL cleanup (offline-safe). Each step is isolated so a failure in one
     // never blocks the sign-out below.

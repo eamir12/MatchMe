@@ -227,6 +227,28 @@ void main() {
       expect(calls, 2);
     });
 
+    test('dead DNS is offline after one attempt, without confirmation',
+        () async {
+      var calls = 0;
+      final result = await evaluateSupabaseProbe(
+        (_) async {
+          calls += 1;
+          throw const HttpExceptionStub(
+            'SocketException: Failed host lookup: '
+            "'vazkmvrbshxwyodentng.supabase.co' "
+            '(OS Error: No address associated with hostname, errno = 7)',
+          );
+        },
+        confirm: true,
+        confirmDelay: Duration.zero,
+      );
+
+      expect(result.isUnreachable, isTrue);
+      expect(result.failureKind, SupabaseFailureKind.noResponse);
+      expect(result.attempts, 1);
+      expect(calls, 1, reason: 'DNS already answered: nothing to confirm');
+    });
+
     test('the confirming attempt gets the larger budget', () async {
       final budgets = <Duration>[];
       await evaluateSupabaseProbe(

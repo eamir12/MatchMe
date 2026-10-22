@@ -2589,7 +2589,9 @@ userProfileProvider = StreamProvider.family<UserProfile?, String>((
       }
     }
 
-    return UserProfile.fromMap(localProfileMap);
+    final profile = UserProfile.fromMap(localProfileMap);
+    unawaited(StorageHelper.prefetchImageSources(profile.photos));
+    return profile;
   });
 });
 
@@ -2690,6 +2692,7 @@ final otherUserProfileProvider = FutureProvider.family<UserProfile?, String>((
       final clean = Map<String, dynamic>.from(cachedProfileWithMeta)
         ..remove('cached_at');
       final cached = UserProfile.fromMap(clean);
+      unawaited(StorageHelper.prefetchImageSources(cached.photos));
 
       final isStale =
           cachedAt == null ||
@@ -2783,6 +2786,7 @@ final otherUserProfileProvider = FutureProvider.family<UserProfile?, String>((
 
     // Convert to UserProfile format and cache
     final userProfile = UserProfile.fromMap(response);
+    unawaited(StorageHelper.prefetchImageSources(userProfile.photos));
     await localDb.saveOtherUserProfile(userId, response);
 
     return userProfile;
@@ -3052,8 +3056,8 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
   /// matching settings follow the account across devices.
   void _attachMatchingSettingsRealtime() {
     _matchingSettingsSubscription?.cancel();
-    _matchingSettingsSubscription =
-        MyUserRealtimeService.instance.updates.listen((update) {
+    _matchingSettingsSubscription = MyUserRealtimeService.instance.updates
+        .listen((update) {
           final changed = update.changedKeys
               .where(_matchingSettingsColumns.contains)
               .toSet();
@@ -3063,8 +3067,10 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
 
     // The match preferences (gender, age range, lifestyle, family, religion
     // and height filters) live on `user_profiles`, not on `users`.
-    _matchPreferencesSubscription =
-        MyUserRealtimeService.instance.profileUpdates.listen((update) {
+    _matchPreferencesSubscription = MyUserRealtimeService
+        .instance
+        .profileUpdates
+        .listen((update) {
           if (!update.changed('intent_preferences')) return;
           unawaited(_applyRemoteMatchPreferences(update.row));
         });
@@ -3170,23 +3176,22 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
       gpsIntervalDefault: changed.contains('gps_interval_default')
           ? readInt('gps_interval_default', current.gpsIntervalDefault)
           : null,
-      smartGpsThrottlingEnabled: changed.contains('smart_gps_throttling_enabled')
+      smartGpsThrottlingEnabled:
+          changed.contains('smart_gps_throttling_enabled')
           ? readBool(
               'smart_gps_throttling_enabled',
               current.smartGpsThrottlingEnabled,
             )
           : null,
-      sharedEventMatchingEnabled: changed.contains(
-        'shared_event_matching_enabled',
-      )
+      sharedEventMatchingEnabled:
+          changed.contains('shared_event_matching_enabled')
           ? readBool(
               'shared_event_matching_enabled',
               current.sharedEventMatchingEnabled,
             )
           : null,
-      sharedMovementMatchingEnabled: changed.contains(
-        'shared_movement_matching_enabled',
-      )
+      sharedMovementMatchingEnabled:
+          changed.contains('shared_movement_matching_enabled')
           ? readBool(
               'shared_movement_matching_enabled',
               current.sharedMovementMatchingEnabled,
@@ -3196,14 +3201,17 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
           ? readBool('retro_matching_enabled', current.retroMatchingEnabled)
           : null,
       retroRetentionHours: changed.contains('retro_retention_hours')
-          ? readInt('retro_retention_hours', current.retroRetentionHours)!
-              .clamp(2, 72)
+          ? readInt(
+              'retro_retention_hours',
+              current.retroRetentionHours,
+            )!.clamp(2, 72)
           : null,
     );
 
     if (updated.matchRadiusDefault == current.matchRadiusDefault &&
         updated.gpsIntervalDefault == current.gpsIntervalDefault &&
-        updated.smartGpsThrottlingEnabled == current.smartGpsThrottlingEnabled &&
+        updated.smartGpsThrottlingEnabled ==
+            current.smartGpsThrottlingEnabled &&
         updated.sharedEventMatchingEnabled ==
             current.sharedEventMatchingEnabled &&
         updated.sharedMovementMatchingEnabled ==
@@ -3230,7 +3238,10 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
         );
       }
       if (changed.contains('retro_matching_enabled')) {
-        await prefs.setBool('flutter.retro_enabled', updated.retroMatchingEnabled);
+        await prefs.setBool(
+          'flutter.retro_enabled',
+          updated.retroMatchingEnabled,
+        );
       }
       if (changed.contains('retro_retention_hours')) {
         await prefs.setInt(
@@ -4439,10 +4450,7 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     // screen is currently mounted.
     ref.invalidate(dashboardStatsProvider);
     unawaited(
-      warmDashboardStatsForUser(
-        userId,
-        center: resolveNearbyCountAnchor(ref),
-      ),
+      warmDashboardStatsForUser(userId, center: resolveNearbyCountAnchor(ref)),
     );
     // Note: Removed ref.invalidate(isVisibleProvider) to break circular dependency.
     // The visibility provider already listens to profileEditProvider changes via ref.listen,
@@ -6149,4 +6157,3 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     }
   }
 }
-

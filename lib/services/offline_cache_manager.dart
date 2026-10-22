@@ -13,6 +13,7 @@ import 'package:matchme/services/calendar_sync_service.dart';
 import 'package:matchme/services/offline_mutation_queue.dart';
 import 'package:matchme/services/supabase_realtime_manager.dart';
 import 'package:matchme/services/storage_helper.dart';
+import 'package:matchme/services/offline_api_cache.dart';
 import 'package:matchme/services/offline_image_cache.dart';
 import 'package:matchme/services/mobile_local_notification_service.dart';
 import 'package:matchme/services/pinned_location_gate.dart';
@@ -440,7 +441,14 @@ class OfflineCacheManager {
       try {
         await OfflineImageCache.instance.clear();
       } catch (error) {
-        debugPrint('⚠️ [OFFLINE] Failed to clear cached image bytes: $error');
+        debugPrint('?? [OFFLINE] Failed to clear cached image bytes: $error');
+      }
+      // Every cached REST payload is user-scoped and may contain private
+      // profile/chat/verification data; never let it survive logout.
+      try {
+        await OfflineApiCache.instance.clear();
+      } catch (error) {
+        debugPrint('?? [OFFLINE] Failed to clear cached API responses: $error');
       }
       // Sensitive prefs shim for native service (tokens/location key).
       final prefs = await SharedPreferences.getInstance();
@@ -503,6 +511,14 @@ class OfflineCacheManager {
       for (final key in translationStateKeys) {
         await prefs.remove(key);
       }
+      // Legacy plaintext verification payloads (pre-Hive cache).
+      final verificationCacheKeys = prefs
+          .getKeys()
+          .where((key) => key.startsWith('verification_status_cache_'))
+          .toList();
+      for (final key in verificationCacheKeys) {
+        await prefs.remove(key);
+      }
       await StorageHelper.clearSessionCache();
       await CalendarSyncService.clearPersistedCalendarCredentials();
       // Tray notifications, pending pinned-location sync, a pending
@@ -529,9 +545,7 @@ class OfflineCacheManager {
       // encrypted copies) so the signed-out user's secrets don't persist.
       final secure = SecureStorageService.instance;
       if (outgoingUserId != null && outgoingUserId.isNotEmpty) {
-        EncryptedCacheService.instance.clearMemoryCache(
-          userId: outgoingUserId,
-        );
+        EncryptedCacheService.instance.clearMemoryCache(userId: outgoingUserId);
         await secure.delete('chat_cache_key:$outgoingUserId');
       }
       await secure.delete('oauth_original_session_json');

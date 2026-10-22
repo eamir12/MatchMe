@@ -24,9 +24,12 @@
 // "the server answered but cannot serve us" distinguishable from "no server".
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:matchme/services/network_availability.dart';
+import 'package:matchme/services/runtime_supabase_config.dart';
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -269,6 +272,18 @@ Future<SupabaseReachResult?> _attemptSupabaseProbe(
       log?.call(
         'Supabase probe attempt $attempt got no response in ${stopwatch.elapsedMilliseconds}ms: $e',
       );
+      // A DNS/route failure is a definitive answer, not an ambiguous stall:
+      // the device has no way to reach the host right now, so a confirming
+      // attempt only doubles the offline-detection latency (8s + 12s on
+      // mobile when the resolver hangs). Timeouts and resets stay ambiguous
+      // and still get the confirmation attempt.
+      if (_isDefinitiveNoResponseFailure(e)) {
+        return SupabaseReachResult.unreachable(
+          failureKind: SupabaseFailureKind.noResponse,
+          detail: '$e',
+          attempts: attempt,
+        );
+      }
       return null;
     }
     log?.call(
@@ -280,6 +295,17 @@ Future<SupabaseReachResult?> _attemptSupabaseProbe(
       attempts: attempt,
     );
   }
+}
+
+/// True when the error proves the host cannot be reached at all (bad DNS or
+/// no route), instead of a request that merely failed to answer in time.
+bool _isDefinitiveNoResponseFailure(Object error) {
+  final text = error.toString().toLowerCase();
+  return text.contains('failed host lookup') ||
+      text.contains('no address associated with hostname') ||
+      text.contains('nodename nor servname provided') ||
+      text.contains('network is unreachable') ||
+      text.contains('networkisunreachable');
 }
 
 SupabaseClient? _supabaseClientOrNull() {
@@ -325,8 +351,21 @@ Future<SupabaseReachResult> probeSupabaseReachability({
   bool confirm = false,
   void Function(String message)? log,
 }) async {
+  // Probe with the anon key instead of the signed-in session. Any RPC through
+  // the authenticated client can silently refresh an expired access token;
+  // when the network is down that refresh retries for ~30s and, once DNS
+  // returns, spends a refresh token that another refresher may already have
+  // rotated — surfacing `refresh_token_already_used` and tearing down the
+  // session during what was only supposed to be a connectivity check.
+  // `health_check` is granted to `anon`, so a raw request proves the same
+  // thing without touching auth state (and fails immediately on dead DNS
+  // instead of hanging inside gotrue's retry loop).
+  final url = (runtimeSupabaseUrl ?? '').trim();
+  final anonKey = (runtimeSupabaseAnonKey ?? '').trim();
+  final useAnonProbe = url.isNotEmpty && anonKey.isNotEmpty;
+
   final client = _supabaseClientOrNull();
-  if (client == null) {
+  if (!useAnonProbe && client == null) {
     log?.call('Supabase is not initialized yet');
     return const SupabaseReachResult.unreachable(
       failureKind: SupabaseFailureKind.noResponse,
@@ -344,7 +383,9 @@ Future<SupabaseReachResult> probeSupabaseReachability({
   }
 
   final future = evaluateSupabaseProbe(
-    (budget) => _runHealthCheck(client, budget),
+    (budget) => useAnonProbe
+        ? _runAnonHealthCheck(url: url, anonKey: anonKey, budget: budget)
+        : _runHealthCheck(client!, budget),
     budget: timeout ?? platformProbeTimeout(kSupabaseProbeTimeout),
     confirmBudget: platformProbeTimeout(kSupabaseConfirmTimeout),
     confirm: confirm,
@@ -364,6 +405,70 @@ Future<SupabaseReachResult> probeSupabaseReachability({
   }
 
   return future;
+}
+
+/// One `health_check` round trip that never touches the signed-in session.
+///
+/// See [probeSupabaseReachability] for why this exists. Uses the anon key
+/// directly so no access-token refresh (and no rotating refresh-token use)
+/// can be triggered by a connectivity probe.
+Future<Object?> _runAnonHealthCheck({
+  required String url,
+  required String anonKey,
+  required Duration budget,
+}) async {
+  final base = url.replaceFirst(RegExp(r'/+$'), '');
+  final client = http.Client();
+  try {
+    final response = await client
+        .post(
+          Uri.parse('$base/rest/v1/rpc/health_check'),
+          headers: <String, String>{
+            'apikey': anonKey,
+            'Authorization': 'Bearer $anonKey',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'cache-control': 'no-cache',
+          },
+          body: '{}',
+        )
+        .timeout(budget);
+    final status = response.statusCode;
+    if (status >= 200 && status < 300) {
+      final body = response.body.trim();
+      if (body.isEmpty) return null;
+      try {
+        return jsonDecode(body);
+      } catch (_) {
+        // A 2xx is proof the backend answered even if the body is not JSON.
+        return null;
+      }
+    }
+    // Auth/RLS/rate-limit rejections still prove the server is there.
+    if (status == 401 || status == 403 || status == 429) {
+      throw _ProbeHttpRejection(status);
+    }
+    throw PostgrestException(
+      message: 'health_check answered HTTP $status',
+      code: 'PGRST$status',
+    );
+  } finally {
+    // Also aborts an in-flight request when [budget] won, so a stalled
+    // gateway does not leave a socket behind.
+    client.close();
+  }
+}
+
+/// An auth/RLS/rate-limit answer from the raw probe. Treated as "reachable"
+/// by [evaluateSupabaseProbe]; the message shape matches
+/// `isAuthRateLimitFailure`.
+class _ProbeHttpRejection implements Exception {
+  const _ProbeHttpRejection(this.statusCode);
+
+  final int statusCode;
+
+  @override
+  String toString() => 'health_check auth rejection (statusCode: $statusCode)';
 }
 
 /// One `health_check` round trip that is actually cancelled when [budget] wins.

@@ -95,6 +95,11 @@ class LocalDbService {
   Box? _optionsBox;
   Box<String>? _offlineTrailBox;
   bool _initialized = false;
+
+  /// True once [init] has opened the startup-critical encrypted boxes.
+  /// Callers that must not block (e.g. first-paint cache reads) can fall back
+  /// to another source while background initialization is still running.
+  static bool get isInitialized => _instance?._initialized ?? false;
   bool _optionalWarmupStarted = false;
 
   Completer<void>? _initCompleter;
@@ -793,9 +798,8 @@ class LocalDbService {
     double? parseCoord(dynamic v) => v == null
         ? null
         : (v is num ? v.toDouble() : double.tryParse(v.toString()));
-    int parseOcc(dynamic v) => v == null
-        ? 1
-        : (v is int ? v : int.tryParse(v.toString()) ?? 1);
+    int parseOcc(dynamic v) =>
+        v == null ? 1 : (v is int ? v : int.tryParse(v.toString()) ?? 1);
 
     final occ = parseOcc(m['match_occurrence'] ?? m['matchOccurrence']);
     final cLat = parseCoord(
@@ -818,8 +822,7 @@ class LocalDbService {
       m['user2_lng'] ?? m['user2Lng'] ?? m['user2_longitude'],
     );
     final intent = (m['matched_intent'] ?? m['matchedIntent'])?.toString();
-    final createdAt =
-        m['created_at']?.toString() ?? m['createdAt']?.toString();
+    final createdAt = m['created_at']?.toString() ?? m['createdAt']?.toString();
 
     // Check previous locations
     final prev = m['previous_locations'] ?? m['locations_history'];
@@ -828,10 +831,14 @@ class LocalDbService {
         if (p is Map) {
           final pMap = Map<String, dynamic>.from(p);
           final pLat = parseCoord(
-            pMap['map_center_lat'] ?? pMap['mapCenterLat'] ?? pMap['center_lat'],
+            pMap['map_center_lat'] ??
+                pMap['mapCenterLat'] ??
+                pMap['center_lat'],
           );
           final pLng = parseCoord(
-            pMap['map_center_lng'] ?? pMap['mapCenterLng'] ?? pMap['center_lng'],
+            pMap['map_center_lng'] ??
+                pMap['mapCenterLng'] ??
+                pMap['center_lng'],
           );
           final pU1Lat = parseCoord(
             pMap['user1_lat'] ?? pMap['user1Lat'] ?? pMap['user1_latitude'],
@@ -839,7 +846,8 @@ class LocalDbService {
           final pU2Lat = parseCoord(
             pMap['user2_lat'] ?? pMap['user2Lat'] ?? pMap['user2_latitude'],
           );
-          final hasLoc = (pLat != null && pLng != null) ||
+          final hasLoc =
+              (pLat != null && pLng != null) ||
               (pU1Lat != null && pU2Lat != null);
           if (hasLoc) {
             pMap['match_id'] ??= matchId;
@@ -849,7 +857,8 @@ class LocalDbService {
       }
     }
 
-    final hasCurrent = (cLat != null && cLng != null) ||
+    final hasCurrent =
+        (cLat != null && cLng != null) ||
         (u1Lat != null && u1Lng != null && u2Lat != null && u2Lng != null);
     if (hasCurrent) {
       final currentMap = <String, dynamic>{
@@ -1125,10 +1134,7 @@ class LocalDbService {
   }) {
     return _withMessagesWrite(
       matchId,
-      () => _clearCachedTranslationsForMatchUnlocked(
-        matchId,
-        userId: userId,
-      ),
+      () => _clearCachedTranslationsForMatchUnlocked(matchId, userId: userId),
     );
   }
 
@@ -1228,10 +1234,7 @@ class LocalDbService {
     );
   }
 
-  Future<void> _deleteMessageUnlocked(
-    String matchId,
-    String messageId,
-  ) async {
+  Future<void> _deleteMessageUnlocked(String matchId, String messageId) async {
     final box = await _getMessagesBox();
     final messages = await getMessages(matchId);
     final updatedMessages = messages
@@ -1874,7 +1877,9 @@ class LocalDbService {
             .map((row) => Map<String, dynamic>.from(row))
             .toList();
       } catch (error) {
-        debugPrint('[LocalDb] Could not decode cached chats for $userId: $error');
+        debugPrint(
+          '[LocalDb] Could not decode cached chats for $userId: $error',
+        );
         return const [];
       }
     }
@@ -1931,10 +1936,7 @@ class LocalDbService {
   final Map<String, Future<void>> _messagesWriteChains = {};
 
   /// Runs [action] after every previously queued write for [matchId].
-  Future<T> _withMessagesWrite<T>(
-    String matchId,
-    Future<T> Function() action,
-  ) {
+  Future<T> _withMessagesWrite<T>(String matchId, Future<T> Function() action) {
     final previous = _messagesWriteChains[matchId] ?? Future<void>.value();
     final gate = Completer<void>();
     _messagesWriteChains[matchId] = gate.future;
@@ -1992,8 +1994,8 @@ class LocalDbService {
   /// Hive string is held alongside its decoded rows so the cache can be
   /// validated against the current raw value (any write produces a different
   /// string → cache miss → re-decode; a stale entry can never be served).
-  final Map<String, (String, List<Map<String, dynamic>>)>
-  _messagesDecodeCache = {};
+  final Map<String, (String, List<Map<String, dynamic>>)> _messagesDecodeCache =
+      {};
 
   /// Cached-decode counterpart of [getMessages].
   ///
@@ -2339,12 +2341,7 @@ class LocalDbService {
   ) {
     return _withMessagesWrite(
       matchId,
-      () => _saveCachedReactorsUnlocked(
-        matchId,
-        messageId,
-        reaction,
-        reactors,
-      ),
+      () => _saveCachedReactorsUnlocked(matchId, messageId, reaction, reactors),
     );
   }
 
@@ -2380,10 +2377,7 @@ class LocalDbService {
     await box.put(matchId, jsonEncode(messages));
   }
 
-  Future<void> clearMessageReactorCache(
-    String matchId,
-    String messageId,
-  ) {
+  Future<void> clearMessageReactorCache(String matchId, String messageId) {
     return _withMessagesWrite(
       matchId,
       () => _clearMessageReactorCacheUnlocked(matchId, messageId),
@@ -2720,7 +2714,8 @@ class LocalDbService {
 
         final localReadInstant = parseInstant(msg['read_at']);
         if (serverRead != null &&
-            (localReadInstant == null || serverRead.isAfter(localReadInstant))) {
+            (localReadInstant == null ||
+                serverRead.isAfter(localReadInstant))) {
           msg['read_at'] = status['read_at'].toString();
           changed = true;
         }
@@ -2901,9 +2896,7 @@ class LocalDbService {
               incomingOrig.isEmpty ||
               incomingOrig == 'null') {
             final oldOrig = oldMsg['content_original']?.toString();
-            if (oldOrig != null &&
-                oldOrig.isNotEmpty &&
-                oldOrig != 'null') {
+            if (oldOrig != null && oldOrig.isNotEmpty && oldOrig != 'null') {
               mergedRow['content_original'] = oldOrig;
             }
           }
@@ -2912,9 +2905,7 @@ class LocalDbService {
               incomingTrans.isEmpty ||
               incomingTrans == 'null') {
             final oldTrans = oldMsg['content_translated']?.toString();
-            if (oldTrans != null &&
-                oldTrans.isNotEmpty &&
-                oldTrans != 'null') {
+            if (oldTrans != null && oldTrans.isNotEmpty && oldTrans != 'null') {
               mergedRow['content_translated'] = oldTrans;
             }
           }
@@ -2937,8 +2928,7 @@ class LocalDbService {
               mergedRow['content_original'].toString().isEmpty ||
               mergedRow['content_original'] == 'null') &&
           mergedRow['content_original_encrypted_cache'] != null) {
-        final cached =
-            mergedRow['content_original_encrypted_cache'].toString();
+        final cached = mergedRow['content_original_encrypted_cache'].toString();
         if (cached.isNotEmpty) {
           try {
             final restored = await EncryptedCacheService.instance
@@ -3459,12 +3449,8 @@ class LocalDbService {
   ) {
     return _withMessagesWrite(
       matchId,
-      () => _saveTranslationUnlocked(
-        matchId,
-        messageId,
-        translation,
-        targetLang,
-      ),
+      () =>
+          _saveTranslationUnlocked(matchId, messageId, translation, targetLang),
     );
   }
 
@@ -3897,6 +3883,46 @@ class LocalDbService {
         await mutationBox.clear();
       }
     } catch (_) {}
+  }
+
+  /// Encrypted verification-status snapshot (is_verified, AI analysis,
+  /// similarity score, rejection metadata, verification photo path).
+  ///
+  /// Kept in the encrypted settings box rather than SharedPreferences so the
+  /// AI analysis and rejection details are not left in plaintext on disk.
+  Future<void> saveVerificationStatus(
+    String userId,
+    Map<String, dynamic> data,
+  ) async {
+    final trimmedId = userId.trim();
+    if (trimmedId.isEmpty || data.isEmpty) return;
+    final box = await _getSettingsBox();
+    await box.put(
+      'verification_status_$trimmedId',
+      jsonEncode({
+        'user_id': trimmedId,
+        'data': data,
+        'cached_at': DateTime.now().toIso8601String(),
+      }),
+    );
+  }
+
+  Future<Map<String, dynamic>?> getVerificationStatus(String userId) async {
+    final trimmedId = userId.trim();
+    if (trimmedId.isEmpty) return null;
+    try {
+      final box = await _getSettingsBox();
+      final raw = box.get('verification_status_$trimmedId');
+      if (raw == null) return null;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map || decoded['user_id'] != trimmedId) return null;
+      final data = decoded['data'];
+      if (data is! Map) return null;
+      return Map<String, dynamic>.from(data);
+    } catch (error) {
+      debugPrint('[LocalDb] Could not decode verification status: $error');
+      return null;
+    }
   }
 
   Future<void> saveNotificationInbox(

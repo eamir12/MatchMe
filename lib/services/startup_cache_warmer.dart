@@ -1,3 +1,4 @@
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/offline_cache_manager.dart';
@@ -75,6 +76,12 @@ class StartupCacheWarmer {
       // (GlobalHomeSyncManager fireImmediately on wake) can land during the
       // wait and would otherwise skip the warm even though the app is online.
       if (offlineCacheManager.shouldUseCachedData()) return;
+      // Startup warming is an optimization, not worth consuming a cellular
+      // data plan or competing with the first profile/logout round trips.
+      if (await _isMeteredConnection()) {
+        debugPrint('[CACHE_WARM] Skipping avatar warm on metered connection');
+        return;
+      }
       final collectStartMs = sw.elapsedMilliseconds;
       await Future.delayed(const Duration(milliseconds: 300));
       if (offlineCacheManager.shouldUseCachedData()) return;
@@ -116,6 +123,15 @@ class StartupCacheWarmer {
       );
     } catch (e) {
       debugPrint('[CACHE_WARM] Avatar warm failed (non-fatal): $e');
+    }
+  }
+
+  static Future<bool> _isMeteredConnection() async {
+    try {
+      final results = await Connectivity().checkConnectivity();
+      return results.contains(ConnectivityResult.mobile);
+    } catch (_) {
+      return false;
     }
   }
 }

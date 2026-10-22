@@ -17,8 +17,10 @@ import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/native_secure_store.dart';
 import 'package:matchme/services/offline_cache_manager.dart';
 import 'package:matchme/services/network_availability.dart';
+import 'package:matchme/services/runtime_supabase_config.dart';
 import 'package:matchme/services/secure_storage_service.dart';
 import 'package:matchme/services/sensitive_session_store.dart';
+import 'package:matchme/services/supabase_reachability.dart';
 import 'package:matchme/services/user_activity_service.dart';
 import 'package:matchme/services/windows_location_channel.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -36,8 +38,9 @@ import 'package:matchme/utils/offline_utils.dart';
 ///   trying another stored copy; NEVER a reason to sign the user out.
 /// * [RefreshTokenHealth.dead] — the server no longer knows this token
 ///   (`Invalid Refresh Token` / `refresh_token_not_found`). The session family
-///   was revoked server-side: the app's session-rotation limit was reached
-///   and the user has to sign in again.
+///   was revoked server-side. This is NOT proof that the account was deleted,
+///   so it never signs the user out by itself: the app keeps the persisted
+///   session and the cached data.
 /// * [RefreshTokenHealth.unknown] — the probe could not reach the server.
 enum RefreshTokenHealth { healthy, race, dead, unknown }
 
@@ -91,6 +94,17 @@ class SessionService {
   static void disableRecovery() {
     _recoveryDisabled = true;
     _recoveredPersistedSessionThisLaunch = false;
+  }
+
+  /// Re-arms persisted-session recovery after a brand-new sign-in.
+  ///
+  /// [disableRecovery] is scoped to the session that was proven dead (forced
+  /// sign-out or deleted account). A later sign-in creates a different
+  /// session, and that one must be recoverable on the next launch.
+  static void enableRecovery() {
+    _recoveryDisabled = false;
+    _recoveredPersistedSessionThisLaunch = false;
+    _lastRecoveryAttempt = null;
   }
 
   static Map<String, dynamic> _readAccessTokenPayload() {
@@ -297,7 +311,8 @@ class SessionService {
 
   /// Same question as [consumeExplicitUserSignOutFlag], but explicitly
   /// non-destructive.
-  static bool get isExplicitUserSignOutPending => _explicitUserSignOutAt != null;
+  static bool get isExplicitUserSignOutPending =>
+      _explicitUserSignOutAt != null;
 
   /// Called when a new session is established: the previous sign-out (if any)
   /// is no longer relevant.
@@ -446,31 +461,90 @@ class SessionService {
   static Future<bool> safeRefreshSession({
     Duration timeout = const Duration(milliseconds: 1500),
   }) async {
-    // If another refresh is already in flight, wait for it (with timeout)
+    // If another refresh is already in flight, wait for it (with timeout).
+    // Return the real state of the session: returning true just because a
+    // session object still exists turned a failed refresh into a logged
+    // "Token refreshed successfully" while the expired access token kept
+    // being sent to the server (401 / RLS 42501 on every call).
     if (_refreshCompleter != null && !_refreshCompleter!.isCompleted) {
       try {
         await _refreshCompleter!.future.timeout(timeout);
       } catch (_) {}
-      return Supabase.instance.client.auth.currentSession != null;
+      final joined = Supabase.instance.client.auth.currentSession;
+      final usable = _isUsableSession(joined);
+      if (!usable) {
+        debugPrint(
+          '🔐 [SESSION] safeRefresh: joined an in-flight refresh that did not renew the session',
+        );
+      }
+      return usable;
     }
 
     _refreshCompleter = Completer<void>();
     try {
-      // Remember the token we are about to spend so the retry below never
-      // re-uses the very token the server just rejected.
-      final tokenBeingSpent = Supabase
-          .instance
-          .client
-          .auth
-          .currentSession
-          ?.refreshToken
-          ?.trim() ??
+      // Never start a refresh while the app already knows Supabase is
+      // unreachable. GoTrue retries AuthRetryableFetchException internally
+      // for up to ~30s, surviving our own timeout; that orphaned retry can
+      // outlive the outage and later spend a refresh token that another
+      // refresher already rotated, producing `refresh_token_already_used`
+      // and a server-side revocation of the session family.
+      if (!offlineCacheManager.isSupabaseAvailable) {
+        debugPrint(
+          '🔐 [SESSION] safeRefresh skipped (Supabase marked offline)',
+        );
+        return false;
+      }
+
+      // Confirm the transport with the anon probe before spending the
+      // single-use refresh token. Dead DNS fails in milliseconds here,
+      // instead of starting GoTrue's long retry loop.
+      if (!await _canReachSupabaseForRefresh()) {
+        debugPrint(
+          '🔐 [SESSION] safeRefresh skipped (Supabase probe unreachable)',
+        );
+        return false;
+      }
+
+      // Prefer the freshest refresh-token copy on the device. The native
+      // background service rotates the token in the shared encrypted store
+      // but cannot update Dart's in-memory session; if it refreshed first,
+      // the in-memory token is already spent. Spending it again is what
+      // GoTrue answers with `already_used` (and then revokes the session
+      // family). Every Dart refresh dual-writes the native copy, so that
+      // copy is at least as new as the in-memory one.
+      var tokenToSpend =
+          Supabase.instance.client.auth.currentSession?.refreshToken?.trim() ??
           '';
       try {
+        final candidates = await SensitiveSessionStore.instance
+            .readRefreshTokenCandidates();
+        if (candidates.isNotEmpty) {
+          final freshest = candidates.first.trim();
+          if (freshest.isNotEmpty && freshest != tokenToSpend) {
+            debugPrint(
+              '🔐 [SESSION] safeRefresh: using the newer stored refresh token',
+            );
+            tokenToSpend = freshest;
+          }
+        }
+      } catch (_) {}
+
+      if (tokenToSpend.isEmpty) {
+        debugPrint('🔐 [SESSION] safeRefresh: no refresh token available');
+        return false;
+      }
+
+      // Remember the token we are about to spend so the retry below never
+      // re-uses the very token the server just rejected.
+      final tokenBeingSpent = tokenToSpend;
+      try {
         _lastRefreshStopwatch.start();
-        await Supabase.instance.client.auth.refreshSession().timeout(timeout);
+        final response = await Supabase.instance.client.auth
+            .refreshSession(tokenBeingSpent)
+            .timeout(timeout);
         _lastRefreshStopwatch.stop();
         _alreadyUsedRetryCount = 0; // Reset on success
+        await _adoptRotatedSession(response);
       } on TimeoutException {
         _lastRefreshStopwatch.stop();
         rethrow;
@@ -519,9 +593,10 @@ class SessionService {
                 '🔐 [SESSION] safeRefresh: retrying with a stored refresh-token copy (attempt $_alreadyUsedRetryCount/$_maxAlreadyUsedRetries) after already_used',
               );
               try {
-                await Supabase.instance.client.auth
+                final retryResponse = await Supabase.instance.client.auth
                     .refreshSession(candidate)
                     .timeout(timeout);
+                await _adoptRotatedSession(retryResponse);
                 await persistCurrentSupabaseSessionSnapshot();
 
                 // Sync back to secure store + native shim via prefs
@@ -579,6 +654,71 @@ class SessionService {
         _refreshCompleter!.complete();
       }
       _refreshCompleter = null;
+    }
+  }
+
+  /// True when [session] carries a non-empty, not-yet-expired access token.
+  static bool _isUsableSession(Session? session) {
+    if (session == null) return false;
+    if (session.accessToken.trim().isEmpty) return false;
+    final expiresAt = session.expiresAt;
+    if (expiresAt == null) return true;
+    return expiresAt > DateTime.now().millisecondsSinceEpoch / 1000;
+  }
+
+  /// Adopt the session returned by a refresh when GoTrue discarded it.
+  ///
+  /// `_doRefresh` ignores its own result if the session was mutated while the
+  /// network call was in flight (an offline restore/sign-out race). The
+  /// server has still rotated the refresh token at that point; keeping the
+  /// old in-memory token makes the NEXT refresh fail with
+  /// `refresh_token_already_used` and tears the session down. `recoverSession`
+  /// persists the successful response without spending another token.
+  static Future<void> _adoptRotatedSession(AuthResponse response) async {
+    final returned = response.session;
+    if (returned == null) return;
+    if (returned.accessToken.trim().isEmpty) return;
+    // recoverSession() signs the user out locally when handed an expired
+    // session; a session that just came back from the server cannot be, but
+    // never risk it.
+    if (returned.isExpired) return;
+    final current = Supabase.instance.client.auth.currentSession;
+    final alreadyApplied =
+        current != null &&
+        current.accessToken == returned.accessToken &&
+        current.refreshToken == returned.refreshToken;
+    if (alreadyApplied) return;
+    // Never let a slow refresh overwrite a different account that signed in
+    // while the network call was in flight.
+    if (current != null && current.user.id != returned.user.id) return;
+    try {
+      await Supabase.instance.client.auth.recoverSession(
+        jsonEncode(returned.toJson()),
+      );
+      debugPrint(
+        '🔐 [SESSION] Adopted a rotated session the auth client had discarded',
+      );
+    } catch (e) {
+      debugPrint('🔐 [SESSION] Failed to adopt rotated session: $e');
+    }
+  }
+
+  /// Cheap anon reachability check before spending a rotating refresh token.
+  ///
+  /// Returns true when the probe cannot run at all (never block a refresh on
+  /// probe infrastructure) and only false on a definitive "nothing answered"
+  /// verdict.
+  static Future<bool> _canReachSupabaseForRefresh() async {
+    final url = (runtimeSupabaseUrl ?? '').trim();
+    final key = (runtimeSupabaseAnonKey ?? '').trim();
+    if (url.isEmpty || key.isEmpty) return true;
+    try {
+      final result = await probeSupabaseReachability(
+        timeout: const Duration(seconds: 3),
+      );
+      return result.isReachable;
+    } catch (_) {
+      return true;
     }
   }
 
@@ -663,15 +803,18 @@ class SessionService {
         text.contains('token is expired') ||
         text.contains('invalid token') ||
         text.contains('unauthorized') ||
-        text.contains('statuscode: 401') ||
-        text.contains('statuscode: 403')) {
+        text.contains('invalid claim')) {
       return false;
     }
 
+    // Check the definitive signatures BEFORE any status-code heuristic.
+    // GoTrue answers a deleted auth user with HTTP 403 + `user_not_found`
+    // ("User from sub claim in JWT does not exist"); treating 403 as a
+    // blanket exclusion made deletion detection silently fail.
     return text.contains('user from sub claim') ||
+        text.contains('user_not_found') ||
         text.contains('user not found') ||
-        text.contains('user does not exist') ||
-        text.contains('invalid claim');
+        text.contains('user does not exist');
   }
 
   /// Whether a refresh-token failure is a benign rotation race or a genuinely
@@ -684,8 +827,8 @@ class SessionService {
   ///   Recoverable by trying another stored copy; NEVER a reason to sign out.
   /// * [RefreshTokenHealth.dead] — the server no longer knows this token
   ///   (`Invalid Refresh Token` / `refresh_token_not_found`). The session
-  ///   family was revoked server-side: this is the app's session-rotation
-  ///   limit being reached and the only legitimate automatic sign-out.
+  ///   family was revoked server-side. This is not proof of deletion and is
+  ///   NEVER a reason to sign out: keep the persisted session and cached data.
   /// * [RefreshTokenHealth.unknown] — the probe could not reach the server.
   static Future<RefreshTokenHealth> probeRefreshTokenHealth() async {
     final auth = Supabase.instance.client.auth;
@@ -697,9 +840,9 @@ class SessionService {
     var sawDead = false;
     for (final candidate in candidates) {
       try {
-        await auth.refreshSession(candidate).timeout(
-          const Duration(seconds: 8),
-        );
+        await auth
+            .refreshSession(candidate)
+            .timeout(const Duration(seconds: 8));
         // A refresh succeeded: the session family is alive.
         try {
           await persistCurrentSupabaseSessionSnapshot();
@@ -742,45 +885,24 @@ class SessionService {
     return RefreshTokenHealth.unknown;
   }
 
-  /// Ends a session the server no longer knows about.
-  ///
-  /// This is the app's session-rotation limit: the session family was
-  /// revoked server-side (long-lived session, admin revocation, or a server
-  /// side session reset), so the session cannot be renewed any more and the
-  /// user has to sign in again. It is one of the few legitimate reasons to
-  /// show the login screen.
-  static Future<void> signOutSessionRotationLimitReached() async {
-    debugPrint(
-      '🔐 [SESSION] Session rotation limit reached — the refresh token is no longer valid server-side. Signing out.',
-    );
-    try {
-      await persistSignOutReason(
-        reason:
-            'The refresh token is no longer valid server-side (session rotation limit reached)',
-        source: 'sessionRotationLimit',
-      );
-    } catch (_) {}
-    markExplicitUserSignOut();
-    await clearPersistedSupabaseSessionSnapshot();
-    try {
-      await Supabase.instance.client.auth.signOut(scope: SignOutScope.local);
-    } catch (_) {}
-  }
-
   /// Asks the server whether the currently signed-in account still exists.
   ///
-  /// ONLY a `getUser()` that comes back with a definitive "this user does not
-  /// exist" answer proves a deletion (admin delete, or self-delete on another
-  /// device). Every other failure — expired JWT, network blip, a dead or
-  /// spent refresh token — is ambiguous and keeps the user signed in.
+  /// Returns [true] only for a definitive deletion, [false] when the account
+  /// is confirmed alive, and [null] when the answer is ambiguous (offline,
+  /// expired JWT that the SDK cannot refresh, dead refresh token). Ambiguous
+  /// answers keep the user signed in and leave the probe re-armed.
   ///
-  /// A refresh-token failure used to be accepted as proof of deletion, which
-  /// hard-signed the user out on a rotation race. That check now lives in
-  /// [probeRefreshTokenHealth] and is reported separately as the
-  /// session-rotation-limit case.
-  static Future<bool> confirmAccountDeleted() async {
+  /// [Auth.getUser] does not refresh an expired access token: GoTrue rejects
+  /// the JWT before looking up the account, so after a long offline period it
+  /// can no longer distinguish a deleted account from a revoked session. The
+  /// anonymous [account_exists] probe closes that gap without touching the
+  /// user's rotating refresh token.
+  static Future<bool?> confirmAccountDeleted() async {
     final auth = Supabase.instance.client.auth;
-    if (auth.currentSession == null) return false;
+    final session = auth.currentSession;
+    if (session == null) return null;
+    final userId = session.user.id.trim();
+    if (userId.isEmpty) return null;
 
     try {
       await auth.getUser().timeout(const Duration(seconds: 8));
@@ -789,9 +911,49 @@ class SessionService {
       if (isAccountGoneAuthError(e)) {
         return true; // definitive: the auth user is gone
       }
-      // Ambiguous (expired JWT, network blip, token problems): not proof of
-      // deletion. Keep the user signed in.
-      return false;
+    }
+
+    // `getUser` failed for a non-definitive reason. If the backend still
+    // serves the narrow existence RPC, use it: it works with an expired
+    // access token and a refresh token that was deleted with the account.
+    final exists = await _probeAccountExistsAnon(userId);
+    return exists == false ? true : null;
+  }
+
+  /// Raw anon probe for the account-existence RPC.
+  ///
+  /// Returns [true]/[false] when the RPC answered, and [null] when it is
+  /// unavailable (not deployed, old backend, offline, timeout). A missing RPC
+  /// is deliberately treated as "unknown", never as "deleted".
+  static Future<bool?> _probeAccountExistsAnon(String userId) async {
+    if (userId.isEmpty) return null;
+    final base = (runtimeSupabaseUrl ?? '').trim().replaceFirst(
+      RegExp(r'/+$'),
+      '',
+    );
+    final anonKey = (runtimeSupabaseAnonKey ?? '').trim();
+    if (base.isEmpty || anonKey.isEmpty) return null;
+
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$base/rest/v1/rpc/account_exists'),
+            headers: <String, String>{
+              'apikey': anonKey,
+              'Authorization': 'Bearer $anonKey',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'cache-control': 'no-cache',
+            },
+            body: jsonEncode(<String, String>{'p_user_id': userId}),
+          )
+          .timeout(const Duration(seconds: 4));
+      if (response.statusCode != 200) return null;
+      final decoded = jsonDecode(response.body);
+      if (decoded is bool) return decoded;
+      return null;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -804,10 +966,7 @@ class SessionService {
       '$reason',
     );
     try {
-      await persistSignOutReason(
-        reason: reason,
-        source: 'accountDeletedCheck',
-      );
+      await persistSignOutReason(reason: reason, source: 'accountDeletedCheck');
     } catch (_) {}
     disableRecovery();
     markExplicitUserSignOut();
@@ -861,8 +1020,7 @@ class SessionService {
           await Supabase.instance.client.auth
               .setInitialSession(sessionJson)
               .timeout(const Duration(seconds: 2));
-          restored =
-              Supabase.instance.client.auth.currentSession != null;
+          restored = Supabase.instance.client.auth.currentSession != null;
         } catch (_) {}
 
         // STEP 2 — if the restored session is still usable we are done.
@@ -1473,13 +1631,87 @@ class SessionService {
     final sessionId = await _getStoredSessionId(uid, p, deviceId: deviceId);
     if (sessionId == null || sessionId.isEmpty) return;
 
+    final now = DateTime.now().toUtc().toIso8601String();
     try {
       await Supabase.instance.client
           .from('user_session')
-          .update({'revoked': true})
+          .update({
+            'revoked': true,
+            'revoked_at': now,
+            'logout_at': now,
+            'terminated_by': 'user',
+          })
           .eq('id', sessionId)
           .eq('user_id', uid);
     } catch (_) {}
+  }
+
+  /// Ends only THIS device's session.
+  ///
+  /// A user may be signed in on several devices at once. Logging out here must
+  /// not revoke the other devices' sessions, mark the account offline, or clear
+  /// its account-level pinned location while another device is still active.
+  /// The server-side [logout_user_device] RPC revokes the matching session and
+  /// only drops presence when no non-revoked session remains.
+  ///
+  /// Returns TRUE when at least one other device session is still active.
+  static Future<bool> logoutCurrentDevice({
+    String? userId,
+    bool clearPinnedLocation = true,
+    Duration timeout = const Duration(seconds: 3),
+  }) async {
+    final uid = (userId ?? Supabase.instance.client.auth.currentUser?.id)
+        ?.trim();
+    if (uid == null || uid.isEmpty) return false;
+
+    final platform = _detectPlatform();
+    final deviceId = await _getDeviceIdFast();
+    var sessionId = await _getStoredSessionId(
+      uid,
+      platform,
+      deviceId: deviceId,
+    );
+    if (sessionId == null && deviceId != null && deviceId.trim().isNotEmpty) {
+      sessionId = await _findExistingSessionId(uid, platform, deviceId);
+    }
+
+    // The caller may have begun this work before signOut but reached the RPC
+    // only after auth was cleared. Running then would execute as `anon` and
+    // fail with 42501, leaving a stale session. Skip instead.
+    final client = Supabase.instance.client;
+    if (client.auth.currentSession == null ||
+        client.auth.currentUser?.id != uid) {
+      debugPrint('[SESSION] logout_user_device skipped: auth session changed');
+      await _clearStoredSessionId(uid, platform, deviceId: deviceId);
+      return false;
+    }
+
+    var remainsOnline = false;
+    try {
+      final result = await client
+          .rpc(
+            'logout_user_device',
+            params: {
+              'p_user_id': uid,
+              'p_session_id': sessionId,
+              'p_platform': platform,
+              'p_device_id': deviceId,
+              'p_clear_pinned': clearPinnedLocation,
+            },
+          )
+          .timeout(timeout);
+      remainsOnline = result == true || result?.toString() == 'true';
+    } catch (e) {
+      // Do NOT fall back to direct table writes or set_user_offline here.
+      // This call is only valid while the user JWT is still active; a timeout
+      // or failure must not keep running after auth.signOut(), where it would
+      // execute as `anon` and either fail noisily or leave a stale session.
+      debugPrint('[SESSION] logout_user_device failed: $e');
+    } finally {
+      await _clearStoredSessionId(uid, platform, deviceId: deviceId);
+    }
+
+    return remainsOnline;
   }
 
   static Future<String?> _getDeviceIdFast() async {
@@ -1522,11 +1754,8 @@ class SessionService {
     String? platform,
   }) async {
     final uid = userId?.trim();
-    final p = platform?.trim();
-    if (uid != null && uid.isNotEmpty && p != null && p.isNotEmpty) {
-      final deviceId = await _getDeviceIdFast();
-      await revokeCurrentSession(userId: uid, platform: p, deviceId: deviceId);
-      await _clearStoredSessionId(uid, p, deviceId: deviceId);
+    if (uid != null && uid.isNotEmpty) {
+      await logoutCurrentDevice(userId: uid);
     }
     await deleteFcmToken();
     await clearLocalFcmToken();
@@ -1756,8 +1985,8 @@ class SessionService {
       final wnsChannel = await _getStoredWnsChannel();
       if (wnsChannel != null && wnsChannel.startsWith('https://')) {
         metadata['wns_channel_uri'] = wnsChannel;
-        metadata['wns_channel_uri_updated_at'] =
-            DateTime.now().toIso8601String();
+        metadata['wns_channel_uri_updated_at'] = DateTime.now()
+            .toIso8601String();
       }
     }
     if (userTimezone != null) {

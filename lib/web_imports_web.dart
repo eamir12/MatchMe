@@ -7,7 +7,6 @@
 // through `(html.window as dynamic).navigator...`.
 
 import 'dart:async';
-import 'dart:convert';
 import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
 import 'dart:typed_data';
@@ -249,10 +248,36 @@ class _WebWindow extends Window {
 final HtmlDocument document = _WebDocument();
 final Window window = _WebWindow();
 
-/// Send beacon for reliable offline notification during page unload.
-bool sendOfflineBeacon(String url, String data) {
+/// Send an authenticated keepalive request during page unload.
+///
+/// `navigator.sendBeacon` cannot attach an Authorization header, so the RPC
+/// would run as `anon` and be rejected now that presence updates require a
+/// user JWT. `fetch(..., keepalive: true)` survives the unload and carries
+/// the same headers as a normal PostgREST call.
+bool sendAuthenticatedOfflineBeacon(
+  String url,
+  String data,
+  String accessToken,
+  String anonKey,
+) {
   try {
-    return window.navigator.sendBeacon(url, utf8.encode(data));
+    final headers = web.Headers();
+    headers.set('apikey', anonKey);
+    headers.set('Authorization', 'Bearer $accessToken');
+    headers.set('Content-Type', 'application/json');
+    final init = web.RequestInit(
+      method: 'POST',
+      headers: headers,
+      body: data.toJS,
+      keepalive: true,
+    );
+    unawaited(
+      web.window
+          .fetch(url.toJS, init)
+          .toDart
+          .then<void>((_) {}, onError: (_) {}),
+    );
+    return true;
   } catch (_) {
     return false;
   }

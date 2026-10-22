@@ -90,9 +90,9 @@ class _WizardFieldLegend extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final style = Theme.of(
-      context,
-    ).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant);
+    final style = Theme.of(context).textTheme.bodySmall?.copyWith(
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    );
     if (allOptional) {
       return Padding(
         padding: const EdgeInsets.only(top: 4.0),
@@ -692,6 +692,18 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     try {
       await SessionService.clearLocalWnsChannel();
     } catch (_) {}
+    // End only this device's session. The account stays online, visible and
+    // pinned while another device still has an active session. This must
+    // finish before signOut(); running it afterwards would execute as `anon`.
+    final canReachServer = OfflineCacheManager.instance.isSupabaseAvailable;
+    if (canReachServer) {
+      try {
+        await SessionService.logoutCurrentDevice(
+          userId: widget.user.id,
+          clearPinnedLocation: true,
+        );
+      } catch (_) {}
+    }
     try {
       if (mounted) ref.invalidate(chatKeyProvider);
       ChatKeyService.instance.clearMemoryCaches();
@@ -735,11 +747,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     final key = isSocial
         ? 'profileWizardInterestMaxCategoriesSocial'
         : 'profileWizardInterestMaxCategoriesBusiness';
-    final text = l10n.getPluralString(
-      key,
-      limit,
-      countParam: 'limit',
-    );
+    final text = l10n.getPluralString(key, limit, countParam: 'limit');
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(text)));
@@ -3751,10 +3759,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     final opts =
         ref
             .watch(
-              fieldOptionsProvider((
-                fieldKey: fieldKey,
-                context: 'profile',
-              )),
+              fieldOptionsProvider((fieldKey: fieldKey, context: 'profile')),
             )
             .asData
             ?.value ??
@@ -4093,14 +4098,14 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12.0),
               borderSide: BorderSide(
-              color: Theme.of(context).colorScheme.outlineVariant,
-            ),
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12.0),
               borderSide: BorderSide(
-              color: Theme.of(context).colorScheme.outlineVariant,
-            ),
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12.0),
@@ -4308,9 +4313,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
       ),
       'rejected' => (
         isDarkPill ? scheme.error.withValues(alpha: 0.16) : Colors.red.shade50,
-        isDarkPill
-            ? scheme.error.withValues(alpha: 0.45)
-            : Colors.red.shade200,
+        isDarkPill ? scheme.error.withValues(alpha: 0.45) : Colors.red.shade200,
         isDarkPill ? scheme.error : Colors.red.shade800,
         Icons.cancel,
         'profileEditAdminDecisionRejected',
@@ -4575,9 +4578,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                 padding: const EdgeInsets.symmetric(vertical: 8.0),
                 child: Text(
                   l10n.getString('profileWizardSearchNoResults'),
-                  style: Theme.of(
-                    context,
-                  ).textTheme.bodyMedium?.copyWith(
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
                 ),
@@ -4695,7 +4696,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             elevation: 0,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12.0),
-              side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+              side: BorderSide(
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
             ),
             margin: const EdgeInsets.only(bottom: 8.0),
             child: Column(
@@ -4856,9 +4859,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
               const SizedBox(height: 8),
               Text(
                 l10n.getString('profileInterestsHelper'),
-                style: Theme.of(
-                  ctx,
-                ).textTheme.bodyMedium?.copyWith(
+                style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
                   color: Theme.of(ctx).colorScheme.onSurfaceVariant,
                 ),
               ),
@@ -4923,9 +4924,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                       padding: const EdgeInsets.only(top: 16.0),
                       child: Text(
                         l10n.getString('profileWizardSearchNoResults'),
-                        style: Theme.of(
-                          ctx,
-                        ).textTheme.bodyMedium?.copyWith(
+                        style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
                           color: Theme.of(ctx).colorScheme.onSurfaceVariant,
                         ),
                       ),
@@ -4995,7 +4994,10 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                       clipBehavior: Clip.antiAlias,
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12.0),
-                        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant, width: 1),
+                        side: BorderSide(
+                          color: Theme.of(context).colorScheme.outlineVariant,
+                          width: 1,
+                        ),
                       ),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
@@ -5227,9 +5229,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
           const SizedBox(height: 8),
           Text(
             helperText,
-            style: Theme.of(
-              context,
-            ).textTheme.bodyMedium?.copyWith(
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),
@@ -5245,7 +5245,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                     elevation: 0,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12.0),
-                      side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+                      side: BorderSide(
+                        color: Theme.of(context).colorScheme.outlineVariant,
+                      ),
                     ),
                     margin: const EdgeInsets.only(bottom: 14.0),
                     child: Padding(
@@ -5302,7 +5304,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                     elevation: 0,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12.0),
-                      side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+                      side: BorderSide(
+                        color: Theme.of(context).colorScheme.outlineVariant,
+                      ),
                     ),
                     margin: const EdgeInsets.only(bottom: 14.0),
                     child: Padding(
@@ -5398,7 +5402,11 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                           child: Text(
                             l10n.getString('profileLastNameNotDisplayed'),
                             style: Theme.of(context).textTheme.bodySmall
-                                ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                                ?.copyWith(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                                ),
                           ),
                         ),
                       );
@@ -5411,7 +5419,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                     elevation: 0,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12.0),
-                      side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+                      side: BorderSide(
+                        color: Theme.of(context).colorScheme.outlineVariant,
+                      ),
                     ),
                     margin: const EdgeInsets.only(bottom: 14.0),
                     child: ListTile(
@@ -5522,10 +5532,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                               child: Text(
                                 '$ageLabel: $age',
                                 style: TextStyle(
-                                  color: _selectionCounterColor(
-                                    context,
-                                    false,
-                                  ),
+                                  color: _selectionCounterColor(context, false),
                                 ),
                               ),
                             ),
@@ -5566,7 +5573,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                     elevation: 0,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12.0),
-                      side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+                      side: BorderSide(
+                        color: Theme.of(context).colorScheme.outlineVariant,
+                      ),
                     ),
                     margin: const EdgeInsets.only(bottom: 14.0),
                     child: Padding(
@@ -5672,7 +5681,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                       elevation: 0,
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12.0),
-                        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+                        side: BorderSide(
+                          color: Theme.of(context).colorScheme.outlineVariant,
+                        ),
                       ),
                       margin: EdgeInsets.zero,
                       child: ListTile(
@@ -5712,7 +5723,10 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
           const SizedBox(height: 12),
           Text(
             l10n.getString('profileAgeRequirementNote'),
-            style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12),
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              fontSize: 12,
+            ),
           ),
 
           const SizedBox(height: 60),
@@ -5762,8 +5776,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
               const SizedBox(width: 12),
               CircleAvatar(
                 radius: 24,
-                backgroundColor:
-                    Theme.of(context).brightness == Brightness.dark
+                backgroundColor: Theme.of(context).brightness == Brightness.dark
                     ? Colors.blue.withValues(alpha: 0.18)
                     : Colors.blue.shade50,
                 child: Icon(
@@ -5778,9 +5791,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
           const SizedBox(height: 8),
           Text(
             l10n.getString('profileWizardDetailsSubtitle'),
-            style: Theme.of(
-              context,
-            ).textTheme.bodyMedium?.copyWith(
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),
@@ -5792,7 +5803,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             elevation: 0,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12.0),
-              side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+              side: BorderSide(
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
             ),
             margin: const EdgeInsets.only(bottom: 14.0),
             child: Padding(
@@ -5836,7 +5849,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
               elevation: 0,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12.0),
-                side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+                side: BorderSide(
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
               ),
               margin: const EdgeInsets.only(bottom: 14.0),
               child: Padding(
@@ -5981,7 +5996,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             elevation: 0,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12.0),
-              side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+              side: BorderSide(
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
             ),
             margin: const EdgeInsets.only(bottom: 14.0),
             child: Padding(
@@ -6035,7 +6052,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             elevation: 0,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12.0),
-              side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+              side: BorderSide(
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
             ),
             margin: const EdgeInsets.only(bottom: 14.0),
             child: Padding(
@@ -6166,17 +6185,15 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
           const SizedBox(height: 8),
           Text(
             l10n.getString('profileWizardDetailsSubtitle'),
-            style: Theme.of(
-              context,
-            ).textTheme.bodyMedium?.copyWith(
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),
           Text(
             l10n.getString('profileWizardPhotosRequiredNote'),
-            style: Theme.of(
-              context,
-            ).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
           const SizedBox(height: 20),
           _buildPhotoEditorSection(profile),
@@ -6203,7 +6220,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
           elevation: 0,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12.0),
-            side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+            side: BorderSide(
+              color: Theme.of(context).colorScheme.outlineVariant,
+            ),
           ),
           margin: const EdgeInsets.only(bottom: 14.0),
           child: Padding(
@@ -6267,7 +6286,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
           elevation: 0,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12.0),
-            side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+            side: BorderSide(
+              color: Theme.of(context).colorScheme.outlineVariant,
+            ),
           ),
           margin: const EdgeInsets.only(bottom: 14.0),
           child: Padding(
@@ -6330,7 +6351,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             elevation: 0,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12.0),
-              side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+              side: BorderSide(
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
             ),
             margin: const EdgeInsets.only(bottom: 14.0),
             child: Padding(
@@ -6354,7 +6377,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                           'https://linkedin.com/in/',
                           style: Theme.of(context).textTheme.bodyMedium
                               ?.copyWith(
-                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant,
                                 fontFeatures: const [],
                               ),
                         ),
@@ -6418,8 +6443,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
               const SizedBox(width: 12),
               CircleAvatar(
                 radius: 24,
-                backgroundColor:
-                    Theme.of(context).brightness == Brightness.dark
+                backgroundColor: Theme.of(context).brightness == Brightness.dark
                     ? Colors.blue.withValues(alpha: 0.18)
                     : Colors.blue.shade50,
                 child: Icon(
@@ -6434,9 +6458,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
           const SizedBox(height: 8),
           Text(
             l10n.getString('profileSocialLinksSubtitle'),
-            style: Theme.of(
-              context,
-            ).textTheme.bodyMedium?.copyWith(
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),
@@ -6512,9 +6534,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
           const SizedBox(height: 12),
           Text(
             l10n.getString('profileEditIntentsSubtitle'),
-            style: Theme.of(
-              ctx,
-            ).textTheme.bodyMedium?.copyWith(
+            style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
               color: Theme.of(ctx).colorScheme.onSurfaceVariant,
             ),
           ),
@@ -6940,9 +6960,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                   countParam: 'max',
                   params: {'min': '$_minSubIntents'},
                 ),
-                style: Theme.of(
-                  ctx,
-                ).textTheme.bodyMedium?.copyWith(
+                style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
                   color: Theme.of(ctx).colorScheme.onSurfaceVariant,
                 ),
               ),
@@ -6979,9 +6997,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
               if (subIntents.isEmpty)
                 Text(
                   localResolve('profileEditNoSubIntents'),
-                  style: Theme.of(
-                    ctx,
-                  ).textTheme.bodyMedium?.copyWith(
+                  style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
                     color: Theme.of(ctx).colorScheme.onSurfaceVariant,
                   ),
                 ),
@@ -7001,7 +7017,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                         )
                       : RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12.0),
-                          side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+                          side: BorderSide(
+                            color: Theme.of(context).colorScheme.outlineVariant,
+                          ),
                         ),
                   margin: const EdgeInsets.only(bottom: 12.0),
                   child: ListTile(
@@ -7095,9 +7113,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                 const SizedBox(height: 8),
                 Text(
                   l10n.getString('profileInterestsHelper'),
-                  style: Theme.of(
-                    ctx,
-                  ).textTheme.bodyMedium?.copyWith(
+                  style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
                     color: Theme.of(ctx).colorScheme.onSurfaceVariant,
                   ),
                 ),
@@ -7143,9 +7159,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                     padding: const EdgeInsets.only(top: 16.0),
                     child: Text(
                       localResolve('profileEditNoInterests'),
-                      style: Theme.of(
-                        ctx,
-                      ).textTheme.bodyMedium?.copyWith(
+                      style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
                         color: Theme.of(ctx).colorScheme.onSurfaceVariant,
                       ),
                     ),
@@ -7254,9 +7268,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12.0),
                           side: BorderSide(
-                            color: Theme.of(
-                              ctx,
-                            ).colorScheme.outlineVariant,
+                            color: Theme.of(ctx).colorScheme.outlineVariant,
                             width: 1,
                           ),
                         ),
@@ -8065,7 +8077,10 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         const SizedBox(height: 12),
         Text(
           l10n.getString('profileWizardPhotosTip'),
-          style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12),
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+            fontSize: 12,
+          ),
         ),
       ],
     );
@@ -8446,10 +8461,16 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         onPressed: onPressed,
         padding: const EdgeInsets.all(12),
         style: IconButton.styleFrom(
-          backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-          disabledBackgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+          backgroundColor: Theme.of(
+            context,
+          ).colorScheme.surfaceContainerHighest,
+          disabledBackgroundColor: Theme.of(
+            context,
+          ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
           foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant,
-          disabledForegroundColor: Theme.of(context).colorScheme.onSurfaceVariant,
+          disabledForegroundColor: Theme.of(
+            context,
+          ).colorScheme.onSurfaceVariant,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
           minimumSize: const Size(48, 48),
         ),
@@ -8493,7 +8514,10 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                 const SizedBox(height: 6),
                 Text(
                   label,
-                  style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 13),
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontSize: 13,
+                  ),
                 ),
               ],
             ),
@@ -8583,7 +8607,9 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
             if (filteredEntries.isEmpty)
               Text(
                 l10n.getString('profileNoLanguages'),
-                style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               )
             else
               Column(
@@ -8978,7 +9004,10 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
 
     final cardShape = RoundedRectangleBorder(
       borderRadius: BorderRadius.circular(12.0),
-      side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant, width: 1),
+      side: BorderSide(
+        color: Theme.of(context).colorScheme.outlineVariant,
+        width: 1,
+      ),
     );
     final cardMargin = const EdgeInsets.only(bottom: 14.0);
     final isDarkDiff = Theme.of(context).brightness == Brightness.dark;
@@ -10141,8 +10170,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                 const SizedBox(width: 12),
                 CircleAvatar(
                   radius: 22,
-                  backgroundColor:
-                      Theme.of(ctx).brightness == Brightness.dark
+                  backgroundColor: Theme.of(ctx).brightness == Brightness.dark
                       ? Colors.blue.withValues(alpha: 0.18)
                       : Colors.blue.shade50,
                   child: Icon(
@@ -10300,7 +10328,10 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
       decoration: BoxDecoration(
         color: Theme.of(context).scaffoldBackgroundColor,
         border: Border(
-          top: BorderSide(color: Theme.of(context).colorScheme.outlineVariant, width: 1.0),
+          top: BorderSide(
+            color: Theme.of(context).colorScheme.outlineVariant,
+            width: 1.0,
+          ),
         ),
       ),
       child: Row(
@@ -10862,12 +10893,7 @@ class _OptionDef {
   final String label;
   final String? optionKey;
   final String? description;
-  const _OptionDef(
-    this.value,
-    this.label, {
-    this.optionKey,
-    this.description,
-  });
+  const _OptionDef(this.value, this.label, {this.optionKey, this.description});
 }
 
 class _LifestyleWizardPageState extends ConsumerState<LifestyleWizardPage> {
@@ -11002,8 +11028,7 @@ class _LifestyleWizardPageState extends ConsumerState<LifestyleWizardPage> {
               const SizedBox(width: 12),
               CircleAvatar(
                 radius: 24,
-                backgroundColor:
-                    Theme.of(context).brightness == Brightness.dark
+                backgroundColor: Theme.of(context).brightness == Brightness.dark
                     ? Colors.green.withValues(alpha: 0.18)
                     : Colors.green.shade50,
                 child: Icon(
@@ -11018,9 +11043,7 @@ class _LifestyleWizardPageState extends ConsumerState<LifestyleWizardPage> {
           const SizedBox(height: 8),
           Text(
             l10n.getString('profileWizardLifestyleSubtitle'),
-            style: Theme.of(
-              context,
-            ).textTheme.bodyMedium?.copyWith(
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),
@@ -11314,8 +11337,7 @@ class _FamilyWizardPageState extends ConsumerState<FamilyWizardPage> {
               const SizedBox(width: 12),
               CircleAvatar(
                 radius: 24,
-                backgroundColor:
-                    Theme.of(context).brightness == Brightness.dark
+                backgroundColor: Theme.of(context).brightness == Brightness.dark
                     ? Colors.orange.withValues(alpha: 0.18)
                     : Colors.orange.shade50,
                 child: Icon(
@@ -11330,9 +11352,7 @@ class _FamilyWizardPageState extends ConsumerState<FamilyWizardPage> {
           const SizedBox(height: 8),
           Text(
             l10n.getString('profileWizardFamilySubtitle'),
-            style: Theme.of(
-              context,
-            ).textTheme.bodyMedium?.copyWith(
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),
@@ -11433,10 +11453,10 @@ class _ReligionWizardPageState extends ConsumerState<ReligionWizardPage> {
     final selectedKey = value == null
         ? null
         : _religionOptionsForProfile()
-              .where((o) => o.profileValue == value)
-              .firstOrNull
-              ?.optionKey ??
-            value;
+                  .where((o) => o.profileValue == value)
+                  .firstOrNull
+                  ?.optionKey ??
+              value;
     final showPractice = _showsPracticeFor(value);
     setState(() {
       _religion = value;
@@ -11466,10 +11486,7 @@ class _ReligionWizardPageState extends ConsumerState<ReligionWizardPage> {
   List<AppProfileOption> _religionOptionsForProfile() {
     return ref
             .read(
-              fieldOptionsProvider((
-                fieldKey: 'religion',
-                context: 'profile',
-              )),
+              fieldOptionsProvider((fieldKey: 'religion', context: 'profile')),
             )
             .asData
             ?.value ??
@@ -11692,9 +11709,7 @@ class _ReligionWizardPageState extends ConsumerState<ReligionWizardPage> {
           const SizedBox(height: 8),
           Text(
             l10n.getString('profileWizardReligionSubtitle'),
-            style: Theme.of(
-              context,
-            ).textTheme.bodyMedium?.copyWith(
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),
@@ -12047,9 +12062,7 @@ class _UnifiedMatchPreferencesWizardPageState
               const SizedBox(height: 8),
               Text(
                 l10n.getString('profileWizardGenderAgePreferencesSubtitle'),
-                style: Theme.of(
-                  context,
-                ).textTheme.bodyMedium?.copyWith(
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               ),
@@ -12584,10 +12597,7 @@ class _UnifiedMatchPreferencesWizardPageState
     final religionOptions =
         ref
             .read(
-              fieldOptionsProvider((
-                fieldKey: 'religion',
-                context: 'filter',
-              )),
+              fieldOptionsProvider((fieldKey: 'religion', context: 'filter')),
             )
             .asData
             ?.value ??
@@ -12627,16 +12637,16 @@ class _UnifiedMatchPreferencesWizardPageState
         .map((r) => keyByValue[r] ?? r)
         .toSet();
     final showParent = selectedReligions.length > 1;
-    return _filterOptions(l10n, 'denomination')
-        .where((o) => selectedKeys.contains(o.value.split('__').first))
-        .map((o) {
-          if (!showParent) return o;
-          final parentKey = o.value.split('__').first;
-          final parentLabel = labelByKey[parentKey];
-          if (parentLabel == null || parentLabel.isEmpty) return o;
-          return _ChipOption(o.value, '$parentLabel: ${o.label}');
-        })
-        .toList();
+    return _filterOptions(
+      l10n,
+      'denomination',
+    ).where((o) => selectedKeys.contains(o.value.split('__').first)).map((o) {
+      if (!showParent) return o;
+      final parentKey = o.value.split('__').first;
+      final parentLabel = labelByKey[parentKey];
+      if (parentLabel == null || parentLabel.isEmpty) return o;
+      return _ChipOption(o.value, '$parentLabel: ${o.label}');
+    }).toList();
   }
 
   List<String> _getListField(
@@ -12668,11 +12678,7 @@ class _UnifiedMatchPreferencesWizardPageState
       final label = (val.isNotEmpty && val != key)
           ? val
           : _humanizeSimple(o.filterValue ?? '');
-      return _ChipOption(
-        o.filterValue ?? '',
-        label,
-        optionKey: o.optionKey,
-      );
+      return _ChipOption(o.filterValue ?? '', label, optionKey: o.optionKey);
     }).toList();
   }
 
@@ -12688,4 +12694,3 @@ class _ChipOption {
   final String? optionKey;
   const _ChipOption(this.value, this.label, {this.optionKey});
 }
-

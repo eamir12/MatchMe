@@ -430,33 +430,45 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
       return channel;
     });
 
-    var staggerMs = 0;
+    // Warm matched profiles with a small worker pool instead of firing one
+    // full sync per match at once. Two at a time keeps startup network work
+    // bounded without delaying the first notification data by much.
+    final targets = <String>[];
     for (final id in _matchedOtherUserIds) {
       if (supabase.auth.currentSession == null) break;
       if (_shouldSyncProfileFromRealtime(
         id,
         const Duration(milliseconds: 1200),
       )) {
-        final targetId = id;
-        unawaited(
-          Future.delayed(Duration(milliseconds: staggerMs), () {
-            if (!ref.mounted) return;
-            if (supabase.auth.currentSession == null) return;
-            // Skip if a sync for this user is already running (the warm path
-            // schedules the same matched users with source warm-home-refresh).
-            // Without this, both paths fire a full sync per matched user on
-            // startup — roughly double the network work for no benefit.
-            final sync = ref.read(profileSyncProvider);
-            if (sync.isSyncInFlight(targetId)) return;
-            sync.syncProfile(
-              targetId,
-              source: 'matched-user-subscription-init',
-            );
-          }),
-        );
-        staggerMs += 350;
+        targets.add(id);
       }
     }
+    if (targets.isEmpty) return;
+
+    var nextIndex = 0;
+    Future<void> worker() async {
+      while (nextIndex < targets.length) {
+        final targetId = targets[nextIndex++];
+        await Future.delayed(const Duration(milliseconds: 350));
+        if (!ref.mounted) return;
+        if (supabase.auth.currentSession == null) return;
+        // Skip if a sync for this user is already running (the warm path
+        // schedules the same matched users with source warm-home-refresh).
+        // Without this, both paths fire a full sync per matched user on
+        // startup - roughly double the network work for no benefit.
+        final sync = ref.read(profileSyncProvider);
+        if (sync.isSyncInFlight(targetId)) continue;
+        try {
+          await sync.syncProfile(
+            targetId,
+            source: 'matched-user-subscription-init',
+          );
+        } catch (_) {}
+      }
+    }
+
+    final workerCount = targets.length < 2 ? targets.length : 2;
+    unawaited(Future.wait(List.generate(workerCount, (_) => worker())));
   }
 
   Future<void> _setupRealtimeSubscription() async {

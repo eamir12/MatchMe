@@ -82,7 +82,10 @@ class _SignedImageState extends State<SignedImage> {
   @override
   void initState() {
     super.initState();
-    _lastCacheKey = StorageHelper.cacheKeyForSource(widget.source);
+    _lastCacheKey = StorageHelper.cacheKeyForSource(
+      widget.source,
+      bucket: widget.bucket,
+    );
     final hot = OfflineImageCache.instance.peek(_lastCacheKey ?? '');
     if (hot != null) {
       // Sync hot-cache hit: paints in this very frame.
@@ -95,7 +98,10 @@ class _SignedImageState extends State<SignedImage> {
   @override
   void didUpdateWidget(covariant SignedImage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final newCacheKey = StorageHelper.cacheKeyForSource(widget.source);
+    final newCacheKey = StorageHelper.cacheKeyForSource(
+      widget.source,
+      bucket: widget.bucket,
+    );
     if (oldWidget.source != widget.source || _lastCacheKey != newCacheKey) {
       _loadGeneration++;
       _failed = false;
@@ -153,7 +159,10 @@ class _SignedImageState extends State<SignedImage> {
       return;
     }
 
-    final cacheKey = StorageHelper.cacheKeyForSource(src);
+    final cacheKey = StorageHelper.cacheKeyForSource(
+      src,
+      bucket: widget.bucket,
+    );
 
     // 1. Persistent encrypted byte cache (survives relaunch): paints with
     // zero network and zero signed-URL work.

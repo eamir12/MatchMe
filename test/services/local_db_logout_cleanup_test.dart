@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -5,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
 import 'package:matchme/services/encrypted_cache_service.dart';
 import 'package:matchme/services/local_db_service.dart';
+import 'package:matchme/services/offline_api_cache.dart';
 import 'package:matchme/services/offline_image_cache.dart';
 
 void main() {
@@ -80,20 +82,17 @@ void main() {
     },
   );
 
-  test(
-    'logout clears emoji usage and queued offline mutations',
-    () async {
-      final emojiBox = await Hive.openBox<int>('emoji_usage');
-      await emojiBox.put('👍', 5);
-      final mutationBox = await Hive.openBox('offline_mutations');
-      await mutationBox.put('mutation-1', {'payload': 'queued-secret'});
+  test('logout clears emoji usage and queued offline mutations', () async {
+    final emojiBox = await Hive.openBox<int>('emoji_usage');
+    await emojiBox.put('👍', 5);
+    final mutationBox = await Hive.openBox('offline_mutations');
+    await mutationBox.put('mutation-1', {'payload': 'queued-secret'});
 
-      await db.clearUserData('outgoing-user');
+    await db.clearUserData('outgoing-user');
 
-      expect(Hive.box<int>('emoji_usage').isEmpty, isTrue);
-      expect(Hive.box('offline_mutations').isEmpty, isTrue);
-    },
-  );
+    expect(Hive.box<int>('emoji_usage').isEmpty, isTrue);
+    expect(Hive.box('offline_mutations').isEmpty, isTrue);
+  });
 
   test(
     'offline chat preview persists as a message without dropping history',
@@ -236,24 +235,21 @@ void main() {
     },
   );
 
-  test(
-    'notification snapshot remains available offline',
-    () async {
-      await db.saveNotificationInbox('offline-snapshot-user', [
-        {
-          'id': 'cached-notification',
-          'title': 'A cached title',
-          'body': 'A cached body',
-        },
-      ]);
+  test('notification snapshot remains available offline', () async {
+    await db.saveNotificationInbox('offline-snapshot-user', [
+      {
+        'id': 'cached-notification',
+        'title': 'A cached title',
+        'body': 'A cached body',
+      },
+    ]);
 
-      expect(
-        (await db.getNotificationInbox('offline-snapshot-user'))?.single['id'],
-        'cached-notification',
-      );
-      expect(await db.getNotificationInbox('different-user'), isNull);
-    },
-  );
+    expect(
+      (await db.getNotificationInbox('offline-snapshot-user'))?.single['id'],
+      'cached-notification',
+    );
+    expect(await db.getNotificationInbox('different-user'), isNull);
+  });
 
   test(
     'web image cache round-trips bytes through encrypted local storage',
@@ -270,6 +266,96 @@ void main() {
       expect(
         await OfflineImageCache.instance.read('offline-test-image'),
         isNull,
+      );
+    },
+  );
+
+  test(
+    'verification status stays in encrypted storage and is wiped on logout',
+    () async {
+      const userId = 'verification-cache-user';
+      await db.saveVerificationStatus(userId, {
+        'verification_status': 'rejected',
+        'verification_ai_analysis': {'reasoning': 'Different person'},
+        'verification_photo_path': '$userId/verification.jpg',
+      });
+
+      final cached = await db.getVerificationStatus(userId);
+      expect(cached?['verification_status'], 'rejected');
+      expect(
+        cached?['verification_ai_analysis'],
+        containsPair('reasoning', 'Different person'),
+      );
+      expect(await db.getVerificationStatus('different-user'), isNull);
+
+      await db.clearUserData(userId);
+      expect(await db.getVerificationStatus(userId), isNull);
+    },
+  );
+
+  test(
+    'Supabase GET responses round-trip through the encrypted API cache',
+    () async {
+      final key = OfflineApiCache.buildKey(
+        method: 'GET',
+        url: Uri.parse('https://example.supabase.co/rest/v1/users?select=*'),
+        userId: 'cache-user',
+      );
+      final bytes = Uint8List.fromList(utf8.encode('[{"id":"cache-user"}]'));
+      await OfflineApiCache.instance.write(
+        key,
+        bytes,
+        headers: {'content-type': 'application/json'},
+      );
+
+      final cached = await OfflineApiCache.instance.read(key);
+      expect(cached, isNotNull);
+      expect(cached!.bytes, orderedEquals(bytes));
+      expect(cached.headers['content-type'], 'application/json');
+
+      await OfflineApiCache.instance.clear();
+      expect(await OfflineApiCache.instance.read(key), isNull);
+    },
+  );
+
+  test(
+    'API cache identity is stable per subject and isolates accounts',
+    () async {
+      final url = Uri.parse('https://example.supabase.co/rest/v1/matches');
+      final anonymous = OfflineApiCache.buildKey(method: 'GET', url: url);
+      final first = OfflineApiCache.buildKey(
+        method: 'GET',
+        url: url,
+        userId: 'user-a',
+      );
+      final second = OfflineApiCache.buildKey(
+        method: 'GET',
+        url: url,
+        userId: 'user-b',
+      );
+      expect(anonymous, isNot(first));
+      expect(first, isNot(second));
+      expect(
+        first,
+        OfflineApiCache.buildKey(method: 'GET', url: url, userId: 'user-a'),
+      );
+      // `.range()` pages share a URL but not a body: the Range header must
+      // keep their cache identities distinct.
+      expect(
+        OfflineApiCache.buildKey(
+          method: 'GET',
+          url: url,
+          userId: 'user-a',
+          headers: {'Range': '0-9'},
+        ),
+        isNot(
+          OfflineApiCache.buildKey(
+            method: 'GET',
+            url: url,
+            userId: 'user-a',
+            headers: {'Range': '10-19'},
+          ),
+        ),
       );
     },
   );

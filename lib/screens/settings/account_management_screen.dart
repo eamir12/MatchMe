@@ -10,6 +10,9 @@ import 'package:matchme/services/session_service.dart';
 import 'package:matchme/services/calendar_sync_service.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/error_localization_service.dart';
+import 'package:matchme/services/offline_api_cache.dart';
+import 'package:matchme/services/offline_image_cache.dart';
+import 'package:matchme/services/storage_helper.dart';
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/widgets/safe_text.dart';
@@ -672,9 +675,7 @@ class _AccountManagementScreenState
                         }
                       }
                       try {
-                        unawaited(
-                          SessionService.deleteFcmToken(),
-                        );
+                        unawaited(SessionService.deleteFcmToken());
                       } catch (_) {}
                       try {
                         unawaited(
@@ -686,6 +687,18 @@ class _AccountManagementScreenState
                       } catch (_) {}
                       final localDb = await LocalDbService.instance;
                       await localDb.clearDatabase();
+                      // Account deletion must also erase the encrypted
+                      // image-byte and REST-response caches: clearDatabase
+                      // only covers the LocalDb boxes.
+                      try {
+                        await OfflineImageCache.instance.clear();
+                      } catch (_) {}
+                      try {
+                        await OfflineApiCache.instance.clear();
+                      } catch (_) {}
+                      try {
+                        await StorageHelper.clearSessionCache();
+                      } catch (_) {}
                     } catch (clearError) {}
 
                     if (mounted) {
@@ -741,7 +754,9 @@ class _AccountManagementScreenState
     );
 
     return Scaffold(
-      appBar: AppBar(title: ShrinkText(l10n.getString('settingsAccountManagement'))),
+      appBar: AppBar(
+        title: ShrinkText(l10n.getString('settingsAccountManagement')),
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16.0),
         children: [

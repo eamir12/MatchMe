@@ -93,8 +93,41 @@ void main() {
           ),
           isTrue,
         );
+        // GoTrue answers a deleted auth user with HTTP 403 + user_not_found.
+        // The old classifier excluded every 403 before checking the marker,
+        // so a deletion could never be confirmed.
+        expect(
+          SessionService.isAccountGoneAuthError(
+            'AuthApiException(message: User from sub claim in JWT does not '
+            'exist, statusCode: 403, code: user_not_found)',
+          ),
+          isTrue,
+        );
+        expect(
+          SessionService.isAccountGoneAuthError(
+            'AuthApiException(message: user not found, statusCode: 403)',
+          ),
+          isTrue,
+        );
       },
     );
+
+    test('expired or invalid claims are never proof of deletion', () {
+      expect(
+        SessionService.isAccountGoneAuthError(
+          'AuthApiException(message: JWT expired, statusCode: 401, '
+          'code: jwt_expired)',
+        ),
+        isFalse,
+      );
+      expect(
+        SessionService.isAccountGoneAuthError(
+          'AuthApiException(message: invalid claim: missing sub claim, '
+          'statusCode: 401)',
+        ),
+        isFalse,
+      );
+    });
 
     test('a network failure is never proof of deletion', () {
       expect(
