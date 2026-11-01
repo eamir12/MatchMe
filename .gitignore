@@ -43,3 +43,10 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Local scratch: one-off SQL, query payloads, probes and logs
+.tmp/
+
+# Gradle caches and reports inside vendored packages
+third_party/**/.gradle/
+third_party/**/build/
