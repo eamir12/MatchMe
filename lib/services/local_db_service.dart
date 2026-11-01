@@ -10,6 +10,7 @@ import 'package:matchme/utils/resume_diagnostics.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/encrypted_cache_service.dart';
 import 'package:matchme/services/hive_encryption_service.dart';
+import 'package:matchme/services/notification_avatar_service.dart';
 import 'package:matchme/utils/encrypted_text_guard.dart';
 import 'package:matchme/utils/translation_edit_marker.dart';
 
@@ -920,6 +921,8 @@ class LocalDbService {
     if (userId != null && userId.isNotEmpty) {
       await clearChatTranslationSettings(userId, matchId);
     }
+    // A conversation that is gone takes its notification avatar with it.
+    unawaited(NotificationAvatarService.instance.evict(matchId));
   }
 
   Future<void> addOrUpdateChat(Map<String, dynamic> chat) async {
@@ -3688,6 +3691,12 @@ class LocalDbService {
   Future<void> removeVisibilityUpdateFromOutbox(dynamic key) async {
     final box = await _getVisibilityOutboxBox();
     await box.delete(key);
+  }
+
+  Future<bool> hasPendingVisibilityUpdate(String userId) async {
+    final box = await _getVisibilityOutboxBox();
+    final prefix = '${userId}_visibility_';
+    return box.keys.any((key) => key.toString().startsWith(prefix));
   }
 
   // --- Invisibility Rules Outbox Methods ---

@@ -343,7 +343,7 @@ class _CalendarSyncScreenState extends ConsumerState<CalendarSyncScreen> {
                             child: Text(
                               l10n.getString('calendarSyncDuplicateBadge'),
                               style: TextStyle(
-                                fontSize: 10,
+                                fontSize: 12,
                                 color: Colors.orange.shade800,
                                 fontWeight: FontWeight.bold,
                               ),

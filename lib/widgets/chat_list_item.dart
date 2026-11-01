@@ -1,10 +1,12 @@
 // lib/widgets/chat_list_item.dart
 import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/models/chat_model.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/providers/meetup_alerts_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/new_options_provider.dart';
 import 'package:matchme/providers/typing_provider.dart';
@@ -153,7 +155,16 @@ class ChatListItem extends ConsumerWidget {
             chat.lastMessageTranslatedEditedAt,
             chat.lastMessageEditedAt,
           );
-      if (translated != null &&
+      final source = chat.lastMessageSourceLanguage;
+      final sourceMatchesUi =
+          isValidLanguageCode(source) &&
+          normalizeLanguageCode(source!) == uiLang;
+      if (sourceMatchesUi) {
+        // Same language as the UI: the original is already readable and does
+        // not need a translation payload (historical rows can legitimately
+        // have source == target with no translated content).
+        displayMessage = chat.lastMessage;
+      } else if (translated != null &&
           translated.isNotEmpty &&
           translated != 'null' &&
           target != null &&
@@ -163,6 +174,9 @@ class ChatListItem extends ConsumerWidget {
       } else {
         // Translation-enabled incoming content stays hidden until a usable
         // result for this target language and message revision is available.
+        // A permanent failure is stored server-side as the original payload
+        // with translation_status='failed', so it arrives through the
+        // `translated` branch above rather than leaking the original here.
         isTranslationPending = true;
       }
     } else {
@@ -270,6 +284,12 @@ class ChatListItem extends ConsumerWidget {
                       ? profileName
                       : fallbackName;
 
+                  // Opening the conversation counts as seeing the tool
+                  // alert: the heads-up overlay and its inbox row clear.
+                  await ref
+                      .read(meetupAlertsProvider.notifier)
+                      .clearMatch(chat.matchId);
+
                   // When opened from a chats-list search, hand the query (and the
                   // newest matching message id) to the chat so it auto-scrolls to
                   // the found text instead of landing at the bottom.
@@ -288,6 +308,8 @@ class ChatListItem extends ConsumerWidget {
                         matchId: chat.matchId,
                         otherUserName: resolvedName,
                         otherUserId: chat.otherUserId,
+                        matchType: chat.matchType,
+                        eventName: chat.eventName,
                         initialSearchQuery: pendingQuery.isNotEmpty
                             ? pendingQuery
                             : null,
@@ -364,7 +386,7 @@ class ChatListItem extends ConsumerWidget {
                                     : TextAlign.left,
                                 style: Theme.of(context).textTheme.bodySmall
                                     ?.copyWith(
-                                      fontSize: 10,
+                                      fontSize: 12,
                                       color: Theme.of(context)
                                           .colorScheme
                                           .onSurface
@@ -384,9 +406,7 @@ class ChatListItem extends ConsumerWidget {
                               container: true,
                               label: l10n.getString(
                                 'chatsUnreadMessages',
-                                params: {
-                                  'count': chat.unreadCount.toString(),
-                                },
+                                params: {'count': chat.unreadCount.toString()},
                               ),
                               excludeSemantics: true,
                               child: Container(
@@ -395,9 +415,7 @@ class ChatListItem extends ConsumerWidget {
                                   vertical: 2,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.primary,
+                                  color: Theme.of(context).colorScheme.primary,
                                   borderRadius: BorderRadius.circular(10),
                                 ),
                                 child: Text(
@@ -406,7 +424,7 @@ class ChatListItem extends ConsumerWidget {
                                     color: Theme.of(
                                       context,
                                     ).colorScheme.onPrimary,
-                                    fontSize: 10,
+                                    fontSize: 12,
                                     fontWeight: FontWeight.w600,
                                   ),
                                 ),

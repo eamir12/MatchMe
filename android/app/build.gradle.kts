@@ -10,7 +10,7 @@ if (file("google-services.json").exists()) {
 
 android {
     namespace = "com.example.matchme"
-    compileSdk = 36
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

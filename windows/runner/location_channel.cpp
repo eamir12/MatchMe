@@ -218,6 +218,7 @@ winrt::fire_and_forget GetPositionWithTimeout(
 
     Log("GetPositionWithTimeout: creating local Geolocator");
     Geolocator geolocator;
+    geolocator.DesiredAccuracy(PositionAccuracy::High);
     auto operation = geolocator.GetGeopositionAsync();
 
     auto timer = ThreadPoolTimer::CreateTimer(

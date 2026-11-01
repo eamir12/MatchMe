@@ -5,12 +5,38 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:matchme/models/chat_model.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/providers/meetup_alerts_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/widgets/chat_list_item.dart';
 import 'package:matchme/widgets/signed_image.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
+class _StubMeetupAlerts extends MeetupAlertsNotifier {
+  @override
+  MeetupAlertsState build() => MeetupAlertsState(now: DateTime.now());
+}
+
+class _MeetupAlertStub extends MeetupAlertsNotifier {
+  @override
+  MeetupAlertsState build() => MeetupAlertsState(
+    alerts: [
+      MeetupAlert(
+        id: 'alert-1',
+        matchId: 'match-alert',
+        senderId: 'other-user-alert',
+        kind: kMeetupAlertSignal,
+        gesture: 'wave',
+        title: 'Alex waved',
+        body: 'Open the chat to see the live state',
+        createdAt: DateTime.now(),
+        expiresAt: DateTime.now().add(const Duration(minutes: 1)),
+      ),
+    ],
+    now: DateTime.now(),
+  );
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -47,6 +73,7 @@ void main() {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
+            meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
             localizationProvider.overrideWithValue(l10n),
             otherUserProfileProvider(
               chat.otherUserId,
@@ -114,6 +141,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
           localizationProvider.overrideWithValue(l10n),
           otherUserProfileProvider(
             chat.otherUserId,
@@ -156,6 +184,7 @@ void main() {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
+            meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
             localizationProvider.overrideWithValue(l10n),
             otherUserProfileProvider(
               chat.otherUserId,
@@ -176,6 +205,51 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('same-language preview renders without waiting for translation', (
+    tester,
+  ) async {
+    final chat = ChatModel(
+      matchId: 'match-same-language',
+      otherUserId: 'other-user-same-language',
+      otherUserName: 'Bella V.',
+      lastMessage: 'Hello there!',
+      lastMessageId: 'message-same-language',
+      lastMessageSenderId: 'other-user-same-language',
+      lastMessageAt: DateTime(2026, 1, 1),
+      unreadCount: 1,
+      translationEnabled: true,
+      lastMessageSourceLanguage: 'en',
+      lastMessageTranslated: null,
+    );
+    final l10n = LocalizationState(
+      currentLocale: const Locale('en'),
+      textDirection: TextDirection.ltr,
+      strings: const {},
+      supportedLanguages: const [],
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
+          localizationProvider.overrideWithValue(l10n),
+          otherUserProfileProvider(
+            chat.otherUserId,
+          ).overrideWith((ref) => Future<UserProfile?>.value(null)),
+        ],
+        child: MaterialApp(
+          home: Scaffold(body: ChatListItem(chat: chat)),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // No translation round trip is needed when the sender already wrote in
+    // the reader's language; hiding it would stall the row forever.
+    expect(find.text('Hello there!'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     'translated preview and unread badge reveal together on the age line',
@@ -205,6 +279,7 @@ void main() {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
+            meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
             localizationProvider.overrideWithValue(l10n),
             otherUserProfileProvider(chat.otherUserId).overrideWith(
               (ref) => Future<UserProfile?>.value(
@@ -247,154 +322,158 @@ void main() {
   // spilled onto a second line, and a longer one painted over the line
   // below it. The name now owns its own band, so it can never be squeezed
   // by the timestamp.
-  testWidgets('the name owns its own band and never shares a line with the timestamp', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(390, 844);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(tester.view.reset);
+  testWidgets(
+    'the name owns its own band and never shares a line with the timestamp',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
 
-    final chat = ChatModel(
-      matchId: 'match-long-name',
-      otherUserId: 'other-user-long-name',
-      otherUserName: 'Aleksandra Konstantinova V.',
-      lastMessage: 'Hey',
-      lastMessageId: 'message-long-name',
-      lastMessageAt: DateTime(2015, 3, 15),
-      unreadCount: 0,
-    );
-    final l10n = LocalizationState(
-      currentLocale: const Locale('en'),
-      textDirection: TextDirection.ltr,
-      strings: const {},
-      supportedLanguages: const [],
-    );
+      final chat = ChatModel(
+        matchId: 'match-long-name',
+        otherUserId: 'other-user-long-name',
+        otherUserName: 'Aleksandra V.',
+        lastMessage: 'Hey',
+        lastMessageId: 'message-long-name',
+        lastMessageAt: DateTime(2015, 3, 15),
+        unreadCount: 0,
+      );
+      final l10n = LocalizationState(
+        currentLocale: const Locale('en'),
+        textDirection: TextDirection.ltr,
+        strings: const {},
+        supportedLanguages: const [],
+      );
 
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          localizationProvider.overrideWithValue(l10n),
-          otherUserProfileProvider(chat.otherUserId).overrideWith(
-            (ref) => Future<UserProfile?>.value(
-              UserProfile.fromMap({
-                'id': chat.otherUserId,
-                'name': 'Aleksandra Konstantinova V.',
-                'dateOfBirth': '2000-01-01',
-              }),
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
+            localizationProvider.overrideWithValue(l10n),
+            otherUserProfileProvider(chat.otherUserId).overrideWith(
+              (ref) => Future<UserProfile?>.value(
+                UserProfile.fromMap({
+                  'id': chat.otherUserId,
+                  'name': 'Aleksandra V.',
+                  'dateOfBirth': '2000-01-01',
+                }),
+              ),
             ),
+          ],
+          child: MaterialApp(
+            home: Scaffold(body: ChatListItem(chat: chat)),
           ),
-        ],
-        child: MaterialApp(
-          home: Scaffold(body: ChatListItem(chat: chat)),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
+      );
+      await tester.pumpAndSettle();
 
-    final nameFinder = find.textContaining('Aleksandra Konstantinova V.');
-    expect(nameFinder, findsOneWidget);
+      final nameFinder = find.textContaining('Aleksandra V.');
+      expect(nameFinder, findsOneWidget);
 
-    // The timestamp lives in the metadata band below the name, so the two
-    // can never overlap horizontally.
-    final stampFinder = find.text('March 15, 2015');
-    expect(stampFinder, findsOneWidget);
-    final nameRect = tester.getRect(nameFinder);
-    final stampRect = tester.getRect(stampFinder);
-    expect(nameRect.overlaps(stampRect), isFalse);
+      // The timestamp lives in the metadata band below the name, so the two
+      // can never overlap horizontally.
+      final stampFinder = find.text('March 15, 2015');
+      expect(stampFinder, findsOneWidget);
+      final nameRect = tester.getRect(nameFinder);
+      final stampRect = tester.getRect(stampFinder);
+      expect(nameRect.overlaps(stampRect), isFalse);
 
-    // And the name is not squeezed into a sliver: it owns the content
-    // column next to the avatar.
-    expect(nameRect.width, greaterThan(200));
+      // And the name is not squeezed into a sliver: it owns the content
+      // column next to the avatar.
+      expect(nameRect.width, greaterThan(200));
 
-    // The metadata band (age/gender + timestamp) sits below the name, so a
-    // name that needs more than one line can never paint over it.
-    final ageRect = tester.getRect(find.textContaining('Age:'));
-    expect(nameRect.overlaps(ageRect), isFalse);
+      // The metadata band (age/gender + timestamp) sits below the name, so a
+      // name that needs more than one line can never paint over it.
+      final ageRect = tester.getRect(find.textContaining('Age:'));
+      expect(nameRect.overlaps(ageRect), isFalse);
 
-    expect(tester.takeException(), isNull);
-  });
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   // Regression: a long last message used to be painted with `maxLines: 2`
   // and `overflow: visible`, so its third line and beyond spilled over the
   // card below it. The preview is now cut at a word boundary and marked
   // with an ellipsis.
-  testWidgets('a long preview is cut at a word boundary and stays in its two lines', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(390, 844);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(tester.view.reset);
+  testWidgets(
+    'a long preview is cut at a word boundary and stays in its two lines',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
 
-    const longMessage =
-        'one two three four five six seven eight nine ten eleven twelve';
-    final l10n = LocalizationState(
-      currentLocale: const Locale('en'),
-      textDirection: TextDirection.ltr,
-      strings: const {},
-      supportedLanguages: const [],
-    );
+      const longMessage =
+          'one two three four five six seven eight nine ten eleven twelve';
+      final l10n = LocalizationState(
+        currentLocale: const Locale('en'),
+        textDirection: TextDirection.ltr,
+        strings: const {},
+        supportedLanguages: const [],
+      );
 
-    ChatModel chatWith(String message, String id) => ChatModel(
-      matchId: id,
-      otherUserId: 'other-user-$id',
-      otherUserName: 'Alex M.',
-      lastMessage: message,
-      lastMessageId: 'message-$id',
-      lastMessageAt: DateTime(2015, 3, 15),
-      unreadCount: 0,
-    );
+      ChatModel chatWith(String message, String id) => ChatModel(
+        matchId: id,
+        otherUserId: 'other-user-$id',
+        otherUserName: 'Alex M.',
+        lastMessage: message,
+        lastMessageId: 'message-$id',
+        lastMessageAt: DateTime(2015, 3, 15),
+        unreadCount: 0,
+      );
 
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          localizationProvider.overrideWithValue(l10n),
-          otherUserProfileProvider('other-user-short').overrideWith(
-            (ref) => Future<UserProfile?>.value(null),
-          ),
-          otherUserProfileProvider('other-user-long').overrideWith(
-            (ref) => Future<UserProfile?>.value(null),
-          ),
-        ],
-        child: MaterialApp(
-          home: Scaffold(
-            body: Column(
-              children: [
-                ChatListItem(chat: chatWith('Short', 'short')),
-                ChatListItem(chat: chatWith(longMessage, 'long')),
-              ],
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
+            localizationProvider.overrideWithValue(l10n),
+            otherUserProfileProvider(
+              'other-user-short',
+            ).overrideWith((ref) => Future<UserProfile?>.value(null)),
+            otherUserProfileProvider(
+              'other-user-long',
+            ).overrideWith((ref) => Future<UserProfile?>.value(null)),
+          ],
+          child: MaterialApp(
+            home: Scaffold(
+              body: Column(
+                children: [
+                  ChatListItem(chat: chatWith('Short', 'short')),
+                  ChatListItem(chat: chatWith(longMessage, 'long')),
+                ],
+              ),
             ),
           ),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
+      );
+      await tester.pumpAndSettle();
 
-    final shortPreview = find.byWidgetPredicate(
-      (w) => w is RichText && w.text.toPlainText() == 'Short',
-    );
-    final longPreview = find.byWidgetPredicate(
-      (w) => w is RichText && w.text.toPlainText().contains('…'),
-    );
-    expect(shortPreview, findsOneWidget);
-    expect(longPreview, findsOneWidget);
-    final shortHeight = tester.getSize(shortPreview).height;
+      final shortPreview = find.byWidgetPredicate(
+        (w) => w is RichText && w.text.toPlainText() == 'Short',
+      );
+      final longPreview = find.byWidgetPredicate(
+        (w) => w is RichText && w.text.toPlainText().contains('…'),
+      );
+      expect(shortPreview, findsOneWidget);
+      expect(longPreview, findsOneWidget);
+      final shortHeight = tester.getSize(shortPreview).height;
 
-    final plain = tester.widget<RichText>(longPreview).text.toPlainText();
-    expect(plain, endsWith('…'));
+      final plain = tester.widget<RichText>(longPreview).text.toPlainText();
+      expect(plain, endsWith('…'));
 
-    // The cut lands on a word boundary: what is kept is a prefix of the
-    // message, and the next character in the original is a space.
-    final kept = plain.replaceAll('…', '').trim();
-    expect(longMessage.startsWith(kept), isTrue);
-    if (kept.length < longMessage.length) {
-      expect(longMessage[kept.length], ' ');
-    }
+      // The cut lands on a word boundary: what is kept is a prefix of the
+      // message, and the next character in the original is a space.
+      final kept = plain.replaceAll('…', '').trim();
+      expect(longMessage.startsWith(kept), isTrue);
+      if (kept.length < longMessage.length) {
+        expect(longMessage[kept.length], ' ');
+      }
 
-    // And the preview never grows past its two lines.
-    final longHeight = tester.getSize(longPreview).height;
-    expect(longHeight, lessThanOrEqualTo(shortHeight * 2 + 0.5));
-    expect(tester.takeException(), isNull);
-  });
+      // And the preview never grows past its two lines.
+      final longHeight = tester.getSize(longPreview).height;
+      expect(longHeight, lessThanOrEqualTo(shortHeight * 2 + 0.5));
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('never renders an undecrypted translation preview', (
     tester,
@@ -421,6 +500,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
           localizationProvider.overrideWithValue(l10n),
           otherUserProfileProvider(
             chat.otherUserId,
@@ -458,6 +538,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
           localizationProvider.overrideWithValue(l10n),
           otherUserProfileProvider(
             chat.otherUserId,
@@ -501,6 +582,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
           localizationProvider.overrideWithValue(l10n),
           userProfileProvider(
             chat.otherUserId,
@@ -547,6 +629,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
           localizationProvider.overrideWithValue(l10n),
           userProfileProvider(
             chat.otherUserId,
@@ -587,6 +670,7 @@ void main() {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
+            meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
             localizationProvider.overrideWithValue(l10n),
             otherUserProfileProvider(
               chat.otherUserId,
@@ -620,4 +704,44 @@ void main() {
       await tester.pump(const Duration(seconds: 11));
     },
   );
+
+  testWidgets('a live meet-up alert stays out of the chat row', (tester) async {
+    final chat = ChatModel(
+      matchId: 'match-alert',
+      otherUserId: 'other-user-alert',
+      otherUserName: 'Alex M.',
+      lastMessage: 'Hey',
+      lastMessageId: 'message-alert',
+      lastMessageAt: DateTime(2026, 1, 1),
+      unreadCount: 0,
+    );
+    final l10n = LocalizationState(
+      currentLocale: const Locale('en'),
+      textDirection: TextDirection.ltr,
+      strings: const {},
+      supportedLanguages: const [],
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          meetupAlertsProvider.overrideWith(_MeetupAlertStub.new),
+          localizationProvider.overrideWithValue(l10n),
+          otherUserProfileProvider(
+            chat.otherUserId,
+          ).overrideWith((ref) => Future<UserProfile?>.value(null)),
+        ],
+        child: MaterialApp(
+          home: Scaffold(body: ChatListItem(chat: chat)),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // The match card owns the live/pending indication; the row shows only the
+    // conversation itself.
+    expect(find.text('Alex waved'), findsNothing);
+    expect(find.text('Hey'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

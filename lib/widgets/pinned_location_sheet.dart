@@ -49,10 +49,13 @@ List<Duration> pinnedExtensionDurations(PinnedLocationState pin) {
       .toList(growable: false);
 }
 
-String pinnedFormatExpiry(DateTime exp) {
-  final l = exp.toLocal();
-  final min = l.minute.toString().padLeft(2, '0');
-  return '${l.day}.${l.month}.${l.year} ${l.hour}:$min';
+String pinnedFormatExpiry(
+  BuildContext context,
+  WidgetRef ref,
+  LocalizationState l10n,
+  DateTime exp,
+) {
+  return formatDateAndTimeOfDateTimeWithPrefs(context, ref, l10n, exp);
 }
 
 /// Remaining time in full words ("3 days left", "5 hours left") — never the
@@ -124,14 +127,22 @@ Future<void> showPinnedLocationSheet(
         final exp = pin.expiresAt;
         text = l10n.getString(
           'pinnedLocationPinned',
-          params: {'date': exp == null ? '' : pinnedFormatExpiry(exp)},
+          params: {
+            'date': exp == null
+                ? ''
+                : pinnedFormatExpiry(context, ref, l10n, exp),
+          },
         );
         break;
       case 'extended':
         final exp = pin.expiresAt;
         text = l10n.getString(
           'pinnedLocationExtended',
-          params: {'date': exp == null ? '' : pinnedFormatExpiry(exp)},
+          params: {
+            'date': exp == null
+                ? ''
+                : pinnedFormatExpiry(context, ref, l10n, exp),
+          },
         );
         break;
       case 'unpinned':
@@ -390,7 +401,7 @@ class _PinnedLocationSheetBodyState
                             : ' "${pin.label}"',
                         'date': pin.expiresAt == null
                             ? ''
-                            : pinnedFormatExpiry(pin.expiresAt!),
+                            : pinnedFormatExpiry(context, ref, l10n, pin.expiresAt!),
                       },
                     ),
                     style: TextStyle(fontSize: 13, color: colors.onSurface),

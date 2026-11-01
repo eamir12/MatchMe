@@ -2,12 +2,14 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:matchme/main.dart' show navigatorKey;
 import 'package:matchme/providers/system_notification_provider.dart';
 import 'package:matchme/providers/user_preferences_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/utils/location_share_countdown.dart';
 import 'package:matchme/widgets/pinned_location_sheet.dart';
+import 'package:matchme/widgets/swipe_to_dismiss.dart';
 
 class SystemNotificationOverlay extends ConsumerStatefulWidget {
   const SystemNotificationOverlay({super.key});
@@ -154,85 +156,92 @@ class _SystemNotificationOverlayState
         position: _slideAnimation!,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12.0),
-          child: Material(
-            elevation: 9,
-            borderRadius: BorderRadius.circular(12),
-            color: Theme.of(context).colorScheme.primary,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 16.0,
-                vertical: 12.0,
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    icon,
-                    color: Theme.of(context).colorScheme.onPrimary,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          displayText,
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.onPrimary,
-                            fontSize: 13,
-                          ),
-                        ),
-                        if (hasAction) ...[
-                          const SizedBox(height: 6),
-                          TextButton(
-                            style: TextButton.styleFrom(
-                              padding: EdgeInsets.zero,
-                              minimumSize: const Size(0, 0),
-                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                              foregroundColor: Theme.of(
-                                context,
-                              ).colorScheme.onPrimary,
+          child: SwipeToDismiss(
+            key: ValueKey(n),
+            onDismissed: () =>
+                ref.read(systemNotificationProvider.notifier).dismissCurrent(),
+            child: Material(
+              elevation: 9,
+              borderRadius: BorderRadius.circular(12),
+              color: Theme.of(context).colorScheme.primary,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16.0,
+                  vertical: 12.0,
+                ),
+                child: Row(
+                  children: [
+                    Icon(icon, color: Theme.of(context).colorScheme.onPrimary),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            displayText,
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.onPrimary,
+                              fontSize: 13,
                             ),
-                            onPressed: () async {
-                              if (isPinnedManage) {
-                                showPinnedLocationSheet(context, ref);
-                                return;
-                              }
-                              try {
-                                final uri = Uri.parse(actionUrl);
-                                if (await canLaunchUrl(uri)) {
-                                  await launchUrl(
-                                    uri,
-                                    mode: LaunchMode.externalApplication,
+                          ),
+                          if (hasAction) ...[
+                            const SizedBox(height: 6),
+                            TextButton(
+                              style: TextButton.styleFrom(
+                                padding: EdgeInsets.zero,
+                                minimumSize: const Size(0, 0),
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                foregroundColor: Theme.of(
+                                  context,
+                                ).colorScheme.onPrimary,
+                              ),
+                              onPressed: () async {
+                                if (isPinnedManage) {
+                                  // The overlay mounts above the Navigator, so
+                                  // the sheet needs a context below it.
+                                  showPinnedLocationSheet(
+                                    navigatorKey.currentContext ?? context,
+                                    ref,
                                   );
+                                  return;
                                 }
-                              } catch (_) {}
-                            },
-                            child: Text(
-                              (n.actionText ?? l10n.getString('open'))
-                                      .trim()
-                                      .isEmpty
-                                  ? l10n.getString('open')
-                                  : (n.actionText ?? l10n.getString('open'))
-                                        .trim(),
+                                try {
+                                  final uri = Uri.parse(actionUrl);
+                                  if (await canLaunchUrl(uri)) {
+                                    await launchUrl(
+                                      uri,
+                                      mode: LaunchMode.externalApplication,
+                                    );
+                                  }
+                                } catch (_) {}
+                              },
+                              child: Text(
+                                (n.actionText ?? l10n.getString('open'))
+                                        .trim()
+                                        .isEmpty
+                                    ? l10n.getString('open')
+                                    : (n.actionText ?? l10n.getString('open'))
+                                          .trim(),
+                              ),
                             ),
-                          ),
+                          ],
                         ],
-                      ],
+                      ),
                     ),
-                  ),
-                  IconButton(
-                    icon: Icon(
-                      Icons.close,
-                      color: Theme.of(context).colorScheme.onPrimary,
-                      size: 20,
+                    IconButton(
+                      icon: Icon(
+                        Icons.close,
+                        color: Theme.of(context).colorScheme.onPrimary,
+                        size: 20,
+                      ),
+                      onPressed: () => ref
+                          .read(systemNotificationProvider.notifier)
+                          .dismissCurrent(),
+                      tooltip: l10n.getString('dismiss'),
                     ),
-                    onPressed: () => ref
-                        .read(systemNotificationProvider.notifier)
-                        .dismissCurrent(),
-                    tooltip: l10n.getString('dismiss'),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),

@@ -329,8 +329,8 @@ class ExternalAdService {
   }) async {
     final cacheKey = '${placement}_$platform';
 
-    // If offline, return cached ad immediately
-    if (shouldSkipSupabaseCalls()) {
+    // If offline or no live session, return cached ad immediately
+    if (shouldSkipUserScopedSupabaseCalls()) {
       final cached = peekCachedExternalAd(cacheKey);
       if (cached != null) {
         return cached;

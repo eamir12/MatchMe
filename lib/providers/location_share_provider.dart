@@ -49,6 +49,10 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
   Timer? _expirationTimer;
   Uint8List? _sessionKey;
   bool _disposed = false;
+  // Own-signal deletes caused by us (stop or stale-row refresh) rather than
+  // by pg_cron expiry must not surface as "the peer stopped sharing".
+  int _ownSignalDeleteSuppressions = 0;
+  bool get _suppressOwnSignalDelete => _ownSignalDeleteSuppressions > 0;
   final Map<String, String> _lastNotifiedExpiresAt = {};
   // Live per-second countdown ticker for incoming-share notifications
   Timer? _notifCountdownTimer;
@@ -321,67 +325,11 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
     return null;
   }
 
-  /// Format a user's full name to "First Name(s) Last Initial." format.
-  /// Handles Latin American names where there can be multiple first and last names.
-  /// Example: "Ana Maria Hernandez Martinez" -> "Ana Maria H."
-  /// Example: "John Smith" -> "John S."
-  /// Example: "Carlos" -> "Carlos"
-  /// Capitalizes every displayed part regardless of input casing.
-  String _formatUserName(String? name) {
-    if (name == null || name.trim().isEmpty) return 'Someone';
-
-    String capWord(String word) {
-      if (word.isEmpty) return word;
-      final hyphenParts = word.split('-');
-      return hyphenParts
-          .map((h) {
-            if (h.isEmpty) return h;
-            return h
-                .split("'")
-                .map((s) {
-                  if (s.isEmpty) return s;
-                  final lower = s.toLowerCase();
-                  return '${lower[0].toUpperCase()}${lower.substring(1)}';
-                })
-                .join("'");
-          })
-          .join('-');
-    }
-
-    final cleaned = name.replaceAll(bidiControls, '');
-    final words = cleaned
-        .trim()
-        .split(RegExp(r'\s+'))
-        .where((w) => w.isNotEmpty)
-        .toList();
-
-    if (words.isEmpty) {
-      return 'Someone';
-    } else if (words.length == 1) {
-      // Single word name, capitalize it
-      return capWord(words.first).withDirectionalMarks();
-    } else {
-      // Multiple names: all words except the last are first names, last word's
-      // initial is used. "Ana Maria Hernandez Martinez" -> "Ana Maria Hernandez M."
-      // Note: callers that already mask via formatAsFirstNameLastInitial pass
-      // through here unchanged apart from capitalization.
-      if (words.length == 2) {
-        // Simple case: "John Smith" -> "John S."
-        return '${capWord(words.first)} ${words.last[0].toUpperCase()}.'
-            .withDirectionalMarks();
-      } else {
-        // Multiple names: "Ana Maria Hernandez Martinez" -> "Ana Maria Hernandez M."
-        final firstNameWords = words
-            .sublist(0, words.length - 1)
-            .map(capWord)
-            .toList();
-        // Last name initial = last word's initial (uppercased)
-        final lastNameInitial = '${words.last[0].toUpperCase()}.';
-        return '${firstNameWords.join(' ')} $lastNameInitial'
-            .withDirectionalMarks();
-      }
-    }
-  }
+  /// "John S." — the app's only display-name format. A single-word name has
+  /// no valid form, so it shows the neutral 'Someone' placeholder instead of
+  /// the bare first name.
+  String _formatUserName(String? name) =>
+      (name ?? '').formatAsFirstNameLastInitial(fallback: 'Someone');
 
   SupabaseClient get _supabase => Supabase.instance.client;
 
@@ -974,11 +922,12 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
           table: 'location_share_signals',
           callback: (payload) {
             if (_disposed) return;
-
-            // Defer all state mutations to after the current frame to avoid
-            // "setState() called during build" when the async DB queries below
-            // resume mid-frame.
-            _handleSignalDeleted();
+            unawaited(
+              handleSignalDeleted(
+                deletedSharerId: payload.oldRecord['sharer_id'] as String?,
+                deletedMatchId: payload.oldRecord['match_id'] as String?,
+              ),
+            );
           },
         )
         .subscribe((status, error) {
@@ -1025,20 +974,49 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
         });
   }
 
-  /// Handles the DELETE Postgres Changes event. Queries the DB to determine
-  /// whether the peer's signal or our own was deleted, then reacts accordingly.
-  /// Runs as a fire-and-forget async method so the callback returns
-  /// synchronously (avoids "setState during build").
-  Future<void> _handleSignalDeleted() async {
+  /// Handles a DELETE on `location_share_signals`.
+  ///
+  /// [deletedSharerId] / [deletedMatchId] identify the removed row, read from
+  /// the delete payload (the table has REPLICA IDENTITY FULL). Callers that
+  /// cannot supply them fall back to attributing the delete by querying.
+  ///
+  /// A delete of our own row is never the peer stopping: it is our explicit
+  /// stop or a stale row replaced by a new share. Only the peer's row ending
+  /// while they were actually sharing may produce the "stopped" notice.
+  Future<void> handleSignalDeleted({
+    String? deletedSharerId,
+    String? deletedMatchId,
+  }) async {
     if (_disposed) return;
     if (shouldSkipSupabaseCalls()) return;
 
     final current = state;
     if (current == null) return;
+    if (deletedMatchId != null && deletedMatchId != current.matchId) return;
 
+    final myId = _supabase.auth.currentUser?.id;
+
+    if (deletedSharerId != null && myId != null) {
+      if (deletedSharerId == myId) {
+        if (_suppressOwnSignalDelete) return;
+        await _handleOwnSignalGone(current);
+        return;
+      }
+      // Delete in another match — nothing in this session changed.
+      if (deletedSharerId != current.otherUserId) return;
+
+      // Unknown/stopped peers were never seen sharing, and duplicate DELETE
+      // events for the same row must not re-notify.
+      if (current.otherStatus == ShareStatus.sharing ||
+          current.otherStatus == ShareStatus.paused) {
+        markOtherStopped();
+      }
+      return;
+    }
+
+    // Fallback: no sharer id in the payload — attribute via the DB.
     final now = DateTime.now().toUtc().toIso8601String();
 
-    // Check if the peer's signal still exists
     final peerSignal = await _supabase
         .from('location_share_signals')
         .select('id')
@@ -1049,7 +1027,11 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
 
     if (_disposed) return;
 
-    if (peerSignal == null) {
+    final peerWasSharing =
+        current.otherStatus == ShareStatus.sharing ||
+        current.otherStatus == ShareStatus.paused;
+
+    if (peerSignal == null && peerWasSharing) {
       // Peer's signal is gone — they stopped or it expired.
       // Defer state update to avoid "setState during build".
       SchedulerBinding.instance.addPostFrameCallback((_) {
@@ -1058,44 +1040,51 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
       return;
     }
 
-    // Check if our own signal was deleted (expired by pg_cron)
+    // No attributable peer stop — check whether our own row was removed.
+    await _handleOwnSignalGone(current);
+  }
+
+  /// Handles our own signal row disappearing (pg_cron expiry, or a stale row
+  /// replaced while re-sharing). Announces the expiry only when this device
+  /// still believed it was sharing and the row is really gone.
+  Future<void> _handleOwnSignalGone(LocationShareSession current) async {
+    if (_disposed) return;
     final user = _supabase.auth.currentUser;
-    if (user != null && current.myStatus == ShareStatus.sharing) {
-      final mySignal = await _supabase
-          .from('location_share_signals')
-          .select('id')
-          .eq('match_id', current.matchId)
-          .eq('sharer_id', user.id)
-          .or('expires_at.gt.$now,expires_at.is.null')
-          .maybeSingle();
+    if (user == null || current.myStatus != ShareStatus.sharing) return;
 
-      if (_disposed) return;
+    final now = DateTime.now().toUtc().toIso8601String();
+    final mySignal = await _supabase
+        .from('location_share_signals')
+        .select('id')
+        .eq('match_id', current.matchId)
+        .eq('sharer_id', user.id)
+        .or('expires_at.gt.$now,expires_at.is.null')
+        .maybeSingle();
 
-      if (mySignal == null) {
-        // Our signal was deleted — share expired.
-        // Stop GPS but keep receiving if peer is still sharing.
-        _stopGpsSubscription();
-        await BackgroundService.stopLocationShare();
-        _cancelExpirationTimer();
-        String notifText;
-        try {
-          final l10n = ref.read(localizationProvider);
-          notifText = l10n.getString('locationShareExpired');
-        } catch (_) {
-          notifText = 'Location sharing has ended';
-        }
-        _showInAppNotification(notifText, 'location_sharing');
-        // Defer state update to avoid "setState during build".
-        SchedulerBinding.instance.addPostFrameCallback((_) {
-          if (!_disposed) {
-            state = current.copyWith(
-              myStatus: ShareStatus.stopped,
-              myPosition: null,
-            );
-          }
-        });
-      }
+    if (_disposed || mySignal != null) return;
+
+    // Our signal was deleted — share expired.
+    // Stop GPS but keep receiving if peer is still sharing.
+    _stopGpsSubscription();
+    await BackgroundService.stopLocationShare();
+    _cancelExpirationTimer();
+    String notifText;
+    try {
+      final l10n = ref.read(localizationProvider);
+      notifText = l10n.getString('locationShareExpired');
+    } catch (_) {
+      notifText = 'Location sharing has ended';
     }
+    _showInAppNotification(notifText, 'location_sharing');
+    // Defer state update to avoid "setState during build".
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!_disposed) {
+        state = (state ?? current).copyWith(
+          myStatus: ShareStatus.stopped,
+          myPosition: null,
+        );
+      }
+    });
   }
 
   /// Stop listening for signals
@@ -1193,19 +1182,25 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
       );
       print('LocationShare: expires_at=${expiresAt?.toIso8601String()}');
 
-      // Delete any stale signal for this match+sharer before inserting a new one
-      await _supabase
-          .from('location_share_signals')
-          .delete()
-          .eq('match_id', matchId)
-          .eq('sharer_id', user.id);
+      // Delete any stale signal for this match+sharer before inserting a new
+      // one. The realtime DELETE it emits is ours, not the peer stopping.
+      _ownSignalDeleteSuppressions++;
+      try {
+        await _supabase
+            .from('location_share_signals')
+            .delete()
+            .eq('match_id', matchId)
+            .eq('sharer_id', user.id);
 
-      await _supabase.from('location_share_signals').insert({
-        'match_id': matchId,
-        'sharer_id': user.id,
-        if (expiresAt != null)
-          'expires_at': expiresAt.toUtc().toIso8601String(),
-      });
+        await _supabase.from('location_share_signals').insert({
+          'match_id': matchId,
+          'sharer_id': user.id,
+          if (expiresAt != null)
+            'expires_at': expiresAt.toUtc().toIso8601String(),
+        });
+      } finally {
+        _ownSignalDeleteSuppressions--;
+      }
       print('LocationShare: Signal inserted successfully');
     } catch (e) {
       print('LocationShare: Failed to insert signal: $e');
@@ -1215,33 +1210,38 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
   Future<void> stopSharing() async {
     if (state == null) return;
     final current = state!;
-    await _sendSessionStop();
-    await _deleteSignal();
-    await _deletePositionFromDb(current.matchId);
-    _stopGpsSubscription();
-    await BackgroundService.stopLocationShare();
-    _cancelExpirationTimer();
-    await _clearPersistedSessionState();
+    _ownSignalDeleteSuppressions++;
+    try {
+      await _sendSessionStop();
+      await _deleteSignal();
+      await _deletePositionFromDb(current.matchId);
+      _stopGpsSubscription();
+      await BackgroundService.stopLocationShare();
+      _cancelExpirationTimer();
+      await _clearPersistedSessionState();
 
-    // Check if the peer is still sharing — if so, transition to receiver
-    // mode instead of tearing everything down.
-    final peerStillSharing = await _isPeerSignalActive(
-      current.matchId,
-      current.otherUserId,
-    );
-    if (peerStillSharing && !_disposed) {
-      state = current.copyWith(
-        myStatus: ShareStatus.stopped,
-        myPosition: null,
-        broadcastMode: BroadcastMode.none,
+      // Check if the peer is still sharing — if so, transition to receiver
+      // mode instead of tearing everything down.
+      final peerStillSharing = await _isPeerSignalActive(
+        current.matchId,
+        current.otherUserId,
       );
-      _startStaleTimer();
-      return;
-    }
+      if (peerStillSharing && !_disposed) {
+        state = current.copyWith(
+          myStatus: ShareStatus.stopped,
+          myPosition: null,
+          broadcastMode: BroadcastMode.none,
+        );
+        _startStaleTimer();
+        return;
+      }
 
-    // Peer is not sharing — full cleanup
-    await _cleanup();
-    state = null;
+      // Peer is not sharing — full cleanup
+      await _cleanup();
+      state = null;
+    } finally {
+      _ownSignalDeleteSuppressions--;
+    }
   }
 
   Future<bool> _isPeerSignalActive(String matchId, String peerId) async {
@@ -2296,7 +2296,8 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
   // State mutation helpers
   // ---------------------------------------------------------------------------
 
-  /// Marks the other user's share as stopped (called from Postgres Changes DELETE handler).
+  /// Marks the other user's share as stopped (called from Postgres Changes
+  /// DELETE handlers once the deleted row is attributed to the peer).
   void markOtherStopped() {
     final current = state;
     if (current == null || _disposed) return;
@@ -2308,6 +2309,14 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
       MobileLocalNotificationService.cancelLocationShareNotification(
         notificationId: 'location_share_${current.matchId}',
       );
+    }
+
+    // Only the peer ending an actual share is worth announcing. `unknown`
+    // means they were never seen sharing, and `stopped` was already
+    // announced — neither may produce the "stopped sharing" notice again.
+    if (current.otherStatus != ShareStatus.sharing &&
+        current.otherStatus != ShareStatus.paused) {
+      return;
     }
 
     final otherName = current.otherUserName;

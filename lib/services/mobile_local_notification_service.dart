@@ -3,9 +3,13 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:matchme/providers/meetup_alerts_provider.dart';
 import 'package:matchme/providers/user_preferences_provider.dart';
 import 'package:matchme/services/app_badge_service.dart';
+import 'package:matchme/services/notification_avatar_service.dart';
+import 'package:matchme/utils/chat_notification_copy.dart';
 import 'package:matchme/utils/notification_channels.dart';
+import 'package:matchme/utils/notification_copy_source.dart';
 import 'package:matchme/utils/notification_limits.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -20,49 +24,30 @@ class MobileLocalNotificationService {
   static String? _currentViewingChatId;
   static final Map<String, List<String>> _messageHistory = {};
   static final Map<String, int> _lastNotifiedChatIds = {};
+
+  /// Handler for in-app route payloads ('/chat/<id>', '/meetup/<id>' and
+  /// '/meetup/<id>/plan'). Installed by main.dart, which owns the navigator
+  /// key.
+  static void Function(String route)? onOpenRoute;
   static final RegExp _rtlScriptRegex = RegExp(r'[\u0590-\u08FF]');
 
   // Strong LTR scripts (Latin, Latin Extended, etc.). Used together with
   // _rtlScriptRegex to find the first strong character and decide the
   // paragraph direction for mixed LTR/RTL notification text.
-  static final RegExp _strongLtrRegex =
-      RegExp(r'[A-Za-z\u00C0-\u024F\u1E00-\u1EFF\u0370-\u03FF\u0400-\u04FF]');
+  static final RegExp _strongLtrRegex = RegExp(
+    r'[A-Za-z\u00C0-\u024F\u1E00-\u1EFF\u0370-\u03FF\u0400-\u04FF]',
+  );
 
   // Bidi control characters that mean the text's directionality has already
   // been explicitly handled (isolate / embedding / override marks and their
   // terminators). If any are present, do not add another outer wrap.
-  static final RegExp _bidiHandledRegex =
-      RegExp(r'[\u2066\u2067\u2068\u2069\u202A\u202B\u202C\u202D\u202E]');
+  static final RegExp _bidiHandledRegex = RegExp(
+    r'[\u2066\u2067\u2068\u2069\u202A\u202B\u202C\u202D\u202E]',
+  );
 
   /// Set the ProviderContainer to access preferences
   static void setProviderContainer(ProviderContainer container) {
     _container = container;
-  }
-
-  static String _chatNotificationTitle({
-    required String senderName,
-    required String messageContent,
-  }) {
-    final rtl =
-        _rtlScriptRegex.hasMatch(senderName) ||
-        _rtlScriptRegex.hasMatch(messageContent);
-    // Isolate the sender name so a name in the opposite direction of the
-    // template (e.g. an English name in the Hebrew title) doesn't scramble
-    // the surrounding sentence.
-    final isolatedName = _bidiIsolate(senderName);
-    if (rtl) {
-      return '💬 הודעה חדשה מ-$isolatedName';
-    }
-    return '💬 New message from $isolatedName';
-  }
-
-  /// Wrap [value] in Unicode bidi isolation marks (FSI/PDI) so an embedded
-  /// name/label of opposite directionality does not scramble the surrounding
-  /// sentence. Mirrors the server-side `bidiIsolate` helper.
-  static String _bidiIsolate(String value) {
-    final s = value;
-    if (s.isEmpty) return s;
-    return '\u2068$s\u2069';
   }
 
   static String _wrapRtlIfNeeded(String text) {
@@ -192,6 +177,11 @@ class MobileLocalNotificationService {
             'Location Sharing',
             'Live location sharing notifications',
           ),
+          (
+            'meetup_alerts',
+            'Meet-up alerts',
+            'Waves, beacons, Spot me cards and meeting-point updates',
+          ),
         ]) {
           try {
             await android.createNotificationChannel(
@@ -291,11 +281,12 @@ class MobileLocalNotificationService {
         showWhen: true,
         playSound: soundEnabled,
         enableVibration: vibrationEnabled,
-        // Publishes the current unread count on the card itself. This is a
-        // supplement to the app-icon badge (the carrier notification and the
-        // OEM launcher APIs own that), for launchers that read the number off
-        // the newest notification.
-        number: _badgeNumber(),
+        // Joins the conversation group whose summary carries the unread badge
+        // (MatchMeBadgeController). Deliberately no `number` here: numeric
+        // launchers *sum* the number of every active notification, so a card
+        // that repeats the badge count doubles it.
+        groupKey: NotificationGroups.chats,
+        groupAlertBehavior: GroupAlertBehavior.children,
         // Same tag the server push and the native background-service dedup
         // key on: the Kotlin poller checks the tray for "new_match_<id>"
         // before posting its own fallback card, so this foreground card must
@@ -387,7 +378,8 @@ class MobileLocalNotificationService {
         showWhen: true,
         playSound: soundEnabled,
         enableVibration: vibrationEnabled,
-        number: _badgeNumber(),
+        groupKey: NotificationGroups.chats,
+        groupAlertBehavior: GroupAlertBehavior.children,
       ),
       iOS: DarwinNotificationDetails(
         presentAlert: true,
@@ -419,6 +411,16 @@ class MobileLocalNotificationService {
     final payload = (response.payload ?? '').trim();
     if (payload.isEmpty) return;
 
+    // In-app routes posted by this service (for example the meet-up tools'
+    // foreground cards). main.dart owns the navigator, so it installs the
+    // handler instead of this service importing the app entry point.
+    if (payload.startsWith('/')) {
+      try {
+        onOpenRoute?.call(payload);
+      } catch (_) {}
+      return;
+    }
+
     final lower = payload.toLowerCase();
     final isHttpUrl =
         lower.startsWith('https://') || lower.startsWith('http://');
@@ -436,6 +438,21 @@ class MobileLocalNotificationService {
     }());
   }
 
+  /// Show the conversation card iOS or Windows posts for itself.
+  ///
+  /// [card] is the copy the server computed for this recipient; when the push
+  /// carried it, the card repeats the server. Otherwise it is built from the
+  /// lines this device holds, with the server's two rules applied - unread total
+  /// in the title, no quoted text once the backlog is more than one message -
+  /// so an iOS banner, a Windows toast, a browser tray entry and the Android
+  /// card say the same thing about the same conversation.
+  ///
+  /// The sender's face rides along where the OS can take one: a Windows toast
+  /// resolves the local avatar mirror itself. iOS is left with text - a face in
+  /// a banner means an attachment, an attachment means a plaintext JPEG in the
+  /// app's Documents directory, and that directory goes into the member's
+  /// iCloud backup unless native code marks it excluded. A face the member
+  /// never agreed to back up is not worth a thumbnail.
   static Future<void> showMessageNotification({
     required String chatId,
     required String senderName,
@@ -444,6 +461,8 @@ class MobileLocalNotificationService {
     String? messageId,
     bool alreadyAggregated = false,
     bool? shouldAlertOverride,
+    ChatPushCardModel? card,
+    int? unreadCount,
   }) async {
     if (kIsWeb) return;
     await ensureInitialized();
@@ -503,10 +522,36 @@ class MobileLocalNotificationService {
       return;
     }
 
-    final shouldAlert = shouldAlertOverride ?? (_lastNotifiedChatIds[chatId] == null);
+    final shouldAlert =
+        shouldAlertOverride ?? (_lastNotifiedChatIds[chatId] == null);
     final soundEnabled = _isSoundEnabledForType(NotificationType.chatMessages);
     final vibrationEnabled = _isVibrationEnabledForType(
       NotificationType.chatMessages,
+    );
+
+    final safeSender = maskFullName(senderName);
+    final previewsEnabled =
+        card?.previewsEnabled ?? messagePreviewsEnabled(_container);
+    // The server's total wins: it counts messages this device never saw. A
+    // locally-signalled message counts the lines this device holds, which is
+    // the same window the member reads in the chat list.
+    final count =
+        card?.unreadCount ??
+        unreadCount ??
+        (history.isEmpty ? 1 : history.length);
+    // An aggregated push that carried no card of its own still carries its
+    // body, and that body already stands for the whole batch.
+    final served =
+        card ??
+        (alreadyAggregated && messageContent.trim().isNotEmpty
+            ? ChatPushCardModel(body: messageContent.trim())
+            : null);
+    final model = buildChatNotificationCard(
+      unreadCount: count,
+      previewsEnabled: previewsEnabled,
+      candidateLines: history,
+      forms: chatCardForms(_container, safeSender),
+      payload: served,
     );
 
     final NotificationDetails details = NotificationDetails(
@@ -519,7 +564,8 @@ class MobileLocalNotificationService {
         showWhen: true,
         playSound: shouldAlert && soundEnabled,
         enableVibration: shouldAlert && vibrationEnabled,
-        number: _badgeNumber(),
+        groupKey: NotificationGroups.chats,
+        groupAlertBehavior: GroupAlertBehavior.children,
       ),
       iOS: DarwinNotificationDetails(
         presentAlert: shouldAlert,
@@ -527,21 +573,15 @@ class MobileLocalNotificationService {
         presentSound: shouldAlert && soundEnabled,
         sound: (shouldAlert && soundEnabled) ? 'default' : null,
       ),
-      windows: _windowsDetails(soundEnabled: shouldAlert && soundEnabled),
+      windows: _windowsDetails(
+        soundEnabled: shouldAlert && soundEnabled,
+        avatarPath: NotificationAvatarService.instance.filePathFor(matchId),
+        altText: safeSender,
+      ),
     );
 
-    // Transport/display guard: truncate history to byte budget so 5 long
-    // user messages can't overflow the tray (FCM 4096B, display ~800B).
-    var joined = alreadyAggregated ? messageContent : history.join('\n');
-    final capped = truncateUtf8Bytes(joined, NotifLimits.chatHistoryMaxBytes);
-    joined = capped.text;
-    final safeSender = maskFullName(senderName);
-    final enforced = enforceTitleBody(
-      _chatNotificationTitle(senderName: safeSender, messageContent: joined),
-      joined,
-    );
-    final title = _wrapRtlIfNeeded(enforced.title);
-    final body = _wrapRtlIfNeeded(enforced.body);
+    final title = _wrapRtlIfNeeded(model.title);
+    final body = _wrapRtlIfNeeded(model.body);
 
     await _notificationsPlugin.show(
       id: chatId.hashCode,
@@ -665,17 +705,6 @@ class MobileLocalNotificationService {
     }
   }
 
-  /// Unread count published on the notification itself.
-  ///
-  /// `null` leaves the number to the launcher (its default is the number of
-  /// active notifications). Whenever the inbox has reported a count, the card
-  /// carries the same value the app-icon badge uses, so a launcher that reads
-  /// the number off the newest notification cannot disagree with the badge.
-  static int? _badgeNumber() {
-    final count = AppBadgeService.currentCount;
-    return count > 0 ? count : null;
-  }
-
   /// Check if chat notifications should be shown
   static bool _shouldShowChatNotification() {
     final notifs = _getNotifs();
@@ -726,15 +755,33 @@ class MobileLocalNotificationService {
   /// Windows has no channels/vibration — sound on/off is the only per-type
   /// preference that maps. Silent when the user turned sound off so toasts
   /// respect the same settings as the other platforms.
+  ///
+  /// [avatarPath] is a file this app already holds: a toast resolves its own
+  /// images from a URI and cannot be handed bytes, and an https URL only works
+  /// in an MSIX-packaged build. No path, no face - the card posts without one.
   static WindowsNotificationDetails _windowsDetails({
     required bool soundEnabled,
+    String? avatarPath,
+    String? altText,
   }) {
-    return WindowsNotificationDetails(
-      audio: soundEnabled
-          ? WindowsNotificationAudio.preset(
-              sound: WindowsNotificationSound.im,
-            )
-          : WindowsNotificationAudio.silent(),
+    final audio = soundEnabled
+        ? WindowsNotificationAudio.preset(sound: WindowsNotificationSound.im)
+        : WindowsNotificationAudio.silent();
+    final avatar = _windowsAvatar(avatarPath, altText: altText);
+    return avatar == null
+        ? WindowsNotificationDetails(audio: audio)
+        : WindowsNotificationDetails(audio: audio, images: [avatar]);
+  }
+
+  static WindowsImage? _windowsAvatar(String? path, {String? altText}) {
+    final file = (path ?? '').trim();
+    if (file.isEmpty) return null;
+    final name = (altText ?? '').trim();
+    return WindowsImage(
+      Uri.file(file, windows: true),
+      altText: name.isEmpty ? 'Profile photo' : name,
+      placement: WindowsImagePlacement.appLogoOverride,
+      crop: WindowsImageCrop.circle,
     );
   }
 
@@ -777,7 +824,6 @@ class MobileLocalNotificationService {
         showWhen: true,
         playSound: soundEnabled,
         enableVibration: vibrationEnabled,
-        number: _badgeNumber(),
       ),
       iOS: DarwinNotificationDetails(
         presentAlert: true,
@@ -844,7 +890,6 @@ class MobileLocalNotificationService {
         showWhen: true,
         playSound: soundEnabled,
         enableVibration: vibrationEnabled,
-        number: _badgeNumber(),
       ),
       iOS: DarwinNotificationDetails(
         presentAlert: true,
@@ -960,6 +1005,79 @@ class MobileLocalNotificationService {
     if (notifs.isPausedNow) return false;
     return notifs.isMethodEnabled(
       NotificationType.locationSharing,
+      NotificationMethod.push,
+    );
+  }
+
+  static Future<void> showMeetupNotification({
+    required String notificationId,
+    required String title,
+    required String body,
+    String? matchId,
+    String? kind,
+  }) async {
+    if (kIsWeb) return;
+    await ensureInitialized();
+
+    if (!_shouldShowMeetupNotification()) return;
+
+    final soundEnabled = _isSoundEnabledForType(NotificationType.meetupTools);
+    final vibrationEnabled = _isVibrationEnabledForType(
+      NotificationType.meetupTools,
+    );
+
+    final NotificationDetails details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        'meetup_alerts',
+        'Meet-up alerts',
+        channelDescription:
+            'Waves, beacons, Spot me cards and meeting-point updates',
+        importance: Importance.high,
+        priority: Priority.high,
+        showWhen: true,
+        playSound: soundEnabled,
+        enableVibration: vibrationEnabled,
+        // Per-notification sound overrides the channel, so existing installs
+        // get the distinct chime without a channel-id bump.
+        sound: soundEnabled
+            ? const RawResourceAndroidNotificationSound('meetup_chime')
+            : null,
+      ),
+      iOS: DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: soundEnabled,
+        sound: soundEnabled ? 'default' : null,
+      ),
+      windows: _windowsDetails(soundEnabled: soundEnabled),
+    );
+
+    final enforced = enforceTitleBody(title, body);
+    final finalTitle = _wrapRtlIfNeeded(enforced.title);
+    final finalBody = _wrapRtlIfNeeded(enforced.body);
+    final route = (matchId ?? '').trim();
+    // Proposal and place-change cards open the planning screen, where the
+    // accept/counter decision lives; every other kind opens the hub.
+    final isDecision =
+        kind == kMeetupAlertProposal || kind == kMeetupAlertPlaceChange;
+
+    await _notificationsPlugin.show(
+      id: notificationId.hashCode,
+      title: finalTitle,
+      body: finalBody,
+      notificationDetails: details,
+      payload: route.isEmpty
+          ? notificationId
+          : (isDecision ? '/meetup/$route/plan' : '/meetup/$route'),
+    );
+  }
+
+  static bool _shouldShowMeetupNotification() {
+    final notifs = _getNotifs();
+    if (notifs == null) return true;
+    if (notifs.isPausedNow) return false;
+    return notifs.isMethodEnabled(
+      NotificationType.meetupTools,
       NotificationMethod.push,
     );
   }

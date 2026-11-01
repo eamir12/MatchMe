@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
+import 'package:matchme/utils/offline_utils.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 
@@ -16,7 +17,6 @@ class ChatViewStateService {
       RouteObserver<Route<dynamic>>();
 
   static final String _sessionId = const Uuid().v4();
-  static String? _userId;
   static String? _matchId;
   static bool _foreground = false;
   static bool _routeVisible = false;
@@ -25,7 +25,6 @@ class ChatViewStateService {
 
   static Future<void> setViewingChat(String matchId) {
     _matchId = matchId.trim().isEmpty ? null : matchId.trim();
-    _userId = Supabase.instance.client.auth.currentUser?.id;
     _foreground = true;
     _routeVisible = true;
     final write = _scheduleWrite();
@@ -71,7 +70,6 @@ class ChatViewStateService {
   }
 
   static Future<void> clearForLogout() async {
-    _userId = null;
     _matchId = null;
     _routeVisible = false;
     _foreground = false;
@@ -94,9 +92,11 @@ class ChatViewStateService {
 
   static Future<void> _writeState() async {
     final client = Supabase.instance.client;
-    final currentUserId = client.auth.currentUser?.id ?? _userId;
+    // No session, no write: an anon upsert would be rejected (401/42501 log
+    // spam), and the server ignores stale rows after 45 seconds anyway.
+    if (shouldSkipUserScopedSupabaseCalls()) return;
+    final currentUserId = client.auth.currentUser?.id;
     if (currentUserId == null || currentUserId.isEmpty) return;
-    _userId = currentUserId;
     final active = _foreground && _routeVisible && _matchId != null;
     try {
       await client.from('user_chat_view_state').upsert(

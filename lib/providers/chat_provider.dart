@@ -36,48 +36,6 @@ import 'package:matchme/services/background_service.dart';
 final supabase = Supabase.instance.client;
 final uuid = Uuid();
 
-// Helper function to format sender name: "FirstName LastInitial." e.g., "John S."
-// Capitalizes first letters regardless of how the user typed the name and
-// handles multiple first/last names (e.g. Spanish names).
-String formatSenderNameForNotification(String fullName) {
-  if (fullName.isEmpty) return 'MatchMe';
-
-  String capWord(String word) {
-    if (word.isEmpty) return word;
-    final hyphenParts = word.split('-');
-    return hyphenParts
-        .map((h) {
-          if (h.isEmpty) return h;
-          return h
-              .split("'")
-              .map((s) {
-                if (s.isEmpty) return s;
-                final lower = s.toLowerCase();
-                return '${lower[0].toUpperCase()}${lower.substring(1)}';
-              })
-              .join("'");
-        })
-        .join('-');
-  }
-
-  final cleaned = fullName.replaceAll(bidiControls, '');
-  final parts = cleaned
-      .trim()
-      .split(RegExp(r'\s+'))
-      .where((p) => p.isNotEmpty)
-      .toList();
-  if (parts.isEmpty) return 'MatchMe';
-  if (parts.length == 1) {
-    return capWord(parts[0])
-        .withDirectionalMarks(); // Just first name if no last name
-  }
-
-  // First name + first letter of last name with period
-  final firstName = capWord(parts[0]);
-  final lastInitial = parts[parts.length - 1][0].toUpperCase();
-  return '$firstName $lastInitial.'.withDirectionalMarks();
-}
-
 /// Drops a stale tray card after a peer edit/delete: cancels the Flutter
 /// card and clears native history, then re-checks the RPC latest on Android
 /// so remaining unreads re-post with correct text. Never throws.
@@ -266,6 +224,7 @@ Future<void> migrateLegacyTranslationPrefs() async {
 class _TranslationCacheEntry {
   final String translation;
   final int version;
+
   /// The original text (translation-provider `text` param) the translation
   /// was resolved for. The memory fast path below is honored only when the
   /// bubble's current content matches, so an edited message forces a fresh
@@ -513,10 +472,7 @@ class ChatSyncService {
         // This ensures deleted messages are removed from local cache
         await localDb.saveMessages(matchId, data);
         // The local cache now mirrors the server exactly.
-        await localDb.markMessagesSynced(
-          matchId,
-          messageCount: data.length,
-        );
+        await localDb.markMessagesSynced(matchId, messageCount: data.length);
       } else {
         // Catch-up pass: only rows that landed after [since] are present, so
         // merge them into the cache instead of replacing it (replacing would
@@ -626,7 +582,7 @@ class ChatSyncService {
       'id, match_id, sender_id, created_at, edited_at, delivered_at, read_at, '
       'reaction_summary, reply_to_message_id, '
       'detected_source_language, translated_target_language, '
-      'translated_source_edited_at, '
+      'translation_status, translated_source_edited_at, '
       'encryption_scheme, sender_key_id, recipient_key_id, recipient_id, '
       'content_original_encrypted, content_original_nonce, '
       'content_translated_encrypted, content_translated_nonce, '
@@ -1019,8 +975,7 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
                     decryptedOriginal = await chatKeyService
                         .decryptMessageContent(
                           currentUserId: currentUserId,
-                          currentUserPrivateKey:
-                              chatKeyState.privateKeyBytes!,
+                          currentUserPrivateKey: chatKeyState.privateKeyBytes!,
                           messageId: m.id,
                           matchId: m.matchId,
                           senderId: m.senderId,
@@ -1031,8 +986,7 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
                           contentOriginalNonceBase64: m.contentOriginalNonce!,
                           wrappedKeys: m.wrappedKeys!,
                           recipientId:
-                              m.recipientId != null &&
-                                  m.recipientId!.isNotEmpty
+                              m.recipientId != null && m.recipientId!.isNotEmpty
                               ? m.recipientId
                               : null,
                         );
@@ -1079,8 +1033,7 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
                       isValidLanguageCode(sourceLang) &&
                       storedTarget != null &&
                       storedTarget.isNotEmpty &&
-                      normalizeLanguageCode(storedTarget) ==
-                          normalizedTarget) {
+                      normalizeLanguageCode(storedTarget) == normalizedTarget) {
                     try {
                       decryptedTranslated = await chatKeyService
                           .decryptMessageTranslatedContent(
@@ -1121,8 +1074,7 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
                         normalized[i]['content_translated_encrypted_cache']
                             as String?;
                     if (cached != null && cached.isNotEmpty) {
-                      decryptedTranslated = await EncryptedCacheService
-                          .instance
+                      decryptedTranslated = await EncryptedCacheService.instance
                           .decryptFromCache(cached);
                     }
                   } catch (e) {
@@ -1170,8 +1122,7 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
             }
             if (decryptedTranslated != null &&
                 decryptedTranslated.isNotEmpty &&
-                (m.contentTranslated == null ||
-                    m.contentTranslated!.isEmpty)) {
+                (m.contentTranslated == null || m.contentTranslated!.isEmpty)) {
               models[idx] = m.copyWith(
                 contentTranslated: decryptedTranslated,
                 translatedText: decryptedTranslated,
@@ -1703,6 +1654,9 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
         'content_translated_nonce',
         'translated_target_language',
         'translated_source_edited_at',
+        'translation_status',
+        'translation_attempts',
+        'translated_at',
         'detected_source_language',
         'edited_at',
       };
@@ -1744,6 +1698,9 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
         'content_translated_nonce',
         'translated_target_language',
         'translated_source_edited_at',
+        'translation_status',
+        'translation_attempts',
+        'translated_at',
         'detected_source_language',
         'edited_at',
       };
@@ -2291,7 +2248,9 @@ final chatMessagesProvider = StreamProvider.autoDispose.family<List<ChatMessageM
       try {
         final state = await localDb.getMessagesSyncState(matchId);
         if (state != null) {
-          final localCount = (await localDb.getMessagesSnapshot(matchId)).length;
+          final localCount = (await localDb.getMessagesSnapshot(
+            matchId,
+          )).length;
           cacheIsComplete =
               localCount >= state.count &&
               DateTime.now().toUtc().difference(state.at) <
@@ -2405,6 +2364,11 @@ class ChatService {
   final Ref _ref;
   ChatService(this._ref);
 
+  /// Match participants never change, so the sender can avoid a `matches`
+  /// round-trip on every message. Keyed by user id as well so a different
+  /// account can never reuse the previous account's recipient.
+  final Map<String, String> _matchRecipientCache = {};
+
   Future<void> sendMessage({
     required String matchId,
     required String text,
@@ -2415,6 +2379,34 @@ class ChatService {
     final localDb = _ref.read(localDbProvider);
     final tempId = uuid.v4();
     final sourceLang = guessLanguageCode(text);
+
+    // Insert the optimistic row before any network work. The previous order
+    // awaited the reachability probe, the match lookup, the recipient key
+    // fetch and the crypto operations before the bubble appeared, which is
+    // what made the sender's own message take seconds to show. Local storage
+    // is now the first thing that happens; encryption fields are merged in as
+    // soon as they are ready.
+    final optimisticMessage = ChatMessageModel(
+      id: tempId,
+      matchId: matchId,
+      senderId: user.id,
+      contentOriginal: text,
+      createdAt: DateTime.now(),
+      isPending: true,
+      replyToMessageId: replyToMessageId,
+      encryptionScheme: '',
+      translationCapable: false,
+    );
+    try {
+      await localDb.addMessages(matchId, [optimisticMessage.toJson()]);
+      await localDb.recomputeChatLastMessagePreviewFromMessages(
+        user.id,
+        matchId,
+      );
+      _ref.invalidate(recentChatsProvider(user.id));
+    } catch (e) {
+      debugPrint('❌ [sendMessage] Error adding optimistic message: $e');
+    }
 
     // Resolve the quoted preview at send time so the optimistic bubble shows
     // the reply immediately (WhatsApp-style), even before the provider's
@@ -2433,56 +2425,44 @@ class ChatService {
           }
         }
       } catch (_) {}
+      if (replyToSenderId != null || replyToContent != null) {
+        try {
+          await localDb.mergeMessages(matchId, [
+            {
+              'id': tempId,
+              'reply_to_sender_id': replyToSenderId,
+              'reply_to_content': replyToContent,
+            },
+          ]);
+        } catch (_) {}
+      }
     }
 
     // Detect connectivity up front. When the device is offline we cannot
     // fetch the recipient's chat key from Supabase, so we cannot encrypt
-    // the message. In that case the message is added optimistically to
-    // the local DB (so the sender sees it immediately, with a clock icon)
-    // and the plaintext is queued in the chat outbox. The
-    // OutboxSyncService picks it up automatically when connectivity is
-    // restored, encrypts it using the cached key, and uploads it to
-    // Supabase. The queued payload survives app restarts and device
-    // reboots because it lives in a persistent Hive box.
-    // Supabase reachability is the only signal: if we cannot round-trip with
-    // it, the recipient's chat key is not coming and the send has to take the
-    // offline path. A working internet with a dead backend is still offline.
-    final isOnline = (await probeSupabaseReachability(
-      log: (m) => debugPrint('📤 [sendMessage:probe] $m'),
-    )).isReachable;
+    // the message. The optimistic row was already stored above, so the
+    // sender sees it immediately with a clock icon; the plaintext is queued
+    // in the chat outbox for OutboxSyncService to encrypt and upload when
+    // connectivity returns. The queued payload survives app restarts and
+    // device reboots because it lives in a persistent Hive box.
+    bool isOnline;
+    try {
+      isOnline = (await probeSupabaseReachability(
+        log: (m) => debugPrint('📤 [sendMessage:probe] $m'),
+      )).isReachable;
+    } catch (e) {
+      debugPrint('📤 [sendMessage:probe] failed, treating as offline: $e');
+      isOnline = false;
+    }
 
     if (!isOnline) {
       // ── OFFLINE PATH ─────────────────────────────────────────────
-      // Add the optimistic message to local DB so the sender sees it
-      // appear immediately with the watch-later "pending" icon. We
-      // intentionally do NOT include any encryption fields because we
-      // could not fetch the recipient's public key. The OutboxSyncService
-      // will encrypt and sync the message when the device comes back
-      // online; the resulting server echo will then clear `isPending`.
-      final pendingMessage = ChatMessageModel(
-        id: tempId,
-        matchId: matchId,
-        senderId: user.id,
-        contentOriginal: text,
-        createdAt: DateTime.now(),
-        isPending: true,
-        replyToMessageId: replyToMessageId,
-        replyToSenderId: replyToSenderId,
-        replyToContent: replyToContent,
-        encryptionScheme: '',
-        translationCapable: false,
-      );
-      try {
-        debugPrint(
-          '📤 [sendMessage:offline] Adding optimistic message: $tempId',
-        );
-        await localDb.addMessages(matchId, [pendingMessage.toJson()]);
-      } catch (e) {
-        debugPrint(
-          '❌ [sendMessage:offline] Error adding optimistic message: $e',
-        );
-      }
-
+      // The optimistic row (with no encryption fields yet) was already
+      // stored before the probe, so the sender sees it immediately with the
+      // watch-later "pending" icon. OutboxSyncService encrypts and syncs it
+      // when the device comes back online; the server echo clears
+      // `isPending`.
+      //
       // Queue the plaintext message in the persistent outbox. The
       // OutboxSyncService drains this queue when connectivity is
       // restored.
@@ -2514,6 +2494,18 @@ class ChatService {
       user: user,
     );
     if (encryption == null) {
+      // Remove the optimistic row rather than leaving a permanently pending
+      // bubble. Sending unencrypted messages is not allowed by design.
+      try {
+        await localDb.deleteMessage(matchId, tempId);
+        await localDb.recomputeChatLastMessagePreviewFromMessages(
+          user.id,
+          matchId,
+        );
+        _ref.invalidate(recentChatsProvider(user.id));
+      } catch (e) {
+        debugPrint('❌ [sendMessage] Failed to remove optimistic row: $e');
+      }
       throw Exception(
         'Cannot send message: encryption not available. Ensure encryption keys are loaded.',
       );
@@ -2528,30 +2520,24 @@ class ChatService {
         encryption['content_original_nonce'] as String?;
     final wrappedKeys = encryption['wrapped_keys'] as Map<String, dynamic>?;
 
-    final optimisticMessage = ChatMessageModel(
-      id: tempId,
-      matchId: matchId,
-      senderId: user.id,
-      contentOriginal: text,
-      createdAt: DateTime.now(),
-      isPending: true,
-      replyToMessageId: replyToMessageId,
-      replyToSenderId: replyToSenderId,
-      replyToContent: replyToContent,
-      encryptionScheme: 'v1',
-      senderKeyId: senderKeyId,
-      recipientKeyId: recipientKeyId,
-      recipientId: messageRecipientId,
-      contentOriginalEncrypted: contentOriginalEncrypted,
-      contentOriginalNonce: contentOriginalNonce,
-      wrappedKeys: wrappedKeys,
-      translationCapable: false,
-    );
+    // Attach the encryption fields to the already-visible optimistic row.
     try {
-      debugPrint('📤 [sendMessage:online] Adding optimistic message: $tempId');
-      await localDb.addMessages(matchId, [optimisticMessage.toJson()]);
+      await localDb.mergeMessages(matchId, [
+        {
+          'id': tempId,
+          'encryption_scheme': 'v1',
+          'sender_key_id': senderKeyId,
+          'recipient_key_id': recipientKeyId,
+          'recipient_id': messageRecipientId,
+          'content_original_encrypted': contentOriginalEncrypted,
+          'content_original_nonce': contentOriginalNonce,
+          'wrapped_keys': wrappedKeys,
+        },
+      ]);
     } catch (e) {
-      debugPrint('❌ [sendMessage:online] Error adding optimistic message: $e');
+      debugPrint(
+        '❌ [sendMessage:online] Error updating optimistic encryption: $e',
+      );
     }
     final supabasePayload = <String, dynamic>{
       'id': tempId,
@@ -2618,11 +2604,6 @@ class ChatService {
         user.id,
         matchId,
       );
-
-      final currentUserId = supabase.auth.currentUser?.id;
-      if (currentUserId != null) {
-        _ref.invalidate(recentChatsProvider(currentUserId));
-      }
 
       // Push notification is now triggered by a database webhook on INSERT
       // to chat_messages, not by the sender's client. See migration
@@ -2767,16 +2748,21 @@ class ChatService {
     if (senderKeyId == null) return null;
 
     try {
-      final matchResp = await supabase
-          .from('matches')
-          .select('user1_id, user2_id')
-          .eq('id', matchId)
-          .maybeSingle();
-      if (matchResp == null) return null;
+      final cacheKey = '${user.id}|$matchId';
+      var recipientId = _matchRecipientCache[cacheKey];
+      if (recipientId == null) {
+        final matchResp = await supabase
+            .from('matches')
+            .select('user1_id, user2_id')
+            .eq('id', matchId)
+            .maybeSingle();
+        if (matchResp == null) return null;
 
-      final recipientId = matchResp['user1_id'] == user.id
-          ? matchResp['user2_id'] as String
-          : matchResp['user1_id'] as String;
+        recipientId = matchResp['user1_id'] == user.id
+            ? matchResp['user2_id'] as String
+            : matchResp['user1_id'] as String;
+        _matchRecipientCache[cacheKey] = recipientId;
+      }
 
       final recipientActive = await chatKeyService.fetchActiveKey(recipientId);
       if (recipientActive == null) return null;
@@ -3048,6 +3034,26 @@ class ChatService {
           messageId: messageId,
           kind: 'message_edited',
         ),
+      );
+      // Regenerate the translation for the edited content in the background.
+      // The server clears the old translation; without this the recipient
+      // would keep seeing the "translating" placeholder until their next
+      // batch request happens to include this message.
+      unawaited(
+        TranslationProxy.invoke(
+          body: {
+            'action': 'retranslate_edited',
+            'message_id': messageId,
+            'match_id': matchId,
+            'message_ids': [messageId],
+            'request_id':
+                '${messageId}_${DateTime.now().microsecondsSinceEpoch}',
+            'source_language': guessLanguageCode(newText),
+          },
+        ).catchError((Object e) {
+          debugPrint('retranslate edited message failed: $e');
+          return null;
+        }),
       );
       try {
         _ref.invalidate(chatMessagesProvider(matchId));
@@ -3408,26 +3414,11 @@ class ChatService {
         }
       }
 
-      String? maskFullName(String? fullName) {
-        if (fullName == null) return null;
-        final parts = fullName
-            .replaceAll(bidiControls, '')
-            .trim()
-            .split(RegExp(r'\s+'))
-            .where((p) => p.isNotEmpty)
-            .toList();
-        if (parts.isEmpty) return null;
-        if (parts.length == 1) return parts.first.withDirectionalMarks();
-        final first = parts.first;
-        final lastInitial = parts.last[0].toUpperCase();
-        return '$first $lastInitial.'.withDirectionalMarks();
-      }
-
       final List<Map<String, dynamic>> result = [];
       for (final id in ids) {
         final p = byId[id];
         final masked = p != null
-            ? maskFullName(p['full_name'] as String?)
+            ? (p['full_name'] as String?)?.formatAsFirstNameLastInitial()
             : null;
         result.add({
           'user_id': id,
@@ -3841,8 +3832,9 @@ class TranslationNotifier extends Notifier<TranslationStates> {
 
     // Serialize the server write per match so consecutive toggles commit in
     // press order. See [_toggleWriteChains].
-    final chained = (_toggleWriteChains[matchId] ?? Future<void>.value())
-        .then((_) => _writeTranslationToServer(matchId, targetLang, previous));
+    final chained = (_toggleWriteChains[matchId] ?? Future<void>.value()).then(
+      (_) => _writeTranslationToServer(matchId, targetLang, previous),
+    );
     final safeChain = chained.catchError((Object _) {});
     _toggleWriteChains[matchId] = safeChain;
     try {

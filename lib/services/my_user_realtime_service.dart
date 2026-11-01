@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:matchme/services/session_service.dart';
 import 'package:matchme/services/supabase_realtime_manager.dart';
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -47,6 +48,7 @@ class MyUserUpdate {
 class MyUserRealtimeService {
   MyUserRealtimeService._() {
     _listenAuthState();
+    SessionService.deadSessionDetected.addListener(_onDeadSessionChanged);
   }
 
   static final MyUserRealtimeService instance = MyUserRealtimeService._();
@@ -149,6 +151,14 @@ class MyUserRealtimeService {
 
   void _ensureChannel() {
     if (!_enabled) return;
+    // While the re-login gate is armed the session is proven dead: a realtime
+    // join would run as anon and every attempt is another 42501 on `users`.
+    // The latch listener re-opens the channel as soon as a new sign-in
+    // clears it.
+    if (SessionService.deadSessionDetected.value) {
+      _stop();
+      return;
+    }
     final userId = Supabase.instance.client.auth.currentUser?.id;
     if (userId == null) {
       _stop();
@@ -237,9 +247,19 @@ class MyUserRealtimeService {
     }
   }
 
+  void _onDeadSessionChanged() {
+    if (!_enabled) return;
+    if (SessionService.deadSessionDetected.value) {
+      _stop();
+    } else {
+      _ensureChannel();
+    }
+  }
+
   /// Releases every resource. The service is a singleton and normally lives
   /// for the whole process; this exists for tests and for a hard shutdown.
   void dispose() {
+    SessionService.deadSessionDetected.removeListener(_onDeadSessionChanged);
     _stop();
     _authSubscription?.cancel();
     _authSubscription = null;

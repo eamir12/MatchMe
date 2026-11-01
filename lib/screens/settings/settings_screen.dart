@@ -514,7 +514,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                                   Text(
                                     destination.group,
                                     style: TextStyle(
-                                      fontSize: 11,
+                                      fontSize: 12,
                                       fontWeight: FontWeight.w700,
                                       color: destination.accent,
                                     ),

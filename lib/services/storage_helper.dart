@@ -21,6 +21,7 @@ import 'package:matchme/services/runtime_supabase_config.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/utils/offline_utils.dart';
+import 'package:matchme/services/session_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:extended_image/extended_image.dart';
 
@@ -44,8 +45,32 @@ class StorageHelper {
   static final Map<String, int> _cacheBustVersions = {};
   static final Set<String> _knownImageCacheKeys = {};
   static final Set<String> _prefetchedImageKeys = {};
+
+  /// One in-flight createSignedUrl per bucket+object path: concurrent
+  /// resolvers (startup warmer, list prefetch, SignedImage widgets) share a
+  /// single POST instead of each firing their own while the cache is still
+  /// empty for that object.
+  static final Map<String, Future<String?>> _signInFlight = {};
   static const String _bucket = 'profile-photos';
   static const Duration _missingTtl = Duration(minutes: 10);
+
+  /// Buckets that are private by construction. Supabase answers 400 for
+  /// `/storage/v1/object/public/<bucket>/...` on a private bucket, so building
+  /// a public URL for one can never serve the object: it only turns a
+  /// transient signing/auth failure into a permanently broken image.
+  static const Set<String> _privateBuckets = {
+    _bucket,
+    'verification-photos',
+    'profile-edit-attachments',
+    'meetup-spot',
+  };
+
+  static bool isPrivateBucket([String? bucket]) {
+    final name = (bucket == null || bucket.trim().isEmpty)
+        ? _bucket
+        : bucket.trim();
+    return _privateBuckets.contains(name);
+  }
 
   /// Persistent (local-storage) layer for signed URLs.
   /// Memory [_cache] is fast but emptied on restart; SharedPreferences
@@ -60,6 +85,7 @@ class StorageHelper {
   static Future<void> clearSessionCache() async {
     _cache.clear();
     _missingUntil.clear();
+    _signInFlight.clear();
     if (!kIsWeb) {
       for (final raw in _knownImageCacheKeys) {
         final version = _cacheBustVersions[raw] ?? 0;
@@ -521,6 +547,12 @@ class StorageHelper {
             _isAuthorizedImageRequest(url, headers)) {
           _markMissing(objectPath);
         }
+        // Path only: the query string carries the signed-URL token.
+        final path = Uri.tryParse(url)?.path ?? '';
+        debugPrint(
+          '[IMG] fetch failed status=${response.statusCode} '
+          'bytes=${response.bodyBytes.length} path=$path',
+        );
         return null;
       }
       final bytes = Uint8List.fromList(response.bodyBytes);
@@ -528,7 +560,10 @@ class StorageHelper {
         await OfflineImageCache.instance.write(cacheKey, bytes);
       }
       return bytes;
-    } catch (_) {
+    } catch (error) {
+      // Message payloads can embed the signed URL; log the type only.
+      final path = Uri.tryParse(url)?.path ?? '';
+      debugPrint('[IMG] fetch error path=$path type=${error.runtimeType}');
       return null;
     }
   }
@@ -575,6 +610,9 @@ class StorageHelper {
           if (bytes != null && bytes.isNotEmpty) return bytes;
         }
       }
+      // Private buckets answer 400 for public object URLs, so requesting one
+      // can only waste a round trip and hide the real (auth) failure.
+      if (isPrivateBucket(bucket)) return null;
       final publicUrl = buildPublicObjectUrl(source, bucket: bucket);
       if (publicUrl == null || publicUrl.isEmpty) return null;
       return await fetchImageBytesFromUrl(
@@ -838,8 +876,10 @@ class StorageHelper {
       }
     }
 
-    // Don't fall back to public URL if this object is known missing
-    if (!isKnownMissing(source, bucket: bucket)) {
+    // Private buckets reject public URLs with 400, so falling back to one
+    // only converts a transient signing/auth failure into a permanently
+    // broken tile. Returning null lets the caller retry once auth is ready.
+    if (!isPrivateBucket(bucket) && !isKnownMissing(source, bucket: bucket)) {
       final publicUrl = buildPublicObjectUrl(source, bucket: bucket);
       if (publicUrl != null && publicUrl.isNotEmpty) {
         return ResolvedImageRequest(url: publicUrl);
@@ -850,6 +890,153 @@ class StorageHelper {
       return ResolvedImageRequest(url: source);
     }
 
+    return null;
+  }
+
+  /// Transient sign failures worth exactly one retry: Supabase Storage's
+  /// 544 database_timeout (Postgres pool momentarily exhausted), other 5xx,
+  /// and the client-side 8s timeout. Deterministic failures (404/401/403)
+  /// never retry.
+  static bool _isTransientSignFailure(Object error) {
+    if (error is TimeoutException) return true;
+    if (error is StorageException) {
+      final code = int.tryParse(error.statusCode ?? '');
+      if (code != null && code >= 500) return true;
+    }
+    final msg = error.toString().toLowerCase();
+    return msg.contains('544') || msg.contains('database_timeout');
+  }
+
+  /// Deduplicates concurrent sign requests for the same object: the first
+  /// caller performs the (retry-capable) POST; every other caller resolving
+  /// the same path in the meantime gets this pending future. The completed
+  /// URL flows into the memory/persisted caches exactly as before.
+  static Future<String?> _createSignedUrlShared({
+    required String bucketName,
+    required String objectPath,
+    required String cacheKey,
+    required int ttlSeconds,
+    int expireEarlySeconds = 0,
+  }) {
+    final inflightKey = '$bucketName:$objectPath';
+    final pending = _signInFlight[inflightKey];
+    if (pending != null) return pending;
+    // Braces matter: `whenComplete` waits for a future returned by its
+    // callback, and returning the map entry here made every signing future
+    // await itself — createSignedUrl never resolved for any caller.
+    final future = _createSignedUrlWithRetry(
+      bucketName: bucketName,
+      objectPath: objectPath,
+      cacheKey: cacheKey,
+      ttlSeconds: ttlSeconds,
+      expireEarlySeconds: expireEarlySeconds,
+    ).whenComplete(() {
+      _signInFlight.remove(inflightKey);
+    });
+    _signInFlight[inflightKey] = future;
+    return future;
+  }
+
+  static Future<String?> _createSignedUrlWithRetry({
+    required String bucketName,
+    required String objectPath,
+    required String cacheKey,
+    required int ttlSeconds,
+    int expireEarlySeconds = 0,
+  }) async {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      // A proven-dead refresh-token family cannot mint a signed URL: Storage
+      // calls the SDK's internal `_getAccessToken()`, which calls
+      // `auth.refreshSession()` directly — bypassing `safeRefreshSession` — and
+      // replays the revoked token (one "Possible abuse attempt" per attempt;
+      // 2026-10-30 relaunch log). The re-login gate owns recovery; until then
+      // callers fall back to the offline cache.
+      if (SessionService.deadSessionDetected.value) return null;
+      if (attempt > 0) {
+        // Observed 544 blips clear within ~1s; the single delayed retry
+        // serves every waiter sharing this future.
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+      }
+      try {
+        // A hung createSignedUrl used to stall its whole prefetch batch (and
+        // any caller awaiting this resolve) with no bound. Cap it so a dead
+        // backend fails fast and the caller can fall back to cache.
+        final dynamic resp = await _client.storage
+            .from(bucketName)
+            .createSignedUrl(objectPath, ttlSeconds)
+            .timeout(const Duration(seconds: 8));
+
+        String? url;
+        if (resp == null) {
+          url = null;
+        } else if (resp is String) {
+          url = resp;
+        } else if (resp is Map) {
+          url = (resp['signedUrl'] ?? resp['signed_url'] ?? resp['signedurl'])
+              ?.toString();
+          if (url == null && resp.containsKey('data')) {
+            final d = resp['data'];
+            if (d is Map) {
+              url = (d['signedUrl'] ?? d['signed_url'])?.toString();
+            }
+          }
+        } else {
+          // some SDKs return object with .signedUrl
+          try {
+            final maybe =
+                (resp as dynamic).signedUrl ?? (resp as dynamic).data?.signedUrl;
+            if (maybe is String) url = maybe;
+          } catch (_) {}
+        }
+
+        if (url == null) {
+          debugPrint('createSignedUrl returned null for $objectPath');
+          return null;
+        }
+
+        final expiresAt = DateTime.now().add(
+          Duration(seconds: ttlSeconds - expireEarlySeconds),
+        );
+        _cache[cacheKey] = _CacheEntry(url, expiresAt);
+        // Persist to local storage (memory + disk) for instant startup.
+        _persistUrlInBackground(cacheKey, url, expiresAt);
+        return url;
+      } on StorageException catch (e) {
+        if (attempt == 0 && _isTransientSignFailure(e)) {
+          debugPrint(
+            'Transient signed-URL failure for $objectPath, retrying once: '
+            '${e.message}',
+          );
+          continue;
+        }
+        final cleanMsg = e.message.replaceAll(RegExp(r'<[^>]*>'), '').trim();
+        debugPrint(
+          'StorageException creating signed URL for $objectPath: $cleanMsg',
+        );
+        final msg = e.message.toLowerCase();
+        if (msg.contains('401') || msg.contains('403')) {
+          debugPrint(
+            '⚠️ Storage signing failed: Authentication/Authorization error - check JWT validity',
+          );
+        }
+        if (_looksLikeMissingError(e)) {
+          _markMissing(objectPath, bucket: bucketName);
+        }
+        return null;
+      } catch (e) {
+        if (attempt == 0 && _isTransientSignFailure(e)) {
+          continue;
+        }
+        // Suppress error logging for expected offline failures
+        if (!isExpectedOfflineFailure(e)) {
+          debugPrint('Error creating signed URL for $objectPath: $e');
+        }
+        if (_looksLikeMissingError(e)) {
+          _markMissing(objectPath, bucket: bucketName);
+        }
+        return null;
+      }
+    }
     return null;
   }
 
@@ -922,115 +1109,12 @@ class StorageHelper {
 
     // Use signed URLs for authenticated access only
     // This ensures profile photos are only accessible to logged-in users
-    try {
-      // A hung createSignedUrl used to stall its whole prefetch batch (and any
-      // caller awaiting this resolve) with no bound. Cap it so a dead backend
-      // fails fast and the caller can fall back to cache.
-      final dynamic resp = await _client.storage
-          .from(_bucket)
-          .createSignedUrl(objectPath, ttlSeconds)
-          .timeout(const Duration(seconds: 8));
-
-      String? url;
-
-      if (resp == null) {
-        url = null;
-      } else if (resp is String) {
-        url = resp;
-      } else if (resp is Map) {
-        url = (resp['signedUrl'] ?? resp['signed_url'] ?? resp['signedurl'])
-            ?.toString();
-        if (url == null && resp.containsKey('data')) {
-          final d = resp['data'];
-          if (d is Map) url = (d['signedUrl'] ?? d['signed_url'])?.toString();
-        }
-      } else {
-        // some SDKs return object with .signedUrl
-        try {
-          final maybe =
-              (resp as dynamic).signedUrl ?? (resp as dynamic).data?.signedUrl;
-          if (maybe is String) url = maybe;
-        } catch (_) {}
-      }
-
-      if (url == null) {
-        debugPrint('createSignedUrl returned null for $objectPath');
-        return null;
-      }
-
-      final expiresAt = now.add(Duration(seconds: ttlSeconds));
-      _cache[objectPath] = _CacheEntry(url, expiresAt);
-      // Persist to local storage (memory + disk) for instant startup.
-      _persistUrlInBackground(objectPath, url, expiresAt);
-
-      return url;
-    } on StorageException catch (e) {
-      // Explicitly handle StorageException (from supabase client) to log 404 / not_found and auth errors
-      final msg = e.message.toLowerCase();
-      final cleanMsg = e.message.replaceAll(RegExp(r'<[^>]*>'), '').trim();
-      debugPrint(
-        'StorageException creating signed URL for $objectPath: $cleanMsg',
-      );
-      if (msg.contains('401') || msg.contains('403')) {
-        debugPrint(
-          '⚠️ Storage signing failed: Authentication/Authorization error - check JWT validity',
-        );
-      }
-      if (_looksLikeMissingError(e)) {
-        _markMissing(objectPath, bucket: _bucket);
-      }
-      return null;
-    } catch (e) {
-      // Suppress error logging for expected offline failures
-      if (!isExpectedOfflineFailure(e)) {
-        debugPrint('Error creating signed URL for $objectPath: $e');
-      }
-      if (_looksLikeMissingError(e)) {
-        _markMissing(objectPath, bucket: _bucket);
-      }
-      return null;
-    }
-
-    // Note: If public access fails, you could uncomment the code below to fall back to signed URLs
-    /*
-    try {
-      final dynamic resp = await _client.storage.from(_bucket).createSignedUrl(objectPath, ttlSeconds);
-
-      String? url;
-
-      if (resp == null) {
-        url = null;
-      } else if (resp is String) {
-        url = resp;
-      } else if (resp is Map) {
-        url = (resp['signedUrl'] ?? resp['signed_url'] ?? resp['signedurl'])?.toString();
-        if (url == null && resp.containsKey('data')) {
-          final d = resp['data'];
-          if (d is Map) url = (d['signedUrl'] ?? d['signed_url'])?.toString();
-        }
-      } else {
-        // some SDKs return object with .signedUrl
-        try {
-          final maybe = (resp as dynamic).signedUrl ?? (resp as dynamic).data?.signedUrl;
-          if (maybe is String) url = maybe;
-        } catch (_) {}
-      }
-
-      if (url == null) {
-        return null;
-      }
-
-      final expiresAt = now.add(Duration(seconds: ttlSeconds));
-      _cache[objectPath] = _CacheEntry(url, expiresAt);
-
-      return url;
-    } on StorageException {
-      // Explicitly handle StorageException (from supabase client) to log 404 / not_found
-      return null;
-    } catch (e) {
-      return null;
-    }
-    */
+    return _createSignedUrlShared(
+      bucketName: _bucket,
+      objectPath: objectPath,
+      cacheKey: objectPath,
+      ttlSeconds: ttlSeconds,
+    );
   }
 
   /// Return a signed URL for the given object path from a specific bucket, or null if not found.
@@ -1088,88 +1172,24 @@ class StorageHelper {
     }
 
     // Use signed URLs for authenticated access only
+    final signedUrl = await _createSignedUrlShared(
+      bucketName: bucketName,
+      objectPath: objectPath,
+      cacheKey: cacheKey,
+      ttlSeconds: ttlSeconds,
+      expireEarlySeconds: 60,
+    );
+    if (signedUrl != null && signedUrl.isNotEmpty) {
+      return signedUrl;
+    }
+    // Sign failed: public URL is only a valid fallback for public buckets.
+    // For a private bucket getPublicUrl returns a URL that always answers
+    // 400, so returning it would look like success and pin a broken image.
+    if (isPrivateBucket(bucketName)) return null;
     try {
-      final dynamic resp = await _client.storage
-          .from(bucketName)
-          .createSignedUrl(objectPath, ttlSeconds);
-
-      String? url;
-
-      if (resp == null) {
-        url = null;
-      } else if (resp is String) {
-        url = resp;
-      } else if (resp is Map) {
-        url = (resp['signedUrl'] ?? resp['signed_url'] ?? resp['signedurl'])
-            ?.toString();
-        if (url == null && resp.containsKey('data')) {
-          final d = resp['data'];
-          if (d is Map) url = (d['signedUrl'] ?? d['signed_url'])?.toString();
-        }
-      } else {
-        // some SDKs return object with .signedUrl
-        try {
-          final maybe =
-              (resp as dynamic).signedUrl ?? (resp as dynamic).data?.signedUrl;
-          if (maybe is String) url = maybe;
-        } catch (_) {}
-      }
-
-      if (url == null) {
-        debugPrint(
-          'createSignedUrl returned null for $objectPath in bucket $bucketName',
-        );
-        return null;
-      }
-
-      // Cache the signed URL (memory + local storage for instant startup).
-      final bucketExpiresAt = now.add(
-        Duration(seconds: ttlSeconds - 60),
-      ); // Expire 1 minute early
-      _cache[cacheKey] = _CacheEntry(url, bucketExpiresAt);
-      _persistUrlInBackground(cacheKey, url, bucketExpiresAt);
-      return url;
-    } on StorageException catch (e) {
-      final msg = e.message.toLowerCase();
-      final cleanMsg = e.message.replaceAll(RegExp(r'<[^>]*>'), '').trim();
-      debugPrint(
-        'StorageException creating signed URL for $objectPath in bucket $bucketName: $cleanMsg',
-      );
-      if (msg.contains('401') || msg.contains('403')) {
-        debugPrint(
-          '⚠️ Storage signing failed: Authentication/Authorization error - check JWT validity',
-        );
-      }
-      if (_looksLikeMissingError(e)) {
-        _markMissing(objectPath, bucket: bucketName);
-        return null;
-      }
-      // Try public URL as fallback for public buckets
-      try {
-        final publicUrl = _client.storage
-            .from(bucketName)
-            .getPublicUrl(objectPath);
-        return publicUrl;
-      } catch (_) {
-        return null;
-      }
-    } catch (e) {
-      debugPrint(
-        'createSignedUrl failed for $objectPath in bucket $bucketName: $e',
-      );
-      if (_looksLikeMissingError(e)) {
-        _markMissing(objectPath, bucket: bucketName);
-        return null;
-      }
-      // Try public URL as fallback for public buckets
-      try {
-        final publicUrl = _client.storage
-            .from(bucketName)
-            .getPublicUrl(objectPath);
-        return publicUrl;
-      } catch (_) {
-        return null;
-      }
+      return _client.storage.from(bucketName).getPublicUrl(objectPath);
+    } catch (_) {
+      return null;
     }
   }
 

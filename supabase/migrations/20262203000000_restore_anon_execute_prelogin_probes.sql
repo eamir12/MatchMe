@@ -1,0 +1,51 @@
+-- Migration: restore anonymous EXECUTE on the two RPCs the app calls before sign-in.
+-- Date: 2026-10-29
+--
+-- 20262201000000_revoke_anon_execute_security_definer revoked anonymous EXECUTE
+-- on all 128 SECURITY DEFINER functions in public. Two of them are called by the
+-- client before it holds a session, so that revoke broke live app behaviour:
+--
+--   health_check()        Bootstrap and connectivity probe, called with the anon
+--                         key on purpose so a dead session is never mistaken for
+--                         an outage and no access-token refresh is triggered by
+--                         a probe (lib/main.dart, lib/services/network_availability.dart,
+--                         lib/services/supabase_reachability.dart).
+--   account_exists(uuid)  Deleted-account probe, called with the anon key over
+--                         raw HTTP precisely because the access token may be
+--                         expired and the refresh token deleted with the account
+--                         (lib/services/session_service.dart:_probeAccountExistsAnon).
+--
+-- Evidence, production log window 2026-10-29 10:32-10:36 UTC (immediately after
+-- the revoke): 49 x "permission denied for function health_check" and 4 x
+-- "permission denied for function account_exists", all SQLSTATE 42501, while the
+-- client retried the failing probe. No other RPC produced a 42501 in that window,
+-- which matches a repo scan: these are the only two anon call paths before login.
+--
+-- Both bodies are read-only and were anon-callable before 20262201000000:
+--   health_check   PERFORM 1 FROM users LIMIT 1; return {ok, checked_at}
+--   account_exists SELECT EXISTS (SELECT 1 FROM auth.users WHERE id = p_user_id)
+--
+-- Fix: grant anon EXECUTE back on exactly these two. authenticated and
+-- service_role already hold it. No body, signature, owner or volatility changes.
+--
+-- Blast radius: two ACL entries. The other 126 functions stay revoked; anon
+-- regains a health probe and an account-existence check, which is the state the
+-- app shipped against.
+--
+-- Verification (run after applying):
+--   select proname, has_function_privilege('anon', oid, 'EXECUTE') as anon_x
+--   from pg_proc
+--   where pronamespace = 'public'::regnamespace
+--     and proname in ('health_check', 'account_exists');
+--   -- expect 2 rows, anon_x = true
+--
+--   select count(*) as remaining_anon_secdef
+--   from pg_proc p
+--   where p.pronamespace = 'public'::regnamespace and p.prosecdef
+--     and has_function_privilege('anon', p.oid, 'EXECUTE');
+--   -- expect 2
+
+GRANT EXECUTE ON FUNCTION public.health_check() TO anon;
+GRANT EXECUTE ON FUNCTION public.account_exists(uuid) TO anon;
+
+NOTIFY pgrst, 'reload schema';

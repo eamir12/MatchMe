@@ -366,6 +366,13 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
 
   int _currentPageIndex = 0;
 
+  // The one-time warning for the Basics page (name/birthday/gender are set
+  // once) is shown at most once per wizard session: `_basicsOneTimeNoticeShown`
+  // tracks the arrival dialog, `_basicsOneTimeConfirmed` the Next gate, so a
+  // member who goes back and forth is not re-interrupted.
+  bool _basicsOneTimeNoticeShown = false;
+  bool _basicsOneTimeConfirmed = false;
+
   // --- Voice guidance (spoken step coaching; can be muted from the app bar) ---
   bool _didSpeakInitialStep = false;
 
@@ -1342,6 +1349,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         // programmatic page changes; the initial entry is announced in the
         // profile-load path so a restored draft page is described too).
         _speakStepGuidance(newPage);
+        _maybeShowBasicsOneTimeNotice(newPage);
       }
     });
 
@@ -1478,15 +1486,21 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
       if ((profile.gender ?? '').trim().isNotEmpty) {
         notifier.updateGender(null);
       }
+      // The old signup trigger could seed the email address as the name;
+      // that is not a name, so drop it from the draft as well.
+      if (emailRegex.hasMatch(normalizedName)) {
+        notifier.updateName('');
+      }
     } else {
       _nameController.text = rawName;
-      if (rawName.isEmpty) {
+      // Seeded names can be an email address (older signup trigger) or the
+      // 'Unnamed' placeholder. Neither is a name: start the fields empty so
+      // the user types their real first and last name. A single word stays in
+      // the first-name field and only the last name is missing.
+      if (rawName.isEmpty || emailRegex.hasMatch(normalizedName)) {
         _firstNameController.text = '';
         _lastNameController.text = '';
-        // If the profile name was seeded from the user's email address by
-        // the auth trigger, also clear it in the provider so that
-        // validation and diff logic don't treat it as a real name.
-        if (normalizedName.isNotEmpty && normalizedName != 'Unnamed') {
+        if (normalizedName.isNotEmpty) {
           ref.read(profileEditProvider(widget.user.id).notifier).updateName('');
         }
       } else {
@@ -1807,6 +1821,11 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     if (!profile.isProfileComplete) {
       return true;
     }
+    // A name that is not a first + last name must always be correctable:
+    // the user is routed here to fix it and nothing else may unlock it.
+    if (fieldKey == 'name' && !profile.name.hasFirstAndLastName) {
+      return true;
+    }
     if (!profile.editableProfileFields.contains(fieldKey)) {
       return false;
     }
@@ -1987,6 +2006,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     if (p == null) return _currentPageIndex;
 
     if (p.name.trim().isEmpty) return pageMap.basicsIndex;
+    if (!p.name.hasFirstAndLastName) return pageMap.basicsIndex;
     if (p.dateOfBirth == null) return pageMap.basicsIndex;
 
     if (p.photos.isEmpty) return pageMap.photosIndex;
@@ -2012,6 +2032,15 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     final l10n = ref.read(localizationProvider);
     final allIntentsList = ref.read(mainIntentsProvider);
     final selectedIntents = _getSelectedIntents(ref, p, allIntentsList);
+
+    // First + last name is mandatory everywhere: a single-word name has no
+    // display format and is not a complete profile.
+    if (!p.name.hasFirstAndLastName) {
+      return _ProfileWizardValidationIssue(
+        l10n.getString('profileEditFullNameRequired'),
+        ProfileWizardSection.basics,
+      );
+    }
 
     if (p.height != null && (p.height! < 100 || p.height! > 250)) {
       return _ProfileWizardValidationIssue(
@@ -2194,115 +2223,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     final currentProfile = ref.read(profileEditProvider(widget.user.id)).value;
     if (currentProfile != null) {
       final diffs = _computeDiffs(_originalSnapshot, currentProfile);
-      bool hasChanges = false;
-      if (diffs['name'] != null) {
-        final toName = ((diffs['name'] as Map)['to'] as String?)
-            ?.trim()
-            .toLowerCase();
-        if (toName != null &&
-            toName.isNotEmpty &&
-            toName != 'unnamed' &&
-            toName != 'unknown user') {
-          hasChanges = true;
-        }
-      }
-      if (diffs['dateOfBirth'] != null) {
-        final toDob = (diffs['dateOfBirth'] as Map)['to'] as String?;
-        if (toDob != null && toDob.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['gender'] != null) {
-        final toGender = ((diffs['gender'] as Map)['to'] as String?)?.trim();
-        if (toGender != null && toGender.isNotEmpty) hasChanges = true;
-      }
-      if ((diffs['intentsAdded'] as List).isNotEmpty) hasChanges = true;
-      if ((diffs['intentsRemoved'] as List).isNotEmpty) hasChanges = true;
-      if ((diffs['subIntentsAdded'] as Map).isNotEmpty) hasChanges = true;
-      if ((diffs['subIntentsRemoved'] as Map).isNotEmpty) hasChanges = true;
-      if ((diffs['interestsAdded'] as Map).isNotEmpty) hasChanges = true;
-      if ((diffs['interestsRemoved'] as Map).isNotEmpty) hasChanges = true;
-      if ((diffs['languagesChanged'] as Map).isNotEmpty) hasChanges = true;
-      if (diffs['bioChanged'] != null) {
-        final toBio = (diffs['bioChanged'] as Map)['to']?.toString().trim();
-        if (toBio != null && toBio.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['photosChanged'] != null) {
-        final m = diffs['photosChanged'] as Map;
-        final fromPhotos = (m['from'] as List?)?.cast<String>() ?? [];
-        final toPhotos = (m['to'] as List?)?.cast<String>() ?? [];
-        if (toPhotos.where((p) => !fromPhotos.contains(p)).isNotEmpty ||
-            fromPhotos.where((p) => !toPhotos.contains(p)).isNotEmpty) {
-          hasChanges = true;
-        }
-      }
-      if (diffs['instagramChanged'] != null) {
-        final toVal = ((diffs['instagramChanged'] as Map)['to'] as String?)
-            ?.trim();
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['linkedinChanged'] != null) {
-        final toVal = ((diffs['linkedinChanged'] as Map)['to'] as String?)
-            ?.trim();
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['facebookChanged'] != null) {
-        final toVal = ((diffs['facebookChanged'] as Map)['to'] as String?)
-            ?.trim();
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['heightChanged'] != null) {
-        final toVal = (diffs['heightChanged'] as Map)['to'] as int?;
-        if (toVal != null) hasChanges = true;
-      }
-      if (diffs['heightUnitChanged'] != null) {
-        final toVal = (diffs['heightUnitChanged'] as Map)['to']?.toString();
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['occupationChanged'] != null) {
-        final toVal = ((diffs['occupationChanged'] as Map)['to'] as String?)
-            ?.trim();
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['educationChanged'] != null) {
-        final toVal = ((diffs['educationChanged'] as Map)['to'] as String?)
-            ?.trim();
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['lifestyleChanged'] != null) {
-        final toVal = (diffs['lifestyleChanged'] as Map)['to'] as Map?;
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['familyChanged'] != null) {
-        final toVal = (diffs['familyChanged'] as Map)['to'] as Map?;
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['religionChanged'] != null) {
-        final toVal = (diffs['religionChanged'] as Map)['to'] as Map?;
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['genderPreferencesChanged'] != null) {
-        final toVal = (diffs['genderPreferencesChanged'] as Map)['to'] as Map?;
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['agePreferencesChanged'] != null) {
-        final toVal = (diffs['agePreferencesChanged'] as Map)['to'] as Map?;
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['lifestyleFiltersChanged'] != null) {
-        final toVal = (diffs['lifestyleFiltersChanged'] as Map)['to'] as Map?;
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['familyFiltersChanged'] != null) {
-        final toVal = (diffs['familyFiltersChanged'] as Map)['to'] as Map?;
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['religionFiltersChanged'] != null) {
-        final toVal = (diffs['religionFiltersChanged'] as Map)['to'] as Map?;
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['heightPreferencesChanged'] != null) {
-        final toVal = (diffs['heightPreferencesChanged'] as Map)['to'] as Map?;
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
+      final hasChanges = _diffsContainChanges(diffs);
       if (!hasChanges) {
         // Nothing changed according to the diff. For edit-after-complete
         // this is a clean exit. For the initial wizard (new signup) a
@@ -2628,6 +2549,13 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
         } catch (_) {
           // Ignore invalid date format
         }
+      }
+      // Leaving Basics confirms the name/birthday/gender just entered, which
+      // the database trigger then locks. Warn once per wizard session.
+      if (_isFirstTimeBasicsRun(p) && !_basicsOneTimeConfirmed) {
+        final confirmed = await _confirmBasicsOneTime(l10n);
+        if (!confirmed) return;
+        _basicsOneTimeConfirmed = true;
       }
       await _saveDraftBestEffort(notifier);
       _advancePage();
@@ -3095,6 +3023,71 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     FocusManager.instance.primaryFocus?.unfocus();
   }
 
+  /// The Basics page warns that name, birthday and gender are set once. That
+  /// is only true on the member's first pass through the wizard: with a
+  /// *completed* profile the same page is reopened for a completeness gap (or
+  /// in edit-after-complete mode), where the fields are already locked and the
+  /// warning would be misleading — the locked-note card covers those cases.
+  bool _isFirstTimeBasicsRun(UserProfile? profile) {
+    if (widget.isEditing) return false;
+    return profile != null && !profile.isProfileComplete;
+  }
+
+  /// Shows the one-time explanation the first time the Basics page is reached
+  /// in a first-time run. Fires from the page listener, so it also covers a
+  /// draft that resumes straight onto Basics.
+  void _maybeShowBasicsOneTimeNotice(int pageIndex) {
+    if (_basicsOneTimeNoticeShown) return;
+    final profile = ref.read(profileEditProvider(widget.user.id)).value;
+    if (!_isFirstTimeBasicsRun(profile)) return;
+    if (_profileWizardPageMap(profile).basicsIndex != pageIndex) return;
+    _basicsOneTimeNoticeShown = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(_showBasicsOneTimeDialog(ref.read(localizationProvider)));
+    });
+  }
+
+  Future<void> _showBasicsOneTimeDialog(LocalizationState l10n) async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        scrollable: true,
+        title: Text(l10n.getString('profileBasicsOneTimeDialogTitle')),
+        content: Text(l10n.getString('profileBasicsOneTimeDialogBody')),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(l10n.getString('profileBasicsOneTimeDialogOk')),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Confirmation gate on Next from the Basics page, once per wizard session.
+  Future<bool> _confirmBasicsOneTime(LocalizationState l10n) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        scrollable: true,
+        title: Text(l10n.getString('profileBasicsOneTimeConfirmTitle')),
+        content: Text(l10n.getString('profileBasicsOneTimeConfirmBody')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(l10n.getString('generalCancel')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(l10n.getString('profileBasicsOneTimeConfirmCta')),
+          ),
+        ],
+      ),
+    );
+    return confirmed == true;
+  }
+
   void _handleBackPage(List<Widget> pages) {
     final currentPage = _currentPageIndex;
     if (currentPage >= pages.length || currentPage <= 0) {
@@ -3522,7 +3515,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     final List<String> origPhotos =
         (orig['photos'] as List?)?.map((e) => e.toString()).toList() ?? [];
     final List<String> currPhotos = current.photos;
-    if (origPhotos.toSet() != currPhotos.toSet()) {
+    if (!const ListEquality<String>().equals(origPhotos, currPhotos)) {
       diffs['photosChanged'] = {'from': origPhotos, 'to': currPhotos};
     }
 
@@ -3675,6 +3668,37 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
     }
 
     return diffs;
+  }
+
+  /// Whether [_computeDiffs] recorded any real edit.
+  ///
+  /// A diff entry whose "to" side is null/empty is still a change: the user
+  /// removed an optional answer (religion, lifestyle, family, bio, height,
+  /// social links, ...). Treating those as "nothing changed" made the edit
+  /// wizard skip the save entirely.
+  bool _diffsContainChanges(Map<String, dynamic> diffs) {
+    for (final entry in diffs.entries) {
+      final value = entry.value;
+      if (value == null) continue;
+      if (value is String) {
+        if (value.trim().isEmpty) continue;
+      } else if (value is Iterable) {
+        if (value.isEmpty) continue;
+      } else if (value is Map) {
+        if (value.isEmpty) continue;
+      }
+      if (entry.key == 'name') {
+        final toName = ((value as Map)['to'] as String?)?.trim().toLowerCase();
+        if (toName == null ||
+            toName.isEmpty ||
+            toName == 'unnamed' ||
+            toName == 'unknown user') {
+          continue;
+        }
+      }
+      return true;
+    }
+    return false;
   }
 
   String _humanizeKey(String key) {
@@ -5233,6 +5257,25 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),
+          if (_isFirstTimeBasicsRun(profile)) ...[
+            const SizedBox(height: 12),
+            Card(
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12.0),
+                side: BorderSide(
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
+              ),
+              margin: EdgeInsets.zero,
+              child: ListTile(
+                leading: const Icon(Icons.info_outline),
+                title: Text(l10n.getString('profileBasicsOneTimeBannerTitle')),
+                subtitle: Text(l10n.getString('profileBasicsOneTimeBannerBody')),
+                onTap: () => unawaited(_showBasicsOneTimeDialog(l10n)),
+              ),
+            ),
+          ],
           _WizardFieldLegend(l10n: l10n),
           const SizedBox(height: 20),
 
@@ -5278,7 +5321,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                             ),
                           ),
                         ),
-                        validator: (v) => (v == null || v.isEmpty)
+                        validator: (v) => (v == null || v.trim().isEmpty)
                             ? l10n.getString('profileEditFirstNameRequired')
                             : null,
                         onChanged: (v) {
@@ -5340,7 +5383,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                             ),
                           ),
                         ),
-                        validator: (v) => (v == null || v.isEmpty)
+                        validator: (v) => (v == null || v.trim().isEmpty)
                             ? l10n.getString('profileEditLastNameRequired')
                             : null,
                         onChanged: (v) {
@@ -6746,125 +6789,8 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
 
     // Compute diffs and check for changes
     final diffs = _computeDiffs(_originalSnapshot, profile);
-    bool hasChanges =
-        _isSaving; // Force hasChanges during save to prevent page list changes
-    if (!hasChanges) {
-      // Only count a basic-field diff if the "to" value is meaningful
-      if (diffs['name'] != null) {
-        final toName = ((diffs['name'] as Map)['to'] as String?)
-            ?.trim()
-            .toLowerCase();
-        if (toName != null &&
-            toName.isNotEmpty &&
-            toName != 'unnamed' &&
-            toName != 'unknown user') {
-          hasChanges = true;
-        }
-      }
-      if (diffs['dateOfBirth'] != null) {
-        final toDob = (diffs['dateOfBirth'] as Map)['to'] as String?;
-        if (toDob != null && toDob.isNotEmpty) {
-          hasChanges = true;
-        }
-      }
-      if (diffs['gender'] != null) {
-        final toGender = ((diffs['gender'] as Map)['to'] as String?)?.trim();
-        if (toGender != null && toGender.isNotEmpty) {
-          hasChanges = true;
-        }
-      }
-      if ((diffs['intentsAdded'] as List).isNotEmpty) hasChanges = true;
-      if ((diffs['intentsRemoved'] as List).isNotEmpty) hasChanges = true;
-      if ((diffs['subIntentsAdded'] as Map).isNotEmpty) hasChanges = true;
-      if ((diffs['subIntentsRemoved'] as Map).isNotEmpty) hasChanges = true;
-      if ((diffs['interestsAdded'] as Map).isNotEmpty) hasChanges = true;
-      if ((diffs['interestsRemoved'] as Map).isNotEmpty) hasChanges = true;
-      if ((diffs['languagesChanged'] as Map).isNotEmpty) hasChanges = true;
-      if (diffs['bioChanged'] != null) {
-        final toBio = (diffs['bioChanged'] as Map)['to']?.toString().trim();
-        if (toBio != null && toBio.isNotEmpty) {
-          hasChanges = true;
-        }
-      }
-      if (diffs['photosChanged'] != null) {
-        final m = diffs['photosChanged'] as Map;
-        final fromPhotos = (m['from'] as List?)?.cast<String>() ?? [];
-        final toPhotos = (m['to'] as List?)?.cast<String>() ?? [];
-        if (toPhotos.where((p) => !fromPhotos.contains(p)).isNotEmpty ||
-            fromPhotos.where((p) => !toPhotos.contains(p)).isNotEmpty) {
-          hasChanges = true;
-        }
-      }
-      if (diffs['instagramChanged'] != null) {
-        final toVal = ((diffs['instagramChanged'] as Map)['to'] as String?)
-            ?.trim();
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['linkedinChanged'] != null) {
-        final toVal = ((diffs['linkedinChanged'] as Map)['to'] as String?)
-            ?.trim();
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['facebookChanged'] != null) {
-        final toVal = ((diffs['facebookChanged'] as Map)['to'] as String?)
-            ?.trim();
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['heightChanged'] != null) {
-        final toVal = (diffs['heightChanged'] as Map)['to'] as int?;
-        if (toVal != null) hasChanges = true;
-      }
-      if (diffs['heightUnitChanged'] != null) {
-        final toVal = (diffs['heightUnitChanged'] as Map)['to']?.toString();
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['occupationChanged'] != null) {
-        final toVal = ((diffs['occupationChanged'] as Map)['to'] as String?)
-            ?.trim();
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['educationChanged'] != null) {
-        final toVal = ((diffs['educationChanged'] as Map)['to'] as String?)
-            ?.trim();
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['lifestyleChanged'] != null) {
-        final toVal = (diffs['lifestyleChanged'] as Map)['to'] as Map?;
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['familyChanged'] != null) {
-        final toVal = (diffs['familyChanged'] as Map)['to'] as Map?;
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['religionChanged'] != null) {
-        final toVal = (diffs['religionChanged'] as Map)['to'] as Map?;
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['genderPreferencesChanged'] != null) {
-        final toVal = (diffs['genderPreferencesChanged'] as Map)['to'] as Map?;
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['agePreferencesChanged'] != null) {
-        final toVal = (diffs['agePreferencesChanged'] as Map)['to'] as Map?;
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['lifestyleFiltersChanged'] != null) {
-        final toVal = (diffs['lifestyleFiltersChanged'] as Map)['to'] as Map?;
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['familyFiltersChanged'] != null) {
-        final toVal = (diffs['familyFiltersChanged'] as Map)['to'] as Map?;
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['religionFiltersChanged'] != null) {
-        final toVal = (diffs['religionFiltersChanged'] as Map)['to'] as Map?;
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-      if (diffs['heightPreferencesChanged'] != null) {
-        final toVal = (diffs['heightPreferencesChanged'] as Map)['to'] as Map?;
-        if (toVal != null && toVal.isNotEmpty) hasChanges = true;
-      }
-    }
+    // Force hasChanges during save to prevent page list changes.
+    final hasChanges = _isSaving || _diffsContainChanges(diffs);
 
     // Add a final page for submission only if there are changes.
     // For the initial (new-signup) wizard the page list must stay stable:
@@ -8359,7 +8285,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
                         textAlign: TextAlign.center,
                         style: const TextStyle(
                           color: Colors.white,
-                          fontSize: 11,
+                          fontSize: 12,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
@@ -10298,7 +10224,7 @@ class _ProfileWizardScreenState extends ConsumerState<ProfileWizardScreen> {
               Text(
                 '$score%',
                 style: TextStyle(
-                  fontSize: 11.5,
+                  fontSize: 12,
                   fontWeight: FontWeight.w700,
                   color: color,
                 ),

@@ -180,6 +180,10 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 val senderName = call.argument<String>("senderName")
                 val matchId = call.argument<String>("matchId")
                 val shouldAlert = call.argument<Boolean>("shouldAlert")
+                val title = call.argument<String>("title")
+                val previewLines = call.argument<List<String>>("previewLines")
+                val unreadCount = call.argument<Int>("unreadCount") ?: 0
+                val previewsEnabled = call.argument<Boolean>("previewsEnabled")
 
                 // Log.d("MatchMeBackgroundPlugin", "[PLUGIN] checkNotifications called with messageId: $messageId, translatedContent: '$translatedContent', originalContent: '$originalContent', senderName: '$senderName', matchId: '$matchId'")
 
@@ -195,7 +199,11 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                                 originalContent ?: translatedContent,
                                 senderName ?: "Someone",
                                 matchId,
-                                shouldAlert
+                                shouldAlert,
+                                title,
+                                previewLines,
+                                unreadCount,
+                                previewsEnabled
                             )
                         } catch (e: Exception) {
                             // Log.e("MatchMeBackgroundPlugin", "[PLUGIN] Error showing translated notification", e)
@@ -219,6 +227,54 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             "cancelServerCard" -> {
                 val tag = call.argument<String>("tag")
                 result.success(cancelServerCardByTag(tag.orEmpty()))
+            }
+            "isNotificationAvatarMirrored" -> {
+                val matchId = call.argument<String>("matchId")
+                val cacheKey = call.argument<String>("cacheKey")
+                if (matchId.isNullOrEmpty() || cacheKey.isNullOrEmpty()) {
+                    result.success(false)
+                } else {
+                    result.success(
+                        NotificationAvatarStore.isMirrored(context, matchId, cacheKey)
+                    )
+                }
+            }
+            "mirrorNotificationAvatar" -> {
+                val matchId = call.argument<String>("matchId")
+                val cacheKey = call.argument<String>("cacheKey")
+                val bytes = call.argument<ByteArray>("bytes")
+                if (matchId.isNullOrEmpty() || cacheKey.isNullOrEmpty() || bytes == null) {
+                    result.error("INVALID_ARGUMENTS", "Missing avatar arguments", null)
+                } else if (NotificationAvatarStore.isMirrored(context, matchId, cacheKey)) {
+                    // Already on disk at tray size — skip the decode entirely.
+                    result.success(true)
+                } else {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            NotificationAvatarStore.mirror(context, matchId, cacheKey, bytes)
+                        } catch (_: Exception) {
+                        }
+                    }
+                    result.success(true)
+                }
+            }
+            "evictNotificationAvatar" -> {
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        NotificationAvatarStore.evict(context, call.argument<String>("matchId").orEmpty())
+                    } catch (_: Exception) {
+                    }
+                }
+                result.success(true)
+            }
+            "clearNotificationAvatars" -> {
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        NotificationAvatarStore.clearAll(context)
+                    } catch (_: Exception) {
+                    }
+                }
+                result.success(true)
             }
             "wasMatchNotified" -> {
                 result.success(wasMatchNotified(call.argument<String>("matchId")))

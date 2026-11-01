@@ -21,7 +21,10 @@ export type AiTaskType =
   | "bio_moderation"
   | "event_file_parse"
   | "event_metadata"
-  | "translation";
+  | "translation"
+  // Not an AI call: the landmark suggestion lookup bills against a metered
+  // Places SKU, so it shares this per-user quota mechanism.
+  | "place_suggestions";
 
 interface WindowLimits {
   hourly: number;
@@ -38,6 +41,7 @@ const DEFAULT_LIMITS: Record<AiTaskType, WindowLimits> = {
   event_file_parse: { hourly: 10, daily: 30 },
   event_metadata: { hourly: 30, daily: 150 },
   translation: { hourly: 100, daily: 500 },
+  place_suggestions: { hourly: 60, daily: 300 },
 };
 
 export const AI_RATE_LIMIT_CONFIG_PREFIX = "ai.rate_limit.";

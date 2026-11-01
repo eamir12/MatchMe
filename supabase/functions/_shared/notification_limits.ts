@@ -99,14 +99,16 @@ export function markDisplayName(name: string): string {
   return `${mark}${cleaned}${mark}`;
 }
 
-// Mirrors public.mask_full_name(TEXT): "FirstName L." for multi-word names
-// (first name + last initial, e.g. "John S."), the first name alone for
-// single-word names. Empty/null falls back to 'Someone' (notification
-// template context; the SQL function returns 'Unknown User', which only
-// appears in in-app RPCs). Idempotent: re-masking an already-masked name
-// ("John S.") returns it unchanged, so server-produced titles pass through.
-// Notification display MUST use this - not a first-name-only helper - so
-// tray titles match what the app's other screens show.
+// Mirrors public.mask_full_name(TEXT): "First L." for multi-word names
+// (first name + last initial, e.g. "John S."), title-cased like the client
+// formatter. A name that cannot produce that shape — empty, or a single
+// word — falls back to 'Someone' (notification template context; the SQL
+// function returns NULL there and callers substitute their localized copy).
+// Idempotent: re-masking an already-masked name ("John S.") returns it
+// unchanged, so server-produced titles pass through. Notification display
+// MUST use this - not a first-name-only helper - so tray titles match what
+// the app's other screens show: a bare first name or a full last name is
+// never rendered.
 //
 // The masked name carries the directional mark of its own script, so its
 // trailing period stays glued to the initial in a Hebrew UI too.
@@ -114,12 +116,22 @@ export function maskFullName(raw: string | null | undefined): string {
   const trimmed = stripBidiControls(String(raw ?? '')).trim();
   if (!trimmed) return 'Someone';
   const parts = trimmed.split(/\s+/).filter((p) => p.length > 0);
-  if (parts.length === 0) return 'Someone';
-  if (parts.length === 1) return markDisplayName(parts[0]);
-  const first = parts[0];
+  if (parts.length < 2) return 'Someone';
+  const first = capWord(parts[0]);
   const last = parts[parts.length - 1];
-  if (!last || last === first) return markDisplayName(first);
-  return markDisplayName(`${first} ${last.charAt(0).toUpperCase()}.`);
+  const initial = last.charAt(0).toUpperCase();
+  if (!first || !initial) return 'Someone';
+  return markDisplayName(`${first} ${initial}.`);
+}
+
+// "jOHN" -> "John", "jean-pierre" -> "Jean-Pierre", "o'brien" -> "O'Brien".
+function capWord(word: string): string {
+  return word
+    .split(/([-'])/)
+    .map((seg) => (seg === '-' || seg === "'" || !seg
+      ? seg
+      : seg.charAt(0).toUpperCase() + seg.slice(1).toLowerCase()))
+    .join('');
 }
 
 // Unicode bidi isolation: FSI (U+2068) picks the isolate direction from the

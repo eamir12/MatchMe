@@ -27,6 +27,7 @@ enum NotificationType {
   matchExtended,
   adminAnnouncements,
   locationSharing,
+  meetupTools,
 }
 
 enum NotificationMethod { push, inApp, sound, vibrate }
@@ -39,6 +40,7 @@ String _notificationTypeKey(NotificationType t) {
     NotificationType.matchExtended => 'match_extended',
     NotificationType.adminAnnouncements => 'admin_announcements',
     NotificationType.locationSharing => 'location_sharing',
+    NotificationType.meetupTools => 'meetup_tools',
   };
 }
 
@@ -52,6 +54,7 @@ NotificationType? _notificationTypeFromKey(String? key) {
     'match_extended' => NotificationType.matchExtended,
     'admin_announcements' => NotificationType.adminAnnouncements,
     'location_sharing' => NotificationType.locationSharing,
+    'meetup_tools' => NotificationType.meetupTools,
     _ => null,
   };
 }
@@ -85,7 +88,8 @@ class NotificationPreferencesState {
   final bool pausedIndefinitely;
 
   /// Whether system-tray/FCM notifications may show decrypted message content.
-  /// When false the tray body is replaced with a generic "New message" string.
+  /// When false only the text is hidden: the sender's masked name and avatar
+  /// stay, and the body becomes the count form ("3 unread - open to read").
   /// Server-visible (stored at the top level of notification_preferences) so
   /// killed/background pushes respect it, since those bypass every client gate.
   final bool messagePreviews;
@@ -140,6 +144,12 @@ class NotificationPreferencesState {
       NotificationMethod.vibrate: true,
     },
     NotificationType.locationSharing: {
+      NotificationMethod.push: true,
+      NotificationMethod.inApp: true,
+      NotificationMethod.sound: true,
+      NotificationMethod.vibrate: true,
+    },
+    NotificationType.meetupTools: {
       NotificationMethod.push: true,
       NotificationMethod.inApp: true,
       NotificationMethod.sound: true,
@@ -1469,6 +1479,10 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
               NotificationType.matchExtended,
               NotificationMethod.push,
             ),
+            'enable_meetup_notifications': notifs.isMethodEnabled(
+              NotificationType.meetupTools,
+              NotificationMethod.push,
+            ),
             'enable_admin_notifications': notifs.enableAdminNotifications,
             'enable_sound': notifs.enableSound,
             'enable_vibration': notifs.enableVibration,
@@ -1767,6 +1781,7 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
     required bool sound,
     required bool vibration,
     required bool inApp,
+    bool meetupToolsNotifs = true,
   }) {
     return {
       NotificationType.chatMessages: {
@@ -1795,6 +1810,12 @@ class UserPreferencesNotifier extends Notifier<UserPreferencesState>
       },
       NotificationType.adminAnnouncements: {
         NotificationMethod.push: adminNotifs,
+        NotificationMethod.inApp: inApp,
+        NotificationMethod.sound: sound,
+        NotificationMethod.vibrate: vibration,
+      },
+      NotificationType.meetupTools: {
+        NotificationMethod.push: meetupToolsNotifs,
         NotificationMethod.inApp: inApp,
         NotificationMethod.sound: sound,
         NotificationMethod.vibrate: vibration,

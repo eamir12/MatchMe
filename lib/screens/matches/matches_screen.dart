@@ -19,6 +19,7 @@ import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/match_rating_provider.dart';
 import 'package:matchme/providers/pinned_partner_provider.dart';
 import 'package:matchme/providers/new_options_provider.dart';
+import 'package:matchme/utils/gender_utils.dart';
 import 'package:matchme/utils/match_score_utils.dart';
 import 'package:matchme/utils/shared_intent_utils.dart';
 import 'package:matchme/widgets/list_filter_bar.dart';
@@ -48,6 +49,7 @@ class MatchesScreen extends ConsumerStatefulWidget {
 
 class _MatchesScreenState extends ConsumerState<MatchesScreen> {
   String? _selectedIntentKey;
+  String? _genderFilter;
   ListSortOption _sortOption = ListSortOption.recent;
 
   // Owned by the State, not by build(). Creating a ScrollController inside
@@ -71,17 +73,27 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
     setState(() {
       _searchQuery = '';
       _selectedIntentKey = null;
+      _genderFilter = null;
       _matchTypeFilter = MatchTypeFilter.all;
     });
   }
 
   /// Exact number of matches that would survive [draft], for the live count on
   /// the filter sheet's apply button. Mirrors the list's own predicates.
-  int _countMatches(List<MatchModel> matches, ListFilterState draft) {
+  int _countMatches(
+    List<MatchModel> matches,
+    Map<String, String> genderByUserId,
+    ListFilterState draft,
+  ) {
     final intent = draft.selectedIntentKey?.trim().toLowerCase();
+    final gender = normalizeGenderKey(draft.selectedGenderKey);
     return matches.where((match) {
       if (draft.matchType != MatchTypeFilter.all &&
           !draft.matchType.matches(match.matchType)) {
+        return false;
+      }
+      if (gender.isNotEmpty &&
+          normalizeGenderKey(genderByUserId[match.otherUserId]) != gender) {
         return false;
       }
       if (intent != null && intent.isNotEmpty) {
@@ -104,6 +116,7 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
     LocalizationState l10n,
     List<String> intentKeys,
     List<AppIntent> allIntents,
+    List<Map<String, String>> genderOptions,
     bool canFilterByMatchType,
     int Function(ListFilterState draft) countFor,
   ) async {
@@ -117,9 +130,11 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
       // types. Filtering against unknown values would hide every row, which
       // reads as data loss rather than as a filter.
       showMatchType: canFilterByMatchType,
+      genderOptions: genderOptions,
       sortOptions: _matchSortOptions,
       initial: ListFilterState(
         selectedIntentKey: _selectedIntentKey,
+        selectedGenderKey: _genderFilter,
         matchType: _matchTypeFilter,
         sort: _sortOption,
       ),
@@ -127,6 +142,7 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
     if (result == null || !mounted) return;
     setState(() {
       _selectedIntentKey = result.selectedIntentKey;
+      _genderFilter = result.selectedGenderKey;
       _matchTypeFilter = result.matchType;
       _sortOption = result.sort;
     });
@@ -264,6 +280,7 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
         ? ref.watch(userProfileProvider(currentUser.id))
         : const AsyncValue<UserProfile?>.loading();
     final allIntentsAsync = ref.watch(allIntentsProvider);
+    final genderOptionsAsync = ref.watch(genderOptionsProvider);
     if (currentUser == null) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
@@ -334,6 +351,25 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
                   if (chatIds.contains(m.id)) return true;
                   return m.remainingFrom(now) > Duration.zero;
                 }).toList();
+
+                // Gender lives on the other person's profile — the provider
+                // each MatchBox already watches for its age/gender line.
+                // Resolved once per user id so the list, its live count and
+                // the filter sheet cannot disagree.
+                final matchGenderById = <String, String>{
+                  for (final match in nonExpired)
+                    if (match.otherUserId.isNotEmpty)
+                      match.otherUserId: normalizeGenderKey(
+                        ref
+                            .watch(userProfileProvider(match.otherUserId))
+                            .asData
+                            ?.value
+                            ?.gender,
+                      ),
+                };
+                final normalizedGenderFilter = normalizeGenderKey(
+                  _genderFilter,
+                );
                 final normalizedSelected = _selectedIntentKey
                     ?.trim()
                     .toLowerCase();
@@ -362,14 +398,16 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
                         final otherProfile = match.otherUserId.isEmpty
                             ? null
                             : ref
-                                .watch(userProfileProvider(match.otherUserId))
-                                .asData
-                                ?.value;
+                                  .watch(userProfileProvider(match.otherUserId))
+                                  .asData
+                                  ?.value;
                         final interests = [
-                          ...?otherProfile?.personalInterests.values
-                              .expand((v) => v),
-                          ...?otherProfile?.businessInterests.values
-                              .expand((v) => v),
+                          ...?otherProfile?.personalInterests.values.expand(
+                            (v) => v,
+                          ),
+                          ...?otherProfile?.businessInterests.values.expand(
+                            (v) => v,
+                          ),
                         ].join(' ');
                         final haystack = [
                           match.matchedIntent,
@@ -387,12 +425,24 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
                         return haystack.contains(normalizedSearch);
                       }).toList();
 
-                final searchedMatches = _matchTypeFilter == MatchTypeFilter.all
+                final afterMatchType = _matchTypeFilter == MatchTypeFilter.all
                     ? afterSearch
                     : afterSearch
                           .where(
                             (match) =>
                                 _matchTypeFilter.matches(match.matchType),
+                          )
+                          .toList();
+
+                final searchedMatches = normalizedGenderFilter.isEmpty
+                    ? afterMatchType
+                    : afterMatchType
+                          .where(
+                            (match) =>
+                                normalizeGenderKey(
+                                  matchGenderById[match.otherUserId],
+                                ) ==
+                                normalizedGenderFilter,
                           )
                           .toList();
 
@@ -411,6 +461,9 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
                 );
                 final allIntents =
                     allIntentsAsync.asData?.value ?? const <AppIntent>[];
+                final genderOptions =
+                    genderOptionsAsync.asData?.value ??
+                    const <Map<String, String>>[];
                 final canFilterByMatchType = MatchTypeFilter.canFilter(
                   nonExpired.map((m) => m.matchType).toList(),
                 );
@@ -426,12 +479,14 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
                           l10n,
                           sortedFilterOptions,
                           allIntents,
+                          genderOptions,
                           canFilterByMatchType,
                           (draft) =>
-                              _countMatches(nonExpired, draft),
+                              _countMatches(nonExpired, matchGenderById, draft),
                         ),
                         activeFilterCount: ListFilterState(
                           selectedIntentKey: _selectedIntentKey,
+                          selectedGenderKey: _genderFilter,
                           matchType: _matchTypeFilter,
                           sort: _sortOption,
                         ).activeCount,
@@ -441,6 +496,7 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
 
                 final hasAnyActiveFilter =
                     hasActiveFilter ||
+                    normalizedGenderFilter.isNotEmpty ||
                     _matchTypeFilter != MatchTypeFilter.all ||
                     _searchQuery.trim().isNotEmpty;
 
@@ -455,14 +511,14 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
                   return Column(
                     children: [
                       searchBar,
-                    const SizedBox(height: 2),
-                    ResultCountLabel(
-                      shown: searchedMatches.length,
-                      total: nonExpired.length,
-                      l10n: l10n,
-                      countKey: 'matchesResultsCount',
-                      countOfKey: 'matchesResultsCountOf',
-                    ),
+                      const SizedBox(height: 2),
+                      ResultCountLabel(
+                        shown: searchedMatches.length,
+                        total: nonExpired.length,
+                        l10n: l10n,
+                        countKey: 'matchesResultsCount',
+                        countOfKey: 'matchesResultsCountOf',
+                      ),
                       Expanded(
                         child: AppEmptyState(
                           icon: Icons.filter_alt_off_rounded,
@@ -485,7 +541,7 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
 
                 return Column(
                   children: [
-                      searchBar,
+                    searchBar,
                     const SizedBox(height: 2),
                     ResultCountLabel(
                       shown: searchedMatches.length,

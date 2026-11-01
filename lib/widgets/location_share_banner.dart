@@ -177,7 +177,7 @@ class _LocationShareBannerState extends ConsumerState<LocationShareBanner> {
                     Text(
                       subtitle,
                       style: TextStyle(
-                        fontSize: 11,
+                        fontSize: 12,
                         color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
                     ),
@@ -217,7 +217,7 @@ class _LocationShareBannerState extends ConsumerState<LocationShareBanner> {
                         l10n.getString('locationShareChangeDuration'),
                         style: TextStyle(
                           color: Theme.of(context).colorScheme.onPrimary,
-                          fontSize: 10,
+                          fontSize: 12,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -247,7 +247,7 @@ class _LocationShareBannerState extends ConsumerState<LocationShareBanner> {
                         l10n.getString('locationShareStop'),
                         style: TextStyle(
                           color: Theme.of(context).colorScheme.onError,
-                          fontSize: 10,
+                          fontSize: 12,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -333,7 +333,7 @@ class _LocationShareBannerState extends ConsumerState<LocationShareBanner> {
                         Text(
                           subtitleText,
                           style: TextStyle(
-                            fontSize: 11,
+                            fontSize: 12,
                             color: Theme.of(
                               context,
                             ).colorScheme.onSurfaceVariant,
@@ -376,7 +376,7 @@ class _LocationShareBannerState extends ConsumerState<LocationShareBanner> {
                           l10n.getString('locationShareBannerView'),
                           style: TextStyle(
                             color: Theme.of(context).colorScheme.onTertiary,
-                            fontSize: 11,
+                            fontSize: 12,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
@@ -462,7 +462,7 @@ class _LocationShareBannerState extends ConsumerState<LocationShareBanner> {
                         Text(
                           subtitleText,
                           style: TextStyle(
-                            fontSize: 11,
+                            fontSize: 12,
                             color: Theme.of(
                               context,
                             ).colorScheme.onSurfaceVariant,
@@ -503,7 +503,7 @@ class _LocationShareBannerState extends ConsumerState<LocationShareBanner> {
                           l10n.getString('locationShareStop'),
                           style: TextStyle(
                             color: Theme.of(context).colorScheme.onError,
-                            fontSize: 11,
+                            fontSize: 12,
                             fontWeight: FontWeight.w600,
                           ),
                         ),

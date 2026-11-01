@@ -21,12 +21,10 @@ class ChatMessageModel {
   final bool isPending; // <-- NEW: For optimistic UI
   final String?
   replyToMessageId; // ID of the message this message replies to (nullable)
-  final String?
-  replyToSenderId; // Sender id of the replied-to message (if provided via nested select)
+  final String? replyToSenderId; // Sender id of the replied-to message (if provided via nested select)
   final String?
   replyToContent; // Original content of the replied-to message (for preview)
-  final String?
-  replyToContentTranslated; // Translated preview of the replied-to message (when available)
+  final String? replyToContentTranslated; // Translated preview of the replied-to message (when available)
 
   // Encrypted message fields
   final String encryptionScheme;
@@ -41,6 +39,7 @@ class ChatMessageModel {
   final bool translationCapable;
   final String? detectedSourceLanguage;
   final String? translatedTargetLanguage;
+  final String? translationStatus;
 
   ChatMessageModel({
     required this.id,
@@ -73,6 +72,7 @@ class ChatMessageModel {
     this.translationCapable = false,
     this.detectedSourceLanguage,
     this.translatedTargetLanguage,
+    this.translationStatus,
   });
 
   bool get isEncrypted => encryptionScheme == 'v1';
@@ -214,6 +214,9 @@ class ChatMessageModel {
       translatedTargetLanguage: json['translated_target_language'] != null
           ? parseString(json['translated_target_language'])
           : null,
+      translationStatus: json['translation_status'] != null
+          ? parseString(json['translation_status'])
+          : null,
     );
   }
 
@@ -249,6 +252,7 @@ class ChatMessageModel {
       'translation_capable': translationCapable,
       'detected_source_language': detectedSourceLanguage,
       'translated_target_language': translatedTargetLanguage,
+      'translation_status': translationStatus,
     };
   }
 
@@ -286,6 +290,7 @@ class ChatMessageModel {
     bool? translationCapable,
     String? detectedSourceLanguage,
     String? translatedTargetLanguage,
+    String? translationStatus,
   }) {
     return ChatMessageModel(
       id: id ?? this.id,
@@ -328,6 +333,7 @@ class ChatMessageModel {
           detectedSourceLanguage ?? this.detectedSourceLanguage,
       translatedTargetLanguage:
           translatedTargetLanguage ?? this.translatedTargetLanguage,
+      translationStatus: translationStatus ?? this.translationStatus,
     );
   }
 }

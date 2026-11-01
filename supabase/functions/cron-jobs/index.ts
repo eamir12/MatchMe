@@ -1,7 +1,6 @@
 // supabase/functions/cron-jobs/index.ts
 import { serve } from 'std/http/server.ts';
 import { createClient } from 'supabase';
-import { RRule } from 'rrule-deno';
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
 import { bidiIsolate, enforceTitleBody, maskFullName } from "../_shared/notification_limits.ts";
 import { pluralKeyFor } from "../_shared/plural.ts";
@@ -413,6 +412,12 @@ function channelIdForType(data: Record<string, string>): string {
   if (t === 'admin_broadcast') return 'admin_broadcasts';
   if (t === 'match_expiry' || t === 'pinned_expiry') return 'match_expiry_alerts';
   if (t === 'location_share') return 'location_sharing';
+  if (
+    t === 'meetup_signal' || t === 'meetup_beacon' || t === 'meetup_spot' ||
+    t === 'meetup_proposal' || t === 'meetup_place_change'
+  ) {
+    return 'meetup_alerts';
+  }
   return 'chat_messages';
 }
 
@@ -484,17 +489,13 @@ async function sendFcmV1({
                 notificationPriority: 'PRIORITY_HIGH',
                 defaultSound: soundEnabled,
                 defaultVibrateTimings: vibrateEnabled,
-                // Android has no global badge API: when FCM draws this card
-                // while the app is not running, `notification_count` is the
-                // only way to publish an explicit count. 0 is omitted on
-                // purpose - FCM treats a zero/unspecified count as "unset" and
-                // the launcher falls back to counting cards instead of
-                // clearing the badge. Launchers without an OEM badge API still
-                // render only a dot; the app's own badge carrier takes over
-                // once it runs.
-                ...(resolvedBadge > 0
-                  ? { notification_count: resolvedBadge }
-                  : {}),
+                // Deliberately no `notification_count`: it maps to Android's
+                // `Notification.setNumber`, and numeric-badge launchers SUM it
+                // across every active notification, so repeating the count on
+                // a card double-counts it against the app's badge carrier
+                // (MatchMeBadgeController), which is the only notification
+                // allowed to carry it. iOS is unaffected: `aps.badge` is a
+                // real, absolute count.
               },
             }
           : {
@@ -503,9 +504,6 @@ async function sendFcmV1({
                 notificationPriority: 'PRIORITY_HIGH',
                 defaultSound: soundEnabled,
                 defaultVibrateTimings: vibrateEnabled,
-                ...(resolvedBadge > 0
-                  ? { notification_count: resolvedBadge }
-                  : {}),
               },
             }),
       },
@@ -1144,28 +1142,6 @@ async function cleanupExpiredMatches() {
 }
 
 /**
- * Cleanup old presence events: Deletes presence event records older than 48 hours
- * to prevent unbounded table growth.
- */
-async function cleanupOldPresenceEvents() {
-  console.log('Running Old Presence Events Cleanup...');
-  try {
-    const { data, error } = await supabase.rpc('cleanup_old_presence_events');
-
-    if (error) {
-      console.error('Old Presence Events Cleanup RPC error:', error);
-      throw error;
-    }
-
-    const deletedCount = typeof data === 'number' ? data : Number(data ?? 0);
-    console.log(`Old Presence Events Cleanup completed successfully. Deleted: ${deletedCount}`);
-  } catch (error) {
-    console.error('Error during Old Presence Events Cleanup:', error instanceof Error ? error.message : String(error));
-    throw error;
-  }
-}
-
-/**
  * Cleanup stale online users: Set is_online = false for users whose last_activity
  * is older than 61 seconds. This ensures real-time online count accuracy.
  * Triggers real-time UPDATE events that clients receive immediately.
@@ -1189,80 +1165,7 @@ async function cleanupStaleOnlineUsers() {
 }
 
 /**
- * Task 1: Enforces user-defined invisibility schedules.
- */
-async function handleInvisibilitySchedules() {
-  console.log('Running Invisibility Scheduler...');
-  try {
-    // Reset system_visibility_status to 'visible' only for users who are manually visible
-    // (don't override users who manually set themselves to invisible)
-    await supabase.from('users')
-      .update({ system_visibility_status: 'visible' })
-      .eq('user_visibility_setting', true)
-      .eq('system_visibility_status', 'invisible');
-    console.log('Scheduler: Reset system visibility to visible for manually visible users who were system-invisible.');
-
-    const { data: schedules, error: scheduleError } = await supabase
-      .from('user_visibility_schedules')
-      .select('user_id, rrule')
-      .eq('is_active', true);
-
-    if (scheduleError) throw scheduleError;
-    if (!schedules || schedules.length === 0) {
-      console.log('Scheduler: No active schedules found.');
-      return; // Exit if no rules to apply
-    }
-
-    const now = new Date();
-    const usersToMakeInvisible = new Set<string>();
-
-    for (const schedule of schedules) {
-      if (!schedule.rrule) {
-          console.warn(`Scheduler: Skipping schedule for user ${schedule.user_id} due to missing rrule.`);
-          continue;
-      }
-      try {
-        // Need to ensure the rrule string includes a DTSTART
-        // Let's assume it does for now, or add parsing/defaulting if needed
-        const rule = RRule.fromString(schedule.rrule);
-        // Find occurrences between now and a very short time after now
-        const occurrences = rule.between(now, new Date(now.getTime() + 60000), true); // Check within the next minute
-
-        if (occurrences.length > 0) {
-            // Check if 'now' falls within an "invisible" duration based on rule interpretation
-            // RRule itself generates start times. We need logic to determine duration.
-            // Simplified: If an occurrence starts *now* or *just before now*, consider invisible.
-            // This needs a more robust duration logic based on your RRule format.
-            // For example, if RRule defines START and END/DURATION.
-            // Let's assume for now: if a rule matches *at all* in this check, user is invisible.
-            usersToMakeInvisible.add(schedule.user_id);
-        }
-      } catch (rruleError) {
-        console.error(`Scheduler: Skipping bad rrule for user ${schedule.user_id}: ${schedule.rrule} - ${rruleError instanceof Error ? rruleError.message : String(rruleError)}`);
-      }
-    }
-
-    // Batch-update users in PostgreSQL to be invisible (only if they are manually visible)
-    if (usersToMakeInvisible.size > 0) {
-      const userIds = Array.from(usersToMakeInvisible);
-      console.log(`Scheduler: Setting ${userIds.length} users to invisible based on schedule (only if manually visible).`);
-      const { error: updateError } = await supabase
-        .from('users')
-        .update({ system_visibility_status: 'invisible' })
-        .in('id', userIds)
-        .eq('user_visibility_setting', true);
-    } else {
-        console.log('Scheduler: No users need to be set to invisible based on current schedules.');
-    }
-
-  } catch (error) {
-    console.error('Error during Invisibility scheduling:', error instanceof Error ? error.message : String(error));
-    throw error;
-  }
-}
-
-/**
- * Task 2: Performs continuous event matching for all events
+ * Performs bounded event matching for upcoming events.
  */
 async function handleContinuousEventMatching() {
   console.log('Running Continuous Event Matching...');
@@ -1274,7 +1177,8 @@ async function handleContinuousEventMatching() {
       throw error;
     }
 
-    console.log('Continuous Event Matching completed successfully.');
+    const processed = typeof data === 'number' ? data : Number(data ?? 0);
+    console.log(`Continuous Event Matching completed successfully. Events processed: ${processed}`);
   } catch (error) {
     console.error('Error during Continuous Event Matching:', error instanceof Error ? error.message : String(error));
     throw error;
@@ -1304,6 +1208,14 @@ async function handleContinuousUserMatching() {
 async function handleCleanupExpiredEmailCodes(invocationId: string) {
   log(invocationId, 'Running Email Code Cleanup...');
   try {
+    // Codes expire within minutes; sweeping once an hour is enough and keeps
+    // a full-table delete off every one-minute tick.
+    const canRun = await claimTaskCadence(invocationId, 'cleanup_expired_email_codes', 3600);
+    if (!canRun) {
+      log(invocationId, 'Email Code Cleanup skipped (hourly cadence).');
+      return;
+    }
+
     const { data, error } = await supabase.rpc('cleanup_expired_email_codes');
 
     if (error) {
@@ -1324,6 +1236,12 @@ async function handleCleanupExpiredEmailCodes(invocationId: string) {
 async function handleCleanupPendingEmailChanges(invocationId: string) {
   log(invocationId, 'Running Pending Email Changes Cleanup...');
   try {
+    const canRun = await claimTaskCadence(invocationId, 'cleanup_pending_email_changes', 3600);
+    if (!canRun) {
+      log(invocationId, 'Pending Email Changes Cleanup skipped (hourly cadence).');
+      return;
+    }
+
     // Use RPC to bypass RLS policies
     const { data, error } = await supabase.rpc('cleanup_pending_email_changes');
 
@@ -1345,11 +1263,22 @@ async function handleCleanupPendingEmailChanges(invocationId: string) {
 async function handleCleanupOrphanProfilePhotos(invocationId: string) {
   log(invocationId, 'Running Orphan Profile Photo Cleanup...');
   try {
+    const canRun = await claimTaskCadence(
+      invocationId,
+      'cleanup_orphan_profile_photos',
+      21600,
+    );
+    if (!canRun) {
+      log(invocationId, 'Orphan Profile Photo Cleanup skipped (6h cadence).');
+      return;
+    }
+
     const minAgeMinutes = 1440;
     const limit = 500;
+    const maxPages = 20;
 
     let totalDeleted = 0;
-    for (;;) {
+    for (let page = 0; page < maxPages; page++) {
       const { data, error } = await supabase.rpc('list_orphan_profile_photos', {
         p_min_age_minutes: minAgeMinutes,
         p_limit: limit,
@@ -1381,14 +1310,16 @@ async function handleScheduledAdminBroadcasts(invocationId: string) {
   log(invocationId, 'Processing Scheduled Admin Broadcasts...');
   try {
     const nowIso = new Date().toISOString();
-    log(invocationId, 'Looking for scheduled broadcasts', { nowIso });
+    log(invocationId, 'Looking for due broadcasts', { nowIso });
     const { data: broadcasts, error } = await supabase
       .from('admin_broadcasts')
       .select('id,status,scheduled_at,created_at,updated_at')
       .not('scheduled_at', 'is', null)
       .lte('scheduled_at', nowIso)
-      .in('status', ['scheduled'])
-      .limit(25);
+      // 'sending' is resumed: a previous tick may have timed out mid-audience.
+      .in('status', ['scheduled', 'sending'])
+      .order('scheduled_at', { ascending: true })
+      .limit(10);
 
     if (error) throw error;
     if (!broadcasts || broadcasts.length === 0) {
@@ -1396,70 +1327,69 @@ async function handleScheduledAdminBroadcasts(invocationId: string) {
       return;
     }
 
-    log(invocationId, 'Scheduled broadcasts found', { count: broadcasts.length });
+    log(invocationId, 'Due broadcasts found', { count: broadcasts.length });
 
     let hadError = false;
-    for (const b of broadcasts as Array<{ id: string; status?: string; scheduled_at?: string; created_at?: string; updated_at?: string }>) {
+    for (const b of broadcasts as Array<{ id: string; status?: string; scheduled_at?: string }>) {
       const broadcastId = String(b.id ?? '').trim();
       if (!broadcastId) continue;
-      log(invocationId, 'Sending scheduled broadcast', {
+      log(invocationId, 'Sending broadcast', {
         broadcastId,
         status: b.status ?? null,
         scheduledAt: b.scheduled_at ?? null,
-        createdAt: b.created_at ?? null,
-        updatedAt: b.updated_at ?? null,
       });
-      // Chunked fan-out: 2000 deliveries per RPC call, up to 20k cap enforced
-      // in SQL. Prevents statement-timeout on large blasts; final chunk flips
-      // status to sent (see 20260916000000_add_notification_limits.sql).
-      // 11 iterations: 10 full chunks (20k) + 1 empty probe so exactly-20k
-      // audiences flip from sending -> sent instead of sticking.
+
+      // Audience snapshot + pending-delivery state live in SQL, so each call
+      // resumes exactly where the last committed chunk stopped. 6 chunks per
+      // tick bounds the invocation; any remainder resumes next minute.
       const chunkSize = 2000;
-      let offset = 0;
+      const maxChunksPerTick = 6;
+      let complete = false;
       let broadcastFailed = false;
-      for (let chunk = 0; chunk < 11; chunk++) {
+      let lastPending: number | null = null;
+
+      for (let chunk = 0; chunk < maxChunksPerTick; chunk++) {
         const { data: chunkRes, error: sendError } = await supabase.rpc('send_admin_broadcast', {
-          broadcast_id: broadcastId,
+          p_broadcast_id: broadcastId,
           p_limit: chunkSize,
-          p_offset: offset,
+          p_offset: 0,
         });
         if (sendError) {
-          // Fallback for pre-migration single-arg overload.
-          if (offset === 0 && String(sendError.message ?? '').toLowerCase().includes('function')) {
-            const retry = await supabase.rpc('send_admin_broadcast', { broadcast_id: broadcastId });
-            if (retry.error) {
-              logError(invocationId, 'send_admin_broadcast RPC error', retry.error, { broadcastId });
-              broadcastFailed = true;
-            } else {
-              log(invocationId, 'send_admin_broadcast RPC succeeded (legacy)', { broadcastId });
-            }
-            break;
-          }
-          logError(invocationId, 'send_admin_broadcast RPC error', sendError, { broadcastId, offset });
+          logError(invocationId, 'send_admin_broadcast RPC error', sendError, { broadcastId, chunk });
           broadcastFailed = true;
           break;
         }
         const resObj = chunkRes as Record<string, unknown> | null;
-        const sentCount = Number(resObj?.['sent_count'] ?? chunkSize);
-        // scanned_count is the number of candidate rows the chunk examined
-        // (before the 2/24h frequency guard). Pagination must advance by it,
-        // otherwise guarded users make sentCount underflow and the tail of the
-        // audience never gets processed. Fall back to sentCount for pre-fix
-        // functions so behavior is preserved.
-        const scannedCount = Number(resObj?.['scanned_count'] ?? sentCount);
-        log(invocationId, 'send_admin_broadcast chunk succeeded', { broadcastId, offset, sentCount, scannedCount });
-        offset += scannedCount;
-        if (!Number.isFinite(scannedCount) || scannedCount < chunkSize) break;
+        if (resObj?.['success'] === false) {
+          // Validation failure: SQL already set status='failed'.
+          logError(invocationId, 'send_admin_broadcast rejected the broadcast', resObj?.['errors'], { broadcastId });
+          broadcastFailed = true;
+          break;
+        }
+        const processed = Number(resObj?.['processed_count'] ?? 0);
+        const sent = Number(resObj?.['sent_count'] ?? 0);
+        const pending = Number(resObj?.['pending_count'] ?? 0);
+        complete = resObj?.['complete'] === true;
+        lastPending = pending;
+        log(invocationId, 'send_admin_broadcast chunk succeeded', {
+          broadcastId,
+          chunk,
+          processed,
+          sent,
+          pending,
+          complete,
+        });
+        if (complete || processed === 0) break;
       }
+
       if (broadcastFailed) {
         hadError = true;
-        await supabase
-          .from('admin_broadcasts')
-          .update({ status: 'failed', updated_at: new Date().toISOString() })
-          .eq('id', broadcastId);
-        continue;
+      } else if (!complete) {
+        log(invocationId, 'Broadcast is still sending; remaining recipients resume next tick.', {
+          broadcastId,
+          pending: lastPending,
+        });
       }
-      log(invocationId, 'send_admin_broadcast RPC succeeded', { broadcastId, chunksOffset: offset });
     }
     if (hadError) {
       throw new Error('One or more scheduled broadcasts failed.');
@@ -1485,6 +1415,16 @@ async function handleBirthdayBroadcastAutomations(invocationId: string) {
     const rows = (broadcasts ?? []) as Array<Record<string, unknown>>;
     if (rows.length === 0) {
       log(invocationId, 'No birthday broadcast automations are enabled.');
+      return;
+    }
+
+    const canRun = await claimTaskCadence(
+      invocationId,
+      'birthday_broadcast_automations',
+      3600,
+    );
+    if (!canRun) {
+      log(invocationId, 'Birthday broadcast automations skipped (hourly cadence).');
       return;
     }
 
@@ -1555,6 +1495,16 @@ async function handleProfileCompletionReminders(invocationId: string) {
       return;
     }
 
+    const canRun = await claimTaskCadence(
+      invocationId,
+      'profile_reminder_automations',
+      3600,
+    );
+    if (!canRun) {
+      log(invocationId, 'Profile reminder automations skipped (hourly cadence).');
+      return;
+    }
+
     let totalQueued = 0;
     for (const row of rows) {
       const broadcastId = String(row.id ?? '').trim();
@@ -1593,12 +1543,160 @@ async function handleProfileCompletionReminders(invocationId: string) {
   }
 }
 
+function extractProviderMessageId(body: unknown): string | null {
+  try {
+    if (!body || typeof body !== 'object') return null;
+    const name = (body as Record<string, unknown>)['name'];
+    return typeof name === 'string' && name.trim() ? name.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+// A real provider response means the message was NOT accepted, so retrying is
+// safe. 429 and 5xx are the documented transient classes for FCM v1 and WNS.
+// Anything without a response (thrown fetch, dead invocation) is ambiguous and
+// must never be auto-resent.
+function isRetryableProviderStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+async function isUserViewingMatch(userId: string, matchId: string): Promise<boolean> {
+  if (!userId || !matchId) return false;
+  const freshSince = new Date(Date.now() - 45_000).toISOString();
+  const { data, error } = await supabase
+    .from('user_chat_view_state')
+    .select('session_id')
+    .eq('user_id', userId)
+    .eq('match_id', matchId)
+    .eq('is_active', true)
+    .gte('updated_at', freshSince)
+    .limit(1);
+  return !error && (data?.length ?? 0) > 0;
+}
+
+// A claimed retry must never alert for something the recipient already saw,
+// already replied to, or that is no longer true. Returning a reason marks the
+// row 'skipped' instead of sending.
+async function queueRowSkipReason(
+  userId: string,
+  data: Record<string, string>,
+  row: Record<string, unknown>,
+): Promise<string | null> {
+  const createdMs = Date.parse(String(row.created_at ?? ''));
+  if (Number.isFinite(createdMs) && Date.now() - createdMs > 7 * 24 * 3600 * 1000) {
+    return 'stale: queued more than 7 days ago';
+  }
+
+  // Time-anchored copy ("1 minute left", "sharing until 14:30") is wrong once
+  // the anchor has passed; the in-app inbox still holds the record.
+  const expiryRaw = String(data.expiry_at ?? data.expires_at ?? '').trim();
+  if (expiryRaw) {
+    const expiryMs = Date.parse(expiryRaw);
+    if (Number.isFinite(expiryMs) && expiryMs <= Date.now()) return 'expired';
+  }
+
+  if (data.type === 'chat_message') {
+    const messageId = String(data.message_id ?? data.messageId ?? '').trim();
+    if (!messageId) return null;
+    const { data: msg, error } = await supabase
+      .from('chat_messages')
+      .select('read_at,created_at')
+      .eq('id', messageId)
+      .maybeSingle();
+    // Fail open: a lookup error must not cost a legitimate retry.
+    if (error) return null;
+    if (!msg) return 'message_missing';
+    const msgRow = msg as Record<string, unknown>;
+    if (msgRow.read_at) return 'already_read';
+    const sentMs = Date.parse(String(msgRow.created_at ?? ''));
+    if (Number.isFinite(sentMs) && Date.now() - sentMs > 24 * 3600 * 1000) {
+      return 'stale_message';
+    }
+    const matchId = String(data.match_id ?? data.matchId ?? '').trim();
+    if (matchId && await isUserViewingMatch(userId, matchId)) {
+      return 'recipient_viewing';
+    }
+  }
+
+  return null;
+}
+
+async function updateBroadcastDelivery(
+  invocationId: string,
+  data: Record<string, string>,
+  userId: string,
+  status: 'sent' | 'skipped' | 'failed',
+  failureReason: string | null,
+): Promise<void> {
+  const broadcastId = String(data.broadcast_id ?? '').trim();
+  if (!broadcastId || !userId) return;
+  const patch: Record<string, unknown> = status === 'sent'
+    ? { delivery_status: 'sent', sent_at: new Date().toISOString(), failure_reason: null }
+    : { delivery_status: status, failure_reason: failureReason };
+  let query = supabase
+    .from('admin_broadcast_deliveries')
+    .update(patch)
+    .eq('broadcast_id', broadcastId)
+    .eq('user_id', userId)
+    // Only rows still waiting on transport may move; never downgrade 'sent'.
+    .in('delivery_status', ['pending', 'queued']);
+  const deliveryKey = String(data.delivery_key ?? '').trim();
+  if (deliveryKey) query = query.eq('delivery_key', deliveryKey);
+  const { error } = await query;
+  if (error) {
+    logError(invocationId, 'Failed to update broadcast delivery ledger', error, {
+      broadcastId,
+      userId,
+      deliveryKey: deliveryKey || null,
+      status,
+    });
+  }
+}
+
 /**
  * Task 4: Processes pending FCM notifications from the notification queue
  */
-async function handleNotificationQueueProcessing(invocationId: string) {
+async function handleNotificationQueueProcessing(
+  invocationId: string,
+  opts: { skipHousekeeping?: boolean } = {},
+): Promise<number> {
   log(invocationId, 'Processing Notification Queue...');
   try {
+    if (!opts.skipHousekeeping) {
+      // Claims carry a lease; an invocation that dies after claiming a row
+      // leaves it in 'processing' forever. A dead claim may or may not have
+      // reached FCM, so it becomes 'unknown' (terminal), never 'pending':
+      // resending an ambiguous outcome is how duplicate pushes happen.
+      try {
+        const { data: recovered, error: recoverError } = await supabase.rpc(
+          'requeue_stale_notification_queue',
+          { p_min_age_minutes: 15 },
+        );
+        if (recoverError) throw recoverError;
+        const rec = (Array.isArray(recovered) ? recovered[0] : recovered) as
+          | Record<string, unknown>
+          | null;
+        const unknown = Number(rec?.unknown_count ?? 0);
+        if (unknown > 0) {
+          log(invocationId, 'Stale notification claims marked unknown (not resent)', {
+            unknown,
+          });
+        }
+      } catch (recoverError) {
+        // Never block delivery on the recovery sweep itself.
+        logError(invocationId, 'Stale notification claim recovery failed', recoverError, {});
+      }
+
+      // Bounded retention for terminal rows (7 days = FCM TTL). Runs on this
+      // task so no extra schedule is needed.
+      try {
+        await supabase.rpc('prune_notification_queue', { p_keep_days: 7, p_limit: 2000 });
+      } catch (pruneError) {
+        logError(invocationId, 'Terminal notification queue prune failed', pruneError, {});
+      }
+    }
+
     const fcmServiceAccountJson = Deno.env.get('FCM_SERVICE_ACCOUNT_JSON') ?? '';
     if (!fcmServiceAccountJson) {
       throw new Error('Missing FCM_SERVICE_ACCOUNT_JSON');
@@ -1652,7 +1750,7 @@ async function handleNotificationQueueProcessing(invocationId: string) {
     }
     if (rows.length === 0) {
       log(invocationId, 'No pending notifications ready to send.', { nowIso });
-      return;
+      return 0;
     }
 
     const broadcastRows = rows.filter((r) => {
@@ -1708,12 +1806,14 @@ async function handleNotificationQueueProcessing(invocationId: string) {
         dataType: data.type ?? null,
         broadcastId: data.broadcast_id ?? null,
       });
+      const claimNow = new Date();
       const { data: updated, error: markError } = await supabase
         .from('notification_queue')
         .update({
           status: 'processing',
           attempts: nextAttempts,
-          updated_at: new Date().toISOString(),
+          lease_until: new Date(claimNow.getTime() + 5 * 60_000).toISOString(),
+          updated_at: claimNow.toISOString(),
         })
         .eq('id', id)
         .eq('status', 'pending')
@@ -1732,6 +1832,31 @@ async function handleNotificationQueueProcessing(invocationId: string) {
       log(invocationId, 'Row claimed', { id, nextAttempts });
 
       try {
+        // Staleness gates run after the claim so two drainers can never both
+        // send the same row. A skipped row stays visible in the ledger.
+        const skipReason = await queueRowSkipReason(userId, data, row);
+        if (skipReason) {
+          const skipNow = new Date().toISOString();
+          await supabase
+            .from('notification_queue')
+            .update({
+              status: 'skipped',
+              failure_reason: skipReason,
+              lease_until: null,
+              updated_at: skipNow,
+            })
+            .eq('id', id);
+          await updateBroadcastDelivery(invocationId, data, userId, 'skipped', skipReason);
+          log(invocationId, 'Queue row skipped', {
+            id,
+            userId: userId || null,
+            dataType: data.type ?? null,
+            reason: skipReason,
+          });
+          return;
+        }
+
+
         // Collapse updates so retries replace the previous tray entry
         // instead of stacking (match_expiry 60/59/58..., admin resends).
         let collapseTag: string | undefined;
@@ -1747,12 +1872,48 @@ async function handleNotificationQueueProcessing(invocationId: string) {
           if (key) collapseTag = `new_match_${key}`;
         } else if (data.type === 'admin_broadcast' && data.broadcast_id) {
           collapseTag = `admin_${String(data.broadcast_id).trim()}`;
+        } else if (data.type === 'meetup_signal' || data.type === 'meetup_beacon') {
+          // A resend deletes the sender's previous row server-side (migration
+          // 20262217000000), so the newest signal is the only live one and its
+          // card must replace the old card rather than stack under it. Keyed on
+          // who sent it, never on meetup_signal_id, which changes per resend.
+          // Without a sender the two directions cannot be told apart, so the
+          // row id is the fallback.
+          const match = String(data.match_id ?? data.matchId ?? '').trim();
+          const sender = String(data.sender_id ?? data.senderId ?? '').trim();
+          const row = String(data.meetup_signal_id ?? '').trim();
+          if (match && sender) {
+            collapseTag = `${data.type}_${match}_${sender}`;
+          } else if (row) {
+            collapseTag = `${data.type}_${row}`;
+          }
+        } else if (
+          data.type === 'meetup_spot' ||
+          data.type === 'meetup_proposal' ||
+          data.type === 'meetup_place_change'
+        ) {
+          // One tray entry per meet-up event; a retried row or a newer round
+          // replaces the previous card instead of stacking.
+          const key = String(
+            data.meetup_spot_id ??
+              data.meetup_session_id ?? data.match_id ?? data.matchId ?? '',
+          ).trim();
+          if (key) collapseTag = `${data.type}_${key}`;
         } else if (data.type === 'chat_message') {
           // Chat retry rows (queued by push-message on transient FCM
           // failures): same tag the direct push-message path uses, so a
           // retried push collapses with the live chat tray entry.
           const key = String(data.match_id ?? data.matchId ?? '').trim();
           if (key) collapseTag = `match_${key}`;
+        } else if (data.type === 'location_share') {
+          const key = String(data.match_id ?? data.matchId ?? '').trim();
+          if (key) collapseTag = `location_share_${key}`;
+        } else if (data.type === 'match_extended') {
+          const key = String(data.match_id ?? data.matchId ?? '').trim();
+          if (key) collapseTag = `match_extended_${key}`;
+        } else if (data.type === 'profile_edit_review') {
+          const key = String(data.request_id ?? '').trim();
+          if (key) collapseTag = `profile_edit_${key}`;
         }
         const rowBadge = Number(data.badge ?? 1);
         // >= 0 (not > 0): an explicit badge of 0 must survive so retractions
@@ -1790,25 +1951,21 @@ async function handleNotificationQueueProcessing(invocationId: string) {
         });
 
         if (result.ok) {
+          const sentNow = new Date().toISOString();
           await supabase
             .from('notification_queue')
             .update({
               status: 'sent',
-              sent_at: new Date().toISOString(),
+              sent_at: sentNow,
+              provider_message_id: extractProviderMessageId(result.body),
               failure_reason: null,
-              updated_at: new Date().toISOString(),
+              lease_until: null,
+              updated_at: sentNow,
             })
             .eq('id', id);
 
-          if (data.type === 'admin_broadcast' && data.broadcast_id && userId) {
-            await supabase
-              .from('admin_broadcast_deliveries')
-              .update({
-                delivery_status: 'sent',
-              })
-              .eq('broadcast_id', data.broadcast_id)
-              .eq('user_id', userId);
-          }
+          // Only now is the delivery genuinely sent: the provider accepted it.
+          await updateBroadcastDelivery(invocationId, data, userId, 'sent', null);
 
           if (data.type === 'chat_message') {
             // Delivery receipt for retried chat pushes: same guarded update
@@ -1848,13 +2005,18 @@ async function handleNotificationQueueProcessing(invocationId: string) {
         const unregistered = isWnsTarget
           ? (result as { expired?: boolean }).expired === true
           : isFcmUnregistered(result.status, result.body);
-        const shouldFail = unregistered || nextAttempts >= maxAttempts;
+        // A received response means the provider rejected the send, so a
+        // retry cannot duplicate it. Anything the provider accepted never
+        // reaches this branch.
+        const retryable = !unregistered
+          && isRetryableProviderStatus(result.status)
+          && nextAttempts < maxAttempts;
         const retryAt = new Date(Date.now() + Math.min(60, 5 * nextAttempts) * 60_000).toISOString();
 
         log(invocationId, 'FCM send failed', {
           id,
-          shouldFail,
-          retryAt: shouldFail ? null : retryAt,
+          retryable,
+          retryAt: retryable ? retryAt : null,
           nextAttempts,
           maxAttempts,
           fcmStatus: result.status,
@@ -1881,37 +2043,37 @@ async function handleNotificationQueueProcessing(invocationId: string) {
         }
 
         const queueUpdate: Record<string, unknown> = {
-          status: shouldFail ? 'failed' : 'pending',
+          status: retryable ? 'pending' : 'failed',
           failure_reason: `FCM status=${result.status} body=${JSON.stringify(result.body)}`,
+          lease_until: null,
           updated_at: new Date().toISOString(),
         };
-        if (!shouldFail) queueUpdate.scheduled_at = retryAt;
+        if (retryable) queueUpdate.scheduled_at = retryAt;
 
         await supabase
           .from('notification_queue')
           .update(queueUpdate)
           .eq('id', id);
 
-        if (data.type === 'admin_broadcast' && data.broadcast_id && userId) {
-          await supabase
-            .from('admin_broadcast_deliveries')
-            .update({
-              delivery_status: 'failed',
-              failure_reason: `FCM status=${result.status}`,
-            })
-            .eq('broadcast_id', data.broadcast_id)
-            .eq('user_id', userId)
-            .eq('delivery_status', 'pending');
+        // A retryable row stays 'queued' in the delivery ledger. Only a
+        // terminal outcome resolves the delivery.
+        if (!retryable) {
+          await updateBroadcastDelivery(
+            invocationId,
+            data,
+            userId,
+            'failed',
+            `FCM status=${result.status}`,
+          );
         }
       } catch (sendError) {
-        const shouldFail = nextAttempts >= maxAttempts;
-        const retryAt = new Date(Date.now() + Math.min(60, 5 * nextAttempts) * 60_000).toISOString();
         const errorMessage = sendError instanceof Error ? sendError.message : String(sendError);
 
-        logError(invocationId, 'FCM send threw error', sendError, {
+        // No response was received: the send may or may not have reached the
+        // device. Best-effort push policy: record the ambiguity and stop.
+        // Auto-resending here is the duplicate-notification bug.
+        logError(invocationId, 'FCM send threw; outcome unknown, not retried', sendError, {
           id,
-          shouldFail,
-          retryAt: shouldFail ? null : retryAt,
           nextAttempts,
           maxAttempts,
           dataType: data.type ?? null,
@@ -1919,29 +2081,23 @@ async function handleNotificationQueueProcessing(invocationId: string) {
           fcmTokenPrefix: tokenPrefix(token),
         });
 
-        const queueUpdate: Record<string, unknown> = {
-          status: shouldFail ? 'failed' : 'pending',
-          failure_reason: errorMessage,
-          updated_at: new Date().toISOString(),
-        };
-        if (!shouldFail) queueUpdate.scheduled_at = retryAt;
-
         await supabase
           .from('notification_queue')
-          .update(queueUpdate)
+          .update({
+            status: 'unknown',
+            failure_reason: `ambiguous: ${errorMessage}`,
+            lease_until: null,
+            updated_at: new Date().toISOString(),
+          })
           .eq('id', id);
 
-        if (data.type === 'admin_broadcast' && data.broadcast_id && userId) {
-          await supabase
-            .from('admin_broadcast_deliveries')
-            .update({
-              delivery_status: 'failed',
-              failure_reason: errorMessage,
-            })
-            .eq('broadcast_id', data.broadcast_id)
-            .eq('user_id', userId)
-            .eq('delivery_status', 'pending');
-        }
+        await updateBroadcastDelivery(
+          invocationId,
+          data,
+          userId,
+          'failed',
+          `ambiguous: ${errorMessage}`,
+        );
       }
     };
 
@@ -1952,7 +2108,8 @@ async function handleNotificationQueueProcessing(invocationId: string) {
       await Promise.all(chunk.map((row) => processQueueRow(row)));
     }
 
-    log(invocationId, 'Notification Queue Processing completed successfully.', { sent: processed });
+    log(invocationId, 'Notification Queue Processing completed successfully.', { sent: processed, batchSize: rows.length });
+    return rows.length;
   } catch (error) {
     logError(invocationId, 'Error during Notification Queue Processing', error);
     throw error;
@@ -2196,6 +2353,12 @@ async function handleMatchExpiryWarnings(invocationId: string) {
               scheduled_at: new Date().toISOString(),
             });
             if (insErr) {
+              if (insErr.code === '23505') {
+                // Ledger dedupe: this exact warning is already queued for
+                // this device (an overlapping tick won the insert).
+                skippedAlreadyWarned++;
+                continue;
+              }
               logError(invocationId, 'Failed to enqueue expiry warning', insErr, { matchId: c.matchId, userId: uid, threshold: c.threshold });
               continue;
             }
@@ -2420,6 +2583,12 @@ async function handlePinnedExpiryWarnings(invocationId: string) {
             scheduled_at: new Date().toISOString(),
           });
           if (insErr) {
+            if (insErr.code === '23505') {
+              // Ledger dedupe: this exact warning is already queued for
+              // this device (an overlapping tick won the insert).
+              skippedAlreadyWarned++;
+              continue;
+            }
             logError(invocationId, 'Failed to enqueue pinned warning', insErr, { userId: c.userId, threshold: c.threshold });
             continue;
           }
@@ -3149,6 +3318,13 @@ async function _fetchGeminiQuotaFromGcp(invocationId: string) {
 
 async function handleAiQuotaMonitoring(invocationId: string) {
   log(invocationId, 'Checking AI quota status...');
+  // Each run performs external calls (DeepL usage, GCP OAuth + Monitoring
+  // API). Quota alerts do not need one-minute resolution.
+  const canRun = await claimTaskCadence(invocationId, 'ai_quota_monitoring', 900);
+  if (!canRun) {
+    log(invocationId, 'AI quota monitoring skipped (15m cadence).');
+    return;
+  }
   await _fetchDeepLQuota(invocationId);
   await _fetchGeminiQuotaFromGcp(invocationId);
   const { data, error } = await supabase.from('ai_quota_status').select('provider,metric,window_key,status').limit(5);
@@ -3257,175 +3433,171 @@ async function handleCleanupExpiredOfflineTrail(invocationId: string) {
 }
 
 /**
+ * Normalize expired subscriptions and queued plan changes. Without this task
+ * an entitlement stays on the expired tier until the user opens a billing
+ * screen, because the app-side check only runs on demand.
+ */
+async function handleSubscriptionNormalization(invocationId: string) {
+  log(invocationId, 'Running Subscription Normalization...');
+  try {
+    const canRun = await claimTaskCadence(
+      invocationId,
+      'subscription_normalization',
+      300,
+    );
+    if (!canRun) {
+      log(invocationId, 'Subscription Normalization skipped (5 min cadence).');
+      return;
+    }
+
+    const { error } = await supabase.rpc('scheduled_subscription_normalization');
+    if (error) throw error;
+
+    log(invocationId, 'Subscription Normalization completed.');
+  } catch (error) {
+    logError(invocationId, 'Error during Subscription Normalization', error);
+    throw error;
+  }
+}
+
+/**
+ * Delete location-share signals past expiry. Clients already filter on
+ * expires_at, so this is retention/privacy hygiene, not delivery.
+ */
+async function handleExpiredLocationSignalCleanup(invocationId: string) {
+  log(invocationId, 'Running Expired Location Signal Cleanup...');
+  try {
+    const canRun = await claimTaskCadence(
+      invocationId,
+      'expired_location_signal_cleanup',
+      300,
+    );
+    if (!canRun) {
+      log(invocationId, 'Expired Location Signal Cleanup skipped (5 min cadence).');
+      return;
+    }
+
+    const { data, error } = await supabase.rpc(
+      'cleanup_expired_location_share_signals',
+    );
+    if (error) throw error;
+
+    const deletedCount = Number(data ?? 0);
+    log(
+      invocationId,
+      `Expired Location Signal Cleanup completed. Deleted ${deletedCount} signal(s).`,
+      { deletedCount },
+    );
+  } catch (error) {
+    logError(invocationId, 'Error during Expired Location Signal Cleanup', error);
+    throw error;
+  }
+}
+
+/**
+ * Materialize due match-rating prompts so the prompt appears even when the
+ * user never opens the rating screen.
+ */
+async function handleMatchRatingPrompts(invocationId: string) {
+  log(invocationId, 'Running Due Rating Prompts...');
+  try {
+    const canRun = await claimTaskCadence(
+      invocationId,
+      'match_rating_prompts',
+      300,
+    );
+    if (!canRun) {
+      log(invocationId, 'Due Rating Prompts skipped (5 min cadence).');
+      return;
+    }
+
+    const { error } = await supabase.rpc('check_all_due_rating_prompts');
+    if (error) throw error;
+
+    log(invocationId, 'Due Rating Prompts completed.');
+  } catch (error) {
+    logError(invocationId, 'Error during Due Rating Prompts', error);
+    throw error;
+  }
+}
+
+/**
+ * End expired meetup sessions and purge spot cards after the 24h grace
+ * period that lets both clients remove their private photos.
+ */
+async function handleMeetupCleanup(invocationId: string) {
+  log(invocationId, 'Running Expired Meetup Cleanup...');
+  try {
+    const canRun = await claimTaskCadence(invocationId, 'meetup_cleanup', 600);
+    if (!canRun) {
+      log(invocationId, 'Expired Meetup Cleanup skipped (10 min cadence).');
+      return;
+    }
+
+    const { error } = await supabase.rpc('cleanup_expired_meetups');
+    if (error) throw error;
+
+    log(invocationId, 'Expired Meetup Cleanup completed.');
+  } catch (error) {
+    logError(invocationId, 'Error during Expired Meetup Cleanup', error);
+    throw error;
+  }
+}
+
+/**
  * Cleanup orphan sponsored ad images from storage that are no longer referenced by any ad creative
  */
 async function handleCleanupOrphanSponsoredAdImages(invocationId: string) {
   log(invocationId, 'Starting cleanup of orphan sponsored ad images...');
   try {
-    // Find all image URLs currently referenced by ad_creatives
-    const { data: creatives, error: creativesError } = await supabase
-      .from('ad_creatives')
-      .select('image_url')
-      .not('image_url', 'is', null);
-
-    if (creativesError) {
-      logError(invocationId, 'Failed to fetch ad creatives for image cleanup', creativesError);
-      throw creativesError;
-    }
-
-    // Extract unique image paths from URLs (including subdirectories like campaigns/xxx/filename.jpg)
-    const referencedImages = new Set<string>();
-    for (const creative of (creatives || [])) {
-      if (creative.image_url) {
-        try {
-          const url = new URL(creative.image_url);
-          const pathname = url.pathname;
-          // Extract full path from sponsored-ad-images/ onward (e.g., campaigns/xxx/filename.jpg)
-          const match = pathname.match(/sponsored-ad-images\/(.+)$/);
-          if (match && match[1]) {
-            referencedImages.add(match[1]);
-          }
-        } catch {
-          // If URL parsing fails, extract path after sponsored-ad-images/
-          const sponsoredMatch = creative.image_url.match(/sponsored-ad-images\/(.+)$/);
-          if (sponsoredMatch && sponsoredMatch[1]) {
-            referencedImages.add(sponsoredMatch[1]);
-          } else {
-            // Fallback: just extract the filename
-            const parts = creative.image_url.split('/');
-            const filename = parts[parts.length - 1];
-            if (filename && filename.includes('.')) {
-              referencedImages.add(filename);
-            }
-          }
-        }
-      }
-    }
-
-    log(invocationId, 'Found referenced sponsored ad images', { count: referencedImages.size, sample: Array.from(referencedImages).slice(0, 5) });
-
-    // List all objects in the sponsored-ad-images bucket (root level and campaigns/ subdir)
-    const allStorageObjects: Array<{ name: string; created_at?: string | null }> = [];
-
-    // List root level objects
-    const { data: rootObjects, error: rootListError } = await supabase
-      .storage
-      .from('sponsored-ad-images')
-      .list('', { limit: 1000 });
-
-    if (rootListError) {
-      logError(invocationId, 'Failed to list sponsored-ad-images bucket root', rootListError);
-      throw rootListError;
-    }
-
-    // Add root level files (not folders)
-    for (const obj of (rootObjects || [])) {
-      // Folders have id === null, files have a UUID id
-      const isFolder = obj.id === null;
-
-      if (!isFolder) {
-        allStorageObjects.push(obj);
-      } else if (obj.name === 'campaigns' || obj.name === 'campaigns/') {
-        // List files in campaigns/ subdirectory
-        const { data: campaignObjects, error: campaignListError } = await supabase
-          .storage
-          .from('sponsored-ad-images')
-          .list('campaigns', { limit: 1000 });
-
-        if (campaignListError) {
-          logError(invocationId, 'Failed to list campaigns/ subdirectory', campaignListError);
-        } else {
-          for (const campaignFolder of (campaignObjects || [])) {
-            const isCampaignFolder = campaignFolder.id === null;
-            if (isCampaignFolder) {
-              // List files in each campaign subdirectory
-              const campaignName = campaignFolder.name.replace(/\/$/, '');
-              const { data: campaignFiles, error: campaignFilesError } = await supabase
-                .storage
-                .from('sponsored-ad-images')
-                .list(`campaigns/${campaignName}`, { limit: 1000 });
-
-              if (!campaignFilesError && campaignFiles) {
-                for (const file of campaignFiles) {
-                  const isFile = file.id !== null;
-                  if (isFile) {
-                    allStorageObjects.push({
-                      name: `campaigns/${campaignName}/${file.name}`,
-                      created_at: file.created_at,
-                    });
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-
-    log(invocationId, 'Listed storage objects', { totalObjects: allStorageObjects.length, sample: allStorageObjects.slice(0, 5).map(o => o.name) });
-
-    // Find orphan objects (not referenced by any ad creative)
-    //
-    // GRACE PERIOD — critical: between an admin uploading an image and
-    // clicking Save, the new file is intentionally unreferenced (creatives
-    // still point at the previous URL until the save lands). Without a grace
-    // period this task deleted freshly uploaded images in that window,
-    // leaving live campaigns pointing at dead URLs (404s). Only objects that
-    // stayed unreferenced for 24h are true orphans.
-    const orphanMinAgeMs = 24 * 60 * 60 * 1000;
-    const nowMs = Date.now();
-    const orphanObjects = allStorageObjects.filter(obj => {
-      if (referencedImages.has(obj.name)) {
-        return false;
-      }
-      const createdAtMs = obj.created_at ? Date.parse(obj.created_at) : NaN;
-      if (Number.isNaN(createdAtMs) || nowMs - createdAtMs < orphanMinAgeMs) {
-        return false;
-      }
-      log(invocationId, 'Found orphan object', { name: obj.name, createdAt: obj.created_at });
-      return true;
-    });
-
-    if (orphanObjects.length === 0) {
-      log(invocationId, 'No orphan sponsored ad images found');
+    const canRun = await claimTaskCadence(
+      invocationId,
+      'cleanup_orphan_sponsored_ad_images',
+      21600,
+    );
+    if (!canRun) {
+      log(invocationId, 'Orphan sponsored ad images cleanup skipped (6h cadence).');
       return;
     }
 
-    log(invocationId, 'Found orphan sponsored ad images', { count: orphanObjects.length });
+    // SQL returns one bounded page of unreferenced objects; bytes are removed
+    // through the Storage API because protect_delete blocks direct deletes.
+    const pageLimit = 500;
+    const maxPages = 10;
+    let totalDeleted = 0;
 
-    // Delete orphan objects in batches
-    const batchSize = 100;
-    let deletedCount = 0;
-    const errors: string[] = [];
+    for (let page = 0; page < maxPages; page++) {
+      const { data, error } = await supabase.rpc(
+        'list_orphan_sponsored_ad_images',
+        {
+          p_min_age_minutes: 1440,
+          p_limit: pageLimit,
+        },
+      );
+      if (error) throw error;
 
-    for (let i = 0; i < orphanObjects.length; i += batchSize) {
-      const batch = orphanObjects.slice(i, i + batchSize);
-      const pathsToDelete = batch.map(obj => obj.name);
+      const names = (Array.isArray(data) ? data : [])
+        .map((row) =>
+          row && typeof row === 'object'
+            ? String((row as Record<string, unknown>).name ?? '')
+            : ''
+        )
+        .filter((name) => name.length > 0);
 
-      const { data: deleteResult, error: deleteError } = await supabase
+      if (names.length === 0) break;
+
+      const { error: removeError } = await supabase
         .storage
         .from('sponsored-ad-images')
-        .remove(pathsToDelete);
+        .remove(names);
+      if (removeError) throw removeError;
 
-      if (deleteError) {
-        logError(invocationId, 'Failed to delete batch of orphan images', deleteError, {
-          batchIndex: i / batchSize,
-          batchSize: pathsToDelete.length,
-        });
-        errors.push(deleteError.message);
-      } else {
-        deletedCount += pathsToDelete.length;
-        log(invocationId, 'Deleted batch of orphan sponsored ad images', {
-          batchIndex: i / batchSize,
-          deleted: pathsToDelete.length,
-        });
-      }
+      totalDeleted += names.length;
+      if (names.length < pageLimit) break;
     }
 
     log(invocationId, 'Orphan sponsored ad images cleanup completed', {
-      deletedCount,
-      totalOrphans: orphanObjects.length,
-      errors: errors.length,
+      deletedCount: totalDeleted,
     });
   } catch (error) {
     logError(invocationId, 'Error during orphan sponsored ad images cleanup', error);
@@ -3439,6 +3611,16 @@ async function handleCleanupOrphanSponsoredAdImages(invocationId: string) {
 async function handleCleanupEdgeFunctionInvocations(invocationId: string) {
   log(invocationId, 'Running Edge Function Invocations Cleanup...');
   try {
+    const canRun = await claimTaskCadence(
+      invocationId,
+      'cleanup_edge_function_invocations',
+      86400,
+    );
+    if (!canRun) {
+      log(invocationId, 'Edge function invocations cleanup skipped (daily cadence).');
+      return;
+    }
+
     const { data, error } = await supabase.rpc('cleanup_edge_function_invocations');
 
     if (error) {
@@ -3460,58 +3642,86 @@ async function handleCleanupEdgeFunctionInvocations(invocationId: string) {
 async function handleProcessPendingReferrals(invocationId: string) {
   log(invocationId, 'Processing pending referrals...');
   try {
-    // Find referrals that are pending, where the referee has a complete profile,
-    // and the referral was created >1 hour ago (gives client time to call completeReferral).
-    const { data: referrals, error } = await supabase
-      .from('referrals')
-      .select('id, referee_id')
-      .eq('status', 'pending')
-      .lt('created_at', new Date(Date.now() - 3600000).toISOString());
-
-    if (error) throw error;
-
-    const rows = (referrals ?? []) as Array<{ id: string; referee_id: string }>;
-    if (rows.length === 0) {
-      log(invocationId, 'No pending referrals to process.');
+    // Set-based and indexed, but nothing becomes eligible faster than this
+    // gate; running it every minute only adds write traffic.
+    const canRun = await claimTaskCadence(invocationId, 'process_pending_referrals', 300);
+    if (!canRun) {
+      log(invocationId, 'Pending referral processing skipped (5m cadence).');
       return;
     }
 
-    let completedCount = 0;
-    for (const referral of rows) {
-      // Check if referee has completed their profile
-      const { data: userData } = await supabase
-        .from('users')
-        .select('is_profile_complete')
-        .eq('id', referral.referee_id)
-        .single();
-
-      if ((userData as Record<string, unknown> | null)?.is_profile_complete === true) {
-        // Complete the referral server-side
-        const { error: completeError } = await supabase.rpc('complete_referral', {
-          p_user_id: referral.referee_id,
-        });
-
-        if (completeError) {
-          logError(invocationId, 'Failed to auto-complete referral', completeError, {
-            referralId: referral.id,
-            refereeId: referral.referee_id,
-          });
-          continue;
-        }
-        completedCount++;
-        log(invocationId, 'Auto-completed pending referral', {
-          referralId: referral.id,
-          refereeId: referral.referee_id,
-        });
-      }
-    }
-
-    log(invocationId, 'Pending referral processing completed.', {
-      processed: rows.length,
-      completed: completedCount,
+    // Filtering (complete profile + 1h grace), locking and completion all happen
+    // in SQL; the previous per-referral SELECT + RPC loop was unbounded and N+1.
+    const { data, error } = await supabase.rpc('process_pending_referrals', {
+      p_limit: 500,
     });
+
+    if (error) throw error;
+
+    const completedCount = typeof data === 'number' ? data : Number(data ?? 0);
+    log(invocationId, 'Pending referral processing completed.', { completed: completedCount });
   } catch (error) {
     logError(invocationId, 'Error processing pending referrals', error);
+    throw error;
+  }
+}
+
+/**
+ * Removes verification photos whose retention window expired.
+ * Object bytes must go through the Storage API; the SQL helper only lists
+ * expired artefacts and clears the reference after successful removal.
+ */
+async function handleCleanupExpiredVerificationPhotos(invocationId: string) {
+  log(invocationId, 'Running Expired Verification Photo Cleanup...');
+  try {
+    const canRun = await claimTaskCadence(
+      invocationId,
+      'cleanup_expired_verification_photos',
+      3600,
+    );
+    if (!canRun) {
+      log(invocationId, 'Expired Verification Photo Cleanup skipped (hourly cadence).');
+      return;
+    }
+
+    const { data, error } = await supabase.rpc('list_expired_verification_photos', {
+      p_limit: 200,
+    });
+    if (error) throw error;
+
+    const rows = (data ?? []) as Array<{ user_id: string; storage_path: string }>;
+    if (rows.length === 0) {
+      log(invocationId, 'No expired verification photos.');
+      return;
+    }
+
+    const names = Array.from(new Set(
+      rows
+        .map((row) => String(row.storage_path ?? '').trim())
+        .filter((name) => name.length > 0),
+    ));
+
+    if (names.length > 0) {
+      const { error: removeError } = await supabase
+        .storage
+        .from('verification-photos')
+        .remove(names);
+      if (removeError) throw removeError;
+    }
+
+    const { data: cleared, error: clearError } = await supabase.rpc(
+      'clear_expired_verification_photo_paths',
+      { p_items: rows.map((row) => ({ user_id: row.user_id, path: row.storage_path })) },
+    );
+    if (clearError) throw clearError;
+
+    log(invocationId, 'Expired Verification Photo Cleanup completed.', {
+      listed: rows.length,
+      objectsRemoved: names.length,
+      referencesCleared: Number(cleared ?? 0),
+    });
+  } catch (error) {
+    logError(invocationId, 'Error during Expired Verification Photo Cleanup', error);
     throw error;
   }
 }
@@ -3519,119 +3729,31 @@ async function handleProcessPendingReferrals(invocationId: string) {
 async function handleCleanupStaleProfilePhotoRefs(invocationId: string) {
   log(invocationId, 'Running Stale Profile Photo References Cleanup...');
   try {
-    const limit = 100;
-    let offset = 0;
-    let totalCleaned = 0;
-    let totalUsers = 0;
-
-    for (;;) {
-      const { data: profiles, error: profilesError } = await supabase
-        .from('user_profiles')
-        .select('user_id, photos, approved_primary_photos')
-        .not('photos', 'is', null)
-        .range(offset, offset + limit - 1);
-
-      if (profilesError) throw profilesError;
-      if (!profiles || profiles.length === 0) break;
-
-      for (const profile of profiles) {
-        const photos: string[] = Array.isArray((profile as Record<string, unknown>).photos)
-          ? ((profile as Record<string, unknown>).photos as string[])
-          : [];
-        if (photos.length === 0) {
-          totalUsers++;
-          continue;
-        }
-
-        const userId = String((profile as Record<string, unknown>).user_id ?? '');
-        if (!userId) {
-          totalUsers++;
-          continue;
-        }
-
-        // List files that actually exist in this user's storage folder
-        const { data: storageFiles, error: listError } = await supabase
-          .storage
-          .from('profile-photos')
-          .list(userId, { limit: 100 });
-
-        if (listError) {
-          logError(invocationId, `Failed to list storage folder for user ${tokenPrefix(userId)}`, listError);
-          totalUsers++;
-          continue;
-        }
-
-        // Build a set of existing filenames (just the filename, not the full path)
-        const existingFiles = new Set<string>();
-        for (const f of (storageFiles || [])) {
-          const isFolder = f.id === null;
-          if (!isFolder) {
-            const name = String(f.name ?? '');
-            if (name) existingFiles.add(name);
-          }
-        }
-
-        // Filter photos: keep only those whose filename exists in storage
-        const originalCount = photos.length;
-        const cleanedPhotos = photos.filter((path: string) => {
-          const slashIdx = path.lastIndexOf('/');
-          const filename = slashIdx >= 0 ? path.substring(slashIdx + 1) : path;
-          return existingFiles.has(filename);
-        });
-
-        if (cleanedPhotos.length === originalCount) {
-          totalUsers++;
-          continue;
-        }
-
-        // Build DB update payload
-        const updatePayload: Record<string, unknown> = {
-          photos: cleanedPhotos,
-        };
-
-        // Also clean up approved_primary_photos if any referenced photo is stale
-        const approvedPrimary: string[] = Array.isArray(
-          (profile as Record<string, unknown>).approved_primary_photos,
-        )
-          ? ((profile as Record<string, unknown>).approved_primary_photos as string[])
-          : [];
-        if (approvedPrimary.length > 0) {
-          const cleanedApproved = approvedPrimary.filter((path: string) => {
-            const slashIdx = path.lastIndexOf('/');
-            const filename = slashIdx >= 0 ? path.substring(slashIdx + 1) : path;
-            return existingFiles.has(filename);
-          });
-          if (cleanedApproved.length !== approvedPrimary.length) {
-            updatePayload.approved_primary_photos = cleanedApproved;
-          }
-        }
-
-        // Update the user_profiles row
-        const { error: updateError } = await supabase
-          .from('user_profiles')
-          .update(updatePayload)
-          .eq('user_id', userId);
-
-        if (updateError) {
-          logError(invocationId, `Failed to update user ${tokenPrefix(userId)}`, updateError);
-        } else {
-          totalCleaned += originalCount - cleanedPhotos.length;
-          log(invocationId, `Cleaned ${originalCount - cleanedPhotos.length} stale photo ref(s) for user ${tokenPrefix(userId)}`, {
-            userId: tokenPrefix(userId),
-            before: originalCount,
-            after: cleanedPhotos.length,
-          });
-        }
-        totalUsers++;
-      }
-
-      if (profiles.length < limit) break;
-      offset += limit;
+    const canRun = await claimTaskCadence(
+      invocationId,
+      'cleanup_stale_profile_photo_refs',
+      21600,
+    );
+    if (!canRun) {
+      log(invocationId, 'Stale Profile Photo References Cleanup skipped (6h cadence).');
+      return;
     }
 
+    const { data, error } = await supabase.rpc(
+      'cleanup_stale_profile_photo_refs',
+      { p_limit: 2000 },
+    );
+    if (error) throw error;
+
+    const row = Array.isArray(data)
+      ? (data[0] as Record<string, unknown> | undefined)
+      : (data as Record<string, unknown> | null);
+    const usersUpdated = Number(row?.users_updated ?? 0);
+    const refsRemoved = Number(row?.refs_removed ?? 0);
+
     log(invocationId, 'Stale Profile Photo References Cleanup completed.', {
-      usersChecked: totalUsers,
-      staleRefsRemoved: totalCleaned,
+      usersUpdated,
+      refsRemoved,
     });
   } catch (error) {
     logError(invocationId, 'Error during Stale Profile Photo References Cleanup', error);
@@ -3642,6 +3764,14 @@ async function handleCleanupStaleProfilePhotoRefs(invocationId: string) {
 async function handleCleanupIncompleteSignupUsers(invocationId: string) {
   log(invocationId, 'Running Incomplete Signup Users Cleanup...');
   try {
+    // 200 accounts per call, each a full auth/storage delete; four runs a day
+    // keeps a backlog draining without a heavy sweep every minute.
+    const canRun = await claimTaskCadence(invocationId, 'cleanup_incomplete_signup_users', 21600);
+    if (!canRun) {
+      log(invocationId, 'Incomplete Signup Users Cleanup skipped (6h cadence).');
+      return;
+    }
+
     const { data, error } = await supabase.rpc('cleanup_incomplete_signup_users');
 
     if (error) {
@@ -3663,6 +3793,12 @@ async function handleCleanupIncompleteSignupUsers(invocationId: string) {
 async function handleCleanupOldProfileEditRequests(invocationId: string) {
   log(invocationId, 'Running Old Profile Edit Requests Cleanup...');
   try {
+    const canRun = await claimTaskCadence(invocationId, 'cleanup_old_profile_edit_requests', 86400);
+    if (!canRun) {
+      log(invocationId, 'Old Profile Edit Requests Cleanup skipped (daily cadence).');
+      return;
+    }
+
     const { data, error } = await supabase.rpc('cleanup_old_profile_edit_requests');
 
     if (error) {
@@ -3839,6 +3975,28 @@ async function handleDisposableEmailDomainsSync(invocationId: string) {
 }
 
 // Main server logic
+async function claimTaskCadence(
+  invocationId: string,
+  taskName: string,
+  minSeconds: number,
+): Promise<boolean> {
+  const { data, error } = await supabase.rpc('claim_cron_task', {
+    p_task_name: taskName,
+    p_min_seconds: minSeconds,
+  });
+  if (error) {
+    // Do not silently disable an automation if the claim RPC is unavailable;
+    // both callers are idempotent (delivery keys / reminder state).
+    logError(
+      invocationId,
+      `Cadence claim failed for ${taskName}; running anyway`,
+      error,
+    );
+    return true;
+  }
+  return data === true;
+}
+
 async function runCronTask(
   invocationId: string,
   name: string,
@@ -3865,21 +4023,27 @@ serve(async (req: Request) => {
   const logSuccesses =
     (Deno.env.get("CRON_LOG_SUCCESSES") ?? "").toLowerCase() === "true";
 
-  // Shared-secret gate: when MATCHME_INTERNAL_SECRET is configured (the
-  // pg_cron/pg_net schedule passes it as the x-matchme-internal header),
-  // reject unauthenticated invocations — the function triggers all 28 tasks
-  // and can send real FCM pushes. When the env var is unset, fall open so
-  // legacy dashboard-configured schedules keep working.
+  // Shared-secret gate. This endpoint can send real pushes and rewrite
+  // data, so it fails CLOSED: if the secret is not configured, every request
+  // is refused (503) instead of running unauthenticated. The pg_cron/pg_net
+  // schedule passes the secret in x-matchme-internal.
   const internalSecret = (Deno.env.get("MATCHME_INTERNAL_SECRET") ?? "").trim();
-  if (internalSecret !== "") {
-    const provided = (req.headers.get("x-matchme-internal") ?? "").trim();
-    if (provided !== internalSecret) {
-      console.log(`[${functionName}] rejected: missing/invalid x-matchme-internal header`);
-      return new Response(JSON.stringify({ error: "Forbidden" }), {
-        status: 403,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
+  if (internalSecret === "") {
+    console.error(
+      `[${functionName}] rejected: MATCHME_INTERNAL_SECRET is not configured`,
+    );
+    return new Response(JSON.stringify({ error: "Cron function is not configured" }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  const provided = (req.headers.get("x-matchme-internal") ?? "").trim();
+  if (provided !== internalSecret) {
+    console.log(`[${functionName}] rejected: missing/invalid x-matchme-internal header`);
+    return new Response(JSON.stringify({ error: "Forbidden" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   log(invocationId, 'Cron job function invoked.', {
@@ -3897,27 +4061,145 @@ serve(async (req: Request) => {
     hasFcmServiceAccountJson: Boolean(Deno.env.get('FCM_SERVICE_ACCOUNT_JSON')),
   });
   try {
+    // The once-a-minute tick posts '{}'; queue/broadcast triggers post
+    // {quick:true} through public.request_notification_quick_tick so pushes
+    // leave within seconds instead of waiting for the next tick.
+    let requestBody: Record<string, unknown> = {};
+    try {
+      const parsedBody = await req.json();
+      if (parsedBody && typeof parsedBody === 'object') {
+        requestBody = parsedBody as Record<string, unknown>;
+      }
+    } catch {
+      requestBody = {};
+    }
+
+    if (requestBody['quick'] === true) {
+      const wantBroadcasts = requestBody['broadcasts'] === true;
+      // Depth is carried in the payload; the chain stops at 20 and the minute
+      // tick picks up whatever is left.
+      const chain = Math.min(Math.max(Number(requestBody['chain'] ?? 0) || 0, 0), 20);
+      const quickStartedMs = Date.now();
+      const quickResults: Array<{ name: string; ok: boolean; error?: Record<string, unknown> }> = [];
+
+      if (wantBroadcasts) {
+        quickResults.push(
+          await runCronTask(invocationId, 'quick_scheduled_admin_broadcasts', () =>
+            handleScheduledAdminBroadcasts(invocationId)
+          ),
+        );
+      }
+
+      let batchesRun = 0;
+      let drained = 0;
+      const quickMaxBatches = 3;
+      for (let i = 0; i < quickMaxBatches; i++) {
+        let processed = 0;
+        const batchResult = await runCronTask(invocationId, 'quick_notification_queue', async () => {
+          processed = await handleNotificationQueueProcessing(invocationId, { skipHousekeeping: true });
+        });
+        quickResults.push(batchResult);
+        batchesRun += 1;
+        drained += processed;
+        if (!batchResult.ok || processed < QUEUE_DRAIN_BATCH) break;
+        if (Date.now() - quickStartedMs > 25_000) break;
+      }
+
+      // Self-chain while due work remains. This also refreshes the debounce
+      // state, so trigger-generated requests stay quiet during the burst.
+      let chained = false;
+      const quickAllOk = quickResults.every((r) => r.ok);
+      if (quickAllOk && chain < 20 && Date.now() - quickStartedMs < 60_000) {
+        const { count: duePending, error: dueError } = await supabase
+          .from('notification_queue')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'pending')
+          .lte('scheduled_at', new Date().toISOString());
+        if (!dueError && (duePending ?? 0) > 0) {
+          const { error: chainError } = await supabase.rpc('request_notification_quick_tick', {
+            p_source: 'chain',
+            p_min_interval_seconds: 0,
+            p_queue: true,
+            p_broadcasts: false,
+            p_chain: chain + 1,
+          });
+          if (chainError) {
+            logError(invocationId, 'Quick tick chain request failed', chainError, { chain });
+          } else {
+            chained = true;
+          }
+        }
+      }
+
+      const quickFailed = quickResults.filter((r) => !r.ok);
+      success = quickFailed.length === 0;
+      httpStatus = success ? 200 : 500;
+      if (!success) {
+        errorType = 'QuickTickFailure';
+        errorMessage = `${quickFailed.length} quick tick task(s) failed.`;
+      }
+      meta = {
+        ...meta,
+        quick: true,
+        chain,
+        batchesRun,
+        drained,
+        chained,
+        taskResults: quickResults.map((r) => ({
+          name: r.name,
+          ok: r.ok,
+          errorMessage: r.ok ? null : String((r.error as Record<string, unknown> | undefined)?.message ?? ''),
+        })),
+      };
+      log(invocationId, 'Quick tick completed.', {
+        drained,
+        batchesRun,
+        chained,
+        chain,
+        failed: quickFailed.length,
+      });
+
+      return new Response(JSON.stringify({
+        success,
+        quick: true,
+        drained,
+        batchesRun,
+        chained,
+        failedTasks: quickFailed.map((f) => f.name),
+      }), {
+        headers: { 'Content-Type': 'application/json' },
+        status: httpStatus,
+      });
+    }
+
     const results = [
+      // Latency-sensitive work first: warnings enqueue pushes, and the queue
+      // drain immediately after them sends those pushes in the same tick.
       await runCronTask(invocationId, 'cleanup_stale_online_users', () => cleanupStaleOnlineUsers()),
-      await runCronTask(invocationId, 'cleanup_old_presence_events', () => cleanupOldPresenceEvents()),
-      await runCronTask(invocationId, 'invisibility_schedules', () => handleInvisibilitySchedules()),
       await runCronTask(invocationId, 'cleanup_expired_matches', () => cleanupExpiredMatches()),
       await runCronTask(invocationId, 'expire_pinned_locations', () => handleExpirePinnedLocations(invocationId)),
       await runCronTask(invocationId, 'touch_active_pinned_locations', () => handleTouchPinnedLocations(invocationId)),
+      await runCronTask(invocationId, 'match_expiry_warnings', () => handleMatchExpiryWarnings(invocationId)),
+      await runCronTask(invocationId, 'pinned_location_expiry_warnings', () => handlePinnedExpiryWarnings(invocationId)),
+      await runCronTask(invocationId, 'notification_queue_processing', async () => {
+        await handleNotificationQueueProcessing(invocationId);
+      }),
       await runCronTask(invocationId, 'cleanup_old_user_locations', () => handleCleanupOldUserLocations(invocationId)),
       await runCronTask(invocationId, 'cleanup_expired_offline_trail', () => handleCleanupExpiredOfflineTrail(invocationId)),
+      await runCronTask(invocationId, 'expired_location_signal_cleanup', () => handleExpiredLocationSignalCleanup(invocationId)),
+      await runCronTask(invocationId, 'match_rating_prompts', () => handleMatchRatingPrompts(invocationId)),
+      await runCronTask(invocationId, 'meetup_cleanup', () => handleMeetupCleanup(invocationId)),
+      await runCronTask(invocationId, 'subscription_normalization', () => handleSubscriptionNormalization(invocationId)),
       await runCronTask(invocationId, 'currency_exchange_rates_refresh', () => handleCurrencyExchangeRateRefresh(invocationId)),
       await runCronTask(invocationId, 'continuous_event_matching', () => handleContinuousEventMatching()),
       await runCronTask(invocationId, 'continuous_user_matching', () => handleContinuousUserMatching()),
       await runCronTask(invocationId, 'cleanup_orphan_profile_photos', () => handleCleanupOrphanProfilePhotos(invocationId)),
       await runCronTask(invocationId, 'cleanup_stale_profile_photo_refs', () => handleCleanupStaleProfilePhotoRefs(invocationId)),
+      await runCronTask(invocationId, 'cleanup_expired_verification_photos', () => handleCleanupExpiredVerificationPhotos(invocationId)),
       await runCronTask(invocationId, 'cleanup_orphan_sponsored_ad_images', () => handleCleanupOrphanSponsoredAdImages(invocationId)),
       await runCronTask(invocationId, 'scheduled_admin_broadcasts', () => handleScheduledAdminBroadcasts(invocationId)),
       await runCronTask(invocationId, 'birthday_broadcast_automations', () => handleBirthdayBroadcastAutomations(invocationId)),
       await runCronTask(invocationId, 'profile_completion_reminders', () => handleProfileCompletionReminders(invocationId)),
-      await runCronTask(invocationId, 'match_expiry_warnings', () => handleMatchExpiryWarnings(invocationId)),
-      await runCronTask(invocationId, 'pinned_location_expiry_warnings', () => handlePinnedExpiryWarnings(invocationId)),
-      await runCronTask(invocationId, 'notification_queue_processing', () => handleNotificationQueueProcessing(invocationId)),
       await runCronTask(invocationId, 'cleanup_expired_email_codes', () => handleCleanupExpiredEmailCodes(invocationId)),
       await runCronTask(invocationId, 'cleanup_pending_email_changes', () => handleCleanupPendingEmailChanges(invocationId)),
       await runCronTask(invocationId, 'ai_quota_monitoring', () => handleAiQuotaMonitoring(invocationId)),
@@ -3931,7 +4213,9 @@ serve(async (req: Request) => {
 
     const failed = results.filter((r) => !r.ok);
     success = failed.length === 0;
-    httpStatus = 200;
+    // A 200 must mean every task succeeded. pg_net records this status, and
+    // returning 200 for partial failure hid broken tasks from monitoring.
+    httpStatus = success ? 200 : 500;
     if (!success) {
       errorType = 'CronTaskFailure';
       errorMessage = `${failed.length} cron task(s) failed.`;
@@ -3957,7 +4241,7 @@ serve(async (req: Request) => {
       failedTasks: failed.map((f) => f.name),
     }), {
       headers: { 'Content-Type': 'application/json' },
-      status: 200 // Explicitly set success status
+      status: httpStatus,
     });
 
   } catch (error) {

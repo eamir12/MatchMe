@@ -18,7 +18,8 @@ import 'package:matchme/screens/chats/message_options.dart';
 import 'package:matchme/screens/chats/reaction_picker.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/locale_provider.dart';
-import 'package:matchme/theme/app_theme_tokens.dart';
+import 'package:matchme/providers/meetup_alerts_provider.dart';
+import 'package:matchme/providers/notification_inbox_provider.dart';
 import 'package:matchme/theme/semantic_colors.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/translation_version_provider.dart';
@@ -31,6 +32,9 @@ import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/offline_mutation_queue.dart';
 import 'package:matchme/screens/chats/report_dialog.dart';
 import 'package:matchme/screens/matches/match_profile_screen.dart';
+import 'package:matchme/providers/meetup_provider.dart';
+import 'package:matchme/screens/meetup/meetup_hub_screen.dart';
+import 'package:matchme/widgets/meetup_banner.dart';
 import 'package:matchme/widgets/signed_image.dart';
 import 'package:matchme/widgets/emoji_widget.dart';
 import 'package:matchme/services/error_localization_service.dart';
@@ -55,7 +59,6 @@ import 'package:matchme/screens/location_share/location_share_duration_dialog.da
 import 'package:matchme/widgets/location_share_banner.dart';
 import 'package:matchme/widgets/safe_text.dart';
 import 'package:matchme/widgets/word_clipped_text.dart';
-import 'package:matchme/services/location_service.dart';
 
 SupabaseClient get supabase => Supabase.instance.client;
 
@@ -179,6 +182,8 @@ class ChatScreen extends ConsumerStatefulWidget {
   final String matchId;
   final String otherUserName;
   final String otherUserId;
+  final String matchType;
+  final String? eventName;
 
   /// When opened from the chats-list search, pre-loads in-chat search with
   /// this query so the conversation auto-scrolls to the found text.
@@ -194,6 +199,8 @@ class ChatScreen extends ConsumerStatefulWidget {
     required this.matchId,
     required this.otherUserName,
     required this.otherUserId,
+    this.matchType = 'proximity',
+    this.eventName,
     this.initialSearchQuery,
     this.initialHighlightMessageId,
   });
@@ -219,6 +226,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   // (calling `ref` while the widget is unmounted is unsafe).
   TypingService? _typingService;
   RealtimeChannel? _chatSignalChannel;
+  // Registered on entry so the global meet-up alert bar hides itself while
+  // this chat is on screen — MeetupBanner already shows the same state.
+  MeetupSurfacesNotifier? _meetupSurfaces;
+  bool _surfacesEntered = false;
   Timer? _statusReconcileTimer;
 
   final _messageController = TextEditingController();
@@ -465,6 +476,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   void initState() {
     super.initState();
     _lastBubbleDisplayState.clear();
+    // Provider state must not be modified while the tree is building, so the
+    // meet-up surface registration waits for the end of this frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _meetupSurfaces = ref.read(meetupSurfacesProvider.notifier);
+      _meetupSurfaces!.enter(widget.matchId);
+      _surfacesEntered = true;
+    });
     _flickerLog(
       '[chat] enter match=${_flickerId(widget.matchId)} '
       'cachedTranslation=${ref.read(translationProvider)[widget.matchId]}',
@@ -574,8 +593,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       // WhatsApp-like: clearing the composer hides the peer indicator
       // immediately instead of waiting out the idle timeout.
       if (_messageController.text.trim().isEmpty) {
-    _typingIdleTimer?.cancel();
-    _statusReconcileTimer?.cancel();
+        _typingIdleTimer?.cancel();
+        _statusReconcileTimer?.cancel();
         svc.stopTyping();
         return;
       }
@@ -970,17 +989,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   }
 
   void _onLocationShareSignalDeleted(PostgresChangePayload payload) {
-    // Signal deleted means the other user stopped sharing.
-    // Note: oldRecord only contains the primary key (id) because
-    // location_share_signals uses REPLICA IDENTITY DEFAULT.
-    // The subscription is already filtered by match_id, so we just
-    // check if the session exists.
+    // The delete payload carries the full old row (REPLICA IDENTITY FULL),
+    // so the provider can tell whose signal ended before announcing anything.
     if (!mounted) return;
     final currentSession = ref.read(locationShareProvider);
     if (currentSession == null) return;
     if (currentSession.matchId != widget.matchId) return;
 
-    ref.read(locationShareProvider.notifier).markOtherStopped();
+    ref.read(locationShareProvider.notifier).handleSignalDeleted(
+      deletedSharerId: payload.oldRecord['sharer_id'] as String?,
+      deletedMatchId: payload.oldRecord['match_id'] as String?,
+    );
   }
 
   /// One-shot check for an existing signal when the chat opens.
@@ -1143,7 +1162,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   }
 
   Future<void> _runMarkAsRead() async {
-    if (shouldSkipSupabaseCalls()) {
+    // Opening the chat shows the conversation and the match itself, so the
+    // inbox rows that pointed here are seen too. Deferred like the meet-up
+    // surface registry so a listener-triggered call can never mutate a
+    // provider mid-build, and local-first so the badges clear even when the
+    // sync below is queued for later. The server update further down still
+    // covers chat rows that sit beyond the inbox's loaded page.
+    unawaited(
+      Future.microtask(() {
+        if (!mounted) return;
+        ref.read(notificationInboxProvider.notifier).markMatchKindsRead(
+          widget.matchId,
+          const {'chat_message', 'match', 'new_match', 'match_extended'},
+        );
+      }),
+    );
+    if (shouldSkipUserScopedSupabaseCalls()) {
       await _queueMarkAsReadForLater();
       return;
     }
@@ -1258,6 +1292,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   void dispose() {
     _flickerLog('[chat] exit match=${_flickerId(widget.matchId)}');
     WidgetsBinding.instance.removeObserver(this);
+    if (_surfacesEntered) {
+      _meetupSurfaces?.exit(widget.matchId);
+      _meetupSurfaces = null;
+      _surfacesEntered = false;
+    }
     ChatViewStateService.routeObserver.unsubscribe(this);
     unawaited(ChatViewStateService.clearViewingChat());
     // Notify background services that we're no longer viewing this chat
@@ -1472,9 +1511,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               await ref
                   .read(localDbProvider)
                   .clearUnreadForMatch(currentUserId, widget.matchId);
-            } catch (_) {}
-            try {
-              ref.invalidate(recentChatsProvider(currentUserId));
             } catch (_) {}
           }),
         );
@@ -2000,6 +2036,41 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     }
   }
 
+  ({String matchType, String? eventName}) _matchContext() {
+    var matchType = widget.matchType;
+    String? eventName = widget.eventName;
+    final currentUserId = supabase.auth.currentUser?.id;
+    if (currentUserId != null) {
+      final matches = ref.read(recentMatchesProvider(currentUserId)).value;
+      if (matches != null) {
+        for (final match in matches) {
+          if (match.id == widget.matchId) {
+            matchType = match.matchType;
+            eventName = match.eventName;
+            break;
+          }
+        }
+      }
+    }
+    return (matchType: matchType, eventName: eventName);
+  }
+
+  void _openMeetup() {
+    final matchContext = _matchContext();
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MeetupHubScreen(
+          matchId: widget.matchId,
+          otherUserId: widget.otherUserId,
+          otherUserName: widget.otherUserName,
+          matchType: matchContext.matchType,
+          eventName: matchContext.eventName,
+        ),
+      ),
+    );
+  }
+
   void _navigateToProfile() async {
     try {
       final currentUserId = supabase.auth.currentUser?.id;
@@ -2059,275 +2130,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         ),
       );
     } catch (_) {}
-  }
-
-  bool _isSharingInThisChat() {
-    final session = ref.watch(locationShareProvider);
-    if (session == null || session.matchId != widget.matchId) return false;
-    return session.myStatus == ShareStatus.sharing ||
-        session.otherStatus == ShareStatus.sharing ||
-        session.otherStatus == ShareStatus.unknown;
-  }
-
-  void _handleLocationShare() async {
-    final l10n = ref.read(localizationProvider);
-    final currentSession = ref.read(locationShareProvider);
-
-    if (currentSession != null && currentSession.matchId == widget.matchId) {
-      final iAmSharer = currentSession.myStatus == ShareStatus.sharing;
-      final otherIsSharing = currentSession.otherStatus == ShareStatus.sharing;
-
-      if (iAmSharer && !otherIsSharing) {
-        _showShareOptionsSheet(currentSession);
-        return;
-      }
-      if (otherIsSharing) {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => const LocationShareMapScreen(),
-          ),
-        );
-        return;
-      }
-      // Stale session (nobody sharing) — fall through to re-check
-    }
-
-    final isOffline = shouldSkipSupabaseCalls();
-    if (isOffline) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(l10n.getString('locationShareOffline'))),
-      );
-      return;
-    }
-
-    // Check location permissions before starting location share
-    final locationService = ref.read(locationServiceProvider);
-    final hasPermission = await locationService.handleLocationPermission();
-    if (!hasPermission) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(l10n.getString('locationPermissionDenied')),
-            duration: const Duration(seconds: 3),
-          ),
-        );
-      }
-      return;
-    }
-
-    // Check if other user is already sharing with us
-    final hasExistingSignal = await ref
-        .read(locationShareProvider.notifier)
-        .hasActiveShareSignal(widget.matchId);
-
-    if (hasExistingSignal) {
-      // Receiver joining: view the map view-only (do not share location back immediately)
-      final otherProfileAsync = ref.read(
-        otherUserProfileProvider(widget.otherUserId),
-      );
-      final otherPhoto =
-          otherProfileAsync.asData?.value?.photos.isNotEmpty == true
-          ? otherProfileAsync.asData!.value!.photos[0]
-          : null;
-      ref
-          .read(locationShareProvider.notifier)
-          .viewExistingShare(
-            matchId: widget.matchId,
-            otherUserId: widget.otherUserId,
-            otherUserName: widget.otherUserName,
-            otherUserPhoto: otherPhoto,
-          );
-
-      if (mounted) {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => const LocationShareMapScreen(),
-          ),
-        );
-      }
-      return;
-    }
-
-    // No existing session: start sharing and stay in chat
-    final duration = await showDialog<Duration>(
-      context: context,
-      builder: (context) =>
-          LocationShareDurationDialog(otherUserName: widget.otherUserName),
-    );
-
-    if (duration == null || !mounted) return;
-    final Duration? effectiveDuration = duration == Duration.zero
-        ? null
-        : duration;
-
-    final otherProfileAsync = ref.read(
-      otherUserProfileProvider(widget.otherUserId),
-    );
-    final otherPhoto =
-        otherProfileAsync.asData?.value?.photos.isNotEmpty == true
-        ? otherProfileAsync.asData!.value!.photos[0]
-        : null;
-    ref
-        .read(locationShareProvider.notifier)
-        .startSharing(
-          matchId: widget.matchId,
-          otherUserId: widget.otherUserId,
-          otherUserName: widget.otherUserName,
-          otherUserPhoto: otherPhoto,
-          duration: effectiveDuration,
-        );
-
-    // Stay in chat — the banner will update to show sharing status.
-    // We do NOT navigate to the map: seeing only your own dot is meaningless.
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(l10n.getString('locationShareStarted')),
-          duration: const Duration(seconds: 3),
-        ),
-      );
-    }
-  }
-
-  /// Shows a bottom sheet with sharing options for the initiator (User A).
-  void _showShareOptionsSheet(dynamic session) async {
-    final l10n = ref.read(localizationProvider);
-    await showModalBottomSheet<void>(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (sheetContext) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 40,
-                  height: 4,
-                  margin: const EdgeInsets.only(bottom: 20),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.outlineVariant,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-                Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: AppThemeTokens.accentSurface(
-                          Colors.blue.shade700,
-                          Theme.of(context).brightness,
-                        ),
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(
-                        Icons.share_location,
-                        color: AppThemeTokens.accentInk(
-                          Colors.blue.shade700,
-                          Theme.of(context).brightness,
-                        ),
-                        size: 22,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            l10n.getString('locationShareBannerYouAreSharing'),
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 15,
-                            ),
-                          ),
-                          Text(
-                            l10n
-                                .getString('locationShareBannerSharingWith')
-                                .replaceAll('{name}', widget.otherUserName),
-                            style: TextStyle(
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.onSurfaceVariant,
-                              fontSize: 13,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 24),
-                // Change duration option
-                ListTile(
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  tileColor: AppThemeTokens.accentSurface(
-                    Colors.blue.shade700,
-                    Theme.of(context).brightness,
-                  ),
-                  leading: Icon(
-                    Icons.timer_outlined,
-                    color: AppThemeTokens.accentInk(
-                      Colors.blue.shade700,
-                      Theme.of(context).brightness,
-                    ),
-                  ),
-                  title: Text(
-                    l10n.getString('locationShareChangeDuration'),
-                    style: TextStyle(
-                      color: AppThemeTokens.accentInk(
-                        Colors.blue.shade800,
-                        Theme.of(context).brightness,
-                      ),
-                    ),
-                  ),
-                  onTap: () async {
-                    Navigator.of(sheetContext).pop();
-                    await _handleChangeDuration();
-                  },
-                ),
-                const SizedBox(height: 10),
-                // Stop sharing option
-                ListTile(
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  tileColor: Theme.of(
-                    context,
-                  ).colorScheme.error.withValues(alpha: 0.12),
-                  leading: Icon(
-                    Icons.stop_circle_outlined,
-                    color: Theme.of(context).colorScheme.error,
-                  ),
-                  title: Text(
-                    l10n.getString('locationShareStop'),
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
-                    ),
-                  ),
-                  onTap: () async {
-                    Navigator.of(sheetContext).pop();
-                    await ref
-                        .read(locationShareProvider.notifier)
-                        .stopSharing();
-                  },
-                ),
-                const SizedBox(height: 8),
-              ],
-            ),
-          ),
-        );
-      },
-    );
   }
 
   /// Allows the sharer to extend/change the duration of an active session.
@@ -2703,19 +2505,36 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               // No separate profile button: tapping the title (avatar + name)
               // already opens the profile, and a fifth action button leaves no
               // room for the title. The popup menu keeps a View-profile entry.
-              IconButton(
-                icon: Icon(
-                  _isSharingInThisChat()
-                      ? Icons.location_on
-                      : Icons.share_location,
-                  color: _isSharingInThisChat() ? Colors.green : null,
-                ),
-                tooltip: l10n.getString(
-                  _isSharingInThisChat()
-                      ? 'locationShareView'
-                      : 'locationShareStart',
-                ),
-                onPressed: _handleLocationShare,
+              Consumer(
+                builder: (context, ref, _) {
+                  final meetup = ref.watch(meetupProvider(widget.matchId));
+                  final share = ref.watch(locationShareProvider);
+                  final liveActive =
+                      share != null &&
+                      share.matchId == widget.matchId &&
+                      (share.myStatus == ShareStatus.sharing ||
+                          share.otherStatus == ShareStatus.sharing);
+                  final toolsActive =
+                      meetup.myBeacon != null ||
+                      meetup.incomingWave != null ||
+                      meetup.incomingBeacon != null ||
+                      meetup.incomingSpotCards.isNotEmpty ||
+                      meetup.mySpotCards.isNotEmpty;
+                  final planActive =
+                      meetup.session != null &&
+                      meetup.hasOpenSession &&
+                      !meetup.session!.isExpired;
+                  return IconButton(
+                    icon: Badge(
+                      isLabelVisible: liveActive || toolsActive || planActive,
+                      smallSize: 8,
+                      backgroundColor: Colors.green,
+                      child: const Icon(Icons.handshake_outlined),
+                    ),
+                    tooltip: l10n.getString('meetupHubTitle'),
+                    onPressed: _openMeetup,
+                  );
+                },
               ),
               IconButton(
                 onPressed: () async {
@@ -2883,6 +2702,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 tooltip: l10n.getString('chatSafetyActions'),
                 icon: const Icon(Icons.more_vert),
                 onSelected: (value) {
+                  if (value == 'meetup') _openMeetup();
                   if (value == 'profile') _navigateToProfile();
                   if (value == 'block') _showBlockDialog();
                   if (value == 'report') _showReportDialog();
@@ -2891,6 +2711,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   // A ListTile inside a PopupMenuItem fights the popup's
                   // intrinsic-height sizing and can overflow. A Row gives the
                   // same visual with no layout conflict.
+                  PopupMenuItem(
+                    value: 'meetup',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.handshake_outlined, size: 22),
+                        const SizedBox(width: 12),
+                        Text(l10n.getString('meetupHubTitle')),
+                      ],
+                    ),
+                  ),
                   PopupMenuItem(
                     value: 'profile',
                     child: Row(
@@ -2943,6 +2773,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   messagesAsyncValue.asData?.value ??
                       const <ChatMessageModel>[],
                 ),
+              MeetupBanner(
+                matchId: widget.matchId,
+                otherUserId: widget.otherUserId,
+                otherUserName: widget.otherUserName,
+                matchType: widget.matchType,
+                eventName: widget.eventName,
+              ),
               LocationShareBanner(
                 otherUserId: widget.otherUserId,
                 otherUserName: widget.otherUserName,
@@ -3031,7 +2868,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                                 ? _searchMatchIds[_searchCurrentIndex]
                                 : null;
 
-                            return NotificationListener<ScrollMetricsNotification>(
+                            return NotificationListener<
+                              ScrollMetricsNotification
+                            >(
                               // Translation toggling (and each translation
                               // arriving afterwards) changes the list's
                               // metrics; re-pin the message the user was
@@ -3881,14 +3720,14 @@ class _MessageBubble extends ConsumerWidget {
               builder: (context) {
                 final base = withEmojiFallback(
                   Theme.of(context).textTheme.bodySmall?.copyWith(
-                        fontSize: 11,
+                        fontSize: 12,
                         fontStyle: FontStyle.italic,
                         color: Theme.of(
                           context,
                         ).textTheme.bodySmall?.color?.withValues(alpha: 0.65),
                       ) ??
                       const TextStyle(
-                        fontSize: 11,
+                        fontSize: 12,
                         fontStyle: FontStyle.italic,
                       ),
                 );
@@ -4109,9 +3948,33 @@ class _MessageBubble extends ConsumerWidget {
       }
     }
 
+    // A message whose language differs from the UI must never render its
+    // original while the translation is still in flight. The old fallback
+    // deliberately rendered the original to avoid layout jumps, but that
+    // briefly exposes untranslated content to the recipient (the notification
+    // and the list row already wait for translation). Same-language messages
+    // and permanently failed translations still fall back to the original.
+    final serverSource = normalizeLanguageCode(
+      message.detectedSourceLanguage ?? '',
+    );
+    final sourceMatchesUi =
+        isValidLanguageCode(serverSource) &&
+        serverSource == normalizeLanguageCode(targetLanguage ?? '');
+    final translationFailed = message.translationStatus == 'failed';
+    final showPendingPlaceholder =
+        translationEnabled &&
+        !isMe &&
+        !sourceMatchesUi &&
+        !translationFailed &&
+        translatedData == null;
+
     // The bubble renders once translation resolves. Qualify stored text for display
     // so pre-fix rows (bare ⛱) show color.
-    final primaryText = ensureEmojiPresentation(safeDisplayOriginal);
+    final primaryText = ensureEmojiPresentation(
+      showPendingPlaceholder
+          ? l10n.getString('chatTranslating')
+          : safeDisplayOriginal,
+    );
 
     final bool isOriginalRtl = _isRtl(primaryText);
     // Show translated text if we have translation data and it's different from original
@@ -4409,7 +4272,7 @@ class _MessageBubble extends ConsumerWidget {
                                           .textTheme
                                           .bodySmall
                                           ?.copyWith(
-                                            fontSize: 11,
+                                            fontSize: 12,
                                             fontStyle: FontStyle.italic,
                                             color: textColor.withValues(
                                               alpha: 0.6,
@@ -4486,7 +4349,7 @@ class _MessageBubble extends ConsumerWidget {
                                                 : textColor.withValues(
                                                     alpha: 0.65,
                                                   ),
-                                            fontSize: 10,
+                                            fontSize: 12,
                                             fontStyle: FontStyle.italic,
                                           ),
                                     ),
@@ -4820,16 +4683,9 @@ Future<void> showReactorsSheet(
               ? (r['reaction'] as String)
               : emoji;
 
-          final name = displayName?.isNotEmpty == true
-              ? (() {
-                  final parts = displayName!.trim().split(RegExp(r'\s+'));
-                  if (parts.length > 1) {
-                    return '${parts.first} ${parts.last[0]}.'
-                        .withDirectionalMarks();
-                  }
-                  return displayName.withDirectionalMarks();
-                })()
-              : l10n.getString('generalUnknown');
+          final name = (displayName ?? '').formatAsFirstNameLastInitial(
+            fallback: l10n.getString('generalUnknown'),
+          );
 
           final isMe = uid != null && uid == currentUserId;
           // The reactor's name follows its own script so its trailing period

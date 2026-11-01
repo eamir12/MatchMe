@@ -18,6 +18,8 @@ import 'package:matchme/screens/profile/profile_screen.dart';
 import 'package:matchme/services/match_rating_service.dart';
 import 'package:matchme/utils/profile_sync_result.dart';
 import 'package:matchme/widgets/app_recovery_banner.dart';
+import 'package:matchme/widgets/new_user_badge.dart';
+import 'package:matchme/widgets/verified_badge.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -116,6 +118,7 @@ Widget _buildApp({
   required ProfileSyncState syncState,
   required void Function(String userId, String source) onSync,
   bool online = true,
+  UserProfile? profile,
 }) {
   return ProviderScope(
     overrides: [
@@ -123,7 +126,7 @@ Widget _buildApp({
       unitSystemProvider.overrideWith(_TestUnitSystem.new),
       localUserProfileProvider(
         _userId,
-      ).overrideWith((ref) => Stream.value(_profile())),
+      ).overrideWith((ref) => Stream.value(profile ?? _profile())),
       profileSyncStateProvider(
         _userId,
       ).overrideWith(() => _StubProfileSyncStateNotifier(syncState)),
@@ -325,6 +328,43 @@ void main() {
 
     expect(find.byType(AppRecoveryBanner), findsNothing);
     expect(calls, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Public badges sit in their own band above the Name row', (
+    tester,
+  ) async {
+    // Tall viewport so the lazy ListView builds the Name row below the band.
+    tester.view.physicalSize = const Size(1200, 3600);
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final verified = _profile().copyWith(
+      isVerified: true,
+      verificationStatus: 'approved',
+      createdAt: DateTime.now(),
+    );
+    await tester.pumpWidget(
+      _buildApp(
+        syncState: const ProfileSyncState(),
+        onSync: (_, _) {},
+        profile: verified,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // The caption tells the owner the chips are visible to other users.
+    expect(find.text('Shown to others'), findsOneWidget);
+    expect(find.byType(VerifiedBadge), findsOneWidget);
+    expect(find.byType(NewUserBadge), findsOneWidget);
+
+    // Order: caption, then the chips, then the Name detail row.
+    final captionY = tester.getTopLeft(find.text('Shown to others')).dy;
+    final badgeY = tester.getTopLeft(find.byType(VerifiedBadge)).dy;
+    final nameY =
+        tester.getTopLeft(find.textContaining('Name:', findRichText: true)).dy;
+    expect(captionY, lessThan(badgeY));
+    expect(badgeY, lessThan(nameY));
     expect(tester.takeException(), isNull);
   });
 }

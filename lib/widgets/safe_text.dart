@@ -100,9 +100,16 @@ class ShrinkText extends StatelessWidget {
     this.maxFontSizeScale = 1.0,
   });
 
+  static const double _step = 0.5;
+
   @override
   Widget build(BuildContext context) {
     final baseSize = style?.fontSize;
+    // AutoSizeText asserts the cap is a whole multiple of stepGranularity;
+    // typography sizes such as 9.2 or 10.2 are not, so snap down to a step.
+    final maxFontSize = baseSize == null
+        ? double.infinity
+        : (baseSize * maxFontSizeScale / _step).floorToDouble() * _step;
     return AutoSizeText(
       data,
       style: style,
@@ -117,10 +124,8 @@ class ShrinkText extends StatelessWidget {
       minFontSize: minFontSize,
       // Cap the resolved size so ambient text-scale cannot blow up
       // fixed chrome even before the global clamp (belt and braces).
-      maxFontSize: baseSize == null
-          ? double.infinity
-          : baseSize * maxFontSizeScale,
-      stepGranularity: 0.5,
+      maxFontSize: maxFontSize,
+      stepGranularity: _step,
     );
   }
 }

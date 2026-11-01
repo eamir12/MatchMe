@@ -6,6 +6,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart' show imageCache;
 import 'package:matchme/services/local_db_service.dart';
+import 'package:matchme/services/meetup_snapshot_cache.dart';
+import 'package:matchme/services/meetup_suggestion_cache.dart';
 import 'package:matchme/services/secure_storage_service.dart';
 import 'package:matchme/services/hive_encryption_service.dart';
 import 'package:matchme/services/encrypted_cache_service.dart';
@@ -15,6 +17,7 @@ import 'package:matchme/services/supabase_realtime_manager.dart';
 import 'package:matchme/services/storage_helper.dart';
 import 'package:matchme/services/offline_api_cache.dart';
 import 'package:matchme/services/offline_image_cache.dart';
+import 'package:matchme/services/notification_avatar_service.dart';
 import 'package:matchme/services/mobile_local_notification_service.dart';
 import 'package:matchme/services/pinned_location_gate.dart';
 import 'package:matchme/services/email_change_service.dart';
@@ -443,6 +446,11 @@ class OfflineCacheManager {
       } catch (error) {
         debugPrint('?? [OFFLINE] Failed to clear cached image bytes: $error');
       }
+      // The plaintext avatar mirror the notification card reads is a copy of
+      // the box above, so it goes with it.
+      try {
+        await NotificationAvatarService.instance.clearAll();
+      } catch (_) {}
       // Every cached REST payload is user-scoped and may contain private
       // profile/chat/verification data; never let it survive logout.
       try {
@@ -520,6 +528,10 @@ class OfflineCacheManager {
         await prefs.remove(key);
       }
       await StorageHelper.clearSessionCache();
+      try {
+        await MeetupSnapshotCache.instance.clearAll();
+      } catch (_) {}
+      MeetupSuggestionCache.instance.clearAll();
       await CalendarSyncService.clearPersistedCalendarCredentials();
       // Tray notifications, pending pinned-location sync, a pending
       // email-change request, connected calendar accounts, and the resume

@@ -12,9 +12,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import 'package:matchme/models/chat_model.dart';
+import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/notification_inbox_provider.dart';
+import 'package:matchme/screens/meetup/meetup_hub_screen.dart';
+import 'package:matchme/screens/meetup/meetup_screen.dart';
 import 'package:matchme/services/notification_inbox_service.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/widgets/app_empty_state.dart';
@@ -174,8 +179,7 @@ class _NotificationInboxScreenState
                   icon: const Icon(Icons.checklist),
                   tooltip: l10n.getString('inboxSelect'),
                   onPressed: inbox.items.isNotEmpty
-                      ? () =>
-                          _selection.selectAll(inbox.items.map((n) => n.id))
+                      ? () => _selection.selectAll(inbox.items.map((n) => n.id))
                       : null,
                 ),
               ],
@@ -186,76 +190,71 @@ class _NotificationInboxScreenState
             child: inbox.isLoading && inbox.items.isEmpty
                 ? const Center(child: CircularProgressIndicator())
                 : inbox.items.isEmpty
-                    ? RefreshIndicator(
-                        onRefresh: () => ref
-                            .read(notificationInboxProvider.notifier)
-                            .refresh(),
-                        child: ListView(
-                          children: [
-                            SizedBox(
-                              height:
-                                  MediaQuery.of(context).size.height * 0.6,
-                              child: AppEmptyState(
-                                icon: Icons.notifications_none,
-                                title: l10n.getString('inboxEmptyTitle'),
-                                message: l10n.getString('inboxEmptyMessage'),
-                              ),
-                            ),
-                          ],
-                        ),
-                      )
-                    : RefreshIndicator(
-                        onRefresh: () => ref
-                            .read(notificationInboxProvider.notifier)
-                            .refresh(),
-                        child: ListView.separated(
-                          controller: _scrollController,
-                          physics: const AlwaysScrollableScrollPhysics(),
-                          padding: const EdgeInsets.symmetric(
-                            vertical: 8,
-                            horizontal: 12,
+                ? RefreshIndicator(
+                    onRefresh: () =>
+                        ref.read(notificationInboxProvider.notifier).refresh(),
+                    child: ListView(
+                      children: [
+                        SizedBox(
+                          height: MediaQuery.of(context).size.height * 0.6,
+                          child: AppEmptyState(
+                            icon: Icons.notifications_none,
+                            title: l10n.getString('inboxEmptyTitle'),
+                            message: l10n.getString('inboxEmptyMessage'),
                           ),
-                          itemCount: inbox.items.length +
-                              (inbox.hasMore && !selecting ? 1 : 0),
-                          separatorBuilder: (_, _) => Divider(
-                            height: 1,
-                            thickness: 0.5,
-                            color:
-                                colors.outlineVariant.withValues(alpha: 0.5),
-                          ),
-                          itemBuilder: (context, index) {
-                            if (index >= inbox.items.length) {
-                              return Padding(
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 16),
-                                child: Center(
-                                  child: inbox.isLoadingMore
-                                      ? const SizedBox(
-                                          width: 22,
-                                          height: 22,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                          ),
-                                        )
-                                      : const SizedBox.shrink(),
-                                ),
-                              );
-                            }
-                            final item = inbox.items[index];
-                            return _InboxRow(
-                              item: item,
-                              selectionMode: selecting,
-                              selected: _selection.isSelected(item.id),
-                              onToggleSelect: () =>
-                                  _selection.toggle(item.id),
-                              onTap: () => _openDetail(item),
-                              onDelete: () => ref
-                                  .read(notificationInboxProvider.notifier)
-                                  .delete(item.id),
-                            );
-                          },
                         ),
+                      ],
+                    ),
+                  )
+                : RefreshIndicator(
+                    onRefresh: () =>
+                        ref.read(notificationInboxProvider.notifier).refresh(),
+                    child: ListView.separated(
+                      controller: _scrollController,
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.symmetric(
+                        vertical: 8,
+                        horizontal: 12,
                       ),
+                      itemCount:
+                          inbox.items.length +
+                          (inbox.hasMore && !selecting ? 1 : 0),
+                      separatorBuilder: (_, _) => Divider(
+                        height: 1,
+                        thickness: 0.5,
+                        color: colors.outlineVariant.withValues(alpha: 0.5),
+                      ),
+                      itemBuilder: (context, index) {
+                        if (index >= inbox.items.length) {
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            child: Center(
+                              child: inbox.isLoadingMore
+                                  ? const SizedBox(
+                                      width: 22,
+                                      height: 22,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const SizedBox.shrink(),
+                            ),
+                          );
+                        }
+                        final item = inbox.items[index];
+                        return _InboxRow(
+                          item: item,
+                          selectionMode: selecting,
+                          selected: _selection.isSelected(item.id),
+                          onToggleSelect: () => _selection.toggle(item.id),
+                          onTap: () => _openDetail(item),
+                          onDelete: () => ref
+                              .read(notificationInboxProvider.notifier)
+                              .delete(item.id),
+                        );
+                      },
+                    ),
+                  ),
           ),
           if (selecting)
             SelectionBottomBar(
@@ -341,10 +340,8 @@ class _InboxRow extends ConsumerWidget {
           children: [
             AnimatedSwitcher(
               duration: const Duration(milliseconds: 150),
-              transitionBuilder: (child, animation) => FadeTransition(
-                opacity: animation,
-                child: child,
-              ),
+              transitionBuilder: (child, animation) =>
+                  FadeTransition(opacity: animation, child: child),
               child: selectionMode
                   ? SelectionCheckCircle(
                       key: const ValueKey('check'),
@@ -372,8 +369,9 @@ class _InboxRow extends ConsumerWidget {
                           textDirection: titleLayout.textDirection,
                           style: TextStyle(
                             fontSize: 15,
-                            fontWeight:
-                                unread ? FontWeight.w700 : FontWeight.w500,
+                            fontWeight: unread
+                                ? FontWeight.w700
+                                : FontWeight.w500,
                             color: unread
                                 ? colors.onSurface
                                 : colors.onSurface.withValues(alpha: 0.75),
@@ -384,12 +382,13 @@ class _InboxRow extends ConsumerWidget {
                       Text(
                         _formatRowTimestamp(context, ref, l10n, item),
                         style: TextStyle(
-                          fontSize: 11.5,
+                          fontSize: 12,
                           color: unread
                               ? colors.primary
                               : colors.onSurfaceVariant,
-                          fontWeight:
-                              unread ? FontWeight.w600 : FontWeight.w400,
+                          fontWeight: unread
+                              ? FontWeight.w600
+                              : FontWeight.w400,
                         ),
                       ),
                     ],
@@ -411,7 +410,7 @@ class _InboxRow extends ConsumerWidget {
                   Text(
                     l10n.getString(_typeLabelKey(item.type)),
                     style: TextStyle(
-                      fontSize: 11,
+                      fontSize: 12,
                       color: colors.onSurfaceVariant.withValues(alpha: 0.8),
                     ),
                   ),
@@ -521,10 +520,7 @@ class _InboxTypeIcon extends StatelessWidget {
               decoration: BoxDecoration(
                 color: colors.primary,
                 shape: BoxShape.circle,
-                border: Border.all(
-                  color: colors.surface,
-                  width: 1.5,
-                ),
+                border: Border.all(color: colors.surface, width: 1.5),
               ),
             ),
           ),
@@ -538,6 +534,60 @@ class _InboxDetailSheet extends ConsumerWidget {
 
   const _InboxDetailSheet({required this.item});
 
+  void _openMeetupHub(
+    BuildContext context,
+    WidgetRef ref, {
+    required String matchId,
+    required String senderId,
+  }) {
+    var otherUserId = senderId;
+    var otherUserName = ref
+        .read(localizationProvider)
+        .getString('generalUnknown');
+    var matchType = 'proximity';
+    String? eventName;
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId != null) {
+      final chats = ref.read(recentChatsProvider(userId)).value;
+      if (chats != null) {
+        for (final ChatModel chat in chats) {
+          if (chat.matchId != matchId) continue;
+          if (otherUserId.isEmpty) otherUserId = chat.otherUserId;
+          otherUserName = chat.otherUserName;
+          matchType = chat.matchType;
+          eventName = chat.eventName;
+          break;
+        }
+      }
+    }
+
+    final navigator = Navigator.of(context);
+    navigator.pop();
+    // Proposal and place-change rows open the planning screen, where the
+    // accept/counter decision lives; every other meet-up row opens the hub.
+    final openPlan =
+        item.type == 'meetup_proposal' || item.type == 'meetup_place_change';
+    navigator.push(
+      MaterialPageRoute(
+        builder: (_) => openPlan
+            ? MeetupScreen(
+                matchId: matchId,
+                otherUserId: otherUserId,
+                otherUserName: otherUserName,
+                matchType: matchType,
+                eventName: eventName,
+              )
+            : MeetupHubScreen(
+                matchId: matchId,
+                otherUserId: otherUserId,
+                otherUserName: otherUserName,
+                matchType: matchType,
+                eventName: eventName,
+              ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final l10n = ref.watch(localizationProvider);
@@ -548,11 +598,22 @@ class _InboxDetailSheet extends ConsumerWidget {
     final matchId = (item.data['match_id'] ?? item.data['matchId'] ?? '')
         .toString()
         .trim();
-    final canOpenChat = matchId.isNotEmpty &&
+    final senderId = (item.data['sender_id'] ?? item.data['senderId'] ?? '')
+        .toString()
+        .trim();
+    final isMeetup =
+        item.type == 'meetup_signal' ||
+        item.type == 'meetup_beacon' ||
+        item.type == 'meetup_spot' ||
+        item.type == 'meetup_proposal' ||
+        item.type == 'meetup_place_change';
+    final canOpenChat =
+        matchId.isNotEmpty &&
         (item.type == 'chat_message' ||
             item.type == 'match' ||
             item.type == 'new_match' ||
-            item.type == 'match_extended');
+            item.type == 'match_extended' ||
+            isMeetup);
 
     // Same rule as the row: the subject and the body follow their own script
     // so a masked name keeps its period on the right of the name.
@@ -621,8 +682,9 @@ class _InboxDetailSheet extends ConsumerWidget {
               title,
               textAlign: titleLayout.textAlign,
               textDirection: titleLayout.textDirection,
-              style: theme.textTheme.titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w700),
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
             ),
             const SizedBox(height: 10),
             Text(
@@ -641,9 +703,27 @@ class _InboxDetailSheet extends ConsumerWidget {
                 if (canOpenChat)
                   Expanded(
                     child: FilledButton.icon(
-                      icon: const Icon(Icons.chat_bubble_outline, size: 18),
-                      label: Text(l10n.getString('inboxOpenChat')),
+                      icon: Icon(
+                        isMeetup
+                            ? Icons.handshake_outlined
+                            : Icons.chat_bubble_outline,
+                        size: 18,
+                      ),
+                      label: Text(
+                        l10n.getString(
+                          isMeetup ? 'inboxOpenMeetup' : 'inboxOpenChat',
+                        ),
+                      ),
                       onPressed: () {
+                        if (isMeetup) {
+                          _openMeetupHub(
+                            context,
+                            ref,
+                            matchId: matchId,
+                            senderId: senderId,
+                          );
+                          return;
+                        }
                         Navigator.of(context).pop();
                         Navigator.of(context).pushNamed('/chat/$matchId');
                       },
@@ -693,6 +773,16 @@ class _InboxDetailSheet extends ConsumerWidget {
       return (Icons.campaign_outlined, colors.primary);
     case 'location_share':
       return (Icons.location_on_outlined, colors.tertiary);
+    case 'meetup_signal':
+      return (Icons.waving_hand_outlined, colors.secondary);
+    case 'meetup_beacon':
+      return (Icons.sensors, colors.tertiary);
+    case 'meetup_spot':
+      return (Icons.photo_camera_front_outlined, colors.primary);
+    case 'meetup_proposal':
+      return (Icons.edit_location_alt_outlined, colors.secondary);
+    case 'meetup_place_change':
+      return (Icons.swap_horiz, colors.tertiary);
     case 'birthday':
       return (Icons.cake_outlined, colors.tertiary);
     case 'visibility_warning':
@@ -719,6 +809,16 @@ String _typeLabelKey(String type) {
       return 'inboxTypeAdminBroadcast';
     case 'location_share':
       return 'inboxTypeLocationShare';
+    case 'meetup_signal':
+      return 'inboxTypeMeetupSignal';
+    case 'meetup_beacon':
+      return 'inboxTypeMeetupBeacon';
+    case 'meetup_spot':
+      return 'inboxTypeMeetupSpot';
+    case 'meetup_proposal':
+      return 'inboxTypeMeetupProposal';
+    case 'meetup_place_change':
+      return 'inboxTypeMeetupPlaceChange';
     case 'birthday':
       return 'inboxTypeBirthday';
     case 'visibility_warning':

@@ -26,6 +26,10 @@ class NotifLimits {
   static const int targetUserIdsMax = 500;
   static const int chatHistoryMaxItems = 5;
   static const int chatHistoryMaxBytes = 800;
+  // Mirrors CHAT_PREVIEW_LINE_MAX_BYTES: five lines plus JSON overhead have to
+  // fit inside fcmDataMaxBytes, so an expanded card's line is capped far below
+  // the 1500-byte budget a single-message card gets.
+  static const int chatPreviewLineMaxBytes = 240;
   // Configurable server-side via app_config
   // notifications.admin_broadcast_max_per_day (default 10). Keep in sync.
   static const int adminMaxPerUserPerDay = 10;
@@ -55,31 +59,14 @@ int notifUtf8Bytes(String s) => utf8.encode(s).length;
   return (text: '${buf.toString()}$ellipsis', truncated: true);
 }
 
-/// Mirrors public.mask_full_name(TEXT): "FirstName L." for multi-word names
-/// (first name + last initial, e.g. "John S."), the first name alone for
-/// single-word names. Empty falls back to 'Someone' (notification template
-/// context; the SQL function returns 'Unknown User', which only appears in
-/// in-app RPCs). Idempotent: re-masking an already-masked name ("John S.")
-/// returns it unchanged, so server-produced titles pass through. Notification
-/// display MUST use this - not a first-name-only helper - so tray titles match
-/// what the app's other screens show.
+/// The notification-copy face of the app's only name format, "John S.".
 ///
-/// The masked name carries the directional mark of its own script, so its
-/// trailing period stays glued to the initial wherever it is shown — a tray
-/// title in a Hebrew UI, a notification body, an expiry reminder.
-String maskFullName(String raw) {
-  final parts = raw.withoutBidiControls
-      .trim()
-      .split(RegExp(r'\s+'))
-      .where((e) => e.isNotEmpty)
-      .toList();
-  if (parts.isEmpty) return 'Someone';
-  if (parts.length == 1) return parts.first.withDirectionalMarks();
-  final first = parts.first;
-  final last = parts.last;
-  if (last.isEmpty || last == first) return first.withDirectionalMarks();
-  return '$first ${last[0].toUpperCase()}.'.withDirectionalMarks();
-}
+/// Delegates to [StringExtension.formatAsFirstNameLastInitial], so a bare
+/// first name is never returned for a single-word name; such a name (and an
+/// empty one) falls back to 'Someone', the notification template's neutral
+/// placeholder. Idempotent: already-masked server titles pass through.
+String maskFullName(String raw) =>
+    raw.formatAsFirstNameLastInitial(fallback: 'Someone');
 
 ({String title, String body, bool truncated}) enforceTitleBody(
   String title,

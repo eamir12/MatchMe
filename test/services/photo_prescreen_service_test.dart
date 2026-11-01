@@ -74,6 +74,43 @@ void main() {
         'photoErrorImageTooDark',
       );
     });
+
+    test('maps the Spot me gate reasons', () {
+      expect(
+        prescreenFailureL10nKey(PrescreenFailureReason.multiplePeople),
+        'photoErrorMultiplePeople',
+      );
+      expect(
+        prescreenFailureL10nKey(PrescreenFailureReason.personCheckUnavailable),
+        'photoErrorPersonCheckUnavailable',
+      );
+    });
+  });
+
+  group('singlePersonGateFailures', () {
+    test('passes with one face, one body, or both', () {
+      expect(singlePersonGateFailures(faceCount: 1, bodyCount: 0), isEmpty);
+      expect(singlePersonGateFailures(faceCount: 0, bodyCount: 1), isEmpty);
+      expect(singlePersonGateFailures(faceCount: 1, bodyCount: 1), isEmpty);
+    });
+
+    test('rejects a second face or body', () {
+      expect(singlePersonGateFailures(faceCount: 2, bodyCount: 0), const [
+        PrescreenFailureReason.multiplePeople,
+      ]);
+      expect(singlePersonGateFailures(faceCount: 0, bodyCount: 2), const [
+        PrescreenFailureReason.multiplePeople,
+      ]);
+      expect(singlePersonGateFailures(faceCount: 2, bodyCount: 2), const [
+        PrescreenFailureReason.multiplePeople,
+      ]);
+    });
+
+    test('rejects a photo with nobody in it', () {
+      expect(singlePersonGateFailures(faceCount: 0, bodyCount: 0), const [
+        PrescreenFailureReason.noFaceOrBody,
+      ]);
+    });
   });
 
   group('orderPrescreenFailures', () {
@@ -154,8 +191,7 @@ void main() {
       );
     });
 
-    test(
-        'a dim whole-frame photo (no native face box) still fails: '
+    test('a dim whole-frame photo (no native face box) still fails: '
         'the global score decides when no face region is available', () async {
       final result = await service.prescreenPhoto(
         _noiseJpeg(base: 40, amplitude: 40),
@@ -174,16 +210,45 @@ void main() {
       expect(score, lessThan(PrescreenConfig.primaryPhoto.minBrightness));
     });
 
-    test('rejects files below the primary minimum before any analysis',
-        () async {
-      final flat = img.Image(width: 480, height: 480);
-      final tiny = Uint8List.fromList(img.encodeJpg(flat, quality: 50));
-      final result = await service.prescreenPhoto(tiny, isPrimary: true);
+    test(
+      'rejects files below the primary minimum before any analysis',
+      () async {
+        final flat = img.Image(width: 480, height: 480);
+        final tiny = Uint8List.fromList(img.encodeJpg(flat, quality: 50));
+        final result = await service.prescreenPhoto(tiny, isPrimary: true);
+        expect(result.passed, isFalse);
+        expect(
+          result.failureReasons,
+          contains(PrescreenFailureReason.fileTooSmall),
+        );
+      },
+    );
+  });
+
+  group('prescreenPhoto single-person gate', () {
+    test('fails closed when the host has no local detector', () async {
+      final result = await service.prescreenPhoto(
+        _noiseJpeg(base: 140, amplitude: 40),
+        singlePersonOnly: true,
+      );
       expect(result.passed, isFalse);
+      expect(result.failureReasons, const [
+        PrescreenFailureReason.personCheckUnavailable,
+      ]);
+    });
+
+    test('skips profile quality rules such as the darkness gate', () async {
+      final result = await service.prescreenPhoto(
+        _noiseJpeg(base: 16, amplitude: 40),
+        singlePersonOnly: true,
+      );
       expect(
         result.failureReasons,
-        contains(PrescreenFailureReason.fileTooSmall),
+        isNot(contains(PrescreenFailureReason.imageTooDark)),
       );
+      expect(result.failureReasons, const [
+        PrescreenFailureReason.personCheckUnavailable,
+      ]);
     });
   });
 }

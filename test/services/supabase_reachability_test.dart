@@ -139,6 +139,18 @@ void main() {
       expect(result.isReachable, isTrue);
     });
 
+    test('the raw anon probe 401 rejection counts as reachable', () async {
+      // _runAnonHealthCheck throws _ProbeHttpRejection(401) when PostgREST
+      // denies the function; its message is what evaluateSupabaseProbe
+      // classifies. On 2026-10-29 a revoked health_check produced exactly this
+      // 401 and the app must read it as "answered", never as "offline".
+      final result = await evaluateSupabaseProbe((_) async {
+        throw Exception('health_check auth rejection (statusCode: 401)');
+      }, confirm: true);
+
+      expect(result.isReachable, isTrue);
+    });
+
     test('a 5xx/504 response is offline without a confirming attempt', () async {
       var calls = 0;
       final result = await evaluateSupabaseProbe((_) async {

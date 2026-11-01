@@ -1220,7 +1220,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                 child: Text(
                   l10n.getString(tier.badgeKey!),
                   style: TextStyle(
-                    fontSize: 8,
+                    fontSize: 12,
                     fontWeight: FontWeight.w900,
                     color: isSelected
                         ? scheme.onPrimary
@@ -1442,7 +1442,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                   child: Text(
                     label,
                     style: TextStyle(
-                      fontSize: 10,
+                      fontSize: 12,
                       fontWeight: FontWeight.bold,
                       color: labelColor,
                     ),
@@ -1611,7 +1611,7 @@ class _PaywallScreenState extends ConsumerState<PaywallScreen> {
                         savings,
                         style: TextStyle(
                           color: semantic.onSuccess,
-                          fontSize: 10,
+                          fontSize: 12,
                           fontWeight: FontWeight.bold,
                         ),
                       ),

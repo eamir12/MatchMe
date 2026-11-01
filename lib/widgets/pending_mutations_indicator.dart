@@ -31,18 +31,23 @@ class PendingMutationsBadge extends StatelessWidget {
           right: 0,
           top: 0,
           child: Container(
-            width: badgeSize,
-            height: badgeSize,
+            // The badge is a circle for one digit and a pill for "99+", so it
+            // grows with the count instead of clipping it at [badgeSize].
+            constraints: BoxConstraints(
+              minWidth: badgeSize ?? 18,
+              minHeight: badgeSize ?? 18,
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 4),
             decoration: BoxDecoration(
               color: badgeColor ?? Colors.red,
-              shape: BoxShape.circle,
+              borderRadius: BorderRadius.circular(999),
             ),
             child: Center(
               child: Text(
                 mutations.length > 99 ? "99+" : "${mutations.length}",
                 style: TextStyle(
                   color: textColor ?? Colors.white,
-                  fontSize: 10,
+                  fontSize: 12,
                   fontWeight: FontWeight.bold,
                 ),
               ),
@@ -137,7 +142,7 @@ class PendingMutationsIndicator extends ConsumerWidget {
                         detailsText,
                         style: TextStyle(
                           color: Colors.orange.shade700,
-                          fontSize: 11,
+                          fontSize: 12,
                           fontWeight: FontWeight.w600,
                           decoration: TextDecoration.underline,
                         ),
@@ -214,7 +219,7 @@ class PendingMutationsIndicator extends ConsumerWidget {
                               },
                             ),
                             style: TextStyle(
-                              fontSize: 10,
+                              fontSize: 12,
                               color: Theme.of(
                                 context,
                               ).colorScheme.onSurfaceVariant,
@@ -229,7 +234,7 @@ class PendingMutationsIndicator extends ConsumerWidget {
                                   params: {'count': '${mutation.retryCount}'},
                                 ),
                                 style: const TextStyle(
-                                  fontSize: 10,
+                                  fontSize: 12,
                                   color: Colors.orange,
                                 ),
                               ),
@@ -243,7 +248,7 @@ class PendingMutationsIndicator extends ConsumerWidget {
                                   params: {'error': '${mutation.errorMessage}'},
                                 ),
                                 style: const TextStyle(
-                                  fontSize: 9,
+                                  fontSize: 12,
                                   color: Colors.red,
                                 ),
                                 maxLines: 2,

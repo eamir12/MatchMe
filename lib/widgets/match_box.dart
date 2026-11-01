@@ -5,12 +5,16 @@ import 'dart:developer' as developer;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/models/match_model.dart';
 import 'package:matchme/models/chat_model.dart';
+import 'package:matchme/models/meetup_activity.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/home_providers.dart';
+import 'package:matchme/providers/meetup_activity_provider.dart';
 import 'package:matchme/providers/match_rating_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/new_options_provider.dart';
 import 'package:matchme/screens/matches/match_profile_screen.dart';
+import 'package:matchme/screens/meetup/meetup_hub_screen.dart';
+import 'package:matchme/screens/meetup/meetup_screen.dart';
 import 'package:matchme/widgets/pinned_partner_chip.dart';
 import 'package:matchme/services/storage_helper.dart';
 import 'package:matchme/services/app_config_service.dart';
@@ -160,7 +164,7 @@ class _LiveCountdownRow extends ConsumerWidget {
             Flexible(
               child: Text(
                 hint,
-                style: TextStyle(fontSize: 11, color: color),
+                style: TextStyle(fontSize: 12, color: color),
                 textAlign: TextAlign.start,
                 overflow: TextOverflow.visible,
                 maxLines: 2,
@@ -237,7 +241,9 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
         .asData
         ?.value;
     final otherName =
-        otherProfile?.name.formatAsFirstNameLastInitial() ??
+        otherProfile?.name.formatAsFirstNameLastInitial(
+          fallback: l10n.getString('generalUnknown'),
+        ) ??
         l10n.getString('generalUnknown');
     final extensionSeconds = await appConfigService.getInt(
       'matches.chat_start_extension_seconds',
@@ -349,31 +355,32 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     if (currentUserId == null) return const SizedBox.shrink();
 
     final l10n = ref.watch(localizationProvider);
+    final meetupActivity = ref.watch(
+      meetupActivityForMatchProvider(widget.match.id),
+    );
     final textDir = Directionality.of(context);
-    ref.listen<AsyncValue<UserProfile?>>(
-      otherUserProfileProvider(widget.match.otherUserId),
-      (previous, next) {
-        final prevPhotos =
-            previous?.asData?.value?.photos ?? const <String>[];
-        final nextPhotos = next.asData?.value?.photos ?? const <String>[];
-        if (listEquals(prevPhotos, nextPhotos)) return;
+    ref.listen<
+      AsyncValue<UserProfile?>
+    >(otherUserProfileProvider(widget.match.otherUserId), (previous, next) {
+      final prevPhotos = previous?.asData?.value?.photos ?? const <String>[];
+      final nextPhotos = next.asData?.value?.photos ?? const <String>[];
+      if (listEquals(prevPhotos, nextPhotos)) return;
+      developer.log(
+        '🏠 MatchBox profile change: otherUserId=${widget.match.otherUserId}, prev=${prevPhotos.length}, next=${nextPhotos.length}',
+        name: 'MatchMeTrace',
+      );
+      if (nextPhotos.isNotEmpty) {
         developer.log(
-          '🏠 MatchBox profile change: otherUserId=${widget.match.otherUserId}, prev=${prevPhotos.length}, next=${nextPhotos.length}',
+          '🏠 MatchBox new first photo: ${nextPhotos.first}',
           name: 'MatchMeTrace',
         );
-        if (nextPhotos.isNotEmpty) {
-          developer.log(
-            '🏠 MatchBox new first photo: ${nextPhotos.first}',
-            name: 'MatchMeTrace',
-          );
-        }
-        final allPhotos = <String>{...prevPhotos, ...nextPhotos};
-        for (final path in allPhotos) {
-          if (path.isEmpty) continue;
-          StorageHelper.evictImageCache(path);
-        }
-      },
-    );
+      }
+      final allPhotos = <String>{...prevPhotos, ...nextPhotos};
+      for (final path in allPhotos) {
+        if (path.isEmpty) continue;
+        StorageHelper.evictImageCache(path);
+      }
+    });
     final otherProfileAsync = ref.watch(
       otherUserProfileProvider(widget.match.otherUserId),
     );
@@ -392,7 +399,8 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     final profileName = otherProfileAsync.asData?.value?.name
         .formatAsFirstNameLastInitial()
         .trim();
-    final fallbackName = profileName != null &&
+    final fallbackName =
+        profileName != null &&
             profileName.isNotEmpty &&
             profileName != l10n.getString('generalUnknown')
         ? profileName
@@ -444,6 +452,7 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
           isExpired: isExpired,
           fallbackName: fallbackName,
           fallbackPhotos: cachedChatPhotos,
+          meetupActivity: meetupActivity,
         ),
         if (widget.showDivider) const Divider(height: 1),
       ],
@@ -461,6 +470,7 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     required bool isExpired,
     required String fallbackName,
     required List<String> fallbackPhotos,
+    required MeetupActivity? meetupActivity,
   }) {
     final semanticName = fallbackName;
     // One status band for every status mark (verified / new here / profile
@@ -561,7 +571,40 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
                 otherProfileAsync,
                 currentProfileAsync,
               ),
-              _buildExceptionPills(context, textDir),
+              _buildExceptionPills(context, l10n, textDir),
+              if (meetupActivity != null)
+                _MeetupActivityBanner(
+                  activity: meetupActivity,
+                  name: fallbackName,
+                  l10n: l10n,
+                  onTap: () {
+                    // A pending meeting-point decision opens the planning
+                    // screen; every other activity opens the hub.
+                    final openPlan =
+                        meetupActivity.topKind == MeetupActivityKind.proposal ||
+                        meetupActivity.topKind ==
+                            MeetupActivityKind.placeChange;
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => openPlan
+                            ? MeetupScreen(
+                                matchId: widget.match.id,
+                                otherUserId: widget.match.otherUserId,
+                                otherUserName: fallbackName,
+                                matchType: widget.match.matchType,
+                                eventName: widget.match.eventName,
+                              )
+                            : MeetupHubScreen(
+                                matchId: widget.match.id,
+                                otherUserId: widget.match.otherUserId,
+                                otherUserName: fallbackName,
+                                matchType: widget.match.matchType,
+                                eventName: widget.match.eventName,
+                              ),
+                      ),
+                    );
+                  },
+                ),
               _buildDetailsSection(
                 context,
                 ref,
@@ -600,23 +643,19 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     String fallbackName,
   ) {
     final profile = otherProfileAsync.asData?.value;
-    final name = profile?.name.formatAsFirstNameLastInitial().trim().isNotEmpty ==
-            true
+    final name =
+        profile?.name.formatAsFirstNameLastInitial().trim().isNotEmpty == true
         ? profile!.name.formatAsFirstNameLastInitial()
         : fallbackName;
     final age = profile?.dateOfBirth != null
         ? _calculateAge(profile!.dateOfBirth!)
         : null;
     final rawGender = profile?.gender;
-    final genderText =
-        (rawGender != null && rawGender.trim().isNotEmpty)
-            ? _getGenderLabel(rawGender, ref, l10n)
-            : null;
+    final genderText = (rawGender != null && rawGender.trim().isNotEmpty)
+        ? _getGenderLabel(rawGender, ref, l10n)
+        : null;
 
-    final metaParts = <String>[
-      if (age != null) '$age',
-      ?genderText,
-    ];
+    final metaParts = <String>[if (age != null) '$age', ?genderText];
 
     final nameLayout = name.displayTextLayout(textDir);
 
@@ -652,9 +691,9 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w400,
-                    color: Theme.of(context).colorScheme.onSurface.withValues(
-                      alpha: 0.55,
-                    ),
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.onSurface.withValues(alpha: 0.55),
                   ),
                   textAlign: TextAlign.start,
                 ),
@@ -718,8 +757,8 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     final key = normalized == 'female'
         ? 'profileVerifiedBadgeFemale'
         : (normalized == 'non_binary' || normalized == 'nonbinary')
-            ? 'profileVerifiedBadgeNeutral'
-            : 'profileVerifiedBadge';
+        ? 'profileVerifiedBadgeNeutral'
+        : 'profileVerifiedBadge';
     final translated = l10n.getString(key);
     if (translated == key ||
         translated == '[$key]' ||
@@ -736,8 +775,8 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
     final key = normalized == 'female'
         ? 'profileNewUserBadgeFemale'
         : (normalized == 'non_binary' || normalized == 'nonbinary')
-            ? 'profileNewUserBadgeNeutral'
-            : 'profileNewUserBadge';
+        ? 'profileNewUserBadgeNeutral'
+        : 'profileNewUserBadge';
     final translated = l10n.getString(key);
     if (translated == key ||
         translated == '[$key]' ||
@@ -876,7 +915,7 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
                     fallbackName,
                   ),
                   style: TextStyle(
-                    fontSize: 11,
+                    fontSize: 12,
                     color: successColor,
                     fontWeight: FontWeight.w600,
                   ),
@@ -989,6 +1028,7 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
   /// itself when the partner isn't pinned).
   Widget _buildExceptionPills(
     BuildContext context,
+    LocalizationState l10n,
     ui.TextDirection textDir,
   ) {
     final pills = <Widget>[];
@@ -1124,7 +1164,7 @@ class _MatchBoxState extends ConsumerState<MatchBox> {
             child: Text(
               text,
               style: TextStyle(
-                fontSize: 11,
+                fontSize: 12,
                 color: Theme.of(context).colorScheme.tertiary,
                 fontWeight: FontWeight.w600,
               ),
@@ -1320,13 +1360,234 @@ class _InfoChip extends StatelessWidget {
             child: ShrinkText(
               label,
               style: TextStyle(
-                fontSize: 11,
+                fontSize: 12,
                 fontWeight: FontWeight.w600,
                 color: effectiveColor,
               ),
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Full-width meet-up banner under the facts row. One tinted strip for the
+/// highest-priority live/pending tool: a bold title sentence, a next-step
+/// caption, an icon tile and a chevron. Own activity is muted so an incoming
+/// item never loses the top spot.
+///
+/// Tapping the strip opens the Meet-up hub for this match; the rest of the
+/// card still opens the match profile.
+class _MeetupActivityBanner extends StatelessWidget {
+  final MeetupActivity activity;
+  final String name;
+  final LocalizationState l10n;
+  final VoidCallback onTap;
+
+  const _MeetupActivityBanner({
+    required this.activity,
+    required this.name,
+    required this.l10n,
+    required this.onTap,
+  });
+
+  bool get _needsResponse =>
+      !activity.topOwn &&
+      (activity.topKind == MeetupActivityKind.placeChange ||
+          activity.topKind == MeetupActivityKind.proposal);
+
+  ({String key, Map<String, String> params}) get _title {
+    switch (activity.topKind) {
+      case MeetupActivityKind.placeChange:
+        return activity.topOwn
+            ? (key: 'meetupChangePlaceWaiting', params: {'name': name})
+            : (key: 'meetupChangePlaceIncomingTitle', params: {'name': name});
+      case MeetupActivityKind.proposal:
+        return activity.topOwn
+            ? (key: 'meetupBannerProposedByYou', params: {'name': name})
+            : (key: 'meetupBannerProposedByOther', params: {'name': name});
+      case MeetupActivityKind.live:
+        return activity.topOwn
+            ? (key: 'locationShareActive', params: const {})
+            : (key: 'locationShareOtherSharing', params: {'name': name});
+      case MeetupActivityKind.beacon:
+        return activity.topOwn
+            ? (key: 'meetupBeaconActiveTitle', params: const {})
+            : (key: 'meetupBannerBeacon', params: {'name': name});
+      case MeetupActivityKind.spot:
+        return activity.topOwn
+            ? (key: 'meetupSpotMeFromYou', params: const {})
+            : (key: 'meetupSpotMeIncomingTitle', params: {'name': name});
+      case MeetupActivityKind.wave:
+        return activity.topOwn
+            ? (key: 'meetupActivityYourWave', params: const {})
+            : (key: 'meetupBannerWave', params: {'name': name});
+      case MeetupActivityKind.active:
+        final place = activity.topLabel;
+        return place == null
+            ? (key: 'meetupActiveTitle', params: const {})
+            : (key: 'meetupBannerActive', params: {'place': place});
+      default:
+        return (key: '', params: const {});
+    }
+  }
+
+  ({String key, Map<String, String> params}) get _caption {
+    switch (activity.topKind) {
+      case MeetupActivityKind.placeChange:
+        return activity.topOwn
+            ? (key: 'meetupActivityHintPlaceChangeMine', params: const {})
+            : (key: 'meetupChangePlaceIncomingBody', params: const {});
+      case MeetupActivityKind.proposal:
+        return activity.topOwn
+            ? (key: 'meetupActivityHintProposalMine', params: const {})
+            : (key: 'meetupActivityHintProposal', params: const {});
+      case MeetupActivityKind.live:
+        return activity.topOwn
+            ? (key: 'meetupActivityHintLiveMine', params: const {})
+            : (key: 'meetupActivityHintLive', params: const {});
+      case MeetupActivityKind.beacon:
+        return activity.topOwn
+            ? (key: 'meetupBeaconActiveBody', params: {'name': name})
+            : (key: 'meetupBeaconIncomingBody', params: const {});
+      case MeetupActivityKind.spot:
+        return activity.topOwn
+            ? (key: 'meetupActivityHintSpotMine', params: const {})
+            : (key: 'meetupSpotMeIncomingBody', params: const {});
+      case MeetupActivityKind.wave:
+        return activity.topOwn
+            ? (key: 'meetupActivityHintWaveMine', params: const {})
+            : (key: 'meetupWaveIncomingBody', params: const {});
+      case MeetupActivityKind.active:
+        return (key: 'meetupActivityHintActive', params: const {});
+      default:
+        return (key: '', params: const {});
+    }
+  }
+
+  IconData get _icon {
+    switch (activity.topKind) {
+      case MeetupActivityKind.placeChange:
+        return Icons.compare_arrows;
+      case MeetupActivityKind.proposal:
+        return Icons.edit_location_alt_outlined;
+      case MeetupActivityKind.live:
+        return Icons.share_location;
+      case MeetupActivityKind.beacon:
+        return Icons.light_mode_outlined;
+      case MeetupActivityKind.spot:
+        return Icons.photo_camera_front_outlined;
+      case MeetupActivityKind.wave:
+        return Icons.waving_hand_outlined;
+      case MeetupActivityKind.active:
+        return Icons.handshake_outlined;
+      default:
+        return Icons.circle_outlined;
+    }
+  }
+
+  String get _captionText {
+    final extras = activity.toolCount - 1;
+    if (extras > 0) {
+      return l10n.getString(
+        extras == 1 ? 'meetupActivityOneMoreTool' : 'meetupActivityMoreTools',
+        params: {'count': '$extras'},
+      );
+    }
+    final spec = _caption;
+    return l10n.getString(spec.key, params: spec.params);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final titleSpec = _title;
+    final title = l10n
+        .getString(titleSpec.key, params: titleSpec.params)
+        .trim();
+    if (title.isEmpty) return const SizedBox.shrink();
+    final caption = _captionText.trim();
+
+    final colors = Theme.of(context).colorScheme;
+    final accent = activity.topOwn
+        ? colors.onSurface.withValues(alpha: 0.58)
+        : _needsResponse
+        ? colors.tertiary
+        : colors.primary;
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Semantics(
+        container: true,
+        button: true,
+        child: Container(
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+            color: accent.withValues(alpha: activity.topOwn ? 0.06 : 0.08),
+            borderRadius: BorderRadius.circular(11),
+            border: Border.all(color: accent.withValues(alpha: 0.16)),
+          ),
+          child: Material(
+            type: MaterialType.transparency,
+            child: InkWell(
+              onTap: onTap,
+              child: Padding(
+                padding: const EdgeInsetsDirectional.symmetric(
+                  horizontal: 10,
+                  vertical: 9,
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 32,
+                      height: 32,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: accent.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(9),
+                      ),
+                      child: Icon(_icon, size: 17, color: accent),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ShrinkText(
+                            title,
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w700,
+                              color: accent,
+                            ),
+                          ),
+                          if (caption.isNotEmpty) ...[
+                            const SizedBox(height: 1),
+                            ShrinkText(
+                              caption,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: colors.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    // The glyph carries matchTextDirection, so RTL mirrors it.
+                    Icon(
+                      Icons.chevron_right,
+                      size: 16,
+                      color: accent.withValues(alpha: 0.75),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -1358,7 +1619,11 @@ class _RatingSummaryWidget extends ConsumerWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.star_rounded, size: 14, color: Colors.amber.shade700),
+                Icon(
+                  Icons.star_rounded,
+                  size: 14,
+                  color: Colors.amber.shade700,
+                ),
                 const SizedBox(width: 2),
                 Text(
                   ratingText,

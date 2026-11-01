@@ -67,8 +67,25 @@ void main() {
       final l10n = _englishDefaults();
 
       expect(
+        l10n.getString('mapShowingApproxUsers', params: {'count': '3'}),
+        'Showing about 3 users',
+      );
+      expect(
+        l10n.getString('mapShowingApproxUsers', params: {'count': '1'}),
+        'Showing about 1 user',
+      );
+    });
+
+    test('the nearby cell count agrees with a single user', () {
+      final l10n = _englishDefaults();
+
+      expect(
         l10n.getString('mapApproxUsersHere', params: {'count': '1'}),
-        'Approx users here: 1',
+        'About 1 user here',
+      );
+      expect(
+        l10n.getString('mapApproxUsersHere', params: {'count': '9'}),
+        'About 9 users here',
       );
     });
 
@@ -203,19 +220,40 @@ void main() {
     });
   });
 
+  group('counts', () {
+    test('a count keeps every digit with the locale separator', () {
+      final en = _state(languageCode: 'en', strings: const {});
+      final es = _state(languageCode: 'es', strings: const {});
+
+      expect(en.formatCount(12480), '12,480');
+      expect(es.formatCount(12480), '12.480');
+      expect(en.formatCount(37), '37');
+    });
+  });
+
   group('shipped copy', () {
-    /// The English rows of the plural migration.
+    /// The English rows as they now stand: the plural migration plus every
+    /// later migration that re-inserts one of its keys, so a copy correction
+    /// shipped afterwards is not mistaken for drift.
     Map<String, String> shippedEnglish() {
-      final file = File(
-        'supabase/migrations/20262148000000_add_plural_translations.sql',
-      );
-      expect(file.existsSync(), isTrue, reason: 'the migration must ship');
       final rows = <String, String>{};
       final pattern = RegExp(
-        r"\('en',\s*'([^']+)',\s*'((?:[^']|'')*)'\)",
+        r"\('(en|es|he)',\s*'([^']+)',\s*'((?:[^']|'')*)'\)",
       );
-      for (final match in pattern.allMatches(file.readAsStringSync())) {
-        rows[match.group(1)!] = match.group(2)!.replaceAll("''", "'");
+      final files =
+          Directory('supabase/migrations')
+              .listSync()
+              .whereType<File>()
+              .where((file) => file.path.endsWith('.sql'))
+              .toList()
+            ..sort(
+              (a, b) => a.path.compareTo(b.path),
+            ); // migration filenames are timestamp-prefixed
+      for (final file in files) {
+        for (final match in pattern.allMatches(file.readAsStringSync())) {
+          if (match.group(1) != 'en') continue;
+          rows[match.group(2)!] = match.group(3)!.replaceAll("''", "'");
+        }
       }
       return rows;
     }

@@ -2,6 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { logEdgeFunctionInvocation } from "../_shared/edge_function_logger.ts";
 import { bidiIsolate, enforceTitleBody, markDisplayName, stripBidiControls } from "../_shared/notification_limits.ts";
+import { buildChatPushContent } from "../_shared/chat_notification_copy.ts";
 import { isWnsChannelUri, sendWnsToast, wnsLaunchUri, WnsSendResult } from "../_shared/wns.ts";
 
 const corsHeaders = {
@@ -26,22 +27,28 @@ function base64UrlEncodeBytes(bytes: Uint8Array): string {
   return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
-// Mirrors public.mask_full_name(TEXT) from supabase/migrations.
-// Returns "FirstName L." for multi-word names, "FirstName" for single-word names,
-// or "Unknown User" when the input is empty/null. Input is trimmed.
+// Mirrors public.mask_full_name(TEXT): "First L." for multi-word names,
+// title-cased like the client formatter. A single-word or empty name returns
+// "" — never a bare first name — so callers fall back to their localized
+// "someone" copy. Input is trimmed.
 //
 // The masked name carries the directional mark of its own script, so its
 // trailing period stays glued to the initial in a Hebrew UI too.
 function maskFullName(rawFullName: string | null | undefined): string {
   const trimmed = stripBidiControls(String(rawFullName ?? "")).trim();
-  if (!trimmed) return "Unknown User";
+  if (!trimmed) return "";
   const parts = trimmed.split(/\s+/).filter((p) => p.length > 0);
-  if (parts.length === 0) return "Unknown User";
-  const first = parts[0];
-  if (parts.length === 1) return markDisplayName(first);
+  if (parts.length < 2) return "";
   const last = parts[parts.length - 1];
-  if (!last || last === first) return markDisplayName(first);
-  return markDisplayName(`${first} ${last.charAt(0).toUpperCase()}.`);
+  const initial = last.charAt(0).toUpperCase();
+  if (!initial) return "";
+  const first = parts[0]
+    .split(/([-'])/)
+    .map((seg) => (seg === '-' || seg === "'" || !seg
+      ? seg
+      : seg.charAt(0).toUpperCase() + seg.slice(1).toLowerCase()))
+    .join('');
+  return markDisplayName(`${first} ${initial}.`);
 }
 
 // Resolves the human-readable sender name for a chat push notification.
@@ -312,6 +319,8 @@ function normalizeLocale(raw: unknown): string {
 
 // Minimal killed-state copy so tray pushes aren't English-only. Foreground
 // Dart still does full localization; this only covers system-tray display.
+// Chat message copy lives in _shared/chat_notification_copy.ts, because the
+// same model is rendered by four platforms.
 const _pushStrings: Record<string, Record<string, string>> = {
   en: {
     newMatchTitle: "New Match!",
@@ -686,16 +695,13 @@ async function sendFcmV1({
           channelId: resolvedChannel,
           notificationPriority: "PRIORITY_HIGH",
           defaultSound: playSound,
-          // Android has no global badge API: when FCM draws this card while
-          // the app is not running, `notification_count` is the only way to
-          // publish an explicit count. Launchers that ignore it render a dot;
-          // the app's own badge carrier (and OEM badge APIs) take over once it
-          // runs.
-          //
-          // 0 is deliberately omitted: FCM treats a zero/unspecified count as
-          // "unset", so the launcher would fall back to counting cards
-          // instead of clearing the badge.
-          ...(resolvedBadge > 0 ? { notification_count: resolvedBadge } : {}),
+          // Deliberately no `notification_count` here. It maps to Android's
+          // `Notification.setNumber`, and launchers that render a numeric
+          // badge SUM that number across every active notification — so a
+          // card that repeats the count on top of the app's badge carrier
+          // shows twice the unread total. The carrier is the single
+          // notification allowed to carry it (MatchMeBadgeController).
+          // iOS is unaffected: `aps.badge` below is a real, absolute count.
         },
       },
       apns: {
@@ -1062,7 +1068,7 @@ serve(async (req) => {
 
       const displayNameFor = (userId: string): string => {
         const raw = (usersById.get(userId) ?? "").trim();
-        return raw ? maskFullName(raw) : "Someone";
+        return (raw ? maskFullName(raw) : "") || "Someone";
       };
 
       const recipients = [user1Id, user2Id];
@@ -1261,18 +1267,19 @@ serve(async (req) => {
         recipientId,
         requestId,
       });
-      const senderName = resolvedRawName
+      const senderName = (resolvedRawName
         ? maskFullName(resolvedRawName)
-        : pushString(profile.locale, "someone");
+        : "") || pushString(profile.locale, "someone");
 
-      const enforced = enforceTitleBody(senderName, providedBody);
-      // Message previews off → mask both the tray and inbox body. This branch
-      // is called only after translate-proxy has a displayable message.
-      const enforcedPush = isMessagePreviewsEnabled(profile.prefs)
-        ? enforced
+      const previewsEnabled = isMessagePreviewsEnabled(profile.prefs);
+      // The inbox row is one row per message and holds that message's own
+      // displayable text, because it is the source the preview lines are read
+      // from later. Putting a count in it would make every future card quote a
+      // count. Previews off masks it, as before.
+      const inboxEnforced = previewsEnabled
+        ? enforceTitleBody(senderName, providedBody)
         : enforceTitleBody(senderName, pushString(profile.locale, "newMessageBody"));
-      const inboxNotification = { title: enforcedPush.title, body: enforcedPush.body };
-      let notification = { title: enforcedPush.title, body: enforcedPush.body };
+      const inboxNotification = { title: inboxEnforced.title, body: inboxEnforced.body };
       const data: Record<string, string> = {
         matchId: tMatchId,
         match_id: tMatchId,
@@ -1308,25 +1315,32 @@ serve(async (req) => {
         requestId,
       });
 
-      const previewBodies = isMessagePreviewsEnabled(profile.prefs)
+      const unreadCount = await getUnreadChatMessageCount(adminClient, recipientId, tMatchId);
+      const previewBodies = previewsEnabled
         ? await getUnreadChatNotificationBodies(adminClient, recipientId, tMatchId)
         : [];
-      if (previewBodies.length > 1) {
-        const aggregated = enforceTitleBody(
-          notification.title,
-          previewBodies.join("\n"),
-        );
-        // enforceTitleBody also reports whether it had to truncate. That is
-        // useful internally, but FCM v1's notification object only accepts
-        // title/body/image. Passing `truncated` here makes FCM reject the
-        // whole push (while the inbox row above has already been saved).
-        notification = { title: aggregated.title, body: aggregated.body };
-      }
-      const unreadCount = await getUnreadChatMessageCount(adminClient, recipientId, tMatchId);
-      const shouldAlert = unreadCount <= 1;
+      const content = buildChatPushContent({
+        locale: profile.locale,
+        senderName,
+        unreadCount,
+        previewsEnabled,
+        // The inbox row for this very message was just written, so the query
+        // normally already contains it; fall back to the delivered text only
+        // when it did not, so a single unread never renders an empty body.
+        lines: previewBodies.length > 0 ? previewBodies : (previewsEnabled ? [providedBody] : []),
+      });
+      const notification = { title: content.title, body: content.body };
+      const shouldAlert = content.unreadCount <= 1;
       data["should_alert"] = shouldAlert ? "true" : "false";
-      data["notification_title"] = notification.title;
-      data["notification_body"] = notification.body;
+      data["notification_title"] = content.title;
+      data["notification_body"] = content.body;
+      data["unread_count"] = String(content.unreadCount);
+      data["preview_lines"] = JSON.stringify(content.lines);
+      data["sender_name"] = senderName;
+      data["previews_enabled"] = content.previewsEnabled ? "true" : "false";
+      // The tray body already stands for the whole batch when there is one, so
+      // a client that aggregates unread lines itself must not do it again.
+      data["aggregated_messages"] = content.unreadCount > 1 ? "true" : "false";
 
       // Server-side prefs gate: only the FCM send is gated; the inbox row
       // above is unconditional.
@@ -1397,10 +1411,10 @@ serve(async (req) => {
           else {
             const detail: Record<string, unknown> = { status: r.value.status, body: r.value.body };
             failures.push({ token, ...detail });
-            // Transient FCM failures (rate limiting, 5xx, transport errors)
-            // go to notification_queue for the cron-jobs drainer to retry
-            // with backoff. Permanent errors (400 invalid payload, 404
-            // UNREGISTERED token) are logged only: retrying cannot fix them.
+            // Only an explicit provider rejection is safe to retry: the
+            // message was not accepted. 429/5xx are the transient classes;
+            // permanent errors (400 invalid payload, 404 UNREGISTERED) are
+            // logged only because retrying cannot fix them.
             if (r.value.status === 429 || r.value.status >= 500) {
               retryableFailures.push({ token, detail });
             } else if ((r.value as unknown as WnsSendResult).expired === true) {
@@ -1408,9 +1422,11 @@ serve(async (req) => {
             }
           }
         } else {
+          // No response (timeout, reset, edge death): the provider may or may
+          // not have accepted the message. Best-effort push policy does not
+          // auto-resend ambiguous outcomes — that is how duplicate pushes
+          // happen. The inbox row above already holds the message.
           failures.push({ token, error: String(r.reason) });
-          // Exceptions are transport-level (timeout, network) → retryable.
-          retryableFailures.push({ token, detail: { error: String(r.reason) } });
         }
       }
       // Expired WNS channels are permanent (app reinstalled / 30-day expiry):
@@ -1433,8 +1449,10 @@ serve(async (req) => {
         failed: failures.length,
         failures,
       });
-      // Backstop: hand transient failures to the queue so a chat push that
-      // fails once is retried by cron-jobs instead of being dropped silently.
+      // Backstop: hand explicit provider rejections to the queue so a chat
+      // push that FCM refused is retried by cron-jobs with backoff. The
+      // event_key makes the handoff idempotent: repeated invocations for the
+      // same message collapse to one queue row per device.
       if (retryableFailures.length > 0) {
         const queueRows = retryableFailures.map((f) => ({
           user_id: recipientId,
@@ -1448,10 +1466,11 @@ serve(async (req) => {
           status: "pending",
           attempts: 0,
           scheduled_at: new Date().toISOString(),
+          event_key: `chat:${messageId}`,
         }));
         const { error: queueErr } = await adminClient
           .from("notification_queue")
-          .insert(queueRows);
+          .insert(queueRows, { ignoreDuplicates: true } as any);
         console.log(`[push-message] chat_queue_retry id=${requestId}`, {
           queued: queueRows.length,
           error: queueErr ? formatSbError(queueErr) : null,
@@ -1765,9 +1784,9 @@ serve(async (req) => {
       recipientId,
       requestId,
     });
-    const senderName = resolvedRawName
+    const senderName = (resolvedRawName
       ? maskFullName(resolvedRawName)
-      : pushString(recipientProfile.locale, "someone");
+      : "") || pushString(recipientProfile.locale, "someone");
 
     const encryptionScheme = String(messageRow["encryption_scheme"] ?? "v1").trim().toLowerCase();
 
@@ -1820,8 +1839,9 @@ serve(async (req) => {
       recipientTargetLang != null &&
       String(messageRow["translated_target_language"]).trim().toLowerCase() === recipientTargetLang;
 
-    // Notification body — always a placeholder since the server can't decrypt.
-    // Localized so killed-state tray matches the recipient language.
+    // Inbox-row stand-in: the server cannot decrypt on this path, and it only
+    // reaches here when previews are off. Localized so the in-app list matches
+    // the recipient's language.
     const messageText = pushString(recipientProfile.locale, "newMessageBody");
 
     // Include translation data in the payload so the client can decrypt and update
@@ -1848,11 +1868,12 @@ serve(async (req) => {
       data["has_translation"] = "true";
     }
 
-    const enforced = enforceTitleBody(
-      senderName,
-      messageText.length > 0 ? messageText : pushString(recipientProfile.locale, "newMessageBody"),
-    );
-    const notification = { title: enforced.title, body: enforced.body };
+    // Reaching here means previews are off (the early return above), so the
+    // only displayable text the server holds is the generic stand-in, and it
+    // belongs in the inbox row - not in the tray body, which now states the
+    // count instead of pretending to preview.
+    const inboxEnforced = enforceTitleBody(senderName, messageText);
+    const inboxNotification = { title: inboxEnforced.title, body: inboxEnforced.body };
 
     if (await isRecipientViewingMatch(adminClient, recipientId, matchId, requestId)) {
       console.log(`[push-message] suppress_viewed_chat id=${requestId}`, {
@@ -1867,16 +1888,28 @@ serve(async (req) => {
     await recordInboxNotification(adminClient, {
       userId: recipientId,
       type: "chat_message",
-      title: notification.title,
-      body: notification.body,
+      title: inboxNotification.title,
+      body: inboxNotification.body,
       data,
       requestId,
     });
     const unreadCount = await getUnreadChatMessageCount(adminClient, recipientId, matchId);
-    const shouldAlert = unreadCount <= 1;
+    const content = buildChatPushContent({
+      locale: recipientProfile.locale,
+      senderName,
+      unreadCount,
+      previewsEnabled: false,
+      lines: [],
+    });
+    const notification = { title: content.title, body: content.body };
+    const shouldAlert = content.unreadCount <= 1;
     data["should_alert"] = shouldAlert ? "true" : "false";
-    data["notification_title"] = notification.title;
-    data["notification_body"] = notification.body;
+    data["notification_title"] = content.title;
+    data["notification_body"] = content.body;
+    data["unread_count"] = String(content.unreadCount);
+    data["preview_lines"] = "[]";
+    data["sender_name"] = senderName;
+    data["previews_enabled"] = "false";
 
     // Server-side prefs gate: only the FCM send is gated; the inbox row
     // above is unconditional.

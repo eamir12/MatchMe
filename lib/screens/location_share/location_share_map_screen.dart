@@ -8,10 +8,12 @@ import 'package:latlong2/latlong.dart';
 import 'package:matchme/models/location_share_session.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/location_share_provider.dart';
+import 'package:matchme/providers/notification_inbox_provider.dart';
 import 'package:matchme/providers/current_location_provider.dart';
 import 'package:matchme/providers/unit_provider.dart';
 import 'package:matchme/screens/location_share/location_share_duration_dialog.dart';
 import 'package:matchme/utils/map_theme_utils.dart';
+import 'package:matchme/utils/lat_lng_smoother.dart';
 import 'package:matchme/utils/localized_duration.dart';
 import 'package:matchme/utils/unit_utils.dart';
 import 'package:matchme/widgets/signed_image.dart';
@@ -28,11 +30,14 @@ class LocationShareMapScreen extends ConsumerStatefulWidget {
 }
 
 class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver, TickerProviderStateMixin {
   final MapController _mapController = MapController();
   Timer? _uiTimer;
   bool _initialBothCentered = false;
   LocationShareNotifier? _shareNotifier;
+  late final LatLngSmoother _myPositionSmoother;
+  LatLng? _displayMyPosition;
+  LatLng? _lastRawMyPosition;
 
   static const InteractionOptions _interaction = InteractionOptions(
     flags:
@@ -47,6 +52,13 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _myPositionSmoother = LatLngSmoother(
+      vsync: this,
+      onChanged: (position) {
+        if (!mounted) return;
+        setState(() => _displayMyPosition = position);
+      },
+    );
     // Cache the notifier so dispose() can unsubscribe without using ref,
     // which is unsafe when the widget is being unmounted.
     _shareNotifier = ref.read(locationShareProvider.notifier);
@@ -58,8 +70,37 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
       if (mounted) {
         ref.read(currentLocationProvider.notifier).refreshLocation();
         ref.read(locationShareProvider.notifier).subscribeToLocationUpdates();
+        _markShareSeen();
       }
     });
+  }
+
+  /// The map is the item a live-location alert points at, so a share that is
+  /// displayed here counts as seen: mark its inbox rows read so the bell, the
+  /// Matches badge and the OS icon clear without touching the inbox first.
+  ///
+  /// Runs on open, whenever the share changes and whenever the inbox changes
+  /// (the row can land after the map is already showing, e.g. a cold start
+  /// from the OS notification). Marking is idempotent: once the rows are read
+  /// this is a no-op.
+  void _markShareSeen() {
+    if (!mounted) return;
+    final matchId = ref.read(locationShareProvider)?.matchId.trim() ?? '';
+    if (matchId.isEmpty) return;
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    if (lifecycle != null && lifecycle != AppLifecycleState.resumed) return;
+    // Deferred like the meet-up surface registry: provider listeners can fire
+    // while the tree is building, where a synchronous provider mutation trips
+    // Riverpod's modify-during-build assert.
+    unawaited(
+      Future.microtask(() {
+        if (!mounted) return;
+        ref.read(notificationInboxProvider.notifier).markMatchKindsRead(
+          matchId,
+          const {'location_share'},
+        );
+      }),
+    );
   }
 
   @override
@@ -75,6 +116,7 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
       ref.read(locationShareProvider.notifier).takeoverFromNativeService();
       // Also re-subscribe to position updates for receiving
       ref.read(locationShareProvider.notifier).subscribeToLocationUpdates();
+      _markShareSeen();
     }
   }
 
@@ -95,6 +137,7 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
         }
       }
     } catch (_) {}
+    _myPositionSmoother.dispose();
     super.dispose();
   }
 
@@ -178,25 +221,52 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
     final session = ref.watch(locationShareProvider);
     final l10n = ref.watch(localizationProvider);
 
+    // A share that starts (or replaces another) while this map is open is
+    // displayed the moment it lands, so it is seen here too.
+    ref.listen<LocationShareSession?>(locationShareProvider, (_, _) {
+      _markShareSeen();
+    });
+    // The inbox can load after the map is already showing the share; every
+    // inbox change is another chance to mark it seen (a no-op once read).
+    ref.listen<NotificationInboxState>(notificationInboxProvider, (_, _) {
+      _markShareSeen();
+    });
+
     if (session == null) {
       return Scaffold(
-        appBar: AppBar(title: ShrinkText(l10n.getString('locationShareMapTitle'))),
+        appBar: AppBar(
+          title: ShrinkText(l10n.getString('locationShareMapTitle')),
+        ),
         body: Center(child: Text(l10n.getString('locationShareExpired'))),
       );
     }
 
     final currentPosition = ref.watch(currentLocationProvider);
-    final myPos =
+    final rawMyPos =
         session.myPosition ??
         (currentPosition != null
             ? LatLng(currentPosition.latitude, currentPosition.longitude)
             : null);
     final otherPos = session.otherPosition;
+    final reduceMotion =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    if (rawMyPos != null && _lastRawMyPosition != rawMyPos) {
+      _lastRawMyPosition = rawMyPos;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _lastRawMyPosition != rawMyPos) return;
+        _myPositionSmoother.update(rawMyPos, immediate: reduceMotion);
+      });
+    }
+    final displayMyPos = rawMyPos == null
+        ? null
+        : (_displayMyPosition ?? rawMyPos);
 
-    final center = myPos ?? otherPos;
+    final center = rawMyPos ?? otherPos;
     if (center == null) {
       return Scaffold(
-        appBar: AppBar(title: ShrinkText(l10n.getString('locationShareMapTitle'))),
+        appBar: AppBar(
+          title: ShrinkText(l10n.getString('locationShareMapTitle')),
+        ),
         body: Center(child: Text(l10n.getString('locationShareWaiting'))),
       );
     }
@@ -204,16 +274,16 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
     final markers = <Marker>[];
     final otherIsSharing = session.otherStatus == ShareStatus.sharing;
     final samePosition =
-        myPos != null &&
+        rawMyPos != null &&
         otherPos != null &&
-        myPos.latitude == otherPos.latitude &&
-        myPos.longitude == otherPos.longitude;
+        rawMyPos.latitude == otherPos.latitude &&
+        rawMyPos.longitude == otherPos.longitude;
 
     if (samePosition) {
       // Combined marker: show both users side-by-side so neither hides the other
       markers.add(
         _buildCombinedMarker(
-          position: myPos,
+          position: displayMyPos ?? rawMyPos,
           myPhoto: session.myUserPhoto,
           otherPhoto: session.otherUserPhoto,
           otherStatus: session.otherStatus,
@@ -230,8 +300,10 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
           ),
         );
       }
-      if (myPos != null) {
-        markers.add(_buildSelfMarker(myPos, photoUrl: session.myUserPhoto));
+      if (displayMyPos != null) {
+        markers.add(
+          _buildSelfMarker(displayMyPos, photoUrl: session.myUserPhoto),
+        );
       }
     }
 
@@ -243,8 +315,12 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
     // When only one position is known (the common case on first render),
     // default to zoom 19 — on a location-sharing map the users are nearby.
     double initialZoom = 19;
-    if (myPos != null && otherPos != null) {
-      final distance = const Distance().as(LengthUnit.Meter, myPos, otherPos);
+    if (rawMyPos != null && otherPos != null) {
+      final distance = const Distance().as(
+        LengthUnit.Meter,
+        rawMyPos,
+        otherPos,
+      );
       if (distance < 50) {
         initialZoom = 19;
       } else if (distance < 200) {
@@ -262,15 +338,19 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
         .watch(unitSystemProvider)
         .maybeWhen(data: (value) => value, orElse: () => false);
     String? distanceText;
-    if (myPos != null && otherPos != null) {
-      final distance = const Distance().as(LengthUnit.Meter, myPos, otherPos);
+    if (rawMyPos != null && otherPos != null) {
+      final distance = const Distance().as(
+        LengthUnit.Meter,
+        rawMyPos,
+        otherPos,
+      );
       distanceText = formatDistanceWithImperial(distance, useImperial, l10n);
     }
 
     // When the second position first becomes available (e.g. otherPos was
     // null on initial render), re-center the map after a short delay so
     // FlutterMap has time to finish its initial layout.
-    if (myPos != null && otherPos != null && !_initialBothCentered) {
+    if (rawMyPos != null && otherPos != null && !_initialBothCentered) {
       _initialBothCentered = true;
       Future.delayed(const Duration(milliseconds: 500), () {
         if (mounted) _centerOnBothUsers(session);
@@ -406,7 +486,11 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
     // ("1 hour", not "1 hours").
     final duration = hours > 0
         ? formatDurationParts(l10n.getString, hours: hours, minutes: minutes)
-        : formatDurationParts(l10n.getString, minutes: minutes, seconds: seconds);
+        : formatDurationParts(
+            l10n.getString,
+            minutes: minutes,
+            seconds: seconds,
+          );
     if (duration.isEmpty) return '';
     final remainingText = l10n.getString(
       'locationShareCountdownRemaining',
@@ -474,7 +558,7 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
         text,
         style: const TextStyle(
           color: Colors.white,
-          fontSize: 10,
+          fontSize: 12,
           fontWeight: FontWeight.bold,
         ),
       ),
@@ -580,7 +664,7 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
                 const SizedBox(width: 6),
                 Text(
                   l10n.getString('locationShareYou'),
-                  style: const TextStyle(color: Colors.white, fontSize: 11),
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
                 ),
               ],
             ),
@@ -601,7 +685,7 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
                   const SizedBox(width: 6),
                   Text(
                     session.otherUserName,
-                    style: const TextStyle(color: Colors.white, fontSize: 11),
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
                   ),
                 ],
               ),
@@ -667,7 +751,10 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
     final metersPerPixel = _metersPerPixel(latitude, zoom);
     final rawDistance = metersPerPixel * barWidth;
 
-    final (double displayDistance, String label) = _roundDistance(rawDistance);
+    final (double displayDistance, String label) = _roundDistance(
+      rawDistance,
+      ref.watch(localizationProvider),
+    );
 
     return Positioned(
       left: 16,
@@ -690,7 +777,7 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
             const SizedBox(height: 2),
             Text(
               label,
-              style: const TextStyle(color: Colors.white70, fontSize: 10),
+              style: const TextStyle(color: Colors.white70, fontSize: 12),
             ),
           ],
         ),
@@ -702,17 +789,19 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
     return 156543.03 * cos(latitude * pi / 180) / (1 << zoom.toInt());
   }
 
-  (double, String) _roundDistance(double meters) {
-    if (meters < 10) return (10, '10 m');
-    if (meters < 20) return (20, '20 m');
-    if (meters < 50) return (50, '50 m');
-    if (meters < 100) return (100, '100 m');
-    if (meters < 200) return (200, '200 m');
-    if (meters < 500) return (500, '500 m');
-    if (meters < 1000) return (1000, '1 km');
-    if (meters < 2000) return (2000, '2 km');
-    if (meters < 5000) return (5000, '5 km');
-    return (10000, '10 km');
+  (double, String) _roundDistance(double meters, LocalizationState l10n) {
+    String km(int count) => l10n.getPluralString('distanceInKilometers', count);
+    String m(int count) => l10n.getPluralString('distanceInMeters', count);
+    if (meters < 10) return (10, m(10));
+    if (meters < 20) return (20, m(20));
+    if (meters < 50) return (50, m(50));
+    if (meters < 100) return (100, m(100));
+    if (meters < 200) return (200, m(200));
+    if (meters < 500) return (500, m(500));
+    if (meters < 1000) return (1000, km(1));
+    if (meters < 2000) return (2000, km(2));
+    if (meters < 5000) return (5000, km(5));
+    return (10000, km(10));
   }
 
   Widget _buildBottomControls(
@@ -865,7 +954,7 @@ class _LocationShareMapScreenState extends ConsumerState<LocationShareMapScreen>
           const SizedBox(height: 4),
           Text(
             label,
-            style: TextStyle(color: color ?? Colors.white, fontSize: 11),
+            style: TextStyle(color: color ?? Colors.white, fontSize: 12),
           ),
         ],
       ),

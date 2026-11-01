@@ -1270,7 +1270,12 @@ class _PinnedLocationCard extends ConsumerWidget {
                       : ' "${pin.label}"',
                   'date': pin.expiresAt == null
                       ? ''
-                      : pinnedFormatExpiry(pin.expiresAt!),
+                      : pinnedFormatExpiry(
+                          context,
+                          ref,
+                          l10n,
+                          pin.expiresAt!,
+                        ),
                 },
               ),
               style: TextStyle(fontSize: 13, color: colors.onSurface),

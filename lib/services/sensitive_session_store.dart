@@ -16,8 +16,12 @@
 //
 // All methods are best-effort and never throw (to avoid breaking bootstrap).
 
+import 'dart:convert';
+
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:matchme/services/native_secure_store.dart';
+import 'package:matchme/services/runtime_supabase_config.dart';
+import 'package:matchme/services/secure_local_storage.dart';
 import 'package:matchme/services/secure_storage_service.dart';
 
 class SensitiveSessionStore {
@@ -147,17 +151,21 @@ class SensitiveSessionStore {
 
   /// Every refresh-token copy this device knows about, freshest first.
   ///
-  /// GoTrue refresh tokens are single-use and rotate on every refresh. The
-  /// Android background service refreshes on its own schedule and writes the
-  /// rotated token into the NATIVE encrypted store, but it never updates the
-  /// Dart-side copy. The native copy is therefore always at least as new as
-  /// the Dart copy, so it MUST be read first — reading the Dart copy first
-  /// made the app retry a refresh with the token that had already been
-  /// spent, which fails with `refresh_token_already_used` and (because the
-  /// access token was expired) made the SDK drop the session entirely.
+  /// GoTrue refresh tokens are single-use and rotate on every refresh, so
+  /// only one copy is current at any moment. Order matters when these are
+  /// used as fallbacks:
   ///
-  /// Order: native encrypted store → Dart SecureStorage → legacy plaintext
-  /// SharedPreferences (upgrade fallback).
+  /// 1. Native encrypted store — on Android the background service refreshes
+  ///    out of process and rotates the token here only. On other platforms
+  ///    this is empty.
+  /// 2. The Supabase SDK's own persisted session (`sb-<ref>-auth-token`) on
+  ///    platforms without the native bridge. supabase_flutter rewrites it on
+  ///    every successful refresh, including its own auto-refresh ticks, so it
+  ///    tracks rotations nobody told MatchMe about.
+  /// 3. `flutter.refresh_token` (Dart SecureStorage). Kept in sync by the
+  ///    auth listener; before that it was written only by a few explicit
+  ///    paths, which is how a STALE copy ended up being spent on desktop.
+  /// 4. Legacy plaintext SharedPreferences (upgrade fallback).
   Future<List<String>> readRefreshTokenCandidates() async {
     final out = <String>[];
     void add(String? v) {
@@ -165,10 +173,18 @@ class SensitiveSessionStore {
       if (t.isNotEmpty && !out.contains(t)) out.add(t);
     }
 
-    // Native encrypted store first: the background service rotates here.
+    // Native encrypted store first: the Android background service rotates here.
     try {
       add(await NativeSecureStore.getString(_kRefreshToken));
     } catch (_) {}
+    // Android keeps its authoritative copy in the native store above; skip the
+    // extra Keystore read. Elsewhere the SDK's copy tracks rotations nothing
+    // else records.
+    if (!NativeSecureStore.isAndroid) {
+      try {
+        add(await readSdkPersistedRefreshToken());
+      } catch (_) {}
+    }
     try {
       add(await _secure.read(_kRefreshToken));
     } catch (_) {}
@@ -179,11 +195,69 @@ class SensitiveSessionStore {
     return out;
   }
 
+  /// The Supabase SDK's own persisted session JSON (`sb-<ref>-auth-token`).
+  ///
+  /// The SDK rewrites this entry after every successful refresh; it is the
+  /// SDK's last known-good rotation and the freshest durable copy on
+  /// platforms without an out-of-process refresher. Never throws.
+  Future<String> readSdkPersistedSessionJson() async {
+    try {
+      final url = (runtimeSupabaseUrl ?? '').trim();
+      if (url.isEmpty) return '';
+      final raw = await _secure.read(SecureLocalStorage.buildSessionKey(url));
+      return raw?.trim() ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// Refresh token inside the Supabase SDK's own persisted session.
+  ///
+  /// Never throws — returns '' when the key is absent (explicit sign-out,
+  /// first run) or the payload is unreadable.
+  Future<String> readSdkPersistedRefreshToken() async {
+    try {
+      final raw = await readSdkPersistedSessionJson();
+      if (raw.isEmpty) return '';
+      final session = bareSessionJson(raw);
+      if (session == null) return '';
+      final decoded = jsonDecode(session);
+      if (decoded is! Map) return '';
+      final rt = decoded['refresh_token'];
+      return rt is String ? rt.trim() : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
   /// The freshest refresh token this device knows about (see
   /// [readRefreshTokenCandidates] for why the native copy comes first).
   Future<String> readRefreshToken() async {
     final candidates = await readRefreshTokenCandidates();
     return candidates.isEmpty ? '' : candidates.first;
+  }
+
+  /// The freshest access token this device knows about (native store first —
+  /// the Android background service refreshes it on its own schedule and
+  /// never updates the Dart-side copies; see [readRefreshTokenCandidates]).
+  Future<String> readAccessToken() async {
+    final out = <String>[];
+    void add(String? v) {
+      final t = v?.trim() ?? '';
+      if (t.isNotEmpty && !out.contains(t)) out.add(t);
+    }
+
+    try {
+      add(await NativeSecureStore.getString(_kUserToken));
+    } catch (_) {}
+    try {
+      add(await _secure.read(_kUserToken));
+    } catch (_) {}
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      add(prefs.getString(_kUserToken));
+    } catch (_) {}
+    return out.isEmpty ? '' : out.first;
   }
 
   Future<void> clearAuthTokens() async {

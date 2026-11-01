@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
 import 'package:matchme/services/encrypted_cache_service.dart';
+import 'package:matchme/services/hive_encryption_service.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/offline_api_cache.dart';
 import 'package:matchme/services/offline_image_cache.dart';
@@ -251,6 +252,23 @@ void main() {
     expect(await db.getNotificationInbox('different-user'), isNull);
   });
 
+  test('pending visibility updates are scoped per user', () async {
+    expect(await db.hasPendingVisibilityUpdate('visibility-user-a'), isFalse);
+
+    await db.saveVisibilityUpdateToOutbox('visibility-user-a', false);
+
+    expect(await db.hasPendingVisibilityUpdate('visibility-user-a'), isTrue);
+    expect(await db.hasPendingVisibilityUpdate('visibility-user-b'), isFalse);
+
+    final pending = await db.watchVisibilityOutbox().first;
+    final key = pending.keys.singleWhere(
+      (k) => k.toString().startsWith('visibility-user-a_visibility_'),
+    );
+    await db.removeVisibilityUpdateFromOutbox(key);
+
+    expect(await db.hasPendingVisibilityUpdate('visibility-user-a'), isFalse);
+  });
+
   test(
     'web image cache round-trips bytes through encrypted local storage',
     () async {
@@ -357,6 +375,88 @@ void main() {
           ),
         ),
       );
+    },
+  );
+
+  Uri longEventsUrl() => Uri.parse(
+        'https://example.supabase.co/rest/v1/events'
+        '?select=${List.generate(80, (i) => 'column_$i').join(',')}',
+      );
+
+  test(
+    'API cache keys stay within Hive\'s one-byte key length limit',
+    () {
+      final longUrl = longEventsUrl();
+      final key = OfflineApiCache.buildKey(
+        method: 'GET',
+        url: longUrl,
+        userId: 'cache-user',
+        headers: const {'Range': '0-9'},
+      );
+      // Hive writes the key length with writeByte(): keys over 255 bytes wrap
+      // (290 -> 34), the CRC still validates, and the next open misparses the
+      // frame as "unknown typeId: <garbage>" — the discard loop seen on device.
+      expect(utf8.encode(key).length, lessThanOrEqualTo(255));
+      expect(
+        key,
+        OfflineApiCache.buildKey(
+          method: 'GET',
+          url: longUrl,
+          userId: 'cache-user',
+          headers: const {'Range': '0-9'},
+        ),
+      );
+      expect(
+        key,
+        isNot(
+          OfflineApiCache.buildKey(
+            method: 'GET',
+            url: longUrl,
+            userId: 'cache-user',
+            headers: const {'Range': '10-19'},
+          ),
+        ),
+      );
+      // Short keys keep their exact readable form so existing cache entries
+      // (and logout cleanup) stay byte-identical.
+      expect(
+        OfflineApiCache.buildKey(
+          method: 'GET',
+          url: Uri.parse('https://example.supabase.co/rest/v1/matches'),
+        ),
+        'GET anon https://example.supabase.co/rest/v1/matches',
+      );
+    },
+  );
+
+  test(
+    'oversized-key cache entries survive a full box close and reopen',
+    () async {
+      final key = OfflineApiCache.buildKey(
+        method: 'GET',
+        url: longEventsUrl(),
+        userId: 'cache-user',
+      );
+      expect(utf8.encode(key).length, lessThanOrEqualTo(255));
+      final bytes = Uint8List.fromList(utf8.encode('[{"id":"cache-user"}]'));
+      await OfflineApiCache.instance.write(
+        key,
+        bytes,
+        headers: {'content-type': 'application/json'},
+      );
+
+      // Reopen the file exactly like a fresh launch would. A wrapped key
+      // length on disk makes this throw "unknown typeId" and lose the entry.
+      await Hive.close();
+      final cipher = await HiveEncryptionService.instance.getCipher();
+      final box = await Hive.openBox<dynamic>(
+        'offline_api_cache_v1',
+        encryptionCipher: cipher,
+      );
+      final stored = box.get(key);
+      expect(stored, isNotNull);
+      expect((stored as Map)['bytes'], orderedEquals(bytes));
+      await box.close();
     },
   );
 }

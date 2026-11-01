@@ -1,7 +1,8 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,11 +11,19 @@ import 'package:matchme/widgets/safe_text.dart';
 
 class CustomCameraWidget extends ConsumerStatefulWidget {
   final bool useFrontCamera;
+
+  /// When true, only a front-facing camera is acceptable. Missing permission
+  /// or a rear-only device reports an error instead of silently using a rear
+  /// camera, and the flip control is hidden.
+  final bool frontOnly;
+  final ValueChanged<String>? onCameraError;
   final Function(Uint8List) onImageCaptured;
 
   const CustomCameraWidget({
     super.key,
     this.useFrontCamera = true,
+    this.frontOnly = false,
+    this.onCameraError,
     required this.onImageCaptured,
   });
 
@@ -29,6 +38,35 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
   bool _isCapturing = false;
   bool _hasCameraError = false;
 
+  /// Selfie flows pass [CustomCameraWidget.onCameraError] and auto-close so the
+  /// caller can show its own localized message instead of this screen's
+  /// generic "camera not available" page.
+  void _reportFatal(String code) {
+    if (!mounted) return;
+    final handler = widget.onCameraError;
+    if (handler != null) {
+      Navigator.of(context).pop();
+      handler(code);
+      return;
+    }
+    setState(() => _hasCameraError = true);
+    final l10n = ref.read(localizationProvider);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(l10n.getString('cameraNotAvailable'))),
+    );
+  }
+
+  static bool _looksDenied(Object error) {
+    final message = error.toString().toLowerCase();
+    return message.contains('denied') || message.contains('permission');
+  }
+
+  /// camera_windows reports every device as a front camera and has no notion
+  /// of lens direction, so on Windows the lens labels are meaningless and
+  /// switching has to cycle devices instead of matching front/back.
+  bool get _lensDirectionKnown =>
+      kIsWeb || defaultTargetPlatform != TargetPlatform.windows;
+
   @override
   void initState() {
     super.initState();
@@ -41,11 +79,7 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
 
       if (_cameras.isEmpty) {
         if (mounted) {
-          setState(() => _hasCameraError = true);
-          final l10n = ref.read(localizationProvider);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(l10n.getString('cameraNoCamerasAvailable'))),
-          );
+          _reportFatal('unavailable');
         }
         return;
       }
@@ -53,7 +87,18 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
       // Find the desired camera (front or rear)
       CameraDescription? selectedCamera;
 
-      if (widget.useFrontCamera) {
+      if (widget.frontOnly) {
+        final frontCameras = _cameras
+            .where(
+              (camera) => camera.lensDirection == CameraLensDirection.front,
+            )
+            .toList(growable: false);
+        if (frontCameras.isEmpty) {
+          _reportFatal('unavailable');
+          return;
+        }
+        selectedCamera = frontCameras.first;
+      } else if (widget.useFrontCamera) {
         // Try to find front camera
         selectedCamera = _cameras.firstWhere(
           (camera) => camera.lensDirection == CameraLensDirection.front,
@@ -81,20 +126,20 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
         });
       }
     } catch (e) {
-      if (mounted) {
-        setState(() => _hasCameraError = true);
-        final l10n = ref.read(localizationProvider);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              l10n.getString(
-                'cameraInitFailed',
-                params: {'error': e.toString()},
-              ),
-            ),
-          ),
-        );
+      if (!mounted) return;
+      if (widget.onCameraError != null) {
+        _reportFatal(_looksDenied(e) ? 'denied' : 'unavailable');
+        return;
       }
+      setState(() => _hasCameraError = true);
+      final l10n = ref.read(localizationProvider);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            l10n.getString('cameraInitFailed', params: {'error': e.toString()}),
+          ),
+        ),
+      );
     }
   }
 
@@ -120,6 +165,10 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
       widget.onImageCaptured(bytes);
     } catch (e) {
       if (mounted) {
+        if (widget.onCameraError != null) {
+          _reportFatal('failed');
+          return;
+        }
         final l10n = ref.read(localizationProvider);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -133,20 +182,27 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
         );
       }
     } finally {
-      setState(() {
-        _isCapturing = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isCapturing = false;
+        });
+      }
     }
   }
 
   void _switchCamera() {
-    if (_cameras.length < 2) return;
+    if (widget.frontOnly || _cameras.length < 2) return;
 
     // Find the opposite camera
     CameraDescription? newCamera;
     final currentCamera = _controller!.description;
 
-    if (currentCamera.lensDirection == CameraLensDirection.front) {
+    if (!_lensDirectionKnown) {
+      final index = _cameras.indexWhere(
+        (camera) => camera.name == currentCamera.name,
+      );
+      newCamera = _cameras[(index + 1) % _cameras.length];
+    } else if (currentCamera.lensDirection == CameraLensDirection.front) {
       newCamera = _cameras.firstWhere(
         (camera) => camera.lensDirection == CameraLensDirection.back,
         orElse: () => _cameras.first,
@@ -227,12 +283,15 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
     return Scaffold(
       appBar: AppBar(
         title: ShrinkText(
-          _controller?.description.lensDirection == CameraLensDirection.front
+          !_lensDirectionKnown
+              ? l10n.getString('cameraTitle')
+              : _controller?.description.lensDirection ==
+                    CameraLensDirection.front
               ? l10n.getString('cameraSelfieTitle')
               : l10n.getString('cameraRearTitle'),
         ),
         actions: [
-          if (_cameras.length > 1)
+          if (!widget.frontOnly && _cameras.length > 1)
             IconButton(
               icon: const Icon(Icons.flip_camera_ios),
               onPressed: _switchCamera,
@@ -269,6 +328,8 @@ class _CustomCameraWidgetState extends ConsumerState<CustomCameraWidget> {
 Future<Uint8List?> showCustomCamera({
   required BuildContext context,
   bool useFrontCamera = true,
+  bool frontOnly = false,
+  ValueChanged<String>? onCameraError,
 }) async {
   Uint8List? capturedImage;
 
@@ -277,6 +338,8 @@ Future<Uint8List?> showCustomCamera({
     MaterialPageRoute(
       builder: (context) => CustomCameraWidget(
         useFrontCamera: useFrontCamera,
+        frontOnly: frontOnly,
+        onCameraError: onCameraError,
         onImageCaptured: (bytes) {
           capturedImage = bytes;
           Navigator.pop(context);

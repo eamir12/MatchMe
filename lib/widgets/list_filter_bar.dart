@@ -27,6 +27,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/utils/gender_utils.dart';
 import 'package:matchme/utils/shared_intent_utils.dart';
 import 'package:matchme/utils/string_extensions.dart';
 
@@ -125,14 +126,19 @@ enum MatchTypeFilter {
 enum ListSortOption {
   /// Most recent first: newest match, or most recently active chat.
   recent,
+
   /// Conversations with unread messages float to the top. Chats only.
   unreadFirst,
+
   /// Alphabetical by the other person's display name. Both.
   nameAsc,
+
   /// Most shared interests in common. Matches only.
   sharedInterests,
+
   /// Highest rated. Matches only.
   topRated,
+
   /// Closest to expiring. Matches only.
   expiringSoon;
 
@@ -179,20 +185,30 @@ enum ListSortOption {
 class ListFilterState {
   const ListFilterState({
     this.selectedIntentKey,
+    this.selectedGenderKey,
     this.matchType = MatchTypeFilter.all,
     this.extraToggleLabel,
     this.extraToggleKey,
     this.extraToggleActive = false,
+    this.extraToggleVisible = true,
     this.sort = ListSortOption.recent,
   });
 
   final String? selectedIntentKey;
+
+  /// Canonical gender key the other person must have, or null for everyone.
+  final String? selectedGenderKey;
   final MatchTypeFilter matchType;
 
   /// Optional secondary toggle shown in the sheet, e.g. "Unread only" on Chats.
   final String? extraToggleLabel;
   final String? extraToggleKey;
   final bool extraToggleActive;
+
+  /// Whether the toggle currently has anything to act on. Chats hide "Unread
+  /// only" when no conversation is unread, but keep it visible while the
+  /// filter is on so it can still be switched off.
+  final bool extraToggleVisible;
 
   final ListSortOption sort;
 
@@ -202,6 +218,7 @@ class ListFilterState {
   int get activeCount {
     var n = 0;
     if (selectedIntentKey != null && selectedIntentKey!.isNotEmpty) n++;
+    if (selectedGenderKey != null && selectedGenderKey!.isNotEmpty) n++;
     if (matchType != MatchTypeFilter.all) n++;
     if (extraToggleActive) n++;
     return n;
@@ -214,20 +231,27 @@ class ListFilterState {
   ListFilterState copyWith({
     String? selectedIntentKey,
     bool clearIntent = false,
+    String? selectedGenderKey,
+    bool clearGender = false,
     MatchTypeFilter? matchType,
     String? extraToggleLabel,
     String? extraToggleKey,
     bool? extraToggleActive,
+    bool? extraToggleVisible,
     ListSortOption? sort,
   }) {
     return ListFilterState(
       selectedIntentKey: clearIntent
           ? null
           : (selectedIntentKey ?? this.selectedIntentKey),
+      selectedGenderKey: clearGender
+          ? null
+          : (selectedGenderKey ?? this.selectedGenderKey),
       matchType: matchType ?? this.matchType,
       extraToggleLabel: extraToggleLabel ?? this.extraToggleLabel,
       extraToggleKey: extraToggleKey ?? this.extraToggleKey,
       extraToggleActive: extraToggleActive ?? this.extraToggleActive,
+      extraToggleVisible: extraToggleVisible ?? this.extraToggleVisible,
       sort: sort ?? this.sort,
     );
   }
@@ -297,7 +321,8 @@ class TexturedPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final gradient = colors ??
+    final gradient =
+        colors ??
         <Color>[
           scheme.primary.withValues(alpha: 0.16),
           scheme.tertiary.withValues(alpha: 0.08),
@@ -335,10 +360,7 @@ class TexturedPanel extends StatelessWidget {
               // (ListTile, SwitchListTile, InkWell) has a Material ancestor.
               // Without it Flutter asserts "ListTile background color or ink
               // splashes may be invisible" in debug builds.
-              child: Material(
-                type: MaterialType.transparency,
-                child: child,
-              ),
+              child: Material(type: MaterialType.transparency, child: child),
             ),
           ],
         ),
@@ -526,10 +548,7 @@ class _FilterButton extends StatelessWidget {
               decoration: BoxDecoration(
                 gradient: active
                     ? LinearGradient(
-                        colors: [
-                          scheme.primary,
-                          scheme.tertiary,
-                        ],
+                        colors: [scheme.primary, scheme.tertiary],
                         begin: AlignmentDirectional.topStart,
                         end: AlignmentDirectional.bottomEnd,
                       )
@@ -563,7 +582,9 @@ class _FilterButton extends StatelessWidget {
                     Icon(
                       Icons.tune_rounded,
                       size: 22,
-                      color: active ? scheme.onPrimary : scheme.onSurfaceVariant,
+                      color: active
+                          ? scheme.onPrimary
+                          : scheme.onSurfaceVariant,
                     ),
                     if (active)
                       PositionedDirectional(
@@ -583,7 +604,7 @@ class _FilterButton extends StatelessWidget {
                             '$activeCount',
                             textAlign: TextAlign.center,
                             style: TextStyle(
-                              fontSize: 10,
+                              fontSize: 12,
                               height: 1.3,
                               fontWeight: FontWeight.w800,
                               color: scheme.primary,
@@ -614,6 +635,7 @@ Future<ListFilterState?> showListFilterSheet({
   required List<dynamic> allIntents,
   required int Function(ListFilterState) resultCountFor,
   bool showMatchType = false,
+  List<Map<String, String>> genderOptions = const [],
   List<ListSortOption> sortOptions = const [],
 }) async {
   // Drop focus from the list's search field before the sheet opens: without
@@ -633,6 +655,7 @@ Future<ListFilterState?> showListFilterSheet({
       allIntents: allIntents,
       resultCountFor: resultCountFor,
       showMatchType: showMatchType,
+      genderOptions: genderOptions,
       sortOptions: sortOptions,
     ),
   );
@@ -653,6 +676,7 @@ class _FilterSheet extends StatefulWidget {
     required this.allIntents,
     required this.resultCountFor,
     required this.showMatchType,
+    required this.genderOptions,
     required this.sortOptions,
   });
 
@@ -662,6 +686,7 @@ class _FilterSheet extends StatefulWidget {
   final List<dynamic> allIntents;
   final int Function(ListFilterState) resultCountFor;
   final bool showMatchType;
+  final List<Map<String, String>> genderOptions;
   final List<ListSortOption> sortOptions;
 
   @override
@@ -674,11 +699,8 @@ class _FilterSheetState extends State<_FilterSheet> {
   List<IntentFilterOption> _options() {
     return widget.intentKeys
         .map(
-          (key) => getIntentFilterOption(
-            key,
-            widget.l10n,
-            widget.allIntents.cast(),
-          ),
+          (key) =>
+              getIntentFilterOption(key, widget.l10n, widget.allIntents.cast()),
         )
         .toList();
   }
@@ -691,9 +713,27 @@ class _FilterSheetState extends State<_FilterSheet> {
     final resultCount = widget.resultCountFor(_draft);
     final intentOption = _draft.selectedIntentKey == null
         ? null
-        : options
-              .where((o) => o.key == _draft.selectedIntentKey)
+        : options.where((o) => o.key == _draft.selectedIntentKey).firstOrNull;
+    final genderOptions = widget.genderOptions
+        .where((o) => (o['key'] ?? '').trim().isNotEmpty)
+        .toList(growable: false);
+    final selectedGenderOption = _draft.selectedGenderKey == null
+        ? null
+        : genderOptions
+              .where(
+                (o) =>
+                    normalizeGenderKey(o['key']) ==
+                    normalizeGenderKey(_draft.selectedGenderKey),
+              )
               .firstOrNull;
+    final selectedGenderLabel = _draft.selectedGenderKey == null
+        ? null
+        : selectedGenderOption != null
+        ? genderOptionLabel(l10n, selectedGenderOption)
+        : _draft.selectedGenderKey;
+    // Same neutral slate as the "All" match-type card: gender is a category,
+    // but it must not borrow an intent brand colour or the sort teal.
+    final genderAccent = MatchTypeFilter.all.accentFor(context);
 
     return Padding(
       padding: EdgeInsets.only(
@@ -749,8 +789,9 @@ class _FilterSheetState extends State<_FilterSheet> {
                                   matchType: MatchTypeFilter.all,
                                   extraToggleLabel:
                                       widget.initial.extraToggleLabel,
-                                  extraToggleKey:
-                                      widget.initial.extraToggleKey,
+                                  extraToggleKey: widget.initial.extraToggleKey,
+                                  extraToggleVisible:
+                                      widget.initial.extraToggleVisible,
                                 ),
                               );
                             },
@@ -778,20 +819,28 @@ class _FilterSheetState extends State<_FilterSheet> {
                                 ),
                               ),
                             ),
+                          if (selectedGenderLabel != null)
+                            _RemovablePill(
+                              label: selectedGenderLabel,
+                              icon: Icons.person_outline_rounded,
+                              color: genderAccent,
+                              onRemoved: () => setState(
+                                () =>
+                                    _draft = _draft.copyWith(clearGender: true),
+                              ),
+                            ),
                           if (intentOption != null)
                             _RemovablePill(
                               label: intentOption.label,
                               icon: intentOption.icon,
                               color: intentOption.color,
                               onRemoved: () => setState(
-                                () => _draft = _draft.copyWith(
-                                  clearIntent: true,
-                                ),
+                                () =>
+                                    _draft = _draft.copyWith(clearIntent: true),
                               ),
                             ),
-                        if (_draft.extraToggleActive &&
-                            (_draft.extraToggleLabel?.isNotEmpty ??
-                                  false))
+                          if (_draft.extraToggleActive &&
+                              (_draft.extraToggleLabel?.isNotEmpty ?? false))
                             _RemovablePill(
                               label: _draft.extraToggleLabel!,
                               icon: Icons.bolt_rounded,
@@ -808,29 +857,27 @@ class _FilterSheetState extends State<_FilterSheet> {
                                 ),
                               ),
                             ),
-                        // A non-default sort is shown so the order is never a
-                        // silent state, but it is not part of activeCount — the
-                        // user changed a preference, they did not narrow the
-                        // list.
-                        if (!_draft.sort.isDefault)
-                          _RemovablePill(
-                            label: l10n.getString(
-                              _draft.sort.labelKey(l10n),
-                            ),
-                            icon: _draft.sort.icon,
-                            // Lifted in dark mode; the pill paints its label
-                            // in this colour on a 14% wash of itself.
-                            color:
-                                Theme.of(context).brightness ==
-                                    Brightness.dark
-                                ? const Color(0xFF2DD4BF)
-                                : const Color(0xFF0F766E),
-                            onRemoved: () => setState(
-                              () => _draft = _draft.copyWith(
-                                sort: ListSortOption.recent,
+                          // A non-default sort is shown so the order is never a
+                          // silent state, but it is not part of activeCount — the
+                          // user changed a preference, they did not narrow the
+                          // list.
+                          if (!_draft.sort.isDefault)
+                            _RemovablePill(
+                              label: l10n.getString(_draft.sort.labelKey(l10n)),
+                              icon: _draft.sort.icon,
+                              // Lifted in dark mode; the pill paints its label
+                              // in this colour on a 14% wash of itself.
+                              color:
+                                  Theme.of(context).brightness ==
+                                      Brightness.dark
+                                  ? const Color(0xFF2DD4BF)
+                                  : const Color(0xFF0F766E),
+                              onRemoved: () => setState(
+                                () => _draft = _draft.copyWith(
+                                  sort: ListSortOption.recent,
+                                ),
                               ),
                             ),
-                          ),
                         ],
                       ),
                     ],
@@ -848,7 +895,9 @@ class _FilterSheetState extends State<_FilterSheet> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       if (widget.showMatchType) ...[
-                        _SectionLabel(label: l10n.getString('matchTypeFilterLabel')),
+                        _SectionLabel(
+                          label: l10n.getString('matchTypeFilterLabel'),
+                        ),
                         const SizedBox(height: 10),
                         Row(
                           children: [
@@ -871,6 +920,60 @@ class _FilterSheetState extends State<_FilterSheet> {
                               if (option != MatchTypeFilter.values.last)
                                 const SizedBox(width: 8),
                             ],
+                          ],
+                        ),
+                        const SizedBox(height: 22),
+                      ],
+                      if (genderOptions.isNotEmpty) ...[
+                        _SectionLabel(
+                          label: l10n.getString('listFilterGenderSection'),
+                        ),
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            _IntentChip(
+                              label: l10n.getString('generalAll'),
+                              icon: Icons.people_alt_rounded,
+                              color: genderAccent,
+                              selected: _draft.selectedGenderKey == null,
+                              onTap: () {
+                                HapticFeedback.selectionClick();
+                                setState(
+                                  () => _draft = _draft.copyWith(
+                                    clearGender: true,
+                                  ),
+                                );
+                              },
+                            ),
+                            for (final option in genderOptions)
+                              _IntentChip(
+                                label: genderOptionLabel(l10n, option),
+                                icon: Icons.person_outline_rounded,
+                                color: genderAccent,
+                                selected:
+                                    normalizeGenderKey(
+                                      _draft.selectedGenderKey,
+                                    ) ==
+                                    normalizeGenderKey(option['key']),
+                                onTap: () {
+                                  HapticFeedback.selectionClick();
+                                  final isSelected =
+                                      normalizeGenderKey(
+                                        _draft.selectedGenderKey,
+                                      ) ==
+                                      normalizeGenderKey(option['key']);
+                                  setState(
+                                    () => _draft = _draft.copyWith(
+                                      selectedGenderKey: isSelected
+                                          ? null
+                                          : option['key'],
+                                      clearGender: isSelected,
+                                    ),
+                                  );
+                                },
+                              ),
                           ],
                         ),
                         const SizedBox(height: 22),
@@ -911,7 +1014,9 @@ class _FilterSheetState extends State<_FilterSheet> {
                         ),
                         const SizedBox(height: 22),
                       ],
-                      if (_draft.extraToggleKey != null) ...[
+                      if (_draft.extraToggleKey != null &&
+                          (_draft.extraToggleVisible ||
+                              _draft.extraToggleActive)) ...[
                         _SectionLabel(
                           label: l10n.getString('listFilterOptionsSection'),
                         ),
@@ -965,9 +1070,8 @@ class _FilterSheetState extends State<_FilterSheet> {
                                 onTap: () {
                                   HapticFeedback.selectionClick();
                                   setState(
-                                    () => _draft = _draft.copyWith(
-                                      sort: option,
-                                    ),
+                                    () =>
+                                        _draft = _draft.copyWith(sort: option),
                                   );
                                 },
                               ),
@@ -1010,9 +1114,10 @@ class _FilterSheetState extends State<_FilterSheet> {
                               ),
                             ),
                             Text(
-                              l10n.getString('listFilterShowResults', params: {
-                                'count': '$resultCount',
-                              }),
+                              l10n.getString(
+                                'listFilterShowResults',
+                                params: {'count': '$resultCount'},
+                              ),
                               style: TextStyle(
                                 fontSize: 15,
                                 fontWeight: FontWeight.w700,
@@ -1104,9 +1209,7 @@ class _MatchTypeCard extends StatelessWidget {
                 curve: Curves.easeOut,
                 padding: const EdgeInsets.all(7),
                 decoration: BoxDecoration(
-                  color: selected
-                      ? accent
-                      : accent.withValues(alpha: 0.12),
+                  color: selected ? accent : accent.withValues(alpha: 0.12),
                   shape: BoxShape.circle,
                 ),
                 child: Icon(
@@ -1135,7 +1238,7 @@ class _MatchTypeCard extends StatelessWidget {
                 maxLines: 2,
                 overflow: TextOverflow.visible,
                 style: TextStyle(
-                  fontSize: 10.5,
+                  fontSize: 12,
                   height: 1.25,
                   color: scheme.onSurfaceVariant,
                 ),
@@ -1167,7 +1270,8 @@ class _IntentChip extends StatelessWidget {
   Widget build(BuildContext context) {
     // The intent palette is mid-tone, so white labels on the selected fill
     // fall short of 4.5:1; pick the label colour from the fill's brightness.
-    final onColor = ThemeData.estimateBrightnessForColor(color) == Brightness.dark
+    final onColor =
+        ThemeData.estimateBrightnessForColor(color) == Brightness.dark
         ? Colors.white
         : const Color(0xFF0F172A);
     return Semantics(
@@ -1185,9 +1289,7 @@ class _IntentChip extends StatelessWidget {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(24),
               border: Border.all(
-                color: selected
-                    ? color
-                    : color.withValues(alpha: 0.28),
+                color: selected ? color : color.withValues(alpha: 0.28),
                 width: 1,
               ),
             ),
@@ -1376,16 +1478,11 @@ class ResultCountLabel extends StatelessWidget {
           isFiltered
               ? l10n.getString(
                   countOfKey,
-                  params: {
-                    'shown': '$shown',
-                    'total': '$total',
-                  },
+                  params: {'shown': '$shown', 'total': '$total'},
                   // The noun agrees with the total ("1 of 5 conversations").
                   pluralParam: 'total',
                 )
-              : l10n.getString(countKey, params: {
-                  'count': '$shown',
-                }),
+              : l10n.getString(countKey, params: {'count': '$shown'}),
           style: Theme.of(context).textTheme.bodySmall?.copyWith(
             color: Theme.of(context).colorScheme.onSurfaceVariant,
             fontWeight: FontWeight.w500,

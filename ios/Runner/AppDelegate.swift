@@ -446,6 +446,7 @@ import Darwin
         "faceConfidence": 0.0,
         "bodyConfidence": 0.0,
         "faceCount": 0,
+        "bodyCount": 0,
         "faceSizeRatio": 0.0,
         "facePositionedCenter": false,
         "faceTouchesImageEdge": false,
@@ -472,6 +473,7 @@ import Darwin
         "faceConfidence": 0.0,
         "bodyConfidence": 0.0,
         "faceCount": 0,
+        "bodyCount": 0,
         "faceSizeRatio": 0.0,
         "facePositionedCenter": false,
         "faceTouchesImageEdge": false,
@@ -534,6 +536,11 @@ import Darwin
         let faceConfidence = faceObservations.map(\.confidence).max() ?? 0
         let containsBody = !bodyObservations.isEmpty
         let bodyConfidence = bodyObservations.map(\.confidence).max() ?? 0
+        // Spot me single-person gate input. Count confident bodies only so a
+        // low-confidence background detection does not reject a solo selfie;
+        // any observation still counts as one body.
+        let confidentBodyCount = bodyObservations.filter { $0.confidence >= 0.5 }.count
+        let bodyCount = bodyObservations.isEmpty ? 0 : max(1, confidentBodyCount)
 
         // Calculate face size ratio (largest face)
         let faceSizeRatio: Double
@@ -747,13 +754,14 @@ import Darwin
         DispatchQueue.main.async {
           result([
             "supported": true,
-            "prescreenVersion": 4,
+            "prescreenVersion": 5,
             "containsFace": containsFace,
             "containsBody": containsBody,
             "uncertain": uncertain,
             "faceConfidence": Double(faceConfidence),
             "bodyConfidence": Double(bodyConfidence),
             "faceCount": faceCount,
+            "bodyCount": bodyCount,
             "faceSizeRatio": faceSizeRatio,
             "facePositionedCenter": facePositionedCenter,
             "faceTouchesImageEdge": faceTouchesImageEdge,
@@ -787,6 +795,7 @@ import Darwin
             "faceConfidence": 0.0,
             "bodyConfidence": 0.0,
             "faceCount": 0,
+            "bodyCount": 0,
             "faceSizeRatio": 0.0,
             "facePositionedCenter": false,
             "faceTouchesImageEdge": false,

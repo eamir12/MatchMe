@@ -52,6 +52,17 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
   DateTime? lastLanguageSyncScheduledAt;
   DateTime? lastOfflineFallbackLogAt;
 
+  // A spent rotating refresh token makes the SDK fire signedOut for every
+  // request that touches the expired session. Re-seeding the persisted
+  // session immediately re-arms the same refresh storm, so offline restores
+  // are rate-limited and a background retry probes for a token rotated by
+  // the native background service in the meantime.
+  DateTime? lastOfflineRestoreAt;
+  const offlineRestoreCooldown = Duration(seconds: 30);
+  Timer? sessionRecoveryRetryTimer;
+  Duration sessionRecoveryRetryDelay = const Duration(minutes: 2);
+  const maxSessionRecoveryRetryDelay = Duration(minutes: 15);
+
   // ---- Deleted-account detection -------------------------------------------
   // A device whose persisted session predates the account's deletion (admin
   // or self-delete on another device) recovers that session offline-only and
@@ -115,6 +126,66 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
     }
   }
 
+  late void Function() scheduleSessionRecoveryRetry;
+
+  /// Probes the stored refresh tokens without resurrecting a dead session in
+  /// memory. Only a successful rotation puts a session back and re-emits it;
+  /// repeated failures back off up to [maxSessionRecoveryRetryDelay] instead
+  /// of hammering the token endpoint.
+  Future<void> retrySessionRecovery() async {
+    if (disposed || auth.currentSession != null) return;
+    // The family was proven dead: every stored copy is rejected server-side.
+    // The re-login gate owns recovery; probing again only replays them.
+    if (SessionService.deadSessionDetected.value) return;
+    // Hold the ladder off while the probe is in flight: a failed refresh
+    // makes the SDK emit signedOut, and the ladder must not re-seed the dead
+    // session in the middle of the probe.
+    lastOfflineRestoreAt = DateTime.now();
+    RefreshTokenHealth health = RefreshTokenHealth.unknown;
+    try {
+      health = await SessionService.probeRefreshTokenHealth();
+    } catch (_) {}
+    if (disposed) return;
+    if (health == RefreshTokenHealth.healthy && auth.currentSession != null) {
+      lastOfflineRestoreAt = null;
+      sessionRecoveryRetryDelay = const Duration(minutes: 2);
+      debugPrint(
+        '🔄 [AUTH] Session renewed by background retry after a spent refresh token',
+      );
+      controller.add(
+        AuthState(AuthChangeEvent.tokenRefreshed, auth.currentSession),
+      );
+      return;
+    }
+    scheduleSessionRecoveryRetry();
+  }
+
+  scheduleSessionRecoveryRetry = () {
+    if (disposed) return;
+    // No point retrying a family the server has already revoked; the gate
+    // stays up until the user signs in again.
+    if (SessionService.deadSessionDetected.value) return;
+    sessionRecoveryRetryTimer?.cancel();
+    final delay = sessionRecoveryRetryDelay;
+    sessionRecoveryRetryTimer = Timer(delay, () {
+      if (disposed) return;
+      unawaited(retrySessionRecovery());
+    });
+    final nextMinutes = (sessionRecoveryRetryDelay.inMinutes * 2)
+        .clamp(2, maxSessionRecoveryRetryDelay.inMinutes)
+        .toInt();
+    sessionRecoveryRetryDelay = Duration(minutes: nextMinutes);
+    debugPrint(
+      '[AUTH] Scheduled session recovery retry in ${delay.inMinutes}m',
+    );
+  };
+
+  void cancelSessionRecoveryRetry() {
+    sessionRecoveryRetryTimer?.cancel();
+    sessionRecoveryRetryTimer = null;
+    sessionRecoveryRetryDelay = const Duration(minutes: 2);
+  }
+
   /// When connectivity returns, try to renew a session that was only
   /// restored offline (expired access token, spent refresh token).
   ///
@@ -124,21 +195,48 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
   /// renewal simply leaves the cached session in place.
   Future<void> tryRenewSessionOnResume() async {
     if (disposed) return;
+    sessionRecoveryRetryTimer?.cancel();
+    sessionRecoveryRetryTimer = null;
+    sessionRecoveryRetryDelay = const Duration(minutes: 2);
+    final wasMissing = auth.currentSession == null;
+    if (wasMissing) {
+      // A previous non-explicit sign-out may have left the SDK without a
+      // session to break the refresh storm. Connectivity is back, so give
+      // the persisted session another chance (the native background service
+      // may have rotated the token while we were offline).
+      lastOfflineRestoreAt = DateTime.now();
+      try {
+        await SessionService.restorePersistedSessionOfflineOnly();
+      } catch (_) {}
+      if (disposed) return;
+    }
     final session = auth.currentSession;
-    if (session == null) return;
-    if (!session.isExpired) return;
+    if (session == null) {
+      unawaited(retrySessionRecovery());
+      return;
+    }
+    if (!session.isExpired) {
+      if (wasMissing) {
+        controller.add(AuthState(AuthChangeEvent.tokenRefreshed, session));
+      }
+      return;
+    }
     try {
       final renewed = await SessionService.safeRefreshSession(
         timeout: const Duration(seconds: 8),
       );
       if (!disposed && renewed && auth.currentSession != null) {
+        lastOfflineRestoreAt = null;
         controller.add(
           AuthState(AuthChangeEvent.tokenRefreshed, auth.currentSession),
         );
         debugPrint('🔄 [AUTH] Session renewed after connectivity was restored');
+      } else if (!disposed) {
+        scheduleSessionRecoveryRetry();
       }
     } catch (_) {
       // Keep the cached session — a failed renewal is never a logout.
+      scheduleSessionRecoveryRetry();
     }
   }
 
@@ -338,6 +436,21 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
   Future<bool> emitBestAvailableSession({required String logPrefix}) async {
     var session = auth.currentSession;
     if (session == null) {
+      final now = DateTime.now();
+      final cooldownActive =
+          lastOfflineRestoreAt != null &&
+          now.difference(lastOfflineRestoreAt!) < offlineRestoreCooldown;
+      if (cooldownActive) {
+        try {
+          if (await SessionService.hasAnyPersistedSession()) {
+            debugPrint(
+              '$logPrefix — offline restore cooldown active; keeping the current state',
+            );
+            return false;
+          }
+        } catch (_) {}
+      }
+      lastOfflineRestoreAt = now;
       try {
         await SessionService.restorePersistedSessionOfflineOnly();
         session = auth.currentSession;
@@ -595,6 +708,8 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
 
       if (effectiveAuthState.event == AuthChangeEvent.signedOut) {
         if (SessionService.consumeExplicitUserSignOutFlag()) {
+          lastOfflineRestoreAt = null;
+          cancelSessionRecoveryRetry();
           unawaited(SessionService.clearPersistedSupabaseSessionSnapshot());
         } else {
           if (nonExplicitSignedOutLadderInFlight) {
@@ -621,67 +736,113 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
             // that the session cannot be renewed, so the persisted session and
             // cached data stay in place.
             if (auth.currentSession == null) {
-              final recovered =
-                  await SessionService.recoverPersistedSupabaseSession(
-                    timeout: const Duration(seconds: 3),
-                  );
-              if (!disposed && recovered && auth.currentSession != null) {
-                effectiveAuthState = AuthState(
-                  AuthChangeEvent.initialSession,
-                  auth.currentSession,
-                );
-                debugPrint(
-                  '🔄 [AUTH] Recovered session after non-explicit sign-out',
-                );
-              } else if (!disposed && auth.currentSession == null) {
-                // Recovery failed (cooldown, dead refresh token, or attempted
-                // within 10s of the previous try). Re-seed the last known
-                // session offline WITHOUT network IO and stop auto-refresh to
-                // break the refresh-fail → signedOut loop. The user stays
-                // logged in with cached data.
+              final now = DateTime.now();
+              final cooldownActive =
+                  lastOfflineRestoreAt != null &&
+                  now.difference(lastOfflineRestoreAt!) <
+                      offlineRestoreCooldown;
+
+              var recovered = false;
+              if (!cooldownActive) {
+                recovered =
+                    await SessionService.recoverPersistedSupabaseSession(
+                      timeout: const Duration(seconds: 3),
+                    );
+              }
+
+              // Recovery may return false because its own cooldown is active
+              // while a concurrent path (bootstrap safety net, background
+              // service) restored the session in the meantime. Trust the
+              // live session instead of the boolean, otherwise this ladder
+              // emits a null session and briefly routes to the login screen.
+              var restoredSession = auth.currentSession;
+
+              if (!disposed && restoredSession == null && !cooldownActive) {
+                lastOfflineRestoreAt = now;
                 final offlineRestored =
                     await SessionService.restorePersistedSessionOfflineOnly();
-                if (!disposed &&
-                    offlineRestored &&
-                    auth.currentSession != null) {
+                if (offlineRestored) restoredSession = auth.currentSession;
+              }
+
+              if (!disposed && restoredSession != null) {
+                effectiveAuthState = AuthState(
+                  AuthChangeEvent.initialSession,
+                  restoredSession,
+                );
+                if (restoredSession.isExpired) {
+                  // A refresh already failed for this session (that is why
+                  // the SDK signed out), so re-seeding it is only a stopgap:
+                  // keep the cooldown armed and retry the rotation later.
+                  lastOfflineRestoreAt = now;
+                  scheduleSessionRecoveryRetry();
+                  debugPrint(
+                    '🔄 [AUTH] Restored persisted session offline after non-explicit sign-out (staying logged in)',
+                  );
+                } else {
+                  debugPrint(
+                    recovered
+                        ? '🔄 [AUTH] Recovered session after non-explicit sign-out'
+                        : '🔄 [AUTH] Session restored concurrently after non-explicit sign-out',
+                  );
+                }
+              }
+
+              if (!disposed && auth.currentSession == null) {
+                // Repeated refresh failures on a spent rotating token make
+                // the SDK emit signedOut for every request that touches the
+                // expired session. Re-seeding it again inside the cooldown
+                // would only re-arm the same refresh storm, so stay on the
+                // last known session and let connectivity/resume (or the
+                // background retry) attempt a real renewal.
+                if (cooldownActive) {
+                  final hasPersisted =
+                      await SessionService.hasAnyPersistedSession();
+                  if (!disposed && hasPersisted) {
+                    debugPrint(
+                      '🔄 [AUTH] Suppressing repeated non-explicit sign-out — offline restore cooldown active (staying logged in)',
+                    );
+                    return;
+                  }
+                }
+
+                // Nothing could be restored. Before routing to the login
+                // screen, find out WHY: a rotation race (some other process
+                // spent the token) or a revoked session family must never
+                // log the user out. Only a genuinely empty device (fresh
+                // install) may show the login screen; a deleted account is
+                // detected separately by runAccountExistenceCheck.
+                final health = await SessionService.probeRefreshTokenHealth();
+                if (!disposed && health == RefreshTokenHealth.dead) {
+                  // Every stored copy is unknown to the server: no rotation
+                  // can ever succeed again. Block the app on the re-login
+                  // gate instead of leaving a signed-in shell on screen.
+                  unawaited(SessionService.markDeadSession());
+                }
+                if (!disposed && auth.currentSession != null) {
+                  // The probe renewed the session (a stored copy of the
+                  // refresh token still worked). Keep the user logged in.
+                  lastOfflineRestoreAt = null;
+                  sessionRecoveryRetryDelay = const Duration(minutes: 2);
                   effectiveAuthState = AuthState(
                     AuthChangeEvent.initialSession,
                     auth.currentSession,
                   );
                   debugPrint(
-                    '🔄 [AUTH] Restored persisted session offline after non-explicit sign-out (staying logged in)',
+                    '🔄 [AUTH] Session renewed by the refresh-token probe — staying logged in',
                   );
-                } else if (!disposed && auth.currentSession == null) {
-                  // Nothing could be restored. Before routing to the login
-                  // screen, find out WHY: a rotation race (some other process
-                  // spent the token) or a revoked session family must never
-                  // log the user out. Only a genuinely empty device (fresh
-                  // install) may show the login screen; a deleted account is
-                  // detected separately by runAccountExistenceCheck.
-                  final health = await SessionService.probeRefreshTokenHealth();
-                  if (!disposed && auth.currentSession != null) {
-                    // The probe renewed the session (a stored copy of the
-                    // refresh token still worked). Keep the user logged in.
-                    effectiveAuthState = AuthState(
-                      AuthChangeEvent.initialSession,
-                      auth.currentSession,
-                    );
+                } else if (!disposed) {
+                  final hasPersisted =
+                      await SessionService.hasAnyPersistedSession();
+                  if (!disposed && hasPersisted) {
                     debugPrint(
-                      '🔄 [AUTH] Session renewed by the refresh-token probe — staying logged in',
+                      '🔄 [AUTH] Suppressing non-explicit sign-out (health=$health) — persisted snapshot exists, staying logged in',
                     );
-                  } else if (!disposed) {
-                    final hasPersisted =
-                        await SessionService.hasAnyPersistedSession();
-                    if (!disposed && hasPersisted) {
-                      debugPrint(
-                        '🔄 [AUTH] Suppressing non-explicit sign-out (health=$health) — persisted snapshot exists, staying logged in',
-                      );
-                      return;
-                    }
-                    debugPrint(
-                      '🔄 [AUTH] Non-explicit sign-out with nothing persisted (health=$health) — routing to login',
-                    );
+                    scheduleSessionRecoveryRetry();
+                    return;
                   }
+                  debugPrint(
+                    '🔄 [AUTH] Non-explicit sign-out with nothing persisted (health=$health) — routing to login',
+                  );
                 }
               }
             } else {
@@ -728,6 +889,11 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
         // A new session invalidates any pending "the user signed out" flag:
         // from here on, a signedOut event is NOT the user's decision.
         SessionService.clearExplicitUserSignOutFlag();
+        // A fresh sign-in mints a new refresh-token family: any dead-family
+        // detection from the previous one is obsolete.
+        unawaited(SessionService.clearDeadSessionState());
+        lastOfflineRestoreAt = null;
+        cancelSessionRecoveryRetry();
         // Recovery may have been disabled by the PREVIOUS session (forced
         // sign-out or deleted account). The new session must be recoverable
         // on the next launch, and the policy probes must be evaluated for
@@ -885,6 +1051,7 @@ final authStateProvider = StreamProvider<AuthState>((ref) {
   ref.onDispose(() {
     disposed = true;
     initialEventTimeout?.cancel();
+    sessionRecoveryRetryTimer?.cancel();
     sub?.cancel();
     controller.close();
   });

@@ -556,7 +556,11 @@ class AttendeesScreen extends ConsumerWidget {
                                   data: (profile) {
                                     final name =
                                         profile?.name
-                                            .formatAsFirstNameLastInitial() ??
+                                            .formatAsFirstNameLastInitial(
+                                              fallback: l10n.getString(
+                                                'generalUnknown',
+                                              ),
+                                            ) ??
                                         l10n.getString('generalUnknown');
                                     final age = _calculateAge(
                                       profile?.dateOfBirth,
@@ -620,7 +624,11 @@ class AttendeesScreen extends ConsumerWidget {
                                   // Resolve the cached name so the profile shows it offline.
                                   final cachedName =
                                       otherProfileAsync.asData?.value?.name
-                                          .formatAsFirstNameLastInitial() ??
+                                          .formatAsFirstNameLastInitial(
+                                            fallback: l10n.getString(
+                                              'generalUnknown',
+                                            ),
+                                          ) ??
                                       l10n.getString('generalUnknown');
                                   // Navigate to existing MatchProfileScreen
                                   Navigator.of(

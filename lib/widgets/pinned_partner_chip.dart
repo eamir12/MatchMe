@@ -46,7 +46,7 @@ class PinnedPartnerChip extends ConsumerWidget {
                     child: ShrinkText(
                       l10n.getString('pinnedPartnerBadge'),
                       style: TextStyle(
-                        fontSize: 11,
+                        fontSize: 12,
                         fontWeight: FontWeight.w600,
                         color: color,
                       ),

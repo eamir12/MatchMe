@@ -2,9 +2,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter/foundation.dart';
+
 import 'dart:io' show Platform;
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/models/chat_model.dart';
 import 'package:matchme/models/match_model.dart';
@@ -23,7 +26,6 @@ import 'package:matchme/services/user_activity_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:matchme/utils/encrypted_text_guard.dart';
 import 'package:matchme/utils/offline_utils.dart';
-import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/translation_edit_marker.dart';
 import 'package:matchme/utils/notification_limits.dart';
 import 'package:matchme/utils/nearby_radius_utils.dart';
@@ -45,58 +47,12 @@ import 'package:matchme/services/expiry_local_schedule_service.dart';
 
 final supabase = Supabase.instance.client;
 
-// Helper function to format sender name: "FirstName LastInitial." e.g., "John S."
-// Falls back to "Unknown User" instead of a brand name so we never advertise the
-// app in place of the actual sender.
-// Capitalizes first letters regardless of input casing and handles multiple
-// first/last names (e.g. Spanish names).
-// The result carries the directional mark of the name's own script so the
-// trailing period stays glued to the initial in a Hebrew UI too.
-String formatSenderNameForNotification(String fullName) {
-  if (fullName.isEmpty) return 'Unknown User';
-
-  String capWord(String word) {
-    if (word.isEmpty) return word;
-    final hyphenParts = word.split('-');
-    return hyphenParts
-        .map((h) {
-          if (h.isEmpty) return h;
-          return h
-              .split("'")
-              .map((s) {
-                if (s.isEmpty) return s;
-                final lower = s.toLowerCase();
-                return '${lower[0].toUpperCase()}${lower.substring(1)}';
-              })
-              .join("'");
-        })
-        .join('-');
-  }
-
-  final cleaned = fullName.replaceAll(bidiControls, '');
-  final parts = cleaned
-      .trim()
-      .split(RegExp(r'\s+'))
-      .where((p) => p.isNotEmpty)
-      .toList();
-  if (parts.isEmpty) return 'Unknown User';
-  if (parts.length == 1) {
-    return capWord(parts[0])
-        .withDirectionalMarks(); // Just first name if no last name
-  }
-
-  // First name + first letter of last name with period
-  final firstName = capWord(parts[0]);
-  final lastInitial = parts[parts.length - 1][0].toUpperCase();
-  return '$firstName $lastInitial.'.withDirectionalMarks();
-}
-
 // Resolves the chat counterpart's display name for notifications.
 // Priority:
 //   1) Local Hive chat row (other_user_name / otherUserName) — already masked,
 //      RLS-free, available even when offline.
 //   2) Supabase users.name lookup (may fail under transient network / RLS).
-//   3) formatSenderNameForNotification of whatever non-empty string we got.
+//   3) maskFullName of whatever non-empty string we got.
 //   4) "Someone" as the last-resort fallback (never the brand name).
 Future<String> _resolveChatNotificationSenderName({
   required LocalDbService localDb,
@@ -114,7 +70,7 @@ Future<String> _resolveChatNotificationSenderName({
               .toString()
               .trim();
           if (raw.isNotEmpty && raw != 'Unknown User') {
-            return formatSenderNameForNotification(raw);
+            return maskFullName(raw);
           }
           break;
         }
@@ -133,13 +89,44 @@ Future<String> _resolveChatNotificationSenderName({
         .single();
     final raw = (userData['name'] as String? ?? '').trim();
     if (raw.isNotEmpty) {
-      return formatSenderNameForNotification(raw);
+      return maskFullName(raw);
     }
   } catch (_) {
     // ignore and fall through
   }
 
   return 'Someone';
+}
+
+/// The conversation's picture, as the object path the image cache knows.
+///
+/// A notification card puts this face beside the sender's name. Web resolves it
+/// from a signed URL the session already holds and Windows from the local avatar
+/// mirror, so the path alone is enough - and it is deliberately never fetched
+/// here: a tray card does not spend a request on a photo the member has not
+/// looked at, and a conversation with no picture simply posts without one.
+Future<String> _resolveChatNotificationAvatarSource({
+  required LocalDbService localDb,
+  required String currentUserId,
+  required String matchId,
+}) async {
+  try {
+    final cachedChats = await localDb.loadChats(currentUserId);
+    if (cachedChats == null) return '';
+    for (final chat in cachedChats) {
+      if (chat['match_id'] != matchId) continue;
+      return _chatNotificationPhotoSource(chat['other_user_photos']);
+    }
+  } catch (_) {}
+  return '';
+}
+
+String _chatNotificationPhotoSource(Object? photos) {
+  if (photos is List && photos.isNotEmpty) {
+    return photos.first.toString().trim();
+  }
+  if (photos is String) return photos.trim();
+  return '';
 }
 
 // --- recentMatchesProvider (Reads Local DB Only) ---
@@ -393,9 +380,7 @@ final initialHomeSyncProvider = FutureProvider.autoDispose.family<void, String>(
         if (!ref.mounted) return;
         // The user's own profile is refreshed in parallel with the prefetch
         // below, so it is not held up by the conversation downloads.
-        unawaited(
-          profileSync.syncProfile(userId, source: 'warm-home-refresh'),
-        );
+        unawaited(profileSync.syncProfile(userId, source: 'warm-home-refresh'));
         // Background prefetch: everything the app can show that is not on
         // the device yet is downloaded here - the chat list, every
         // conversation, the matches and the user's own settings. Once this
@@ -554,8 +539,15 @@ Future<void> _warmMatchedUsersAfterHomeSync(Ref ref, String userId) async {
     // written the first time that screen is opened. Warming them here means
     // opening a match profile renders from disk instead of showing a
     // spinner while the snapshot is downloaded.
+    //
+    // Matches are per intent, so one partner occupies as many match rows as
+    // they share intents with; fetching inside that loop issued one identical
+    // concurrent request per row (60 requests for one partner in 6 seconds on
+    // one device, enough for PostgREST to answer 503 — 2026-10-26). Cold
+    // partners are now collected first and fetched in batches.
     try {
       if (shouldSkipSupabaseCalls()) return;
+      final coldIntentsByPartner = <String, Set<String>>{};
       for (final match in matches) {
         final u1 = (match['user1_id'] ?? '').toString().trim();
         final u2 = (match['user2_id'] ?? '').toString().trim();
@@ -563,8 +555,16 @@ Future<void> _warmMatchedUsersAfterHomeSync(Ref ref, String userId) async {
         if (other.isEmpty) continue;
         final intent = (match['matched_intent'] ?? '').toString().trim();
         if (intent.isEmpty) continue;
-        unawaited(_warmSpecificProfileCache(localDb, other, intent));
+        final cold = coldIntentsByPartner.putIfAbsent(other, () => <String>{});
+        if (cold.contains(intent)) continue;
+        try {
+          final cached = await localDb.getCachedSpecificProfile(other, intent);
+          if (cached != null && cached.isNotEmpty) continue;
+        } catch (_) {}
+        cold.add(intent);
       }
+      coldIntentsByPartner.removeWhere((_, intents) => intents.isEmpty);
+      await _warmSpecificProfilesCache(localDb, coldIntentsByPartner);
     } catch (_) {}
   } catch (_) {
   } finally {
@@ -572,37 +572,56 @@ Future<void> _warmMatchedUsersAfterHomeSync(Ref ref, String userId) async {
   }
 }
 
-/// Downloads the intent-specific profile snapshot (bio, sub-intents,
-/// interests) for a matched user into the local cache.
+/// Partners whose snapshot fetch is already running, so two overlapping home
+/// refresh passes can't issue the same request twice.
+final Set<String> _specificProfileWarmInFlight = <String>{};
+
+/// Keeps a single `user_profiles` request's `in (...)` list short enough to
+/// stay well inside URL length limits for users with many matches.
+const int _specificProfileBatchSize = 50;
+
+/// Downloads the intent-specific profile snapshots (bio, sub-intents,
+/// interests) for every partner in [coldIntentsByPartner] in as few requests
+/// as possible, storing each row under all of that partner's cold intents.
 ///
 /// The match profile screen reads this cache first, so a warm cache turns a
-/// full-screen spinner into an instant render. Best effort: never throws.
-Future<void> _warmSpecificProfileCache(
+/// full-screen spinner into an instant render. [coldIntentsByPartner] must
+/// already exclude cached intents. Best effort: never throws.
+Future<void> _warmSpecificProfilesCache(
   LocalDbService localDb,
-  String userId,
-  String intentType,
+  Map<String, Set<String>> coldIntentsByPartner,
 ) async {
-  if (userId.isEmpty || intentType.isEmpty) return;
-  try {
-    final cached = await localDb.getCachedSpecificProfile(userId, intentType);
-    if (cached != null && cached.isNotEmpty) return;
-  } catch (_) {
-    // Fall through and fetch it.
+  final targets = <String>[];
+  for (final userId in coldIntentsByPartner.keys) {
+    if (userId.isEmpty) continue;
+    if (!_specificProfileWarmInFlight.add(userId)) continue;
+    targets.add(userId);
   }
+  if (targets.isEmpty) return;
   try {
-    if (shouldSkipSupabaseCalls()) return;
-    final response = await supabase
-        .from('user_profiles')
-        .select('bio, sub_intents, personal_interests, business_interests')
-        .eq('user_id', userId)
-        .maybeSingle();
-    if (response == null) return;
-    await localDb.saveCachedSpecificProfile(
-      userId,
-      intentType,
-      Map<String, dynamic>.from(response),
-    );
-  } catch (_) {}
+    if (shouldSkipUserScopedSupabaseCalls()) return;
+    for (var i = 0; i < targets.length; i += _specificProfileBatchSize) {
+      final batch = targets.sublist(
+        i,
+        min(i + _specificProfileBatchSize, targets.length),
+      );
+      final rows = await supabase
+          .from('user_profiles')
+          .select(
+            'user_id, bio, sub_intents, personal_interests, business_interests',
+          )
+          .inFilter('user_id', batch);
+      for (final row in rows) {
+        final data = Map<String, dynamic>.from(row);
+        final partner = data.remove('user_id')?.toString().trim() ?? '';
+        for (final intent in coldIntentsByPartner[partner] ?? const <String>{}) {
+          await localDb.saveCachedSpecificProfile(partner, intent, data);
+        }
+      }
+    }
+  } catch (_) {} finally {
+    _specificProfileWarmInFlight.removeAll(targets);
+  }
 }
 
 // Tracks the last time the user-data channel was kicked into a "reconnect
@@ -1317,23 +1336,16 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                             payload.newRecord['content_translated_encrypted'] ||
                         payload.oldRecord['encryption_scheme'] !=
                             payload.newRecord['encryption_scheme']))) {
-              try {
-                await Future.delayed(
-                  await (() async {
-                    try {
-                      return await appConfigService.getDuration(
-                        'ui.home_refresh_delay_ms',
-                        defaultValue: const Duration(milliseconds: 100),
-                      );
-                    } catch (e) {
-                      return const Duration(milliseconds: 100);
-                    }
-                  })(),
-                );
-                await syncService.syncChatsNow(userId);
-              } catch (e) {
-                debugPrint('🔄 Error syncing chats on realtime change: $e');
-              }
+              // Refresh the chats-row snapshots in the background. Never await
+              // this here: the configurable delay plus a full network round-trip
+              // used to run before the INSERT branch below persisted the
+              // message, so the open chat and the preview lagged the
+              // notification by seconds.
+              unawaited(
+                syncService.syncChatsNow(userId).catchError((e) {
+                  debugPrint('🔄 Error syncing chats on realtime change: $e');
+                }),
+              );
             }
 
             if (!ref.mounted) return;
@@ -1497,7 +1509,57 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                 // list row only healed on a later (possibly coalesced-away)
                 // sync. updateChatLastMessageTranslation also self-heals an
                 // out-of-order row by recomputing from the messages box.
+                // A translation UPDATE can arrive before the INSERT event for
+                // the same row (the webhook writes the translation while the
+                // realtime stream is still delivering the insert). Persist the
+                // full updated row first so (a) the INSERT handler sees it as
+                // already cached instead of replacing it with the
+                // pre-translation payload, and (b) the code below always has a
+                // local row to work with.
+                bool translationUpdateArrivedBeforeInsert = false;
                 if (isTranslationUpdate &&
+                    messageId != null &&
+                    matchId != null) {
+                  if (!_sessionAddedMessageIds.contains(messageId)) {
+                    try {
+                      final alreadyExists = await localDb.getMessageById(
+                        matchId,
+                        messageId,
+                      );
+                      translationUpdateArrivedBeforeInsert =
+                          alreadyExists == null;
+                      if (!translationUpdateArrivedBeforeInsert) {
+                        // Replayed/cold-start update for a row we already
+                        // have: the insert/preview path owns it.
+                        _notifiedMessageIds.add(messageId);
+                        _pendingTranslatedNotificationMessageIds.remove(
+                          messageId,
+                        );
+                        _pendingTranslationTimeoutTimers
+                            .remove(messageId)
+                            ?.cancel();
+                      }
+                    } catch (e) {
+                      debugPrint(
+                        '❌ Failed to inspect $messageId before translation merge: $e',
+                      );
+                    }
+                  }
+                  try {
+                    await localDb.mergeMessages(matchId, [payload.newRecord]);
+                  } catch (e) {
+                    debugPrint(
+                      '❌ Failed to persist translation update for $messageId: $e',
+                    );
+                  }
+                }
+
+                // Keep the chats-row preview in sync with every translation
+                // payload update, not only the first one. A failed fallback
+                // (original text) followed by a successful retry is still an
+                // UPDATE with a payload, and the early notification returns
+                // below must not leave the list showing the stale fallback.
+                if (payload.eventType == PostgresChangeEvent.update &&
                     messageId != null &&
                     matchId != null) {
                   final previewText =
@@ -1522,7 +1584,7 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                           editedAt: rowEditedAt,
                         ),
                       );
-                    } else if (rowEditedAt != null) {
+                    } else if (isTranslationUpdate && rowEditedAt != null) {
                       unawaited(
                         localDb.updateChatLastMessageTranslation(
                           currentUserId,
@@ -1532,6 +1594,105 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                         ),
                       );
                     }
+                  }
+                }
+
+                // Persist INSERT events before any notification short-circuit.
+                // The previous order returned for already-notified messages
+                // before touching local storage; when a translation UPDATE won
+                // the race, the INSERT was the only event that could create the
+                // row, so the open chat and preview could miss it entirely.
+                bool insertAlreadyCached = false;
+                if (payload.eventType == PostgresChangeEvent.insert &&
+                    messageId != null &&
+                    matchId != null) {
+                  try {
+                    insertAlreadyCached =
+                        await localDb.getMessageById(matchId, messageId) !=
+                        null;
+                    final messagesToDeliver = await localDb.addMessages(
+                      matchId,
+                      [payload.newRecord],
+                      currentUserId: currentUserId,
+                    );
+                    final deliveryIds = <String>{...messagesToDeliver};
+                    final deliveredAt = payload.newRecord['delivered_at'];
+                    if (senderId != currentUserId &&
+                        (deliveredAt == null ||
+                            deliveredAt == '' ||
+                            deliveredAt == 'null')) {
+                      deliveryIds.add(messageId);
+                    }
+                    if (deliveryIds.isNotEmpty) {
+                      unawaited(
+                        Future.wait(
+                          deliveryIds.map(
+                            (msgId) => supabase
+                                .rpc(
+                                  'mark_message_delivered',
+                                  params: {'p_message_id': msgId},
+                                )
+                                .catchError((e) {
+                                  debugPrint(
+                                    '❌ home_providers: Failed to mark $msgId as delivered: $e',
+                                  );
+                                }),
+                          ),
+                          eagerError: false,
+                        ),
+                      );
+                    }
+                    _sessionAddedMessageIds.add(messageId);
+                  } catch (e) {
+                    debugPrint('❌ Failed to save message to local DB: $e');
+                  }
+
+                  // Preview fast path: don't wait for the next syncChatsNow
+                  // (+cooldowns) to show the new last message in Recent Chats.
+                  // Decrypts + recomputes the preview off the realtime payload
+                  // and single-flights the translation when needed.
+                  // Fire-and-forget; syncChatsNow remains the backstop.
+                  unawaited(
+                    _refreshPreviewForIncomingRealtimeMessage(
+                      localDb: localDb,
+                      currentUserId: currentUserId,
+                      matchId: matchId,
+                      messageId: messageId,
+                      newRecord: payload.newRecord,
+                      uiLang: normalizeLanguageCode(localUiLang),
+                    ),
+                  );
+                }
+
+                // A replayed/cold-start UPDATE for a message we already have
+                // must never notify again. Translation updates that arrived
+                // before the INSERT are the one exception: the row was just
+                // persisted by the merge above and this event is the first
+                // chance to notify for the new message.
+                if (payload.eventType == PostgresChangeEvent.update &&
+                    messageId != null &&
+                    matchId != null &&
+                    !_sessionAddedMessageIds.contains(messageId) &&
+                    !translationUpdateArrivedBeforeInsert) {
+                  try {
+                    final alreadyExists = await localDb.getMessageById(
+                      matchId,
+                      messageId,
+                    );
+                    if (alreadyExists != null) {
+                      _notifiedMessageIds.add(messageId);
+                      _pendingTranslatedNotificationMessageIds.remove(
+                        messageId,
+                      );
+                      _pendingTranslationTimeoutTimers
+                          .remove(messageId)
+                          ?.cancel();
+                      return;
+                    }
+                  } catch (e) {
+                    debugPrint(
+                      '❌ Failed to inspect $messageId before notification: $e',
+                    );
                   }
                 }
 
@@ -1556,91 +1717,23 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                     return;
                   }
 
-                  // Skip notifications for messages already in local DB.
-                  // On cold start the realtime subscription reconnects and
-                  // replays INSERT events for every old message – without
-                  // this guard every replayed message triggers a spurious
-                  // notification.
-                  if (payload.eventType == PostgresChangeEvent.insert) {
-                    final alreadyExists = await localDb.getMessageById(
+                  // Messages already in the local store are replayed INSERT
+                  // events from a cold-start reconnect, or the insert raced a
+                  // translation UPDATE (which already notified). Never notify
+                  // twice for them.
+                  if (payload.eventType == PostgresChangeEvent.insert &&
+                      insertAlreadyCached) {
+                    _notifiedMessageIds.add(messageId);
+                    _pendingTranslatedNotificationMessageIds.remove(messageId);
+                    _pendingTranslationTimeoutTimers
+                        .remove(messageId)
+                        ?.cancel();
+                    _scheduleCoalescedPreviewRecompute(
+                      localDb,
+                      currentUserId,
                       matchId,
-                      messageId,
                     );
-                    if (alreadyExists != null) {
-                      _notifiedMessageIds.add(messageId);
-                      _pendingTranslatedNotificationMessageIds.remove(
-                        messageId,
-                      );
-                      _pendingTranslationTimeoutTimers
-                          .remove(messageId)
-                          ?.cancel();
-                      // The message is already cached (e.g. the open chat's
-                      // own fetch beat this channel), so refresh the chats-row
-                      // preview from the local store right here instead of
-                      // trusting the sync trigger, which the rapid-fire
-                      // guards can coalesce away.
-                      _scheduleCoalescedPreviewRecompute(
-                        localDb,
-                        currentUserId,
-                        matchId,
-                      );
-                      return;
-                    }
-                  }
-
-                  // ... (rest of DB saving logic) ...
-                  try {
-                    if (payload.eventType == PostgresChangeEvent.insert) {
-                      final messagesToDeliver = await localDb.addMessages(
-                        matchId,
-                        [payload.newRecord],
-                        currentUserId: currentUserId,
-                      );
-                      if (messagesToDeliver.isNotEmpty) {
-                        unawaited(
-                          Future.wait(
-                            messagesToDeliver.map(
-                              (msgId) => supabase
-                                  .rpc(
-                                    'mark_message_delivered',
-                                    params: {'p_message_id': msgId},
-                                  )
-                                  .catchError((e) {
-                                    debugPrint(
-                                      '❌ home_providers: Failed to mark $msgId as delivered: $e',
-                                    );
-                                  }),
-                            ),
-                            eagerError: false,
-                          ),
-                        );
-                      }
-                    }
-                  } catch (e) {
-                    debugPrint('❌ Failed to save message to local DB: $e');
-                  }
-
-                  // Preview fast path: don't wait for the next syncChatsNow
-                  // (+cooldowns) to show the new last message in Recent Chats.
-                  // Decrypts + recomputes the preview off the realtime payload
-                  // and single-flights the translation when needed.
-                  // Fire-and-forget; syncChatsNow remains the backstop.
-                  // (matchId/messageId/currentUserId are null-guarded above.)
-                  if (payload.eventType == PostgresChangeEvent.insert) {
-                    unawaited(
-                      _refreshPreviewForIncomingRealtimeMessage(
-                        localDb: localDb,
-                        currentUserId: currentUserId,
-                        matchId: matchId,
-                        messageId: messageId,
-                        newRecord: payload.newRecord,
-                        uiLang: normalizeLanguageCode(localUiLang),
-                      ),
-                    );
-                  }
-
-                  if (payload.eventType == PostgresChangeEvent.insert) {
-                    _sessionAddedMessageIds.add(messageId);
+                    return;
                   }
 
                   bool isTranslationEnabled = false;
@@ -1663,7 +1756,10 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                   // hadn't completed yet.
                   if (payload.eventType == PostgresChangeEvent.insert &&
                       isTranslationEnabled) {
-                    // Always defer notification when translation is enabled
+                    // Wait for the translation/identity UPDATE. This keeps the
+                    // notification, list preview and bubble on the same final
+                    // text; same-language messages already rendered their
+                    // original in the list and bubble while this arrives.
                     debugPrint(
                       '🔔 [NOTIFY] INSERT event with translation enabled - deferring notification until translation arrives',
                     );
@@ -1672,26 +1768,6 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                   }
 
                   if (payload.eventType == PostgresChangeEvent.update) {
-                    // Skip replayed translation updates for messages that were
-                    // never added to local DB during this session (cold-start
-                    // realtime replay).
-                    if (!_sessionAddedMessageIds.contains(messageId)) {
-                      final alreadyExists = await localDb.getMessageById(
-                        matchId,
-                        messageId,
-                      );
-                      if (alreadyExists != null) {
-                        _notifiedMessageIds.add(messageId);
-                        _pendingTranslatedNotificationMessageIds.remove(
-                          messageId,
-                        );
-                        _pendingTranslationTimeoutTimers
-                            .remove(messageId)
-                            ?.cancel();
-                        return;
-                      }
-                    }
-
                     final sourceLang = normalizeLanguageCode(
                       payload.newRecord['detected_source_language']
                               ?.toString() ??
@@ -1725,18 +1801,18 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                       translatedText.isNotEmpty &&
                       translatedText != 'null';
 
+                  // The text this card may quote, or null when nothing is
+                  // displayable yet. Which line the member reads is decided by
+                  // the translation rules below; the "show message previews"
+                  // switch is NOT applied here - the card renderer drops the
+                  // text itself, so a previews-off card keeps its count in the
+                  // title and quotes nothing, exactly like the server's card.
                   String? displayContent;
                   final previewsEnabled = ref
                       .read(userPreferencesProvider)
                       .notifications
                       .messagePreviews;
-                  if (!previewsEnabled) {
-                    // Message previews disabled: mask the tray body with a
-                    // generic string instead of suppressing the notification.
-                    displayContent = ref
-                        .read(localizationProvider)
-                        .getString('pushNewMessageBodyFallback');
-                  } else if (isTranslationEnabled &&
+                  if (isTranslationEnabled &&
                       sourceLanguage != null &&
                       sourceLanguage.isNotEmpty) {
                     final sourceLang = normalizeLanguageCode(sourceLanguage);
@@ -1815,12 +1891,20 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                     }
                   }
 
-                  if (displayContent == null || displayContent.isEmpty) {
+                  // With previews off the card quotes nothing, so a translation
+                  // that has not landed is not a reason to stay silent: the
+                  // member gets the count either way.
+                  final bool hasDisplayableContent =
+                      displayContent != null && displayContent.isNotEmpty;
+                  if (previewsEnabled && !hasDisplayableContent) {
                     debugPrint(
                       '🔔 [NOTIFY] Skipping notification for $messageId - no decrypted content available (sync fallback will handle it)',
                     );
                     return;
                   }
+                  final notificationContent = hasDisplayableContent
+                      ? displayContent
+                      : '';
 
                   final senderName = await _resolveChatNotificationSenderName(
                     localDb: localDb,
@@ -1843,11 +1927,18 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                     debugPrint(
                       '🔔 [WEB_NOTIFY] $webTimestamp | Browser notification',
                     );
+                    final avatarSource =
+                        await _resolveChatNotificationAvatarSource(
+                          localDb: localDb,
+                          currentUserId: currentUserId,
+                          matchId: matchId,
+                        );
                     WebNotificationService.showMessageNotification(
                       chatId: matchId,
                       senderName: senderName,
-                      messageContent: displayContent,
+                      messageContent: notificationContent,
                       matchId: matchId,
+                      photoSource: avatarSource,
                     );
                   } else if (Platform.isAndroid) {
                     final androidTime = DateTime.now();
@@ -1861,10 +1952,11 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                     Future.delayed(const Duration(milliseconds: 200), () {
                       BackgroundService.triggerNotificationCheck(
                         messageId: messageId,
-                        translatedContent: displayContent,
+                        translatedContent: notificationContent,
                         originalContent: originalContent,
                         senderName: senderName,
                         matchId: matchId,
+                        previewsEnabled: previewsEnabled,
                       );
                     });
                   } else if (Platform.isIOS || Platform.isWindows) {
@@ -1879,7 +1971,7 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                     await MobileLocalNotificationService.showMessageNotification(
                       chatId: matchId,
                       senderName: senderName,
-                      messageContent: displayContent,
+                      messageContent: notificationContent,
                       matchId: matchId,
                       messageId: messageId,
                     );
@@ -2738,8 +2830,17 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
 
                 // This message arrived via sync, not realtime - trigger notification as fallback
                 try {
-                  final messageContent =
-                      json['last_message'] as String? ?? 'New message';
+                  // Nullable on purpose: "this chat has no line to quote" is a
+                  // different fact from "this chat holds an empty message", and
+                  // the card is built from that distinction. A placeholder
+                  // string here would get the card to quote a lie.
+                  final String? rawLastMessage = json['last_message']
+                      ?.toString()
+                      .trim();
+                  final String? messageContent =
+                      (rawLastMessage == null || rawLastMessage.isEmpty)
+                      ? null
+                      : rawLastMessage;
                   String? detectedSourceLang =
                       json['last_message_source_language']?.toString();
                   if (detectedSourceLang != null &&
@@ -2784,8 +2885,7 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                   // If source is still unknown, try client-side detection on the message content
                   if ((detectedSourceLang == null ||
                           detectedSourceLang.isEmpty) &&
-                      messageContent.isNotEmpty &&
-                      messageContent != 'New message') {
+                      messageContent != null) {
                     try {
                       final translationService = ref.read(
                         translationServiceProvider,
@@ -2835,18 +2935,16 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                     return chat;
                   }
 
-                  final String displayContent;
+                  // The text this card may quote. The "show message previews"
+                  // switch is not applied here: the renderer drops the text and
+                  // keeps the count, so a previews-off card says the same thing
+                  // as the server's card instead of a canned placeholder.
+                  String? displayContent;
                   final previewsEnabled = ref
                       .read(userPreferencesProvider)
                       .notifications
                       .messagePreviews;
-                  if (!previewsEnabled) {
-                    // Message previews disabled: mask the tray body with a
-                    // generic string instead of suppressing the notification.
-                    displayContent = ref
-                        .read(localizationProvider)
-                        .getString('pushNewMessageBodyFallback');
-                  } else if (translationEnabled &&
+                  if (translationEnabled &&
                       detectedSourceLang != null &&
                       detectedSourceLang.isNotEmpty) {
                     if (detectedSourceLang == uiLang) {
@@ -2868,10 +2966,15 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                     displayContent = decryptedContent ?? messageContent;
                   }
 
-                  if (displayContent.isEmpty) {
+                  final bool hasDisplayableContent =
+                      displayContent != null && displayContent.isNotEmpty;
+                  if (previewsEnabled && !hasDisplayableContent) {
                     _previousChatUnreadCounts[matchId] = unreadCount;
                     return chat;
                   }
+                  final notificationContent = hasDisplayableContent
+                      ? displayContent
+                      : '';
 
                   // Fetch sender name (local Hive first, then Supabase, then "Someone")
                   final senderName = await _resolveChatNotificationSenderName(
@@ -2912,8 +3015,12 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                     WebNotificationService.showMessageNotification(
                       chatId: matchId,
                       senderName: senderName,
-                      messageContent: displayContent,
+                      messageContent: notificationContent,
                       matchId: matchId,
+                      unreadCount: unreadCount,
+                      photoSource: _chatNotificationPhotoSource(
+                        json['other_user_photos'],
+                      ),
                     );
                   } else if (Platform.isAndroid) {
                     // On Android, notification will be handled by background service
@@ -2924,12 +3031,16 @@ final recentChatsProvider = StreamProvider.family<List<ChatModel>, String>((
                     debugPrint(
                       '🔄 [SYNC FALLBACK] Platform: iOS/Windows - showing local notification',
                     );
+                    // The chat row's own total: this device may have seen none
+                    // of these messages, and the title has to say how many
+                    // await the member either way.
                     await MobileLocalNotificationService.showMessageNotification(
                       chatId: matchId,
                       senderName: senderName,
-                      messageContent: displayContent,
+                      messageContent: notificationContent,
                       matchId: matchId,
                       messageId: lastMessageId,
+                      unreadCount: unreadCount,
                     );
                   }
                   if (lastMessageId != null && lastMessageId.isNotEmpty) {
@@ -4676,7 +4787,7 @@ class MatchChatStartExpiryWarningNotifier extends Notifier<Object?> {
               .toString();
       final trimmed = raw.trim();
       if (trimmed.isEmpty) return null;
-      return formatSenderNameForNotification(trimmed);
+      return maskFullName(trimmed);
     } catch (_) {
       return null;
     }
@@ -4696,7 +4807,7 @@ class MatchChatStartExpiryWarningNotifier extends Notifier<Object?> {
       final raw = profile?.name.toString() ?? '';
       final trimmed = raw.trim();
       if (trimmed.isEmpty) return null;
-      return formatSenderNameForNotification(trimmed);
+      return maskFullName(trimmed);
     } catch (_) {
       return null;
     }

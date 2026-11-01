@@ -2420,7 +2420,7 @@ class _OnlineProvidersScreenState extends ConsumerState<OnlineProvidersScreen> {
                       child: Text(
                         l10n.getString('calendarSyncDuplicateBadge'),
                         style: TextStyle(
-                          fontSize: 10,
+                          fontSize: 12,
                           fontWeight: FontWeight.bold,
                           color: Colors.orange.shade800,
                         ),

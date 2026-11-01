@@ -286,7 +286,7 @@ class ProfileCompletenessSummary extends ConsumerWidget {
           Text(
             '+${item.remainingPoints}%',
             style: TextStyle(
-              fontSize: 11,
+              fontSize: 12,
               fontWeight: FontWeight.w700,
               color: Theme.of(context).colorScheme.primary,
             ),

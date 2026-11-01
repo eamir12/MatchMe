@@ -166,6 +166,12 @@ class ChatKeyNotifier extends Notifier<ChatKeyState> {
       final hasLocal = await _chatKeyService.hasPrivateKeyLocally(userId);
       final activeKey = await _chatKeyService.fetchActiveKey(userId);
       final hasCrk = await _chatKeyService.loadCrkBytes(userId) != null;
+      // An unauthenticated/expired session makes RLS return an empty result
+      // instead of throwing. That empty result must NOT be treated as "the
+      // server has no active key": doing so deletes a perfectly good local
+      // private key and makes every message encrypted with it unreadable.
+      final session = Supabase.instance.client.auth.currentSession;
+      final hasValidSession = session != null && !session.isExpired;
       final hasPassword =
           activeKey != null &&
           (await _chatKeyService.fetchWrapperByType(
@@ -196,7 +202,12 @@ class ChatKeyNotifier extends Notifier<ChatKeyState> {
           );
         }
         bool keyCleared = false;
-        if (activeKey == null && storedActiveId != null) {
+        if (activeKey == null && storedActiveId != null && !hasValidSession) {
+          debugPrint(
+            '⚠️ [ChatKeyProvider] Active key lookup returned empty without a valid session — preserving local key',
+          );
+        }
+        if (activeKey == null && storedActiveId != null && hasValidSession) {
           // Server has no active key but local has stale state — clear
           // local state and fall through to first-time setup.
           debugPrint(
@@ -453,6 +464,20 @@ class ChatKeyNotifier extends Notifier<ChatKeyState> {
         return;
       } else {
         // 4. First-time setup — no existing key, no messages to lose.
+        if (!hasValidSession) {
+          // setupEncryption would throw "Not authenticated" and then the
+          // 15s retry below would keep firing while the token is dead.
+          // Defer until a renewal/refresh provides an authenticated session.
+          debugPrint(
+            '🔑 [ChatKeyProvider] No valid session — deferring first-time key setup',
+          );
+          state = ChatKeyState(
+            isLoaded: true,
+            isLocked: false,
+            hasRecoveryKey: hasCrk,
+          );
+          return;
+        }
         debugPrint(
           'ℹ️ [ChatKeyProvider] No active key - setting up encryption',
         );

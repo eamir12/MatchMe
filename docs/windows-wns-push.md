@@ -108,7 +108,7 @@ sync if the package identity ever changes.
    ```
    PFN: EAmir.MatchMeApp_580403ahehwbc
    AppId: 3f5aa18f-ec86-4602-9f2a-d6841ce63166
-   ObjectId: <object id of the SP from step 2 — Get-MgServicePrincipal ... | Select-Object Id>
+   ObjectId: c14b002b-bc61-4a98-93d4-4b58e78f33a2   # Id of the Step-2 SP (Get-MgServicePrincipal)
    ```
    Processed on a **weekly batch**; Microsoft replies when completed. Until it
    lands, every send returns `403` with empty body/headers. Old tokens stay

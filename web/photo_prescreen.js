@@ -8,7 +8,7 @@
 // Exposes: window.MatchMePhotoPrescreen.analyze(base64) -> Promise<result>
 // Result keys match the native MethodChannel map:
 //   supported, containsFace, containsBody, uncertain,
-//   faceConfidence, bodyConfidence, faceCount, faceSizeRatio,
+//   faceConfidence, bodyConfidence, faceCount, bodyCount, faceSizeRatio,
   //   facePositionedCenter, faceTouchesImageEdge, completeFaceDetected,
   //   faceObstructed, upperBodyOnly, fullBodyVisible, completeBodyDetected
 //
@@ -66,6 +66,7 @@
       faceConfidence: 0.0,
       bodyConfidence: 0.0,
       faceCount: 0,
+      bodyCount: 0,
       faceSizeRatio: 0.0,
       facePositionedCenter: false,
       faceTouchesImageEdge: false,
@@ -144,7 +145,9 @@
             vision.PoseLandmarker.createFromOptions(resolver, {
               baseOptions: { modelAssetPath: POSE_MODEL_URL },
               runningMode: 'IMAGE',
-              numPoses: 1,
+              // 3, not 1: the Spot me selfie gate must see a second body to
+              // reject a group shot. FaceDetector still supplies faceCount.
+              numPoses: 3,
               minPoseDetectionConfidence: 0.5,
               minPosePresenceConfidence: 0.5,
               minTrackingConfidence: 0.5
@@ -266,9 +269,7 @@
     };
   }
 
-  function analyzePose(poseResult) {
-    var lists = (poseResult && poseResult.landmarks) || [];
-    var landmarks = lists.length ? lists[0] : null;
+  function analyzeSinglePose(landmarks) {
     if (!landmarks || !landmarks.length) {
       return { containsBody: false, bodyConfidence: 0, upperBodyOnly: false, fullBodyVisible: false, completeBodyDetected: false };
     }
@@ -325,6 +326,32 @@
     };
   }
 
+  function analyzePose(poseResult) {
+    var lists = (poseResult && poseResult.landmarks) || [];
+    var bodyCount = 0;
+    var bodyConfidence = 0;
+    var allUpperBodyOnly = true;
+    var fullBodyVisible = false;
+    var completeBodyDetected = false;
+    for (var i = 0; i < lists.length; i++) {
+      var pose = analyzeSinglePose(lists[i]);
+      if (!pose.containsBody) continue;
+      bodyCount++;
+      bodyConfidence = Math.max(bodyConfidence, pose.bodyConfidence);
+      if (!pose.upperBodyOnly) allUpperBodyOnly = false;
+      fullBodyVisible = fullBodyVisible || pose.fullBodyVisible;
+      completeBodyDetected = completeBodyDetected || pose.completeBodyDetected;
+    }
+    return {
+      bodyCount: bodyCount,
+      containsBody: bodyCount > 0,
+      bodyConfidence: bodyConfidence,
+      upperBodyOnly: bodyCount > 0 ? allUpperBodyOnly : false,
+      fullBodyVisible: fullBodyVisible,
+      completeBodyDetected: completeBodyDetected
+    };
+  }
+
   function analyze(base64) {
     return ensureInitialized().then(function () {
       var blob;
@@ -376,7 +403,7 @@
             : { faceCount: 0, containsFace: false, faceConfidence: 0, faceSizeRatio: 0, facePositionedCenter: false, faceTouchesImageEdge: false, completeFaceDetected: false };
           var pose = poseRan
             ? analyzePose(poseOut)
-            : { containsBody: false, bodyConfidence: 0, upperBodyOnly: false, fullBodyVisible: false, completeBodyDetected: false };
+            : { bodyCount: 0, containsBody: false, bodyConfidence: 0, upperBodyOnly: false, fullBodyVisible: false, completeBodyDetected: false };
           return {
             supported: true,
             containsFace: faces.containsFace,
@@ -385,6 +412,7 @@
             faceConfidence: faces.faceConfidence,
             bodyConfidence: pose.bodyConfidence,
             faceCount: faces.faceCount,
+            bodyCount: pose.bodyCount,
             faceSizeRatio: faces.faceSizeRatio,
             facePositionedCenter: faces.facePositionedCenter,
             faceTouchesImageEdge: faces.faceTouchesImageEdge,

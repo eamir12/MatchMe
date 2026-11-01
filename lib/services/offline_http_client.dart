@@ -10,9 +10,49 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb;
 import 'package:http/http.dart' as http;
+import 'package:matchme/services/app_info_service.dart';
 import 'package:matchme/services/offline_api_cache.dart';
 import 'package:matchme/services/offline_cache_manager.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+/// Builds the User-Agent attached to every Supabase request so the project's
+/// edge logs — which end each line with the request UA — identify which user,
+/// platform and build produced it. `auth_user` is null for exactly the
+/// traffic that needs attribution most (anon/dead-session requests).
+/// Browsers forbid overriding the UA, so on web the referer and `auth_user`
+/// remain the attribution signals.
+class SupabaseLogIdentity {
+  SupabaseLogIdentity._();
+
+  static String? _version;
+  static bool _versionLoadStarted = false;
+
+  static Future<void> _loadVersion() async {
+    try {
+      final info = await AppInfoService.getAppInfo();
+      _version = '${info.version}+${info.buildNumber}';
+    } catch (_) {
+      _version = 'unknown';
+    }
+  }
+
+  static String userAgent() {
+    if (!_versionLoadStarted) {
+      _versionLoadStarted = true;
+      unawaited(_loadVersion());
+    }
+    final platform = kIsWeb ? 'web' : defaultTargetPlatform.name;
+    String uid = 'none';
+    try {
+      uid = Supabase.instance.client.auth.currentUser?.id ?? 'none';
+    } catch (_) {
+      // Supabase not initialized yet — pre-init calls are anonymous anyway.
+    }
+    return 'MatchMe/${_version ?? 'unknown'} ($platform; uid=$uid)';
+  }
+}
 
 class OfflineSupabaseHttpClient extends http.BaseClient {
   OfflineSupabaseHttpClient({http.Client? inner})
@@ -24,6 +64,8 @@ class OfflineSupabaseHttpClient extends http.BaseClient {
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    request.headers['User-Agent'] = SupabaseLogIdentity.userAgent();
+
     if (!_isCacheable(request)) {
       return _inner.send(request);
     }

@@ -136,7 +136,7 @@ class _WebBannerAdWidgetState extends ConsumerState<WebBannerAdWidget> {
                           color: Theme.of(context)
                               .colorScheme
                               .onSurfaceVariant,
-                          fontSize: 11,
+                          fontSize: 12,
                         ),
                         maxLines: 2,
                         overflow: TextOverflow.visible,
@@ -155,7 +155,7 @@ class _WebBannerAdWidgetState extends ConsumerState<WebBannerAdWidget> {
                           l10n.getString('webAdLearnMore'),
                           style: TextStyle(
                             color: Theme.of(context).colorScheme.onPrimary,
-                            fontSize: 10,
+                            fontSize: 12,
                             fontWeight: FontWeight.w500,
                           ),
                         ),

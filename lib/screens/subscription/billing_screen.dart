@@ -358,7 +358,7 @@ class _TabLabel extends StatelessWidget {
               child: Text(
                 count > 99 ? '99+' : count.toString(),
                 style: TextStyle(
-                  fontSize: 11,
+                  fontSize: 12,
                   fontWeight: FontWeight.w700,
                   color: Theme.of(context).colorScheme.primary,
                 ),
@@ -603,7 +603,7 @@ class _PromoBadge extends StatelessWidget {
           Text(
             label,
             style: TextStyle(
-              fontSize: 11,
+              fontSize: 12,
               fontWeight: FontWeight.w700,
               color: Colors.green.shade700,
             ),

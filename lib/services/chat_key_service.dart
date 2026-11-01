@@ -133,8 +133,17 @@ class ChatKeyService {
     );
   }
 
+  static const Duration _activeKeyCacheTtl = Duration(seconds: 60);
+  final Map<String, ({UserChatKeyModel key, DateTime cachedAt})>
+  _activeKeyCache = {};
+
   Future<UserChatKeyModel?> fetchActiveKey(String userId) async {
     if (shouldSkipSupabaseCalls()) return null;
+    final cached = _activeKeyCache[userId];
+    if (cached != null &&
+        DateTime.now().difference(cached.cachedAt) < _activeKeyCacheTtl) {
+      return cached.key;
+    }
     final supabase = Supabase.instance.client;
     final data = await supabase
         .from('user_chat_keys')
@@ -142,8 +151,13 @@ class ChatKeyService {
         .eq('user_id', userId)
         .eq('status', 'active')
         .maybeSingle();
-    if (data == null) return null;
-    return UserChatKeyModel.fromJson(data);
+    if (data == null) {
+      _activeKeyCache.remove(userId);
+      return null;
+    }
+    final key = UserChatKeyModel.fromJson(data);
+    _activeKeyCache[userId] = (key: key, cachedAt: DateTime.now());
+    return key;
   }
 
   Future<UserChatKeyModel?> fetchKeyById(String keyId) async {
@@ -191,6 +205,7 @@ class ChatKeyService {
   /// the old key intact. Returns the old key (or null if none existed).
   Future<UserChatKeyModel?> deleteActiveKey(String userId) async {
     if (shouldSkipSupabaseCalls()) return null;
+    _activeKeyCache.remove(userId);
     final supabase = Supabase.instance.client;
     final activeKey = await fetchActiveKey(userId);
     if (activeKey == null) return null;
@@ -205,6 +220,7 @@ class ChatKeyService {
     if (result.isEmpty) {
       return activeKey;
     }
+    _activeKeyCache.remove(userId);
     return null;
   }
 
@@ -636,7 +652,9 @@ class ChatKeyService {
         return key;
       }
     } catch (e) {
-      debugPrint('⚠️ [fetchPeerPublicKey] Failed loading peer key from prefs: $e');
+      debugPrint(
+        '⚠️ [fetchPeerPublicKey] Failed loading peer key from prefs: $e',
+      );
     }
 
     if (shouldSkipSupabaseCalls()) return _peerKeyCache[keyId];
@@ -655,10 +673,7 @@ class ChatKeyService {
       _peerKeyCache[keyId] = key;
       try {
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setString(
-          'peer_chat_key:$keyId',
-          jsonEncode(key.toJson()),
-        );
+        await prefs.setString('peer_chat_key:$keyId', jsonEncode(key.toJson()));
       } catch (_) {}
       return key;
     } catch (e) {
@@ -727,6 +742,7 @@ class ChatKeyService {
   void clearMemoryCaches() {
     _decryptedContentCache.clear();
     _peerKeyCache.clear();
+    _activeKeyCache.clear();
   }
 
   Future<UserChatKeyModel> setupEncryption({
@@ -867,6 +883,8 @@ class ChatKeyService {
         password: password,
       );
     }
+
+    _activeKeyCache.remove(userId);
 
     return UserChatKeyModel(
       id: userChatKeyId,

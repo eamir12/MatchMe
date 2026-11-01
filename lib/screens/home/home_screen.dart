@@ -15,11 +15,13 @@ import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/payment_provider.dart';
 import 'package:matchme/providers/match_notification_provider.dart';
 import 'package:matchme/providers/app_config_provider.dart';
+import 'package:matchme/providers/auth_provider.dart';
 import 'package:matchme/providers/external_ad_provider.dart';
 import 'package:matchme/providers/theme_provider.dart';
 import 'package:matchme/providers/user_preferences_provider.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/utils/directional_icons.dart';
+import 'package:matchme/utils/gender_utils.dart';
 import 'package:matchme/utils/greeting_utils.dart';
 import 'package:matchme/utils/home_refresh_utils.dart';
 import 'package:matchme/utils/scroll_anchor.dart';
@@ -100,11 +102,7 @@ Widget _buildStatCard(
                   mainAxisAlignment: MainAxisAlignment.center,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(
-                      icon,
-                      size: 30,
-                      color: colors.secondary,
-                    ),
+                    Icon(icon, size: 30, color: colors.secondary),
                     const SizedBox(height: 4),
                     Text(
                       value,
@@ -121,7 +119,7 @@ Widget _buildStatCard(
                       Text(
                         subValue,
                         style: TextStyle(
-                          fontSize: 11,
+                          fontSize: 12,
                           color: colors.onSurfaceVariant,
                         ),
                         textAlign: TextAlign.center,
@@ -379,6 +377,7 @@ class _SortableMatch {
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   // ── Matches filter state ──
   String? _selectedMatchesIntentKey;
+  String? _genderFilterMatches;
   MatchTypeFilter _matchTypeFilterMatches = MatchTypeFilter.all;
   ListSortOption _sortOptionMatches = ListSortOption.recent;
   final TextEditingController _matchesSearchController =
@@ -387,6 +386,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   // ── Chats filter state ──
   String? _selectedChatsIntentKey;
+  String? _genderFilterChats;
   MatchTypeFilter _matchTypeFilterChats = MatchTypeFilter.all;
   ListSortOption _sortOptionChats = ListSortOption.recent;
   bool _unreadOnlyChats = false;
@@ -446,6 +446,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     setState(() {
       _matchesSearchQuery = '';
       _selectedMatchesIntentKey = null;
+      _genderFilterMatches = null;
       _matchTypeFilterMatches = MatchTypeFilter.all;
       _sortOptionMatches = ListSortOption.recent;
     });
@@ -457,6 +458,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     setState(() {
       _chatsSearchQuery = '';
       _selectedChatsIntentKey = null;
+      _genderFilterChats = null;
       _unreadOnlyChats = false;
       _matchTypeFilterChats = MatchTypeFilter.all;
       _sortOptionChats = ListSortOption.recent;
@@ -491,16 +493,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       archived ? 'chatsArchivedCount' : 'chatsUnarchivedCount',
       ids.length,
     );
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  int _countMatches(List<MatchModel> matches, ListFilterState draft) {
+  int _countMatches(
+    List<MatchModel> matches,
+    Map<String, String> genderByUserId,
+    ListFilterState draft,
+  ) {
     final intent = draft.selectedIntentKey?.trim().toLowerCase();
+    final gender = normalizeGenderKey(draft.selectedGenderKey);
     return matches.where((match) {
       if (draft.matchType != MatchTypeFilter.all &&
           !draft.matchType.matches(match.matchType)) {
+        return false;
+      }
+      if (gender.isNotEmpty &&
+          normalizeGenderKey(genderByUserId[match.otherUserId]) != gender) {
         return false;
       }
       if (intent != null && intent.isNotEmpty) {
@@ -531,6 +542,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     List<ChatModel> chats,
     Map<String, List<String>> matchIntentById,
     Map<String, String> matchTypeById,
+    Map<String, String> genderByUserId,
     ListFilterState draft,
   ) {
     String matchTypeOf(ChatModel chat) {
@@ -539,15 +551,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
 
     final intent = draft.selectedIntentKey?.trim().toLowerCase();
+    final gender = normalizeGenderKey(draft.selectedGenderKey);
     return chats.where((chat) {
       if (draft.matchType != MatchTypeFilter.all &&
           !draft.matchType.matches(matchTypeOf(chat))) {
         return false;
       }
+      if (gender.isNotEmpty &&
+          normalizeGenderKey(genderByUserId[chat.otherUserId]) != gender) {
+        return false;
+      }
       if (draft.extraToggleActive && chat.unreadCount <= 0) return false;
       if (intent != null && intent.isNotEmpty) {
-        final keys = _intentKeysForChat(chat, matchIntentById)
-            .map((k) => k.toLowerCase());
+        final keys = _intentKeysForChat(
+          chat,
+          matchIntentById,
+        ).map((k) => k.toLowerCase());
         if (!keys.contains(intent)) return false;
       }
       return true;
@@ -559,6 +578,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     LocalizationState l10n,
     List<String> intentKeys,
     List<AppIntent> allIntents,
+    List<Map<String, String>> genderOptions,
     bool canFilterByMatchType,
     int Function(ListFilterState draft) countFor,
   ) async {
@@ -569,9 +589,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       allIntents: allIntents,
       resultCountFor: countFor,
       showMatchType: canFilterByMatchType,
+      genderOptions: genderOptions,
       sortOptions: _matchSortOptions,
       initial: ListFilterState(
         selectedIntentKey: _selectedMatchesIntentKey,
+        selectedGenderKey: _genderFilterMatches,
         matchType: _matchTypeFilterMatches,
         sort: _sortOptionMatches,
       ),
@@ -579,6 +601,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (result == null || !mounted) return;
     setState(() {
       _selectedMatchesIntentKey = result.selectedIntentKey;
+      _genderFilterMatches = result.selectedGenderKey;
       _matchTypeFilterMatches = result.matchType;
       _sortOptionMatches = result.sort;
     });
@@ -589,7 +612,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     LocalizationState l10n,
     List<String> intentKeys,
     List<AppIntent> allIntents,
+    List<Map<String, String>> genderOptions,
     bool canFilterByMatchType,
+    int unreadConversationCount,
     int Function(ListFilterState draft) countFor,
   ) async {
     final result = await showListFilterSheet(
@@ -599,19 +624,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       allIntents: allIntents,
       resultCountFor: countFor,
       showMatchType: canFilterByMatchType,
+      genderOptions: genderOptions,
       sortOptions: _chatSortOptions,
       initial: ListFilterState(
         selectedIntentKey: _selectedChatsIntentKey,
+        selectedGenderKey: _genderFilterChats,
         matchType: _matchTypeFilterChats,
         extraToggleKey: 'unread',
-        extraToggleLabel: l10n.getString('chatsUnreadOnly'),
+        extraToggleLabel: unreadConversationCount == 0
+            ? l10n.getString('chatsUnreadOnly')
+            : l10n.getString(
+                'chatsUnreadOnlyWithCount',
+                params: {'count': '$unreadConversationCount'},
+              ),
         extraToggleActive: _unreadOnlyChats,
+        // Nothing unread means the toggle would narrow nothing: hide it.
+        extraToggleVisible: unreadConversationCount > 0,
         sort: _sortOptionChats,
       ),
     );
     if (result == null || !mounted) return;
     setState(() {
       _selectedChatsIntentKey = result.selectedIntentKey;
+      _genderFilterChats = result.selectedGenderKey;
       _matchTypeFilterChats = result.matchType;
       _unreadOnlyChats = result.extraToggleActive;
       _sortOptionChats = result.sort;
@@ -820,7 +855,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-
   Widget _buildPinnedLocationCard(
     BuildContext context,
     WidgetRef ref,
@@ -841,9 +875,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     final remaining = pinState.remainingFrom(DateTime.now().toUtc());
     final remainingText = remaining != null
-        ? l10n.getString('pinnedLocationRemaining', params: {
-            'duration': formatDurationWords(l10n, remaining),
-          })
+        ? l10n.getString(
+            'pinnedLocationRemaining',
+            params: {'duration': formatDurationWords(l10n, remaining)},
+          )
         : '';
 
     return Semantics(
@@ -869,10 +904,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     color: statusColor.withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(16),
                   ),
-                  child: Icon(
-                    Icons.push_pin_outlined,
-                    color: statusColor,
-                  ),
+                  child: Icon(Icons.push_pin_outlined, color: statusColor),
                 ),
                 const SizedBox(width: 14),
                 Expanded(
@@ -969,9 +1001,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       padding: const EdgeInsets.all(16.0),
       child: Text(
         message,
-        style: TextStyle(
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
+        style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
         textAlign: TextAlign.center,
       ),
     ),
@@ -986,11 +1016,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       userPreferencesProvider.select((state) => state.backgroundMatchingMode),
     );
     final pinnedLocationState = ref.watch(pinnedLocationProvider);
-    final userId = supabase.auth.currentUser?.id;
+    // The raw auth client can be transiently null for a few hundred ms while
+    // a refresh race is being repaired: gotrue clears its in-memory session
+    // before the recovery ladder re-seeds it from the persisted snapshot (a
+    // secure-storage read). Routing keeps the signed-in shell because the
+    // auth provider still holds the last session, so fall back to that
+    // session instead of flashing a full-screen "Something went wrong" for
+    // those frames. A genuinely signed-out user never lands here — the router
+    // routes them to login — so null on BOTH sources only needs a loader.
+    final authSession = ref.watch(authStateProvider).value?.session;
+    final userId = supabase.auth.currentUser?.id ?? authSession?.user.id;
     if (userId == null) {
-      return Scaffold(
-        body: Center(child: Text(l10n.getString('generalError'))),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     // The Home list scrolls with the ambient primary controller.
@@ -1012,9 +1049,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     });
     ref.listen(pinnedLocationProvider, (previous, next) {
       _pinnedLocationActive = next.initialized && next.isActive;
-      _predictPinnedCardPresence(
-        _currentVisibility && _pinnedLocationActive,
-      );
+      _predictPinnedCardPresence(_currentVisibility && _pinnedLocationActive);
     });
 
     // Match the anchor with the card's real presence once the list has been
@@ -1043,11 +1078,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (_homeUserId != userId) {
       _homeUserId = userId;
       _selectedMatchesIntentKey = null;
+      _genderFilterMatches = null;
       _matchTypeFilterMatches = MatchTypeFilter.all;
       _sortOptionMatches = ListSortOption.recent;
       _matchesSearchController.clear();
       _matchesSearchQuery = '';
       _selectedChatsIntentKey = null;
+      _genderFilterChats = null;
       _matchTypeFilterChats = MatchTypeFilter.all;
       _sortOptionChats = ListSortOption.recent;
       _unreadOnlyChats = false;
@@ -1082,6 +1119,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final recentMatchesAsync = ref.watch(recentMatchesProvider(userId));
     final recentChatsAsync = ref.watch(recentChatsProvider(userId));
     final allIntentsAsync = ref.watch(allIntentsProvider);
+    final genderOptionsAsync = ref.watch(genderOptionsProvider);
     // Watched at the top level (NOT inside a `profileState.when(data: ...)`
     // callback) on purpose. A `ref.watch` created and torn down as the
     // profile AsyncValue flips between `data`/`loading` triggers a Riverpod
@@ -1161,813 +1199,971 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-          Padding(
-            padding: const EdgeInsets.only(
-              left: 16.0,
-              right: 16.0,
-              bottom: 10.0,
-            ),
-            child: profileState.when(
-              data: (profile) {
-                final userName =
-                    profile?.name.split(' ').first ??
-                    l10n.getString('generalUser');
-                final String welcomeText;
-                if (isUsersBirthdayToday(
-                  dateOfBirth: profile?.dateOfBirth,
-                  userTimezone: profile?.userTimezone,
-                )) {
-                  welcomeText =
-                      '${l10n.getString('happyBirthday')}, $userName!';
-                } else {
-                  final greeting = localizedGreeting(
-                    l10n,
-                    DateTime.now(),
-                    gender: profile?.gender,
-                  );
-                  welcomeText =
-                      '${greeting.replaceAll(RegExp(r'[!,]*$'), '').trim()}, $userName!';
-                }
-                return Text(
-                  welcomeText,
-                  style: Theme.of(context).textTheme.headlineSmall,
-                );
-              },
-              loading: () => const SizedBox.shrink(),
-              error: (e, s) => const SizedBox.shrink(),
-            ),
-          ),
-          // Private completeness nudge, dismissible per user/score. Hidden
-          // once the profile reaches 100%.
-          profileState.when(
-            data: (profile) => profile == null
-                ? const SizedBox.shrink()
-                : ProfileCompletenessBanner(profile: profile),
-            loading: () => const SizedBox.shrink(),
-            error: (e, s) => const SizedBox.shrink(),
-          ),
-          // The home-base banner describes the position broadcast to
-          // others. While invisible nothing is broadcast, so it is
-          // irrelevant and stays hidden. Full pin management (extend/unpin)
-          // remains available in Matching settings.
-          //
-          // The size reporter remembers how tall the card is so the scroll
-          // offset can be corrected when the card is added or removed.
-          if (isVisible)
-            _SizeReporter(
-              onSize: (size) => _listAnchor.setBlockHeight(size.height),
-              child: _buildPinnedLocationCard(
-                context,
-                ref,
-                l10n,
-                pinnedLocationState,
-              ),
-            ),
-          // Any active live-location share (outgoing, incoming or mutual)
-          // surfaces here with a one-tap entry into the shared map.
-          const _LiveLocationShareCard(),
-          Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 16.0,
-              vertical: 8.0,
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                if (isOnline && isVisible)
-                  dashboardStats.when(
-                    data: (stats) {
-                      _logRenderedHomeStats('nearby', stats);
-                      return _buildStatCard(
-                        context,
-                        Icons.radar_outlined,
-                        stats['nearby']?.toString() ?? "...",
-                        l10n.getString('homeNearby'),
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => const NearbyMapScreen(),
-                            ),
-                          );
-                        },
-                      );
-                    },
-                    loading: () => _buildStatCard(
-                      context,
-                      Icons.radar_outlined,
-                      "...",
-                      l10n.getString('homeNearby'),
-                      onTap: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const NearbyMapScreen(),
+                      Padding(
+                        padding: const EdgeInsets.only(
+                          left: 16.0,
+                          right: 16.0,
+                          bottom: 10.0,
+                        ),
+                        child: profileState.when(
+                          data: (profile) {
+                            // The greeting addresses the user by first name;
+                            // it is their own name, not a masked other person.
+                            final userName =
+                                profile?.name.split(' ').first ??
+                                l10n.getString('generalUser');
+                            final String welcomeText;
+                            if (isUsersBirthdayToday(
+                              dateOfBirth: profile?.dateOfBirth,
+                              userTimezone: profile?.userTimezone,
+                            )) {
+                              welcomeText =
+                                  '${l10n.getString('happyBirthday')}, $userName!';
+                            } else {
+                              final greeting = localizedGreeting(
+                                l10n,
+                                DateTime.now(),
+                                gender: profile?.gender,
+                              );
+                              welcomeText =
+                                  '${greeting.replaceAll(RegExp(r'[!,]*$'), '').trim()}, $userName!';
+                            }
+                            return Text(
+                              welcomeText,
+                              style: Theme.of(context).textTheme.headlineSmall,
+                            );
+                          },
+                          loading: () => const SizedBox.shrink(),
+                          error: (e, s) => const SizedBox.shrink(),
+                        ),
+                      ),
+                      // Private completeness nudge, dismissible per user/score. Hidden
+                      // once the profile reaches 100%.
+                      profileState.when(
+                        data: (profile) => profile == null
+                            ? const SizedBox.shrink()
+                            : ProfileCompletenessBanner(profile: profile),
+                        loading: () => const SizedBox.shrink(),
+                        error: (e, s) => const SizedBox.shrink(),
+                      ),
+                      // The home-base banner describes the position broadcast to
+                      // others. While invisible nothing is broadcast, so it is
+                      // irrelevant and stays hidden. Full pin management (extend/unpin)
+                      // remains available in Matching settings.
+                      //
+                      // The size reporter remembers how tall the card is so the scroll
+                      // offset can be corrected when the card is added or removed.
+                      if (isVisible)
+                        _SizeReporter(
+                          onSize: (size) =>
+                              _listAnchor.setBlockHeight(size.height),
+                          child: _buildPinnedLocationCard(
+                            context,
+                            ref,
+                            l10n,
+                            pinnedLocationState,
                           ),
-                        );
-                      },
-                    ),
-                    error: (e, s) => _buildStatCard(
-                      context,
-                      Icons.radar_outlined,
-                      "...",
-                      l10n.getString('homeNearby'),
-                      onTap: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const NearbyMapScreen(),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                if (isOnline)
-                  dashboardStats.when(
-                    data: (stats) {
-                      _logRenderedHomeStats('online', stats);
-                      return _buildStatCard(
-                        context,
-                        Icons.people_outline,
-                        stats['online']?.toString() ?? "...",
-                        l10n.getString('homeOnline'),
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => const OnlineWorldMapScreen(),
-                            ),
-                          );
-                        },
-                      );
-                    },
-                    loading: () => _buildStatCard(
-                      context,
-                      Icons.people_outline,
-                      "...",
-                      l10n.getString('homeOnline'),
-                      onTap: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const OnlineWorldMapScreen(),
-                          ),
-                        );
-                      },
-                    ),
-                    error: (e, s) => _buildStatCard(
-                      context,
-                      Icons.people_outline,
-                      "...",
-                      l10n.getString('homeOnline'),
-                      onTap: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const OnlineWorldMapScreen(),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                if (subscriptionsEnabled)
-                  profileState.when(
-                    data: (p) {
-                      // Prefer the effective subscription (which falls back to
-                      // the active queue entry) so the tier label and the
-                      // "time left" subtext stay in sync when the queued
-                      // subscription has been promoted to active before the
-                      // user profile has been refreshed. The watch itself
-                      // lives at the top of `build` — see the comment there.
-                      final effectiveTier = (effectiveSub?.tier ?? 'free')
-                          .trim()
-                          .toLowerCase();
-                      final tierKey =
-                          'tier${effectiveTier.isNotEmpty ? effectiveTier.capitalize() : 'Free'}';
-                      return _SubscriptionTierCard(
-                        profile: p,
-                        tierKey: tierKey,
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => const PaywallScreen(),
-                            ),
-                          );
-                        },
-                      );
-                    },
-                    loading: () => _buildStatCard(
-                      context,
-                      Icons.star_border_outlined,
-                      "...",
-                      l10n.getString('homeTier'),
-                    ),
-                    error: (e, s) => _buildStatCard(
-                      context,
-                      Icons.error_outline,
-                      l10n.getString('generalError'),
-                      l10n.getString('homeTier'),
-                    ),
-                  ),
-              ],
-            ),
-          ),
+                        ),
+                      // Any active live-location share (outgoing, incoming or mutual)
+                      // surfaces here with a one-tap entry into the shared map.
+                      const _LiveLocationShareCard(),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16.0,
+                          vertical: 8.0,
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            if (isOnline && isVisible)
+                              dashboardStats.when(
+                                data: (stats) {
+                                  _logRenderedHomeStats('nearby', stats);
+                                  return _buildStatCard(
+                                    context,
+                                    Icons.radar_outlined,
+                                    stats['nearby']?.toString() ?? "...",
+                                    l10n.getString('homeNearby'),
+                                    onTap: () {
+                                      Navigator.of(context).push(
+                                        MaterialPageRoute(
+                                          builder: (_) =>
+                                              const NearbyMapScreen(),
+                                        ),
+                                      );
+                                    },
+                                  );
+                                },
+                                loading: () => _buildStatCard(
+                                  context,
+                                  Icons.radar_outlined,
+                                  "...",
+                                  l10n.getString('homeNearby'),
+                                  onTap: () {
+                                    Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                        builder: (_) => const NearbyMapScreen(),
+                                      ),
+                                    );
+                                  },
+                                ),
+                                error: (e, s) => _buildStatCard(
+                                  context,
+                                  Icons.radar_outlined,
+                                  "...",
+                                  l10n.getString('homeNearby'),
+                                  onTap: () {
+                                    Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                        builder: (_) => const NearbyMapScreen(),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                            if (isOnline)
+                              dashboardStats.when(
+                                data: (stats) {
+                                  _logRenderedHomeStats('online', stats);
+                                  return _buildStatCard(
+                                    context,
+                                    Icons.people_outline,
+                                    stats['online']?.toString() ?? "...",
+                                    l10n.getString('homeOnline'),
+                                    onTap: () {
+                                      Navigator.of(context).push(
+                                        MaterialPageRoute(
+                                          builder: (_) =>
+                                              const OnlineWorldMapScreen(),
+                                        ),
+                                      );
+                                    },
+                                  );
+                                },
+                                loading: () => _buildStatCard(
+                                  context,
+                                  Icons.people_outline,
+                                  "...",
+                                  l10n.getString('homeOnline'),
+                                  onTap: () {
+                                    Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                        builder: (_) =>
+                                            const OnlineWorldMapScreen(),
+                                      ),
+                                    );
+                                  },
+                                ),
+                                error: (e, s) => _buildStatCard(
+                                  context,
+                                  Icons.people_outline,
+                                  "...",
+                                  l10n.getString('homeOnline'),
+                                  onTap: () {
+                                    Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                        builder: (_) =>
+                                            const OnlineWorldMapScreen(),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                            if (subscriptionsEnabled)
+                              profileState.when(
+                                data: (p) {
+                                  // Prefer the effective subscription (which falls back to
+                                  // the active queue entry) so the tier label and the
+                                  // "time left" subtext stay in sync when the queued
+                                  // subscription has been promoted to active before the
+                                  // user profile has been refreshed. The watch itself
+                                  // lives at the top of `build` — see the comment there.
+                                  final effectiveTier =
+                                      (effectiveSub?.tier ?? 'free')
+                                          .trim()
+                                          .toLowerCase();
+                                  final tierKey =
+                                      'tier${effectiveTier.isNotEmpty ? effectiveTier.capitalize() : 'Free'}';
+                                  return _SubscriptionTierCard(
+                                    profile: p,
+                                    tierKey: tierKey,
+                                    onTap: () {
+                                      Navigator.of(context).push(
+                                        MaterialPageRoute(
+                                          builder: (_) => const PaywallScreen(),
+                                        ),
+                                      );
+                                    },
+                                  );
+                                },
+                                loading: () => _buildStatCard(
+                                  context,
+                                  Icons.star_border_outlined,
+                                  "...",
+                                  l10n.getString('homeTier'),
+                                ),
+                                error: (e, s) => _buildStatCard(
+                                  context,
+                                  Icons.error_outline,
+                                  l10n.getString('generalError'),
+                                  l10n.getString('homeTier'),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
                     ],
                   ),
                 ),
                 SliverList(
                   delegate: SliverChildListDelegate([
-          recentMatchesAsync.when(
-            data: (matches) {
-              // Filter expired without chat. NOTE: do NOT watch matchExpiryNowProvider
-              // here - that rebuilt the whole list every second (visible flicker).
-              // Per-row MatchBox has its own 1s ticker and collapses to shrink
-              // instantly on expiry, so list stays accurate without parent rebuild.
-              // This filter only runs on data change (matches/chats), prune/sync
-              // (15s) refreshes it invisibly via distinct provider.
-              final now = DateTime.now();
-              final chatIdsAsync = ref.watch(userChatIdsProvider(userId));
-              final hasChatsLoaded = chatIdsAsync.hasValue;
-              final chatIds = chatIdsAsync.asData?.value ?? const <String>{};
-              final nonExpiredMatches = matches.where((m) {
-                if (!hasChatsLoaded) return true;
-                if (chatIds.contains(m.id)) return true;
-                return m.remainingFrom(now) > Duration.zero;
-              }).toList();
-              final canFilterByMatchType = MatchTypeFilter.canFilter(
-                nonExpiredMatches.map((m) => m.matchType).toList(),
-              );
-              final normalizedSelectedMatches = _selectedMatchesIntentKey
-                  ?.trim()
-                  .toLowerCase();
-              final filteredByIntent =
-                  normalizedSelectedMatches == null ||
-                          normalizedSelectedMatches.isEmpty
-                      ? nonExpiredMatches
-                      : nonExpiredMatches.where((match) {
-                          if (match.otherUserId.isEmpty) return false;
-                          final keys = getIntentKeysFromMatchedIntent(
-                            match.matchedIntent,
-                          );
-                          return keys.contains(normalizedSelectedMatches);
+                    recentMatchesAsync.when(
+                      data: (matches) {
+                        // Filter expired without chat. NOTE: do NOT watch matchExpiryNowProvider
+                        // here - that rebuilt the whole list every second (visible flicker).
+                        // Per-row MatchBox has its own 1s ticker and collapses to shrink
+                        // instantly on expiry, so list stays accurate without parent rebuild.
+                        // This filter only runs on data change (matches/chats), prune/sync
+                        // (15s) refreshes it invisibly via distinct provider.
+                        final now = DateTime.now();
+                        final chatIdsAsync = ref.watch(
+                          userChatIdsProvider(userId),
+                        );
+                        final hasChatsLoaded = chatIdsAsync.hasValue;
+                        final chatIds =
+                            chatIdsAsync.asData?.value ?? const <String>{};
+                        final nonExpiredMatches = matches.where((m) {
+                          if (!hasChatsLoaded) return true;
+                          if (chatIds.contains(m.id)) return true;
+                          return m.remainingFrom(now) > Duration.zero;
                         }).toList();
+                        final canFilterByMatchType = MatchTypeFilter.canFilter(
+                          nonExpiredMatches.map((m) => m.matchType).toList(),
+                        );
+                        final normalizedSelectedMatches =
+                            _selectedMatchesIntentKey?.trim().toLowerCase();
+                        final filteredByIntent =
+                            normalizedSelectedMatches == null ||
+                                normalizedSelectedMatches.isEmpty
+                            ? nonExpiredMatches
+                            : nonExpiredMatches.where((match) {
+                                if (match.otherUserId.isEmpty) return false;
+                                final keys = getIntentKeysFromMatchedIntent(
+                                  match.matchedIntent,
+                                );
+                                return keys.contains(normalizedSelectedMatches);
+                              }).toList();
 
-              final normalizedSearchMatches =
-                  _matchesSearchQuery.trim().toLowerCase();
-              final afterSearchMatches = normalizedSearchMatches.isEmpty
-                  ? filteredByIntent
-                  : filteredByIntent.where((match) {
-                      final otherProfile = match.otherUserId.isEmpty
-                          ? null
-                          : ref
-                              .watch(userProfileProvider(match.otherUserId))
-                              .asData
-                              ?.value;
-                      // Flatten the other person's interests (both personal
-                      // and business) into a single searchable string.
-                      final interests = [
-                        ...?otherProfile?.personalInterests.values
-                            .expand((v) => v),
-                        ...?otherProfile?.businessInterests.values
-                            .expand((v) => v),
-                      ].join(' ');
-                      final haystack = [
-                        match.matchedIntent,
-                        match.eventName ?? '',
-                        match.matchType,
-                        otherProfile?.name ?? '',
-                        otherProfile?.firstName ?? '',
-                        otherProfile?.lastName ?? '',
-                        otherProfile?.bio ?? '',
-                        otherProfile?.occupation ?? '',
-                        otherProfile?.education ?? '',
-                        otherProfile?.zodiacSign ?? '',
-                        interests,
-                      ].join(' ').toLowerCase();
-                      return haystack.contains(normalizedSearchMatches);
-                    }).toList();
+                        final normalizedSearchMatches = _matchesSearchQuery
+                            .trim()
+                            .toLowerCase();
+                        final afterSearchMatches =
+                            normalizedSearchMatches.isEmpty
+                            ? filteredByIntent
+                            : filteredByIntent.where((match) {
+                                final otherProfile = match.otherUserId.isEmpty
+                                    ? null
+                                    : ref
+                                          .watch(
+                                            userProfileProvider(
+                                              match.otherUserId,
+                                            ),
+                                          )
+                                          .asData
+                                          ?.value;
+                                // Flatten the other person's interests (both personal
+                                // and business) into a single searchable string.
+                                final interests = [
+                                  ...?otherProfile?.personalInterests.values
+                                      .expand((v) => v),
+                                  ...?otherProfile?.businessInterests.values
+                                      .expand((v) => v),
+                                ].join(' ');
+                                final haystack = [
+                                  match.matchedIntent,
+                                  match.eventName ?? '',
+                                  match.matchType,
+                                  otherProfile?.name ?? '',
+                                  otherProfile?.firstName ?? '',
+                                  otherProfile?.lastName ?? '',
+                                  otherProfile?.bio ?? '',
+                                  otherProfile?.occupation ?? '',
+                                  otherProfile?.education ?? '',
+                                  otherProfile?.zodiacSign ?? '',
+                                  interests,
+                                ].join(' ').toLowerCase();
+                                return haystack.contains(
+                                  normalizedSearchMatches,
+                                );
+                              }).toList();
 
-              final afterMatchTypeMatches =
-                  _matchTypeFilterMatches == MatchTypeFilter.all
-                      ? afterSearchMatches
-                      : afterSearchMatches
-                          .where(
-                            (match) => _matchTypeFilterMatches.matches(
-                              match.matchType,
-                            ),
-                          )
-                          .toList();
-
-              final currentProfile = profileState.asData?.value;
-              final sortedMatches = _sortMatches(
-                afterMatchTypeMatches,
-                currentProfile,
-              );
-
-              final filterOptions = <String>{};
-              for (final match in nonExpiredMatches) {
-                if (match.otherUserId.isEmpty) continue;
-                filterOptions.addAll(
-                  getIntentKeysFromMatchedIntent(match.matchedIntent),
-                );
-              }
-              if (normalizedSelectedMatches != null &&
-                  normalizedSelectedMatches.isNotEmpty) {
-                filterOptions.add(normalizedSelectedMatches);
-              }
-              final sortedFilterOptions = getOrderedSharedIntentKeys(
-                filterOptions,
-              );
-
-              final activeFilterCount = ListFilterState(
-                selectedIntentKey: _selectedMatchesIntentKey,
-                matchType: _matchTypeFilterMatches,
-                sort: _sortOptionMatches,
-              ).activeCount;
-              final hasActiveMatchesFilter =
-                  activeFilterCount > 0 || normalizedSearchMatches.isNotEmpty;
-
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _buildSectionTitle(
-                    context,
-                    l10n.getString('homeRecentMatches'),
-                  ),
-                  if (nonExpiredMatches.isNotEmpty) ...[
-                    ListSearchBar(
-                      controller: _matchesSearchController,
-                      onQueryChanged: (value) =>
-                          setState(() => _matchesSearchQuery = value),
-                      onClearQuery: () => setState(() {
-                        _matchesSearchController.clear();
-                        _matchesSearchQuery = '';
-                      }),
-                      onOpenFilters: () => _openMatchesFilterSheet(
-                        context,
-                        l10n,
-                        sortedFilterOptions,
-                        allIntentsAsync.asData?.value ?? const <AppIntent>[],
-                        canFilterByMatchType,
-                        (draft) => _countMatches(nonExpiredMatches, draft),
-                      ),
-                      activeFilterCount: activeFilterCount,
-                      l10n: l10n,
-                      hintKey: 'matchesSearchHint',
-                    ),
-                    // Count line + "See all": the label says how much of the
-                    // full list the preview covers, and the button jumps to
-                    // the Matches tab for the rest.
-                    Row(
-                      children: [
-                        Expanded(
-                          child: ResultCountLabel(
-                            // The preview section only renders
-                            // homePreviewLimit rows, so the "shown" count
-                            // must be capped at that limit — otherwise the
-                            // label would claim "23 results" while only 5
-                            // are visible.
-                            shown: sortedMatches.length.clamp(
-                              0,
-                              homePreviewLimit,
-                            ),
-                            total: nonExpiredMatches.length,
-                            l10n: l10n,
-                            countKey: 'homeRecentMatchesCount',
-                            countOfKey: 'homeRecentMatchesCountOf',
-                          ),
-                        ),
-                        TextButton(
-                          onPressed: () {
-                            ref
-                                .read(navigationIndexProvider.notifier)
-                                .setIndex(1);
-                          },
-                          child: Text(l10n.getString('homeSeeAll')),
-                        ),
-                      ],
-                    ),
-                  ],
-                  if (sortedMatches.isEmpty)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 20.0),
-                      child: hasActiveMatchesFilter
-                          ? AppEmptyState(
-                              icon: Icons.filter_alt_off_rounded,
-                              title: l10n.getString('matchesNoIntentResults'),
-                              message: l10n.getString(
-                                'matchesNoIntentResultsMessage',
-                              ),
-                              actionLabel: l10n.getString(
-                                'matchesClearFilters',
-                              ),
-                              onAction: _clearMatchesFilters,
-                            )
-                          : _buildEmptyList(l10n.getString('homeNoMatches')),
-                    )
-                  else
-                    MatchBoxList(
-                      matches: sortedMatches.take(homePreviewLimit).toList(),
-                      showTitle: false,
-                    ),
-                ],
-              );
-            },
-            loading: _buildLoadingIndicator,
-            // The recovery banner at the top of the screen explains why this
-            // section is empty and offers a retry.
-            error: (e, s) => const SizedBox.shrink(),
-          ),
-          recentChatsAsync.when(
-            data: (chats) {
-              // Archived chats live in the Chats tab's Archived view; the
-              // Home feed shows active chats only. (Archive is per-user and
-              // display-only — see ChatArchiveService.)
-              final activeChats =
-                  filterArchivedChats(chats, archived: false);
-              // Build a lookup from matchId -> matchedIntent keys using the
-              // matches that created the chats. This is the only correct
-              // source: a chat exists because its underlying match was created
-              // for exactly one (or a comma-separated list of) intents.
-              final matchesForChats =
-                  recentMatchesAsync.asData?.value ?? const [];
-              final matchIntentById = <String, List<String>>{
-                for (final m in matchesForChats)
-                  m.id: getIntentKeysFromMatchedIntent(m.matchedIntent),
-              };
-              List<String> chatIntentKeysForChat(dynamic chat) =>
-                  _intentKeysForChat(chat, matchIntentById);
-
-              final matchTypeById = <String, String>{
-                for (final m in matchesForChats)
-                  (m as dynamic).id.toString():
-                      ((m as dynamic).matchType as String?) ?? '',
-              };
-              String chatMatchType(dynamic chat) {
-                final direct = (chat as dynamic).matchType as String? ?? '';
-                if (direct.isNotEmpty) return direct;
-                return matchTypeById[(chat as dynamic).matchId as String] ?? '';
-              }
-
-              final canFilterByMatchType = MatchTypeFilter.canFilter(
-                activeChats.map(chatMatchType).toList(),
-              );
-
-              final normalizedSearchChats =
-                  _chatsSearchQuery.trim().toLowerCase();
-
-              // Preview search: name and last message. Instant and always
-              // available, seeding results while the full-text pass runs.
-              // Same pipeline as the Chats screen.
-              final previewFilteredChats = normalizedSearchChats.isEmpty
-                  ? activeChats
-                  : activeChats.where((chat) {
-                      final searchableText = [
-                        chat.otherUserName,
-                        chat.lastMessage,
-                        chat.lastMessageTranslated ?? '',
-                      ].join(' ').toLowerCase();
-                      return searchableText.contains(normalizedSearchChats);
-                    }).toList();
-
-              // Full-text search: every cached message body, original +
-              // translated (+ decrypted E2E content) — same as Chats screen.
-              final searchAsyncChats = ref.watch(
-                chatFullTextSearchProvider('home'),
-              );
-              final bodyHitsChats = searchAsyncChats.asData?.value;
-              final bodyMatchesChats = normalizedSearchChats.isEmpty
-                  ? const <String>{}
-                  : bodyHitsChats?.map((h) => h.matchId).toSet();
-              final bodySearchResolvedChats = bodyMatchesChats != null;
-
-              // Union of the two: a chat matches if the word is in its
-              // preview OR anywhere in its body.
-              final searchedChats =
-                  normalizedSearchChats.isEmpty || !bodySearchResolvedChats
-                  ? previewFilteredChats
-                  : activeChats
-                        .where(
-                          (chat) =>
-                              bodyMatchesChats.contains(chat.matchId) ||
-                              previewFilteredChats.contains(chat),
-                        )
-                        .toList();
-
-              // Newest body hit per chat: replaces the last-message preview
-              // with the matching text and auto-scrolls the opened chat.
-              final newestHitsChats = newestHitByChat(bodyHitsChats);
-              final hasChatsSearch = normalizedSearchChats.isNotEmpty;
-
-              final afterUnreadChats = filterUnreadChats(
-                searchedChats,
-                unreadOnly: _unreadOnlyChats,
-              );
-
-              final normalizedSelectedChats = _selectedChatsIntentKey
-                  ?.trim()
-                  .toLowerCase();
-              final afterIntentChats =
-                  normalizedSelectedChats == null ||
-                          normalizedSelectedChats.isEmpty
-                      ? afterUnreadChats
-                      : afterUnreadChats.where((chat) {
-                          final keys = chatIntentKeysForChat(chat);
-                          return keys.contains(normalizedSelectedChats);
-                        }).toList();
-
-              final afterMatchTypeChats =
-                  _matchTypeFilterChats == MatchTypeFilter.all
-                      ? afterIntentChats
-                      : afterIntentChats
-                          .where(
-                            (chat) => _matchTypeFilterChats.matches(
-                              chatMatchType(chat),
-                            ),
-                          )
-                          .toList();
-
-              final sortedChats = _sortChats(afterMatchTypeChats);
-
-              final filterOptions = <String>{};
-              for (final chat in activeChats) {
-                filterOptions.addAll(chatIntentKeysForChat(chat));
-              }
-              if (normalizedSelectedChats != null &&
-                  normalizedSelectedChats.isNotEmpty) {
-                filterOptions.add(normalizedSelectedChats);
-              }
-              final sortedFilterOptions = getOrderedSharedIntentKeys(
-                filterOptions,
-              );
-
-              final unreadConversationCount =
-                  activeChats.where((c) => c.unreadCount > 0).length;
-
-              final activeFilterCount = ListFilterState(
-                selectedIntentKey: _selectedChatsIntentKey,
-                matchType: _matchTypeFilterChats,
-                extraToggleKey: 'unread',
-                extraToggleLabel: unreadConversationCount == 0
-                    ? l10n.getString('chatsUnreadOnly')
-                    : l10n.getString(
-                        'chatsUnreadOnlyWithCount',
-                        params: {'count': '$unreadConversationCount'},
-                      ),
-                extraToggleActive: _unreadOnlyChats,
-                sort: _sortOptionChats,
-              ).activeCount;
-              final hasActiveChatsFilter =
-                  activeFilterCount > 0 || normalizedSearchChats.isNotEmpty;
-
-              // Multi-select state for this section. Only the chats actually
-              // rendered (capped at homePreviewLimit) are selectable here —
-              // the full list lives on the Chats tab.
-              final selectingChats = _chatsSelection.isActive;
-              final visibleChatIds = sortedChats
-                  .take(homePreviewLimit)
-                  .map((c) => c.matchId)
-                  .toList(growable: false);
-
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  if (selectingChats)
-                    SelectionHeaderBar(
-                      controller: _chatsSelection,
-                      allIds: visibleChatIds,
-                      selectedLabel: l10n.getString(
-                        'inboxSelectedCount',
-                        params: {'count': _chatsSelection.count.toString()},
-                      ),
-                      closeTooltip: l10n.getString('cancel'),
-                      selectAllTooltip: l10n.getString('inboxSelectAll'),
-                      deselectAllTooltip: l10n.getString('inboxDeselectAll'),
-                    )
-                  else
-                    _buildSectionTitle(
-                      context,
-                      l10n.getString('homeRecentChats'),
-                    ),
-                  if (activeChats.isNotEmpty && !selectingChats) ...[
-                    ListSearchBar(
-                      controller: _chatsSearchController,
-                      onQueryChanged: (value) {
-                        setState(() => _chatsSearchQuery = value);
-                        // Full-text pass over the cached message bodies.
-                        // Debounced inside the provider, scoped to the chats
-                        // on screen. Same as the Chats screen.
-                        ref
-                            .read(
-                              chatFullTextSearchProvider('home').notifier,
-                            )
-                            .search(
-                              ChatSearchRequest(
-                                query: value,
-                                matchIds: activeChats
-                                    .map((c) => c.matchId)
-                                    .toList(growable: false),
-                              ),
-                            );
-                      },
-                      onClearQuery: () {
-                        ref
-                            .read(
-                              chatFullTextSearchProvider('home').notifier,
-                            )
-                            .clear();
-                        setState(() {
-                          _chatsSearchController.clear();
-                          _chatsSearchQuery = '';
-                        });
-                      },
-                      onOpenFilters: () => _openChatsFilterSheet(
-                        context,
-                        l10n,
-                        sortedFilterOptions,
-                        allIntentsAsync.asData?.value ?? const <AppIntent>[],
-                        canFilterByMatchType,
-                        (draft) => _countChats(
-                          activeChats,
-                          matchIntentById,
-                          matchTypeById,
-                          draft,
-                        ),
-                      ),
-                      activeFilterCount: activeFilterCount,
-                      l10n: l10n,
-                      hintKey: 'chatsSearchHint',
-                    ),
-                    // Count line + "See all": the label says how much of
-                    // the full list the preview covers, and the button
-                    // jumps to the Chats tab for the rest.
-                    Row(
-                      children: [
-                        Expanded(
-                          child: ResultCountLabel(
-                            // The preview section only renders
-                            // homePreviewLimit rows, so the "shown" count
-                            // must be capped at that limit — otherwise the
-                            // label would claim "23 conversations" while
-                            // only 5 are visible.
-                            shown: sortedChats.length.clamp(
-                              0,
-                              homePreviewLimit,
-                            ),
-                            total: activeChats.length,
-                            l10n: l10n,
-                            countKey: 'homeRecentChatsCount',
-                            countOfKey: 'homeRecentChatsCountOf',
-                          ),
-                        ),
-                        TextButton(
-                          onPressed: () {
-                            ref
-                                .read(navigationIndexProvider.notifier)
-                                .setIndex(2);
-                          },
-                          child: Text(l10n.getString('homeSeeAll')),
-                        ),
-                      ],
-                    ),
-                    // While the full-text pass runs, say so — same as the
-                    // Chats screen — instead of showing a stale list.
-                    if (hasChatsSearch && !bodySearchResolvedChats)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(18, 0, 16, 8),
-                        child: Row(
-                          children: [
-                            const SizedBox(
-                              width: 11,
-                              height: 11,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 1.6,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                l10n.getString('chatsSearchingMessages'),
-                                style: Theme.of(context).textTheme.bodySmall
-                                    ?.copyWith(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.onSurfaceVariant,
+                        final afterMatchTypeMatches =
+                            _matchTypeFilterMatches == MatchTypeFilter.all
+                            ? afterSearchMatches
+                            : afterSearchMatches
+                                  .where(
+                                    (match) => _matchTypeFilterMatches.matches(
+                                      match.matchType,
                                     ),
+                                  )
+                                  .toList();
+
+                        // Gender lives on the other person's profile — the
+                        // provider each MatchBox already watches for its
+                        // age/gender line. Resolved once per user id so the
+                        // preview, its live count and the sheet agree.
+                        final matchGenderById = <String, String>{
+                          for (final match in nonExpiredMatches)
+                            if (match.otherUserId.isNotEmpty)
+                              match.otherUserId: normalizeGenderKey(
+                                ref
+                                    .watch(
+                                      userProfileProvider(match.otherUserId),
+                                    )
+                                    .asData
+                                    ?.value
+                                    ?.gender,
+                              ),
+                        };
+                        final normalizedGenderFilterMatches =
+                            normalizeGenderKey(_genderFilterMatches);
+                        final afterGenderMatches =
+                            normalizedGenderFilterMatches.isEmpty
+                            ? afterMatchTypeMatches
+                            : afterMatchTypeMatches
+                                  .where(
+                                    (match) =>
+                                        normalizeGenderKey(
+                                          matchGenderById[match.otherUserId],
+                                        ) ==
+                                        normalizedGenderFilterMatches,
+                                  )
+                                  .toList();
+
+                        final currentProfile = profileState.asData?.value;
+                        final sortedMatches = _sortMatches(
+                          afterGenderMatches,
+                          currentProfile,
+                        );
+
+                        final filterOptions = <String>{};
+                        for (final match in nonExpiredMatches) {
+                          if (match.otherUserId.isEmpty) continue;
+                          filterOptions.addAll(
+                            getIntentKeysFromMatchedIntent(match.matchedIntent),
+                          );
+                        }
+                        if (normalizedSelectedMatches != null &&
+                            normalizedSelectedMatches.isNotEmpty) {
+                          filterOptions.add(normalizedSelectedMatches);
+                        }
+                        final sortedFilterOptions = getOrderedSharedIntentKeys(
+                          filterOptions,
+                        );
+
+                        final activeFilterCount = ListFilterState(
+                          selectedIntentKey: _selectedMatchesIntentKey,
+                          selectedGenderKey: _genderFilterMatches,
+                          matchType: _matchTypeFilterMatches,
+                          sort: _sortOptionMatches,
+                        ).activeCount;
+                        final hasActiveMatchesFilter =
+                            activeFilterCount > 0 ||
+                            normalizedSearchMatches.isNotEmpty;
+
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            _buildSectionTitle(
+                              context,
+                              l10n.getString('homeRecentMatches'),
+                            ),
+                            if (nonExpiredMatches.isNotEmpty) ...[
+                              ListSearchBar(
+                                controller: _matchesSearchController,
+                                onQueryChanged: (value) =>
+                                    setState(() => _matchesSearchQuery = value),
+                                onClearQuery: () => setState(() {
+                                  _matchesSearchController.clear();
+                                  _matchesSearchQuery = '';
+                                }),
+                                onOpenFilters: () => _openMatchesFilterSheet(
+                                  context,
+                                  l10n,
+                                  sortedFilterOptions,
+                                  allIntentsAsync.asData?.value ??
+                                      const <AppIntent>[],
+                                  genderOptionsAsync.asData?.value ??
+                                      const <Map<String, String>>[],
+                                  canFilterByMatchType,
+                                  (draft) => _countMatches(
+                                    nonExpiredMatches,
+                                    matchGenderById,
+                                    draft,
+                                  ),
+                                ),
+                                activeFilterCount: activeFilterCount,
+                                l10n: l10n,
+                                hintKey: 'matchesSearchHint',
+                              ),
+                              // Count line + "See all": the label says how much of the
+                              // full list the preview covers, and the button jumps to
+                              // the Matches tab for the rest.
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: ResultCountLabel(
+                                      // The preview section only renders
+                                      // homePreviewLimit rows, so the "shown" count
+                                      // must be capped at that limit — otherwise the
+                                      // label would claim "23 results" while only 5
+                                      // are visible.
+                                      shown: sortedMatches.length.clamp(
+                                        0,
+                                        homePreviewLimit,
+                                      ),
+                                      total: nonExpiredMatches.length,
+                                      l10n: l10n,
+                                      countKey: 'homeRecentMatchesCount',
+                                      countOfKey: 'homeRecentMatchesCountOf',
+                                    ),
+                                  ),
+                                  TextButton(
+                                    onPressed: () {
+                                      ref
+                                          .read(
+                                            navigationIndexProvider.notifier,
+                                          )
+                                          .setIndex(1);
+                                    },
+                                    child: Text(l10n.getString('homeSeeAll')),
+                                  ),
+                                ],
+                              ),
+                            ],
+                            if (sortedMatches.isEmpty)
+                              Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 20.0,
+                                ),
+                                child: hasActiveMatchesFilter
+                                    ? AppEmptyState(
+                                        icon: Icons.filter_alt_off_rounded,
+                                        title: l10n.getString(
+                                          'matchesNoIntentResults',
+                                        ),
+                                        message: l10n.getString(
+                                          'matchesNoIntentResultsMessage',
+                                        ),
+                                        actionLabel: l10n.getString(
+                                          'matchesClearFilters',
+                                        ),
+                                        onAction: _clearMatchesFilters,
+                                      )
+                                    : _buildEmptyList(
+                                        l10n.getString('homeNoMatches'),
+                                      ),
+                              )
+                            else
+                              MatchBoxList(
+                                matches: sortedMatches
+                                    .take(homePreviewLimit)
+                                    .toList(),
+                                showTitle: false,
+                              ),
+                          ],
+                        );
+                      },
+                      loading: _buildLoadingIndicator,
+                      // The recovery banner at the top of the screen explains why this
+                      // section is empty and offers a retry.
+                      error: (e, s) => const SizedBox.shrink(),
+                    ),
+                    recentChatsAsync.when(
+                      data: (chats) {
+                        // Archived chats live in the Chats tab's Archived view; the
+                        // Home feed shows active chats only. (Archive is per-user and
+                        // display-only — see ChatArchiveService.)
+                        final activeChats = filterArchivedChats(
+                          chats,
+                          archived: false,
+                        );
+                        // Build a lookup from matchId -> matchedIntent keys using the
+                        // matches that created the chats. This is the only correct
+                        // source: a chat exists because its underlying match was created
+                        // for exactly one (or a comma-separated list of) intents.
+                        final matchesForChats =
+                            recentMatchesAsync.asData?.value ?? const [];
+                        final matchIntentById = <String, List<String>>{
+                          for (final m in matchesForChats)
+                            m.id: getIntentKeysFromMatchedIntent(
+                              m.matchedIntent,
+                            ),
+                        };
+                        List<String> chatIntentKeysForChat(dynamic chat) =>
+                            _intentKeysForChat(chat, matchIntentById);
+
+                        final matchTypeById = <String, String>{
+                          for (final m in matchesForChats)
+                            (m as dynamic).id.toString():
+                                ((m as dynamic).matchType as String?) ?? '',
+                        };
+                        String chatMatchType(dynamic chat) {
+                          final direct =
+                              (chat as dynamic).matchType as String? ?? '';
+                          if (direct.isNotEmpty) return direct;
+                          return matchTypeById[(chat as dynamic).matchId
+                                  as String] ??
+                              '';
+                        }
+
+                        final canFilterByMatchType = MatchTypeFilter.canFilter(
+                          activeChats.map(chatMatchType).toList(),
+                        );
+
+                        final normalizedSearchChats = _chatsSearchQuery
+                            .trim()
+                            .toLowerCase();
+
+                        // Preview search: name and last message. Instant and always
+                        // available, seeding results while the full-text pass runs.
+                        // Same pipeline as the Chats screen.
+                        final previewFilteredChats =
+                            normalizedSearchChats.isEmpty
+                            ? activeChats
+                            : activeChats.where((chat) {
+                                final searchableText = [
+                                  chat.otherUserName,
+                                  chat.lastMessage,
+                                  chat.lastMessageTranslated ?? '',
+                                ].join(' ').toLowerCase();
+                                return searchableText.contains(
+                                  normalizedSearchChats,
+                                );
+                              }).toList();
+
+                        // Full-text search: every cached message body, original +
+                        // translated (+ decrypted E2E content) — same as Chats screen.
+                        final searchAsyncChats = ref.watch(
+                          chatFullTextSearchProvider('home'),
+                        );
+                        final bodyHitsChats = searchAsyncChats.asData?.value;
+                        final bodyMatchesChats = normalizedSearchChats.isEmpty
+                            ? const <String>{}
+                            : bodyHitsChats?.map((h) => h.matchId).toSet();
+                        final bodySearchResolvedChats =
+                            bodyMatchesChats != null;
+
+                        // Union of the two: a chat matches if the word is in its
+                        // preview OR anywhere in its body.
+                        final searchedChats =
+                            normalizedSearchChats.isEmpty ||
+                                !bodySearchResolvedChats
+                            ? previewFilteredChats
+                            : activeChats
+                                  .where(
+                                    (chat) =>
+                                        bodyMatchesChats.contains(
+                                          chat.matchId,
+                                        ) ||
+                                        previewFilteredChats.contains(chat),
+                                  )
+                                  .toList();
+
+                        // Newest body hit per chat: replaces the last-message preview
+                        // with the matching text and auto-scrolls the opened chat.
+                        final newestHitsChats = newestHitByChat(bodyHitsChats);
+                        final hasChatsSearch = normalizedSearchChats.isNotEmpty;
+
+                        final afterUnreadChats = filterUnreadChats(
+                          searchedChats,
+                          unreadOnly: _unreadOnlyChats,
+                        );
+
+                        final normalizedSelectedChats = _selectedChatsIntentKey
+                            ?.trim()
+                            .toLowerCase();
+                        final afterIntentChats =
+                            normalizedSelectedChats == null ||
+                                normalizedSelectedChats.isEmpty
+                            ? afterUnreadChats
+                            : afterUnreadChats.where((chat) {
+                                final keys = chatIntentKeysForChat(chat);
+                                return keys.contains(normalizedSelectedChats);
+                              }).toList();
+
+                        final afterMatchTypeChats =
+                            _matchTypeFilterChats == MatchTypeFilter.all
+                            ? afterIntentChats
+                            : afterIntentChats
+                                  .where(
+                                    (chat) => _matchTypeFilterChats.matches(
+                                      chatMatchType(chat),
+                                    ),
+                                  )
+                                  .toList();
+
+                        // Gender lives on the other person's profile — the
+                        // provider each chat row already watches for its
+                        // age/gender line. Resolved once per user id so the
+                        // preview, its live count and the sheet agree.
+                        final chatGenderById = <String, String>{
+                          for (final chat in activeChats)
+                            if (chat.otherUserId.isNotEmpty)
+                              chat.otherUserId: normalizeGenderKey(
+                                ref
+                                    .watch(
+                                      userProfileProvider(chat.otherUserId),
+                                    )
+                                    .asData
+                                    ?.value
+                                    ?.gender,
+                              ),
+                        };
+                        final normalizedGenderFilterChats = normalizeGenderKey(
+                          _genderFilterChats,
+                        );
+                        final afterGenderChats =
+                            normalizedGenderFilterChats.isEmpty
+                            ? afterMatchTypeChats
+                            : afterMatchTypeChats
+                                  .where(
+                                    (chat) =>
+                                        normalizeGenderKey(
+                                          chatGenderById[chat.otherUserId],
+                                        ) ==
+                                        normalizedGenderFilterChats,
+                                  )
+                                  .toList();
+
+                        final sortedChats = _sortChats(afterGenderChats);
+
+                        final filterOptions = <String>{};
+                        for (final chat in activeChats) {
+                          filterOptions.addAll(chatIntentKeysForChat(chat));
+                        }
+                        if (normalizedSelectedChats != null &&
+                            normalizedSelectedChats.isNotEmpty) {
+                          filterOptions.add(normalizedSelectedChats);
+                        }
+                        final sortedFilterOptions = getOrderedSharedIntentKeys(
+                          filterOptions,
+                        );
+
+                        final unreadConversationCount = activeChats
+                            .where((c) => c.unreadCount > 0)
+                            .length;
+
+                        final activeFilterCount = ListFilterState(
+                          selectedIntentKey: _selectedChatsIntentKey,
+                          selectedGenderKey: _genderFilterChats,
+                          matchType: _matchTypeFilterChats,
+                          extraToggleKey: 'unread',
+                          extraToggleLabel: unreadConversationCount == 0
+                              ? l10n.getString('chatsUnreadOnly')
+                              : l10n.getString(
+                                  'chatsUnreadOnlyWithCount',
+                                  params: {'count': '$unreadConversationCount'},
+                                ),
+                          extraToggleActive: _unreadOnlyChats,
+                          sort: _sortOptionChats,
+                        ).activeCount;
+                        final hasActiveChatsFilter =
+                            activeFilterCount > 0 ||
+                            normalizedSearchChats.isNotEmpty;
+
+                        // Multi-select state for this section. Only the chats actually
+                        // rendered (capped at homePreviewLimit) are selectable here —
+                        // the full list lives on the Chats tab.
+                        final selectingChats = _chatsSelection.isActive;
+                        final visibleChatIds = sortedChats
+                            .take(homePreviewLimit)
+                            .map((c) => c.matchId)
+                            .toList(growable: false);
+
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            if (selectingChats)
+                              SelectionHeaderBar(
+                                controller: _chatsSelection,
+                                allIds: visibleChatIds,
+                                selectedLabel: l10n.getString(
+                                  'inboxSelectedCount',
+                                  params: {
+                                    'count': _chatsSelection.count.toString(),
+                                  },
+                                ),
+                                closeTooltip: l10n.getString('cancel'),
+                                selectAllTooltip: l10n.getString(
+                                  'inboxSelectAll',
+                                ),
+                                deselectAllTooltip: l10n.getString(
+                                  'inboxDeselectAll',
+                                ),
+                              )
+                            else
+                              _buildSectionTitle(
+                                context,
+                                l10n.getString('homeRecentChats'),
+                              ),
+                            if (activeChats.isNotEmpty && !selectingChats) ...[
+                              ListSearchBar(
+                                controller: _chatsSearchController,
+                                onQueryChanged: (value) {
+                                  setState(() => _chatsSearchQuery = value);
+                                  // Full-text pass over the cached message bodies.
+                                  // Debounced inside the provider, scoped to the chats
+                                  // on screen. Same as the Chats screen.
+                                  ref
+                                      .read(
+                                        chatFullTextSearchProvider(
+                                          'home',
+                                        ).notifier,
+                                      )
+                                      .search(
+                                        ChatSearchRequest(
+                                          query: value,
+                                          matchIds: activeChats
+                                              .map((c) => c.matchId)
+                                              .toList(growable: false),
+                                        ),
+                                      );
+                                },
+                                onClearQuery: () {
+                                  ref
+                                      .read(
+                                        chatFullTextSearchProvider(
+                                          'home',
+                                        ).notifier,
+                                      )
+                                      .clear();
+                                  setState(() {
+                                    _chatsSearchController.clear();
+                                    _chatsSearchQuery = '';
+                                  });
+                                },
+                                onOpenFilters: () => _openChatsFilterSheet(
+                                  context,
+                                  l10n,
+                                  sortedFilterOptions,
+                                  allIntentsAsync.asData?.value ??
+                                      const <AppIntent>[],
+                                  genderOptionsAsync.asData?.value ??
+                                      const <Map<String, String>>[],
+                                  canFilterByMatchType,
+                                  unreadConversationCount,
+                                  (draft) => _countChats(
+                                    activeChats,
+                                    matchIntentById,
+                                    matchTypeById,
+                                    chatGenderById,
+                                    draft,
+                                  ),
+                                ),
+                                activeFilterCount: activeFilterCount,
+                                l10n: l10n,
+                                hintKey: 'chatsSearchHint',
+                              ),
+                              // Count line + "See all": the label says how much of
+                              // the full list the preview covers, and the button
+                              // jumps to the Chats tab for the rest.
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: ResultCountLabel(
+                                      // The preview section only renders
+                                      // homePreviewLimit rows, so the "shown" count
+                                      // must be capped at that limit — otherwise the
+                                      // label would claim "23 conversations" while
+                                      // only 5 are visible.
+                                      shown: sortedChats.length.clamp(
+                                        0,
+                                        homePreviewLimit,
+                                      ),
+                                      total: activeChats.length,
+                                      l10n: l10n,
+                                      countKey: 'homeRecentChatsCount',
+                                      countOfKey: 'homeRecentChatsCountOf',
+                                    ),
+                                  ),
+                                  TextButton(
+                                    onPressed: () {
+                                      ref
+                                          .read(
+                                            navigationIndexProvider.notifier,
+                                          )
+                                          .setIndex(2);
+                                    },
+                                    child: Text(l10n.getString('homeSeeAll')),
+                                  ),
+                                ],
+                              ),
+                              // While the full-text pass runs, say so — same as the
+                              // Chats screen — instead of showing a stale list.
+                              if (hasChatsSearch && !bodySearchResolvedChats)
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    18,
+                                    0,
+                                    16,
+                                    8,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      const SizedBox(
+                                        width: 11,
+                                        height: 11,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 1.6,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          l10n.getString(
+                                            'chatsSearchingMessages',
+                                          ),
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall
+                                              ?.copyWith(
+                                                color: Theme.of(
+                                                  context,
+                                                ).colorScheme.onSurfaceVariant,
+                                              ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                            ],
+                            if (sortedChats.isEmpty)
+                              Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 20.0,
+                                ),
+                                child: hasActiveChatsFilter
+                                    ? AppEmptyState(
+                                        icon: Icons.filter_alt_off_rounded,
+                                        title: l10n.getString(
+                                          'chatsNoIntentResults',
+                                        ),
+                                        message: l10n.getString(
+                                          'chatsNoIntentResultsMessage',
+                                        ),
+                                        actionLabel: l10n.getString(
+                                          'chatsClearFilters',
+                                        ),
+                                        onAction: _clearChatsFilters,
+                                      )
+                                    : _buildEmptyList(
+                                        l10n.getString('homeNoChats'),
+                                      ),
+                              )
+                            else
+                              // The Home preview is always capped at homePreviewLimit,
+                              // even while searching — it is a preview, and the full
+                              // list lives on the Chats tab.
+                              ...sortedChats.take(homePreviewLimit).map((chat) {
+                                final hit = hasChatsSearch
+                                    ? newestHitsChats[chat.matchId]
+                                    : null;
+                                return ChatListItem(
+                                  chat: chat,
+                                  showUnreadBorder: true,
+                                  searchQuery: hasChatsSearch
+                                      ? _chatsSearchQuery
+                                      : null,
+                                  searchSnippet: hit?.snippet,
+                                  searchMessageId: hit?.messageId,
+                                  // Multi-select: long-press (or the row menu's
+                                  // "Select") enters selection mode; while active
+                                  // taps toggle the row and the ⋮ menu hides.
+                                  selectionMode: selectingChats,
+                                  selected: _chatsSelection.isSelected(
+                                    chat.matchId,
+                                  ),
+                                  onToggleSelect: () =>
+                                      _chatsSelection.toggle(chat.matchId),
+                                  onLongPress: () =>
+                                      _chatsSelection.toggle(chat.matchId),
+                                  // Per-row ⋮ menu: archive + select. Hidden while
+                                  // selecting (the bottom bar covers archive).
+                                  onRowMenuArchive: selectingChats
+                                      ? null
+                                      : () => _archiveChatsFromHome({
+                                          chat.matchId,
+                                        }, archived: !chat.isArchived),
+                                  onRowMenuSelect: selectingChats
+                                      ? null
+                                      : () => _chatsSelection.toggle(
+                                          chat.matchId,
+                                        ),
+                                );
+                              }),
+                          ],
+                        );
+                      },
+                      loading: _buildLoadingIndicator,
+                      // The recovery banner at the top of the screen explains why this
+                      // section is empty and offers a retry.
+                      error: (e, s) => const SizedBox.shrink(),
+                    ),
+                    if (recentMatchesAsync.asData?.value.isEmpty == true &&
+                        recentChatsAsync.asData?.value.isEmpty == true &&
+                        isVisible &&
+                        backgroundMatchingEnabled)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                        child: Semantics(
+                          liveRegion: true,
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .primaryContainer
+                                  .withValues(alpha: 0.55),
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.check_circle_outline,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onPrimaryContainer,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Text(
+                                      l10n.getString('homeAllCaughtUp'),
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodyMedium
+                                          ?.copyWith(
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.onPrimaryContainer,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
-                          ],
-                        ),
-                      ),
-                  ],
-                  if (sortedChats.isEmpty)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 20.0),
-                      child: hasActiveChatsFilter
-                          ? AppEmptyState(
-                              icon: Icons.filter_alt_off_rounded,
-                              title: l10n.getString('chatsNoIntentResults'),
-                              message: l10n.getString(
-                                'chatsNoIntentResultsMessage',
-                              ),
-                              actionLabel: l10n.getString(
-                                'chatsClearFilters',
-                              ),
-                              onAction: _clearChatsFilters,
-                            )
-                          : _buildEmptyList(l10n.getString('homeNoChats')),
-                    )
-                  else
-                    // The Home preview is always capped at homePreviewLimit,
-                    // even while searching — it is a preview, and the full
-                    // list lives on the Chats tab.
-                    ...sortedChats.take(homePreviewLimit).map((chat) {
-                      final hit = hasChatsSearch
-                          ? newestHitsChats[chat.matchId]
-                          : null;
-                          return ChatListItem(
-                            chat: chat,
-                            showUnreadBorder: true,
-                            searchQuery: hasChatsSearch
-                                ? _chatsSearchQuery
-                                : null,
-                            searchSnippet: hit?.snippet,
-                            searchMessageId: hit?.messageId,
-                            // Multi-select: long-press (or the row menu's
-                            // "Select") enters selection mode; while active
-                            // taps toggle the row and the ⋮ menu hides.
-                            selectionMode: selectingChats,
-                            selected: _chatsSelection.isSelected(chat.matchId),
-                            onToggleSelect: () =>
-                                _chatsSelection.toggle(chat.matchId),
-                            onLongPress: () =>
-                                _chatsSelection.toggle(chat.matchId),
-                            // Per-row ⋮ menu: archive + select. Hidden while
-                            // selecting (the bottom bar covers archive).
-                            onRowMenuArchive: selectingChats
-                                ? null
-                                : () => _archiveChatsFromHome(
-                                    {chat.matchId},
-                                    archived: !chat.isArchived,
-                                  ),
-                            onRowMenuSelect: selectingChats
-                                ? null
-                                : () => _chatsSelection.toggle(chat.matchId),
-                          );
-                        }),
-                ],
-              );
-            },
-            loading: _buildLoadingIndicator,
-            // The recovery banner at the top of the screen explains why this
-            // section is empty and offers a retry.
-            error: (e, s) => const SizedBox.shrink(),
-          ),
-          if (recentMatchesAsync.asData?.value.isEmpty == true &&
-              recentChatsAsync.asData?.value.isEmpty == true &&
-              isVisible &&
-              backgroundMatchingEnabled)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-              child: Semantics(
-                liveRegion: true,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: Theme.of(
-                      context,
-                    ).colorScheme.primaryContainer.withValues(alpha: 0.55),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.check_circle_outline,
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.onPrimaryContainer,
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            l10n.getString('homeAllCaughtUp'),
-                            style: Theme.of(context).textTheme.bodyMedium
-                                ?.copyWith(
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.onPrimaryContainer,
-                                  fontWeight: FontWeight.w600,
-                                ),
                           ),
                         ),
-                      ],
+                      ),
+                    const SizedBox(height: 10),
+                    Builder(
+                      builder: (context) {
+                        return const AdSlot(placement: AdPlacement.homeInline);
+                      },
                     ),
-                  ),
-                ),
-              ),
-            ),
-          const SizedBox(height: 10),
-          Builder(
-            builder: (context) {
-              return const AdSlot(placement: AdPlacement.homeInline);
-            },
-          ),
-          const SizedBox(height: 20),
+                    const SizedBox(height: 20),
                   ]),
                 ),
               ],

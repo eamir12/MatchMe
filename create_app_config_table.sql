@@ -118,17 +118,10 @@ INSERT INTO app_config (config_key, config_value, config_type, category, descrip
 ('gps.stationary_movement_threshold_meters', '10.0', 'number', 'gps', 'Minimum movement in meters to be considered as moving', false, 5, 50),
 ('gps.stationary_throttle_interval_seconds', '60', 'duration_seconds', 'gps', 'GPS update interval when user is stationary (Smart GPS throttling)', false, 30, 300),
 ('gps.web_hidden_throttle_seconds', '60', 'duration_seconds', 'gps', 'Minimum GPS interval when browser tab is hidden (web only, when Smart GPS enabled)', false, 30, 300),
-('gps.web_max_acceptable_accuracy_meters', '1500.0', 'number', 'gps', 'Maximum acceptable location accuracy for web browsers (1.5km)', false, 500, 5000),
-('gps.web_preferred_accuracy_meters', '200.0', 'number', 'gps', 'Preferred location accuracy for web browsers', false, 50, 1000),
 ('gps.web_sample_max_accuracy_meters', '50.0', 'number', 'gps', 'Maximum accuracy for web location sampling', false, 20, 200),
 ('gps.mobile_time_limit_seconds', '15', 'duration_seconds', 'gps', 'Time limit for mobile GPS location acquisition', false, 5, 60),
 ('gps.interval_options_seconds', '[5, 10, 20, 30, 60]', 'array', 'gps', 'Allowed GPS update interval options for users', true, null, null),
-('gps.interval_default_seconds', '5', 'duration_seconds', 'gps', 'Default GPS update interval for new users', true, 5, 60),
-('gps.kalman_process_noise_position', '0.0001', 'number', 'gps', 'Kalman filter position variance per second', false, 0.00001, 0.001),
-('gps.kalman_process_noise_velocity', '0.001', 'number', 'gps', 'Kalman filter velocity variance per second', false, 0.0001, 0.01),
-('gps.kalman_min_accuracy_meters', '5.0', 'number', 'gps', 'Kalman filter minimum accuracy to use', false, 1, 20),
-('gps.kalman_max_accuracy_meters', '200.0', 'number', 'gps', 'Kalman filter maximum accuracy to use', false, 50, 1000),
-('gps.kalman_filter_skip_threshold_meters', '100.0', 'number', 'gps', 'Accuracy threshold above which the Kalman filter is skipped to avoid drift', false, 20, 500)
+('gps.interval_default_seconds', '5', 'duration_seconds', 'gps', 'Default GPS update interval for new users', true, 5, 60)
 ON CONFLICT (config_key) DO UPDATE SET
     config_value = EXCLUDED.config_value,
     config_type = EXCLUDED.config_type,
@@ -288,7 +281,6 @@ ON CONFLICT (config_key) DO UPDATE SET
 
 -- Performance & Optimization
 INSERT INTO app_config (config_key, config_value, config_type, category, description, is_user_configurable, min_value, max_value) VALUES
-('performance.web_location_sample_interval_seconds', '2', 'duration_seconds', 'gps', 'Interval for web location sampling', false, 1, 10),
 ('performance.mobile_location_restart_delay_ms', '200', 'number', 'gps', 'Delay before restarting mobile location service (milliseconds)', false, 100, 1000),
 ('performance.missing_keys_display_limit', '20', 'number', 'ui', 'Maximum number of missing translation keys to display in logs', false, 10, 100)
 ON CONFLICT (config_key) DO UPDATE SET
@@ -302,6 +294,14 @@ ON CONFLICT (config_key) DO UPDATE SET
 
 -- Cleanup: Remove unused/dead config keys that have no corresponding app code
 DELETE FROM app_config WHERE config_key IN (
+  'gps.kalman_process_noise_position',
+  'gps.kalman_process_noise_velocity',
+  'gps.kalman_min_accuracy_meters',
+  'gps.kalman_max_accuracy_meters',
+  'gps.kalman_filter_skip_threshold_meters',
+  'gps.web_max_acceptable_accuracy_meters',
+  'gps.web_preferred_accuracy_meters',
+  'performance.web_location_sample_interval_seconds',
   'gps.web_sample_max_accuracy_meters',
   'cache.visibility_duration_seconds',
   'cache.user_details_duration_seconds',

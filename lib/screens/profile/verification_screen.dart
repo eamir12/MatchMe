@@ -590,6 +590,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
   bool _isRequestingManualReview = false;
   bool _didSpeakIntro = false;
   bool _didSpeakTakePhotoHint = false;
+  bool _didLogRejectionDebug = false;
 
   /// Latest verification status payload (server truth, or the on-device copy
   /// of it). Held in state so the screen renders the full result — AI
@@ -994,6 +995,31 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
     return fallbackStatus;
   }
 
+  /// Logs the rejection payload once per screen instance instead of from
+  /// build(), which repeated the same dump on every profile emission.
+  void _logRejectionDebugOnce(Map<String, dynamic>? statusData) {
+    if (_didLogRejectionDebug || statusData == null) return;
+    if (_resolveVerificationStatus(
+          statusData: statusData,
+          fallbackStatus: 'unverified',
+        ) !=
+        'rejected') {
+      return;
+    }
+    _didLogRejectionDebug = true;
+    final aiAnalysis = statusData['verification_ai_analysis'];
+    final rejectionReason = aiAnalysis?['reasoning'] as String?;
+    print('VERIFICATION STATUS DEBUG:');
+    print(
+      '  - autoRejected: ${statusData['verification_auto_rejected'] == true}',
+    );
+    print('  - rejectionReason: $rejectionReason');
+    print('  - aiAnalysis: $aiAnalysis');
+    print(
+      '  - similarityScore: ${statusData['verification_similarity_score']}',
+    );
+  }
+
   /// Warms the encrypted image cache for the two photos the rejection card
   /// compares: the user's primary profile photo and the verification selfie.
   /// Both then render from local bytes when opened offline.
@@ -1052,6 +1078,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
           _statusData = cached;
           _isLoadingStatus = false;
         });
+        _logRejectionDebugOnce(cached);
         unawaited(_prefetchComparisonPhotos(userId, cached));
       }
     }
@@ -1082,6 +1109,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
       }
       _isLoadingStatus = false;
     });
+    _logRejectionDebugOnce(fresh);
     if (fresh != null) {
       unawaited(_prefetchComparisonPhotos(userId, fresh));
     }
@@ -1234,19 +1262,9 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
       statusData: statusData,
       fallbackStatus: fallbackStatus,
     );
-    final similarityScore = statusData?['verification_similarity_score'];
     final autoRejected = statusData?['verification_auto_rejected'] == true;
     final aiAnalysis = statusData?['verification_ai_analysis'];
     final rejectionReason = aiAnalysis?['reasoning'] as String?;
-
-    // Debug logging for rejection data
-    if (status == 'rejected') {
-      print('VERIFICATION STATUS DEBUG:');
-      print('  - autoRejected: $autoRejected');
-      print('  - rejectionReason: $rejectionReason');
-      print('  - aiAnalysis: $aiAnalysis');
-      print('  - similarityScore: $similarityScore');
-    }
 
     final isDarkTheme = Theme.of(context).brightness == Brightness.dark;
     switch (status) {
@@ -1337,6 +1355,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
           regions: mismatchRegions,
           showComparison: showComparison,
           showNoBoxesNote: autoRejected,
+          verificationPhotoAvailable: verificationPhotoPath != null,
           l10n: l10n,
           translationService: translationService,
         ),
@@ -1440,6 +1459,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
     required List<_ComparisonRegion> regions,
     required bool showComparison,
     required bool showNoBoxesNote,
+    required bool verificationPhotoAvailable,
     required LocalizationState l10n,
     required TranslationService translationService,
   }) async {
@@ -1457,6 +1477,9 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
     }
     if (showComparison) {
       parts.add(l10n.getString('verificationComparisonTitle'));
+      if (!verificationPhotoAvailable) {
+        parts.add(l10n.getString('verificationComparisonPhotoUnavailable'));
+      }
       if (regions.isEmpty && showNoBoxesNote) {
         parts.add(l10n.getString('verificationComparisonNoBoxes'));
       } else if (regions.isNotEmpty) {
@@ -1692,7 +1715,8 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
   /// Rejected-result comparison: shows the profile photo alongside (or stacked
   /// above, on narrow screens) the verification selfie with the AI's mismatch
   /// rectangles (numbered badges) and a translated, numbered explanation of
-  /// each difference.
+  /// each difference. Once the selfie has been purged by retention, only the
+  /// profile photo is shown, with a note explaining why.
   Widget _buildRejectedPhotoComparison({
     required List<_ComparisonRegion> regions,
     required bool showNoBoxesNote,
@@ -1718,6 +1742,18 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
         .map((region) => region.verificationBox)
         .toList(growable: false);
 
+    // The verification selfie is purged after its retention window
+    // (verification_photo_path becomes null), while the rejection stays
+    // visible. Show the remaining photo plus an explanation instead of an
+    // empty placeholder frame.
+    final hasProfilePhoto =
+        profilePhotoPath != null && profilePhotoPath.trim().isNotEmpty;
+    final hasVerificationPhoto =
+        verificationPhotoPath != null && verificationPhotoPath.trim().isNotEmpty;
+    if (!hasProfilePhoto && !hasVerificationPhoto) {
+      return const SizedBox.shrink();
+    }
+
     return LayoutBuilder(
       builder: (context, constraints) {
         final availableWidth = constraints.maxWidth.isFinite
@@ -1727,7 +1763,10 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
         // tablets and desktop keep the classic side-by-side comparison.
         final sideBySide = availableWidth >= 340;
         final gap = sideBySide ? 8.0 : 14.0;
-        final photoMaxWidth = sideBySide
+        final bothPhotos = hasProfilePhoto && hasVerificationPhoto;
+        // A lone photo (the selfie was purged) gets the full width instead
+        // of the half-column reserved for a comparison pair.
+        final photoMaxWidth = bothPhotos && sideBySide
             ? min((availableWidth - gap) / 2, 360.0)
             : min(availableWidth, 360.0);
         final screenHeight = MediaQuery.sizeOf(context).height;
@@ -1754,74 +1793,98 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
           );
         }
 
-        final profilePhoto = photo(
-          profileLabel,
-          profilePhotoPath,
-          'profile-photos',
-          profileBoxes,
-        );
-        final verificationPhoto = photo(
-          verificationLabel,
-          verificationPhotoPath,
-          'verification-photos',
-          verificationBoxes,
-        );
-
-        final photos = sideBySide
-            ? Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        child: Text(
-                          profileLabel,
-                          textAlign: TextAlign.center,
-                          style: labelStyle,
-                        ),
-                      ),
-                      SizedBox(width: gap),
-                      Expanded(
-                        child: Text(
-                          verificationLabel,
-                          textAlign: TextAlign.center,
-                          style: labelStyle,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(child: Center(child: profilePhoto)),
-                      SizedBox(width: gap),
-                      Expanded(child: Center(child: verificationPhoto)),
-                    ],
-                  ),
-                ],
+        final profilePhoto = hasProfilePhoto
+            ? photo(
+                profileLabel,
+                profilePhotoPath,
+                'profile-photos',
+                profileBoxes,
               )
-            : Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
+            : null;
+        final verificationPhoto = hasVerificationPhoto
+            ? photo(
+                verificationLabel,
+                verificationPhotoPath,
+                'verification-photos',
+                verificationBoxes,
+              )
+            : null;
+
+        final Widget photos;
+        if (profilePhoto == null || verificationPhoto == null) {
+          final shownPhoto = profilePhoto ?? verificationPhoto!;
+          final shownLabel = profilePhoto != null
+              ? profileLabel
+              : verificationLabel;
+          photos = Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                shownLabel,
+                textAlign: TextAlign.center,
+                style: labelStyle,
+              ),
+              const SizedBox(height: 4),
+              Center(child: shownPhoto),
+            ],
+          );
+        } else if (sideBySide) {
+          photos = Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    profileLabel,
-                    textAlign: TextAlign.center,
-                    style: labelStyle,
+                  Expanded(
+                    child: Text(
+                      profileLabel,
+                      textAlign: TextAlign.center,
+                      style: labelStyle,
+                    ),
                   ),
-                  const SizedBox(height: 4),
-                  Center(child: profilePhoto),
-                  const SizedBox(height: 14),
-                  Text(
-                    verificationLabel,
-                    textAlign: TextAlign.center,
-                    style: labelStyle,
+                  SizedBox(width: gap),
+                  Expanded(
+                    child: Text(
+                      verificationLabel,
+                      textAlign: TextAlign.center,
+                      style: labelStyle,
+                    ),
                   ),
-                  const SizedBox(height: 4),
-                  Center(child: verificationPhoto),
                 ],
-              );
+              ),
+              const SizedBox(height: 4),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(child: Center(child: profilePhoto)),
+                  SizedBox(width: gap),
+                  Expanded(child: Center(child: verificationPhoto)),
+                ],
+              ),
+            ],
+          );
+        } else {
+          photos = Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                profileLabel,
+                textAlign: TextAlign.center,
+                style: labelStyle,
+              ),
+              const SizedBox(height: 4),
+              Center(child: profilePhoto),
+              const SizedBox(height: 14),
+              Text(
+                verificationLabel,
+                textAlign: TextAlign.center,
+                style: labelStyle,
+              ),
+              const SizedBox(height: 4),
+              Center(child: verificationPhoto),
+            ],
+          );
+        }
 
         return Container(
           width: double.infinity,
@@ -1859,6 +1922,28 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
                   child: photos,
                 ),
               ),
+              if (!hasVerificationPhoto) ...[
+                const SizedBox(height: 10),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(
+                      Icons.info_outline,
+                      size: 16,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        l10n.getString(
+                          'verificationComparisonPhotoUnavailable',
+                        ),
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 10),
               if (regions.isEmpty && showNoBoxesNote)
                 Text(
@@ -1894,7 +1979,7 @@ class _VerificationScreenState extends ConsumerState<VerificationScreen> {
                             '${i + 1}',
                             style: TextStyle(
                               color: Theme.of(context).colorScheme.onError,
-                              fontSize: 11,
+                              fontSize: 12,
                               fontWeight: FontWeight.bold,
                             ),
                           ),

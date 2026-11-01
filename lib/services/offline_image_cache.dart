@@ -1,5 +1,4 @@
-import 'dart:typed_data';
-
+import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
 import 'package:matchme/services/hive_encryption_service.dart';
 
@@ -15,6 +14,11 @@ class OfflineImageCache {
 
   static final OfflineImageCache instance = OfflineImageCache._();
   static const String _boxName = 'offline_image_bytes';
+
+  /// Test hook: widget tests replace the box read because Hive's open/IO
+  /// futures never complete inside FakeAsync. Always null in production.
+  @visibleForTesting
+  static Future<Uint8List?> Function(String key)? debugReadOverride;
 
   /// In-process hot cache (insertion-ordered LRU). Keeps the same byte
   /// instances alive so `Image.memory`'s cache key is stable across rebuilds.
@@ -68,6 +72,8 @@ class OfflineImageCache {
 
   Future<Uint8List?> read(String key) async {
     if (key.isEmpty) return null;
+    final override = debugReadOverride;
+    if (override != null) return override(key);
     final hot = peek(key);
     if (hot != null) return hot;
     try {

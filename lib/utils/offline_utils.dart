@@ -7,6 +7,7 @@ import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/services/approval_required_fields.dart';
 import 'package:matchme/services/connectivity_restore_coordinator.dart';
 import 'package:matchme/services/offline_cache_manager.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 /// True while the Flutter UI is in the foreground (resumed or briefly inactive).
 /// Screen-off and backgrounding move to [AppLifecycleState.paused]/[AppLifecycleState.hidden].
@@ -96,6 +97,41 @@ void notifySupabaseResumed() {
 /// Check if Supabase calls should be skipped (when offline)
 bool shouldSkipSupabaseCalls() {
   return !OfflineCacheManager.instance.isSupabaseAvailable;
+}
+
+/// Grace period for an expired access token: right after resume the SDK's
+/// auto-refresh may still be in flight, so a briefly-expired session counts
+/// as live. Beyond this the refresh is presumed dead (revoked token family,
+/// signed out) and user-scoped calls must stop.
+const int _expiredSessionGraceSeconds = 60;
+
+/// True when a signed-in user session exists and its access token is not
+/// expired beyond [_expiredSessionGraceSeconds].
+///
+/// Requests fired without this are executed as the `anon` role, which has no
+/// grants on user data tables — they come back as 401/42501 and flood the
+/// Supabase logs (see 2026-10-25 session-expiry incident fallout).
+bool hasLiveUserSession() {
+  try {
+    final auth = Supabase.instance.client.auth;
+    final session = auth.currentSession;
+    if (session == null || auth.currentUser == null) return false;
+    final expiresAt = session.expiresAt;
+    if (expiresAt == null) return true;
+    final nowSeconds = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    return nowSeconds <= expiresAt + _expiredSessionGraceSeconds;
+  } catch (_) {
+    // Supabase not initialized yet — nothing user-scoped can run anyway.
+    return false;
+  }
+}
+
+/// Gate for user-scoped Supabase calls (REST/RPC that require the
+/// `authenticated` role): skip when offline OR when no live user session
+/// exists. Pre-login flows (app config, translations, currency) must keep
+/// using [shouldSkipSupabaseCalls] instead — they legitimately run as anon.
+bool shouldSkipUserScopedSupabaseCalls() {
+  return shouldSkipSupabaseCalls() || !hasLiveUserSession();
 }
 
 class SensitiveActionsOfflineNotice extends StatelessWidget {

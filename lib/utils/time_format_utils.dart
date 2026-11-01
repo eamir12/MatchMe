@@ -171,26 +171,6 @@ String formatCountdownHmsWithPrefs(
   return '$hh:$mm:$ss';
 }
 
-String formatDurationCompact(Duration remaining) {
-  var d = remaining;
-  if (d.isNegative) d = Duration.zero;
-  if (d.inDays > 0) {
-    final days = d.inDays;
-    final hours = d.inHours.remainder(24);
-    return '${days}d ${hours}h';
-  }
-  if (d.inHours > 0) {
-    final hours = d.inHours;
-    final minutes = d.inMinutes.remainder(60);
-    return '${hours}h ${minutes}m';
-  }
-  if (d.inMinutes > 0) {
-    final minutes = d.inMinutes;
-    return '${minutes}m';
-  }
-  return '<1m';
-}
-
 String formatDurationWords(LocalizationState l10n, Duration remaining) {
   var d = remaining;
   if (d.isNegative) d = Duration.zero;

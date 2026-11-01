@@ -167,7 +167,7 @@ function normalizeGenderForContext(raw: unknown): "male" | "female" | null {
 /// explicit feminine-speaker instruction). So this emits plain sentences with
 /// gendered pronouns, never statements about the request itself.
 /// Returns undefined when neither gender is known (no context sent).
-function buildGenderContext(
+export function buildGenderContext(
   speakerGenderRaw: unknown,
   addresseeGenderRaw: unknown,
 ): string | undefined {
@@ -321,6 +321,124 @@ async function fetchUserGenders(
     return out;
   } catch {
     return {};
+  }
+}
+
+/// True when the plaintext contains no translatable characters (emoji,
+/// pictographs, whitespace only). DeepL would either error or return garbled
+/// output, so the original is stored as the translated payload instead.
+export function isEmojiOrWhitespaceOnly(text: string): boolean {
+  const stripped = text
+    .replace(
+      /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/gu,
+      "",
+    )
+    .replace(/\s/g, "")
+    .trim();
+  return stripped.length === 0;
+}
+
+type TranslationStatus = "success" | "same_language" | "skipped" | "failed";
+
+// Source codes DeepL accepts. Anything else (stale client detections such as
+// "ts", "st", or "pag") must fall back to DeepL auto-detection instead of
+// producing a 400 and a permanently failed row.
+const DEEPL_SOURCE_LANGUAGES: ReadonlySet<string> = new Set([
+  "ar", "bg", "cs", "da", "de", "el", "en", "es", "et", "fi", "fr",
+  "he", "hi", "hr", "hu", "id", "it", "ja", "ko", "lt", "lv", "nb",
+  "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "th", "tr", "uk",
+  "vi", "zh",
+]);
+
+export function normalizeSourceHint(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  let code = value.trim().toLowerCase();
+  if (!code || code === "auto" || code === "und") return undefined;
+  code = code.split(/[-_]/)[0];
+  if (code === "iw") code = "he";
+  if (code === "in" || code === "jv") code = "id";
+  return DEEPL_SOURCE_LANGUAGES.has(code) ? code : undefined;
+}
+
+/// Encrypt a plaintext as the row's translated payload and stamp its
+/// lifecycle metadata.
+///
+/// The payload AAD binds the detected source language and target language, so
+/// callers must pass the exact values that will be stored in those columns.
+/// `claimToken` (webhook/batch claim marker) or `expectedTarget` (identity
+/// writes racing a concurrent claim) CAS-guards the update; omitting both
+/// updates by id only, which is reserved for an explicit overwrite of a
+/// corrupt payload that already belongs to this worker.
+async function storeTranslatedPayload(params: {
+  record: any;
+  messageKey: Uint8Array;
+  senderKeyId: string;
+  targetLang: string;
+  translatedText: string;
+  detectedSource: string;
+  status: TranslationStatus;
+  claimToken?: string | null;
+  expectedTarget?: string | null;
+}): Promise<boolean> {
+  const {
+    record,
+    messageKey,
+    senderKeyId,
+    targetLang,
+    translatedText,
+    detectedSource,
+    status,
+    claimToken = null,
+    expectedTarget,
+  } = params;
+  try {
+    const translatedNonce = generateNonce();
+    const translatedAad = new TextEncoder().encode(
+      `matchme.chat.v1|translated|${record.id}|${record.match_id}|${record.sender_id}|${record.recipient_id || ""}|${detectedSource || "und"}|${targetLang.toLowerCase()}|${senderKeyId}|${record.recipient_key_id || ""}`,
+    );
+    const translatedEncrypted = await aesGcmEncrypt(
+      new TextEncoder().encode(translatedText),
+      messageKey,
+      translatedNonce,
+      translatedAad as Uint8Array,
+    );
+
+    let query = supabase
+      .from("chat_messages")
+      .update({
+        content_translated_encrypted: base64Encode(translatedEncrypted),
+        content_translated_nonce: base64Encode(translatedNonce),
+        detected_source_language: detectedSource || "und",
+        translated_target_language: targetLang.toLowerCase(),
+        translated_source_edited_at: (record.edited_at as string | null) ?? null,
+        translation_status: status,
+        translation_attempts: Number(record.translation_attempts ?? 0) + 1,
+        translated_at: new Date().toISOString(),
+      })
+      .eq("id", record.id);
+
+    if (claimToken) {
+      query = query.eq("translated_target_language", claimToken);
+    } else if (expectedTarget !== undefined) {
+      query = expectedTarget === null
+        ? query.is("translated_target_language", null)
+        : query.eq("translated_target_language", expectedTarget);
+    }
+
+    const { data, error } = await query.select("id");
+    if (error) {
+      console.error(
+        `[translate-proxy] Failed to store ${status} payload for ${record.id}: ${error.message}`,
+      );
+      return false;
+    }
+    return !!data && data.length > 0;
+  } catch (error) {
+    console.error(
+      `[translate-proxy] Failed to encrypt ${status} payload for ${record.id}:`,
+      error,
+    );
+    return false;
   }
 }
 
@@ -507,6 +625,15 @@ serve(async (req) => {
           { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
         );
       }
+      if (body.action === "retranslate_edited") {
+        return await handleRetranslateEdited(
+          req,
+          body,
+          userData.user.id,
+          requestId,
+          startedAt,
+        );
+      }
       return await handleDirectClientTranslation(req, body, userData.user.id, requestId, startedAt);
     }
 
@@ -648,9 +775,11 @@ async function handleEncryptedWebhook(
 
   // Determine the body text for the push notification.
   // - Translation enabled + already stored: decrypt the existing translation.
+  // - Translation enabled + same-language/emoji: store the original as the
+  //   translated payload and push it.
   // - Translation enabled + not yet stored: translate now and store.
-  // - Translation enabled but translation/storage failed: keep the message
-  //   completely undisclosed until a current translation is ready.
+  // - Translation failed: store the original as the translated payload and
+  //   push it, so every surface falls back instead of hiding the message.
   // - Translation disabled: use the original plaintext.
   let bodyText = plaintextStr;
   let translatedSuccessfully = false;
@@ -663,8 +792,9 @@ async function handleEncryptedWebhook(
   }
 
   if (translationEnabled && targetLang) {
+    const normTarget = targetLang.toLowerCase();
     const storedTranslationIsCurrent =
-      (record.translated_target_language || "").toLowerCase() === targetLang.toLowerCase() &&
+      (record.translated_target_language || "").toLowerCase() === normTarget &&
       (record.translated_source_edited_at ?? null) === (record.edited_at ?? null);
     if (record.content_translated_encrypted && record.content_translated_nonce && storedTranslationIsCurrent) {
       // Already translated in a previous run — decrypt the stored translation.
@@ -685,89 +815,136 @@ async function handleEncryptedWebhook(
         bodyText = new TextDecoder().decode(decryptedTranslated);
         translatedSuccessfully = true;
       } catch (e) {
-        console.error("[translate-proxy] Decrypt-translation error; translation is still pending:", e);
-        bodyText = "";
+        // The stored blob is unreadable (old AAD, lost key, corrupt row).
+        // Replace it with the original so the message is not hidden forever.
+        console.error("[translate-proxy] Decrypt-translation error; storing original fallback:", e);
+        const fallbackStored = await storeTranslatedPayload({
+          record,
+          messageKey,
+          senderKeyId,
+          targetLang,
+          translatedText: plaintextStr,
+          detectedSource:
+            normalizeSourceHint(record.detected_source_language) ?? "und",
+          status: "failed",
+          expectedTarget: record.translated_target_language ?? null,
+        });
+        if (fallbackStored) {
+          bodyText = plaintextStr;
+          translatedSuccessfully = true;
+        } else {
+          bodyText = "";
+        }
       }
     } else {
-      // Translate now via DeepL, store, and use the translated text.
-      // Gender rule for CHAT: use BOTH sender and recipient genders.
-      // - Sender gender for first-person statements ("I am...")
-      // - Recipient gender for second-person statements ("You are...")
-      // DeepL's context parameter handles both naturally in sentences.
-      //
-      // Claim the row first so a concurrent batch request (or a webhook
-      // redelivery) cannot translate the same message twice.
-      const prevTarget = typeof record.translated_target_language === "string"
-        ? record.translated_target_language
-        : null;
-      const webhookClaim = await claimMessageForTranslation(
-        record.id,
-        targetLang.toLowerCase(),
-        prevTarget,
-      );
-      if (!webhookClaim) {
-        // Another worker owns the translation claim. Do not publish the
-        // original while that translation is in flight.
-        bodyText = "";
+      // Same-language and emoji/whitespace-only content need no DeepL round
+      // trip: the original is already the correct display text. Store it as
+      // the translated payload so the list/push gates have a decryptable
+      // result and later batches can skip the row.
+      const sourceHint = normalizeSourceHint(record.detected_source_language) ?? "";
+      const sameLanguage = sourceHint !== "" && sourceHint === normTarget;
+      const emojiOnly = isEmojiOrWhitespaceOnly(plaintextStr);
+      if (sameLanguage || emojiOnly) {
+        const identitySource = sameLanguage ? sourceHint : normTarget;
+        const stored = await storeTranslatedPayload({
+          record,
+          messageKey,
+          senderKeyId,
+          targetLang,
+          translatedText: plaintextStr,
+          detectedSource: identitySource,
+          status: sameLanguage ? "same_language" : "skipped",
+          expectedTarget: record.translated_target_language ?? null,
+        });
+        if (!stored) {
+          console.warn(
+            `[translate-proxy] Identity payload CAS lost for ${record.id}; a concurrent translator owns the row`,
+          );
+        }
+        // The original is the correct display text even if a concurrent
+        // translator wins the write.
+        bodyText = plaintextStr;
+        translatedSuccessfully = true;
       } else {
-        try {
-          const recipientUserId =
-            (record.recipient_id as string | undefined) ||
-            chats?.find((c) => c.user_id !== record.sender_id)?.user_id;
-          const genderMap = recipientUserId
-            ? await fetchUserGenders(record.sender_id, recipientUserId)
-            : {};
-          const genderContext = buildGenderContext(
-            genderMap[record.sender_id],    // SENDER'S GENDER (for first-person statements)
-            recipientUserId ? genderMap[recipientUserId] : undefined,  // RECIPIENT'S GENDER (for second-person statements)
-          );
-          const { translatedText, detectedSource: detectedSourceLang } = await translateWithSourceValidation(
-            plaintextStr, targetLang, DEEPL_BASE_URL, DEEPL_API_KEY,
-            record.detected_source_language ?? undefined,
-            genderContext ? { context: genderContext } : undefined,
-          );
-
-          const translatedNonce = generateNonce();
-          const translatedAad = new TextEncoder().encode(
-            `matchme.chat.v1|translated|${record.id}|${record.match_id}|${record.sender_id}|${record.recipient_id || ""}|${detectedSourceLang || "und"}|${targetLang.toLowerCase()}|${senderKeyId}|${record.recipient_key_id || ""}`,
-          );
-
-          const translatedEncrypted = await aesGcmEncrypt(
-            new TextEncoder().encode(translatedText),
-            messageKey,
-            translatedNonce,
-            translatedAad as Uint8Array,
-          );
-
-          const { data: updatedRows, error: updateErr } = await supabase
-            .from("chat_messages")
-            .update({
-              content_translated_encrypted: base64Encode(translatedEncrypted),
-              content_translated_nonce: base64Encode(translatedNonce),
-              detected_source_language: detectedSourceLang || "und",
-              translated_target_language: targetLang.toLowerCase(),
-              // Bind this payload to the content revision just translated so
-              // later edits mismatch the marker and trigger one regeneration.
-              translated_source_edited_at: (record.edited_at as string | null) ?? null,
-            })
-            .eq("id", record.id)
-            .eq("translated_target_language", webhookClaim)
-            .select("id");
-
-          if (updateErr || !updatedRows || updatedRows.length === 0) {
-            if (updateErr) {
-              console.error(`[translate-proxy] DB update error for webhook message ${record.id}: ${updateErr.message}`);
-            }
-            await releaseClaim(record.id, webhookClaim, prevTarget);
-            bodyText = "";
-          } else {
-            bodyText = translatedText;
-            translatedSuccessfully = true;
-          }
-        } catch (error) {
-          console.error("[translate-proxy] Encrypted translation failed; keeping notification pending:", error);
-          await releaseClaim(record.id, webhookClaim, prevTarget);
+        // Translate now via DeepL, store, and use the translated text.
+        // Gender rule for CHAT: use BOTH sender and recipient genders.
+        // - Sender gender for first-person statements ("I am...")
+        // - Recipient gender for second-person statements ("You are...")
+        // DeepL's context parameter handles both naturally in sentences.
+        //
+        // Claim the row first so a concurrent batch request (or a webhook
+        // redelivery) cannot translate the same message twice.
+        const prevTarget = typeof record.translated_target_language === "string"
+          ? record.translated_target_language
+          : null;
+        const webhookClaim = await claimMessageForTranslation(
+          record.id,
+          normTarget,
+          prevTarget,
+        );
+        if (!webhookClaim) {
+          // Another worker owns the translation claim. Do not publish the
+          // original while that translation is in flight.
           bodyText = "";
+        } else {
+          try {
+            const recipientUserId =
+              (record.recipient_id as string | undefined) ||
+              chats?.find((c) => c.user_id !== record.sender_id)?.user_id;
+            const genderMap = recipientUserId
+              ? await fetchUserGenders(record.sender_id, recipientUserId)
+              : {};
+            const genderContext = buildGenderContext(
+              genderMap[record.sender_id],    // SENDER'S GENDER (for first-person statements)
+              recipientUserId ? genderMap[recipientUserId] : undefined,  // RECIPIENT'S GENDER (for second-person statements)
+            );
+            const { translatedText, detectedSource: detectedSourceLang } = await translateWithSourceValidation(
+              plaintextStr, targetLang, DEEPL_BASE_URL, DEEPL_API_KEY,
+              sourceHint || undefined,
+              genderContext ? { context: genderContext } : undefined,
+            );
+
+            const stored = await storeTranslatedPayload({
+              record,
+              messageKey,
+              senderKeyId,
+              targetLang,
+              translatedText,
+              detectedSource: detectedSourceLang || "und",
+              status: "success",
+              claimToken: webhookClaim,
+            });
+
+            if (!stored) {
+              await releaseClaim(record.id, webhookClaim, prevTarget);
+              bodyText = "";
+            } else {
+              bodyText = translatedText;
+              translatedSuccessfully = true;
+            }
+          } catch (error) {
+            // Permanently failed translation: store the original as the
+            // translated payload and push it. Every surface then shows the
+            // message instead of hiding it forever.
+            console.error("[translate-proxy] Encrypted translation failed; storing original fallback:", error);
+            const fallbackStored = await storeTranslatedPayload({
+              record,
+              messageKey,
+              senderKeyId,
+              targetLang,
+              translatedText: plaintextStr,
+              detectedSource: sourceHint || "und",
+              status: "failed",
+              claimToken: webhookClaim,
+            });
+            if (fallbackStored) {
+              bodyText = plaintextStr;
+              translatedSuccessfully = true;
+            } else {
+              await releaseClaim(record.id, webhookClaim, prevTarget);
+              bodyText = "";
+            }
+          }
         }
       }
     }
@@ -1046,6 +1223,78 @@ async function handleClientAssistedTranslation(
   }
 }
 
+// Retranslate a single message after its sender edits it. The edit clears the
+// stored translation server-side, so the sender's client can ask the proxy to
+// regenerate it without waiting for the recipient's next batch request.
+async function handleRetranslateEdited(
+  req: Request,
+  body: any,
+  currentUserId: string,
+  requestId: string,
+  startedAt: number,
+): Promise<Response> {
+  const messageId = typeof body.message_id === "string" ? body.message_id : "";
+  if (!messageId) {
+    return new Response(
+      JSON.stringify({ error: "message_id is required" }),
+      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+
+  const { data: msg, error: msgErr } = await supabase
+    .from("chat_messages")
+    .select("id, match_id, sender_id, detected_source_language")
+    .eq("id", messageId)
+    .maybeSingle();
+
+  if (msgErr || !msg) {
+    return new Response(
+      JSON.stringify({ error: "Message not found" }),
+      { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+  if (msg.sender_id !== currentUserId) {
+    return new Response(
+      JSON.stringify({ error: "Only the sender can retranslate this message" }),
+      { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+
+  const { data: chats } = await supabase
+    .from("chats")
+    .select("user_id, translation_enabled, translation_language")
+    .eq("match_id", msg.match_id);
+  const recipientChat = Array.isArray(chats)
+    ? chats.find((c: any) => c.user_id !== currentUserId)
+    : null;
+  if (!recipientChat?.translation_enabled || !recipientChat?.translation_language) {
+    return new Response(
+      JSON.stringify({ status: "skipped", reason: "recipient_translation_disabled" }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+
+  const targetLanguage = String(recipientChat.translation_language).toLowerCase();
+  // The edit may have changed the message language. Trust the sender client's
+  // fresh detection first, then fall back to the row's stored value.
+  const detectedSource =
+    normalizeSourceHint(body.source_language) ??
+    normalizeSourceHint(msg.detected_source_language) ??
+    "";
+  return await handleDirectClientTranslation(
+    req,
+    {
+      match_id: msg.match_id,
+      target_language: targetLanguage,
+      message_ids: [messageId],
+      source_language: detectedSource || undefined,
+    },
+    currentUserId,
+    requestId,
+    startedAt,
+  );
+}
+
 // Handle direct client translation requests authenticated via user's JWT.
 // Supports two sub-modes:
 //   - Single text translation: body has "text" and "target_lang"
@@ -1166,9 +1415,9 @@ async function handleDirectClientTranslation(
       // the next batch run picks them up via the "encrypted without translation" condition.
       const query = supabase
         .from("chat_messages")
-        .select("id, match_id, sender_id, recipient_id, content_original_encrypted, content_original_nonce, content_translated_encrypted, content_translated_nonce, translated_target_language, encryption_scheme, sender_key_id, recipient_key_id, wrapped_keys")
+        .select("id, match_id, sender_id, recipient_id, content_original_encrypted, content_original_nonce, content_translated_encrypted, content_translated_nonce, translated_target_language, detected_source_language, translation_status, translation_attempts, encryption_scheme, sender_key_id, recipient_key_id, wrapped_keys")
         .eq("match_id", matchId)
-        .or(`content_translated_encrypted.is.null,translated_target_language.is.null,translated_target_language.neq.${targetLanguage.toLowerCase()}`)
+        .or(`content_translated_encrypted.is.null,translated_target_language.is.null,translated_target_language.neq.${targetLanguage.toLowerCase()},and(translation_status.eq.failed,translation_attempts.lt.5)`)
         .order("created_at", { ascending: true });
 
       if (excludeSenderId) {
@@ -1198,9 +1447,9 @@ async function handleDirectClientTranslation(
     // may not exist if its migration has not been applied yet — see
     // fetchChunkMessages for the tolerant fallback.
     const kMessageChunkColumns =
-      "id, match_id, sender_id, recipient_id, content_original_encrypted, content_original_nonce, content_translated_encrypted, content_translated_nonce, translated_target_language, translated_source_edited_at, edited_at, encryption_scheme, sender_key_id, recipient_key_id, wrapped_keys";
+      "id, match_id, sender_id, recipient_id, content_original_encrypted, content_original_nonce, content_translated_encrypted, content_translated_nonce, translated_target_language, detected_source_language, translation_status, translation_attempts, translated_source_edited_at, edited_at, encryption_scheme, sender_key_id, recipient_key_id, wrapped_keys";
     const kMessageChunkColumnsLegacy =
-      "id, match_id, sender_id, recipient_id, content_original_encrypted, content_original_nonce, content_translated_encrypted, content_translated_nonce, translated_target_language, encryption_scheme, sender_key_id, recipient_key_id, wrapped_keys";
+      "id, match_id, sender_id, recipient_id, content_original_encrypted, content_original_nonce, content_translated_encrypted, content_translated_nonce, translated_target_language, detected_source_language, encryption_scheme, sender_key_id, recipient_key_id, wrapped_keys";
 
     /// Fetch one chunk of messages, tolerating a database where the
     /// `translated_source_edited_at` migration has not been applied yet. The
@@ -1247,7 +1496,12 @@ async function handleDirectClientTranslation(
           msg.translated_source_edited_at ?? null,
           msg.edited_at ?? null,
         );
-        if (msg.translated_target_language === normTarget && msg.content_translated_encrypted && markerOk) {
+        if (
+          msg.translated_target_language === normTarget &&
+          msg.content_translated_encrypted &&
+          markerOk &&
+          msg.translation_status !== "failed"
+        ) {
           console.log(`[translate-proxy] Skipping message ${msg.id}: translation current for ${normTarget}`);
           continue;
         }
@@ -1336,38 +1590,72 @@ async function handleDirectClientTranslation(
           continue;
         }
 
-        // Skip emoji-only / whitespace-only messages — DeepL can't translate them
-        // and returns garbled output.  Strip emoji/pictographic ranges + whitespace
-        // and check if any real text remains.
-        const strippedForCheck = plaintextStr
-          .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/gu, '')
-          .replace(/[\s]/g, '')
-          .trim();
-        if (strippedForCheck.length === 0) {
-          console.log(`[translate-proxy] Skipping message ${msg.id}: emoji/whitespace-only (${plaintextStr.length} chars)`);
-          continue;
-        }
+        // Prefer the request-level source hint (single-message requests carry
+        // the client's own detection) and fall back to this row's stored
+        // detected source. A batch that spans several messages must never
+        // apply one message's source hint to all of them.
+        const requestMessageIds = Array.isArray(body.message_ids)
+          ? body.message_ids
+          : [];
+        const allowRequestHint = requestMessageIds.length === 1;
+        const normSourceHint =
+          normalizeSourceHint(allowRequestHint ? body.source_language : undefined) ??
+          normalizeSourceHint(msg.detected_source_language) ??
+          "";
+        const sameLanguage =
+          normSourceHint !== "" && normSourceHint === targetLanguage.toLowerCase();
+        const emojiOnly = isEmojiOrWhitespaceOnly(plaintextStr);
 
         let translatedText: string;
         let detectedSource: string;
-        try {
-          const addresseeId =
-            (msg.recipient_id as string | undefined) ||
-            (msg.sender_id === matchRow.user1_id ? matchRow.user2_id : matchRow.user1_id);
-          const genderContext = buildGenderContext(
-            matchGenderMap[msg.sender_id],    // SENDER'S GENDER (for first-person statements)
-            matchGenderMap[addresseeId],      // RECIPIENT'S GENDER (for second-person statements)
-          );
-          const result = await translateWithSourceValidation(
-            plaintextStr, targetLanguage, DEEPL_BASE_URL, DEEPL_API_KEY,
-            body.source_language as string | undefined,
-            genderContext ? { context: genderContext } : undefined,
-          );
-          translatedText = result.translatedText;
-          detectedSource = result.detectedSource;
-        } catch (e) {
-          console.error(`[translate-proxy] DeepL API error for message ${msg.id}: ${e}`);
-          continue;
+        let translationStatus: TranslationStatus = "success";
+
+        if (sameLanguage || emojiOnly) {
+          // No DeepL round trip needed: the original is the display text.
+          // Storing it keeps the row decryptable and lets later batches skip.
+          translatedText = plaintextStr;
+          detectedSource = sameLanguage
+            ? normSourceHint
+            : targetLanguage.toLowerCase();
+          translationStatus = sameLanguage ? "same_language" : "skipped";
+        } else {
+          try {
+            const addresseeId =
+              (msg.recipient_id as string | undefined) ||
+              (msg.sender_id === matchRow.user1_id ? matchRow.user2_id : matchRow.user1_id);
+            const genderContext = buildGenderContext(
+              matchGenderMap[msg.sender_id],    // SENDER'S GENDER (for first-person statements)
+              matchGenderMap[addresseeId],      // RECIPIENT'S GENDER (for second-person statements)
+            );
+            const result = await translateWithSourceValidation(
+              plaintextStr, targetLanguage, DEEPL_BASE_URL, DEEPL_API_KEY,
+              normSourceHint || undefined,
+              genderContext ? { context: genderContext } : undefined,
+            );
+            translatedText = result.translatedText;
+            detectedSource = result.detectedSource;
+          } catch (e) {
+            console.error(`[translate-proxy] DeepL API error for message ${msg.id}: ${e}`);
+            // Permanent failure: store the original as the translated payload
+            // so the client can show it and the row is retryable by status.
+            if (messageKey) {
+              const fallbackStored = await storeTranslatedPayload({
+                record: msg,
+                messageKey,
+                senderKeyId: msg.sender_key_id,
+                targetLang: targetLanguage,
+                translatedText: plaintextStr,
+                detectedSource: normSourceHint || "und",
+                status: "failed",
+                claimToken: claimValue,
+              });
+              if (fallbackStored) {
+                claimSettled = true;
+                translated++;
+              }
+            }
+            continue;
+          }
         }
 
         // Re-verify the content version after the (slow) DeepL round trip: an
@@ -1416,6 +1704,9 @@ async function handleDirectClientTranslation(
               detected_source_language: detectedSource || "und",
               translated_target_language: targetLanguage.toLowerCase(),
               translated_source_edited_at: (msg.edited_at as string | null) ?? null,
+              translation_status: translationStatus,
+              translation_attempts: Number(msg.translation_attempts ?? 0) + 1,
+              translated_at: new Date().toISOString(),
             })
             .eq("id", msg.id)
             .eq("translated_target_language", claimValue)
@@ -1438,6 +1729,9 @@ async function handleDirectClientTranslation(
               detected_source_language: detectedSource || "und",
               translated_target_language: targetLanguage.toLowerCase(),
               translated_source_edited_at: (msg.edited_at as string | null) ?? null,
+              translation_status: translationStatus,
+              translation_attempts: Number(msg.translation_attempts ?? 0) + 1,
+              translated_at: new Date().toISOString(),
             })
             .eq("id", msg.id)
             .eq("translated_target_language", claimValue)

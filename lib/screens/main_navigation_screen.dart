@@ -1,5 +1,6 @@
 // lib/screens/main_navigation_screen.dart
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/locale_provider.dart';
@@ -8,6 +9,8 @@ import 'package:matchme/providers/visibility_provider.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/match_notification_provider.dart';
 import 'package:matchme/providers/notification_inbox_provider.dart';
+import 'package:matchme/providers/meetup_activity_provider.dart';
+import 'package:matchme/providers/meetup_alerts_provider.dart';
 import 'package:matchme/providers/invisibility_rules_provider.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/services/global_sync_manager.dart';
@@ -22,6 +25,7 @@ import 'package:matchme/widgets/offline_indicator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/widgets/rating_prompt_watcher.dart';
 import 'package:matchme/services/user_activity_service.dart';
+import 'package:matchme/services/mobile_local_notification_service.dart';
 import 'package:matchme/providers/current_location_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/payment_provider.dart';
@@ -211,7 +215,7 @@ class _MainNavAppBarCenter extends ConsumerWidget {
           overflow: TextOverflow.visible,
           style: TextStyle(
             color: color,
-            fontSize: 11,
+            fontSize: 12,
             fontWeight: FontWeight.w500,
           ),
         ),
@@ -255,7 +259,7 @@ class _MainNavAppBarCenter extends ConsumerWidget {
                 softWrap: true,
                 style: TextStyle(
                   color: c,
-                  fontSize: 11,
+                  fontSize: 12,
                   fontWeight: FontWeight.w500,
                 ),
               ),
@@ -304,7 +308,7 @@ class _MainNavAppBarCenter extends ConsumerWidget {
               softWrap: true,
               style: TextStyle(
                 color: color,
-                fontSize: 11,
+                fontSize: 12,
                 fontWeight: FontWeight.w500,
               ),
             ),
@@ -344,7 +348,7 @@ Widget _mainNavVisibilityDetailWidget(
         l10n.getString('generalLoadingDots'),
         style: TextStyle(
           color: scheme.onSurfaceVariant,
-          fontSize: 11,
+          fontSize: 12,
           fontWeight: FontWeight.w500,
         ),
       ),
@@ -369,7 +373,7 @@ Widget _mainNavVisibilityDetailWidget(
         l10n.getString('youAreOffline'),
         style: TextStyle(
           color: color,
-          fontSize: 11,
+          fontSize: 12,
           fontWeight: FontWeight.w500,
         ),
       ),
@@ -408,7 +412,7 @@ Widget _mainNavVisibilityDetailWidget(
                 softWrap: true,
                 style: TextStyle(
                   color: color,
-                  fontSize: 11,
+                  fontSize: 12,
                   fontWeight: FontWeight.w500,
                 ),
               ),
@@ -443,7 +447,7 @@ Widget _mainNavVisibilityDetailWidget(
                 softWrap: true,
                 style: TextStyle(
                   color: color,
-                  fontSize: 11,
+                  fontSize: 12,
                   fontWeight: FontWeight.w500,
                 ),
               ),
@@ -494,7 +498,7 @@ Widget _mainNavVisibilityDetailWidget(
                       text: l10n.getString('youAreCurrentlyOnline').trimRight(),
                       style: TextStyle(
                         color: onlineColor,
-                        fontSize: 11,
+                        fontSize: 12,
                         fontWeight: FontWeight.w500,
                       ),
                     ),
@@ -503,7 +507,7 @@ Widget _mainNavVisibilityDetailWidget(
                       text: l10n.getString('andInvisible').trimLeft(),
                       style: TextStyle(
                         color: Theme.of(context).colorScheme.error,
-                        fontSize: 11,
+                        fontSize: 12,
                         fontWeight: FontWeight.w500,
                       ),
                     ),
@@ -778,17 +782,15 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
 
       if (!mounted) return;
       final l10n = ref.read(localizationProvider);
-      final rejected = status == 'rejected';
       final startVerification = await showDialog<bool>(
         context: context,
         builder: (dialogContext) {
           return AlertDialog(
             title: Text(l10n.getString('verificationPromptTitle')),
-            content: Text(
-              rejected
-                  ? l10n.getString('verificationPromptBodyRejected')
-                  : l10n.getString('verificationPromptBodyUnverified'),
-            ),
+            // The launch prompt is an invitation to verify in every case;
+            // the details of a prior rejection belong to the verification
+            // screen's status card.
+            content: Text(l10n.getString('verificationPromptBodyUnverified')),
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(dialogContext).pop(false),
@@ -945,11 +947,8 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
         await prefs.remove('user_id');
         await prefs.remove('supabase_url');
         await prefs.remove('supabase_key');
-        await prefs.remove('manual_visibility');
-        await prefs.remove('effective_visibility');
-        await prefs.remove('user_visibility');
-        await prefs.setBool('manual_visibility', true);
-        await prefs.setBool('effective_visibility', false);
+        // Visibility is per-user and persists across sessions; the provider
+        // clears only the shared native mirror on the sign-out event.
       } catch (_) {}
     }
 
@@ -1302,6 +1301,7 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
           contentScaffold(),
         const MatchNotificationOverlay(),
         const _NotificationInboxWatcher(),
+        const _MeetupDesktopToastWatcher(),
         const RatingPromptWatcher(),
         const _KeepCurrentLocationAlive(),
         const _CurrentUserRealtimeWatcher(),
@@ -1387,7 +1387,7 @@ class _MainNavAppBar extends ConsumerWidget implements PreferredSizeWidget {
                       unreadInbox > 99 ? '99+' : '$unreadInbox',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        fontSize: 8.5,
+                        fontSize: 12,
                         fontWeight: FontWeight.w700,
                         color: Theme.of(context).colorScheme.onError,
                         height: 1,
@@ -1477,6 +1477,50 @@ class _NotificationInboxWatcher extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     ref.watch(notificationInboxProvider);
+    return const SizedBox.shrink();
+  }
+}
+
+/// Windows has no FCM channel, so background pushes never arrive and the
+/// inbox realtime row is the only cue. Mirror fresh meet-up tool rows into a
+/// local toast so desktop gets the same alert mobile gets from push.
+class _MeetupDesktopToastWatcher extends ConsumerStatefulWidget {
+  const _MeetupDesktopToastWatcher();
+
+  @override
+  ConsumerState<_MeetupDesktopToastWatcher> createState() =>
+      _MeetupDesktopToastWatcherState();
+}
+
+class _MeetupDesktopToastWatcherState
+    extends ConsumerState<_MeetupDesktopToastWatcher> {
+  late final DateTime _mountedAt = DateTime.now();
+
+  @override
+  Widget build(BuildContext context) {
+    ref.listen<NotificationInboxState>(notificationInboxProvider, (
+      previous,
+      next,
+    ) {
+      if (kIsWeb || defaultTargetPlatform != TargetPlatform.windows) return;
+      final previousIds =
+          previous?.items.map((item) => item.id).toSet() ?? const <String>{};
+      for (final item in next.items) {
+        if (previousIds.contains(item.id)) continue;
+        if (!item.createdAt.isAfter(_mountedAt)) continue;
+        final kind = item.data['kind']?.toString() ?? item.type;
+        if (!kMeetupAlertKinds.contains(kind)) continue;
+        unawaited(
+          MobileLocalNotificationService.showMeetupNotification(
+            notificationId: item.id,
+            title: item.title,
+            body: item.body,
+            matchId: item.data['matchId']?.toString() ?? '',
+            kind: kind,
+          ),
+        );
+      }
+    });
     return const SizedBox.shrink();
   }
 }
@@ -1616,7 +1660,7 @@ class _CompactRail extends ConsumerWidget {
                         maxLines: 2,
                         overflow: TextOverflow.visible,
                         style: TextStyle(
-                          fontSize: 10,
+                          fontSize: 12,
                           height: 1.1,
                           fontWeight: selected
                               ? FontWeight.w700
@@ -1696,8 +1740,11 @@ class _UnreadMatchesNavIcon extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final count = ref.watch(unreadMatchCountProvider);
-    return _NavBadgeIcon(icon: icon, count: count);
+    // New matches plus incoming live meet-up tools (the same activity the
+    // match cards announce with a banner).
+    final int newMatches = ref.watch(unreadMatchCountProvider);
+    final int liveMeetups = ref.watch(incomingMeetupActivityCountProvider);
+    return _NavBadgeIcon(icon: icon, count: newMatches + liveMeetups);
   }
 }
 
@@ -1737,7 +1784,7 @@ class _NavBadgeIcon extends StatelessWidget {
                 count > 99 ? '99+' : count.toString(),
                 style: TextStyle(
                   color: Theme.of(context).colorScheme.onError,
-                  fontSize: 10,
+                  fontSize: 12,
                   fontWeight: FontWeight.bold,
                 ),
                 textAlign: TextAlign.center,

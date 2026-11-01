@@ -6,11 +6,11 @@ import 'package:geolocator/geolocator.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'location_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'gps_kalman_filter.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/pinned_location_gate.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/user_activity_service.dart';
+import 'package:matchme/utils/offline_utils.dart';
 import 'package:matchme/utils/permission_manager.dart';
 
 String _ts() => DateTime.now().toIso8601String();
@@ -71,39 +71,6 @@ class WebLocationService implements LocationService {
   // 6-step fallback chain independently.
   DateTime? _lastPositionRequestAt;
   static const Duration _positionRequestDedupWindow = Duration(seconds: 10);
-
-  GPSKalmanFilter? _kalmanFilter;
-
-  Future<GPSKalmanFilter> _getKalmanFilter() async {
-    if (_kalmanFilter != null) return _kalmanFilter!;
-    try {
-      final processNoisePosition = await appConfigService.getDouble(
-        'gps.kalman_process_noise_position',
-        defaultValue: 0.0001,
-      );
-      final processNoiseVelocity = await appConfigService.getDouble(
-        'gps.kalman_process_noise_velocity',
-        defaultValue: 0.001,
-      );
-      final minAccuracy = await appConfigService.getDouble(
-        'gps.kalman_min_accuracy_meters',
-        defaultValue: 5.0,
-      );
-      final maxAccuracy = await appConfigService.getDouble(
-        'gps.kalman_max_accuracy_meters',
-        defaultValue: 200.0,
-      );
-      _kalmanFilter = GPSKalmanFilter(
-        processNoisePosition: processNoisePosition,
-        processNoiseVelocity: processNoiseVelocity,
-        minAccuracyMeters: minAccuracy,
-        maxAccuracyMeters: maxAccuracy,
-      );
-    } catch (e) {
-      _kalmanFilter = GPSKalmanFilter();
-    }
-    return _kalmanFilter!;
-  }
 
   // Visibility state to prevent sending when invisible
   bool _isVisible = false;
@@ -706,6 +673,11 @@ class WebLocationService implements LocationService {
         // _wlog('_sendLocationUpdate aborted: no current user');
         return;
       }
+      if (!hasLiveUserSession()) {
+        // Session dead (expired token, revoked family) — every call below
+        // would run as anon and be rejected with 401/42501.
+        return;
+      }
 
       final health = await getCurrentConnectivityHealth();
       if (!health.isOnline) {
@@ -767,43 +739,6 @@ class WebLocationService implements LocationService {
         '[${_ts()}] 🌍 Web location service: About to send location update for visible user (tab: ${html.document.visibilityState})',
       );
 
-      // Accuracy thresholds
-      // Web browsers often have poor initial accuracy (IP geolocation, outdated WiFi databases)
-      // Accept up to 1500m to allow matching to work, but prefer better accuracy
-      final maxAcceptableAccuracyMeters = await (() async {
-        try {
-          return await appConfigService.getDouble(
-            'gps.web_max_acceptable_accuracy_meters',
-            defaultValue: 1500.0,
-          );
-        } catch (e) {
-          // print('[${_ts()}] 🌍 Web location service: Error getting max acceptable accuracy config, using default: $e');
-          return 1500.0;
-        }
-      })(); // Accept locations up to 1.5km (web browsers can be inaccurate)
-      final preferredAccuracyMeters = await (() async {
-        try {
-          return await appConfigService.getDouble(
-            'gps.web_preferred_accuracy_meters',
-            defaultValue: 200.0,
-          );
-        } catch (e) {
-          // print('[${_ts()}] 🌍 Web location service: Error getting preferred accuracy config, using default: $e');
-          return 200.0;
-        }
-      })(); // Prefer locations better than 200m
-      final kalmanFilterThresholdMeters = await (() async {
-        try {
-          return await appConfigService.getDouble(
-            'gps.kalman_filter_skip_threshold_meters',
-            defaultValue: 100.0,
-          );
-        } catch (e) {
-          // print('[${_ts()}] 🌍 Web location service: Error getting Kalman filter threshold config, using default: $e');
-          return 100.0;
-        }
-      })(); // Skip Kalman filter for very inaccurate readings
-
       Position? rawPosition;
 
       // Use latest position from continuous stream or last known if available
@@ -857,7 +792,7 @@ class WebLocationService implements LocationService {
             })();
             rawPosition = await Geolocator.getCurrentPosition(
               locationSettings: LocationSettings(
-                accuracy: LocationAccuracy.medium,
+                accuracy: LocationAccuracy.best,
                 timeLimit: mobileTimeLimit,
               ),
             );
@@ -878,72 +813,14 @@ class WebLocationService implements LocationService {
 
       // Promote nullable rawPosition to a local non-nullable variable to satisfy
       // analyzer (avoid losing promotion across awaits).
-      Position currentRaw = rawPosition;
+      final Position currentRaw = rawPosition;
 
       // print('[${_ts()}] 🌍 Web location service: Got position: ${currentRaw.latitude}, ${currentRaw.longitude}, accuracy: ${currentRaw.accuracy}m');
 
-      // If accuracy is worse than preferred, attempt a short high-precision sampling
-      // to try to match what Google Maps does (continuous watch + refined fixes).
-      if (currentRaw.accuracy > preferredAccuracyMeters) {
-        try {
-          // print('[${_ts()}] 🌍 Web location service: Accuracy ${currentRaw.accuracy}m worse than preferred ${preferredAccuracyMeters}m — attempting high-precision sampling');
-          final high = await getHighPrecisionPosition(
-            sampleCount: 5,
-            sampleInterval: await (() async {
-              try {
-                return await appConfigService.getDuration(
-                  'performance.web_location_sample_interval_seconds',
-                  defaultValue: const Duration(seconds: 2),
-                );
-              } catch (e) {
-                return const Duration(seconds: 2);
-              }
-            })(),
-            maxAccuracyMeters: preferredAccuracyMeters,
-          ).timeout(const Duration(seconds: 20), onTimeout: () => null);
-
-          if (high != null && high.accuracy <= currentRaw.accuracy) {
-            // print('[${_ts()}] 🌍 Web location service: Using high-precision sampled position (accuracy ${high.accuracy}m)');
-            currentRaw = high;
-          } else {
-            // print('[${_ts()}] 🌍 Web location service: High-precision sampling did not improve accuracy');
-          }
-        } catch (e) {
-          // print('[${_ts()}] ⚠️ Web location service: High-precision sampling failed: $e');
-        }
-      }
-
-      // Warn about poor accuracy but accept it (web browsers can be very inaccurate)
-      if (currentRaw.accuracy > preferredAccuracyMeters) {
-        if (currentRaw.accuracy > maxAcceptableAccuracyMeters) {
-          // print('[${_ts()}] ⚠️ Web location service: Very poor accuracy (${currentRaw.accuracy.toStringAsFixed(0)}m) but accepting to allow matching. Consider moving to a location with better WiFi/GPS signal.');
-        } else {
-          // print('[${_ts()}] ⚠️ Web location service: Moderate accuracy (${currentRaw.accuracy.toStringAsFixed(0)}m). Web browsers often have limited location accuracy compared to mobile GPS.');
-        }
-      }
-
-      // Accept the location regardless of accuracy (web browsers are inherently less accurate)
-      // The matching algorithm can handle moderate inaccuracies
-
-      // Apply Kalman filter only for reasonably accurate readings
-      // Skip filter for very inaccurate readings to avoid introducing drift
-      Position finalPosition;
-      if (currentRaw.accuracy <= kalmanFilterThresholdMeters) {
-        // Use Kalman filter for better smoothing of accurate readings
-        // On web, Position objects may be LegacyJavaScriptObject instances, which can cause type casting errors
-        try {
-          finalPosition = (await _getKalmanFilter()).filter(currentRaw);
-          // print('[${_ts()}] 🌍 Web location service: Filtered position: ${finalPosition.latitude}, ${finalPosition.longitude}, accuracy: ${finalPosition.accuracy}m (raw accuracy: ${currentRaw.accuracy}m)');
-        } catch (e) {
-          // If Kalman filter fails (e.g., LegacyJavaScriptObject type error on web), use raw position
-          // print('[${_ts()}] 🌍 Web location service: Kalman filter failed, using raw position: $e');
-          finalPosition = currentRaw;
-        }
-      } else {
-        // For very inaccurate readings, use raw position to avoid filter drift
-        finalPosition = currentRaw;
-        // print('[${_ts()}] 🌍 Web location service: Using raw position (accuracy too poor for Kalman filter): ${finalPosition.latitude}, ${finalPosition.longitude}, accuracy: ${finalPosition.accuracy}m');
-      }
+      // Upload the newest raw fix from the browser/OS. Platform location
+      // providers already fuse GPS, Wi-Fi, cell, and sensor data; applying a
+      // second client-side filter adds latency and distorts reported accuracy.
+      final Position finalPosition = currentRaw;
 
       // Use final position for callback
       // Deferred to next microtask to prevent re-entrant frame scheduling
@@ -1329,8 +1206,6 @@ class WebLocationService implements LocationService {
     // _wlog('stopLocationStream called');
     _isStarting = false;
     _stopInternal();
-    // Reset Kalman filter for fresh start next time
-    _kalmanFilter?.reset();
     // Ensure position stream is stopped
     _positionStreamSubscription?.cancel();
     _positionStreamSubscription = null;

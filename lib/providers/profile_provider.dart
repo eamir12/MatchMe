@@ -31,12 +31,13 @@ import 'package:matchme/providers/home_providers.dart'
         warmDashboardStatsForUser,
         resolveNearbyCountAnchor;
 import 'package:matchme/utils/resume_diagnostics.dart';
+import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/profile_sync_result.dart';
 import 'package:matchme/utils/offline_utils.dart';
-import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/services/referral_service.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/services/photo_prescreen_service.dart';
+import 'package:matchme/services/session_service.dart';
 import 'package:matchme/services/translation_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
@@ -392,44 +393,6 @@ String _normalizeIntentKey(String? value) {
   final replaced = trimmed.replaceAll(RegExp(r'[^a-z0-9]+'), '_');
   final collapsed = replaced.replaceAll(RegExp(r'_+'), '_');
   return collapsed.replaceAll(RegExp(r'^_|_$'), '');
-}
-
-String maskName(String? fullName) {
-  if (fullName == null || fullName.trim().isEmpty) return 'Unknown User';
-  final parts = fullName
-      .replaceAll(bidiControls, '')
-      .trim()
-      .split(RegExp(r'\s+'))
-      .where((p) => p.isNotEmpty)
-      .toList();
-  if (parts.isEmpty) return 'Unknown User';
-  final first = _capitalizeNameWordLocal(parts.first);
-  String suffix = '';
-  if (parts.length > 1) {
-    final last = parts.last;
-    if (last.isNotEmpty && last.toLowerCase() != parts.first.toLowerCase()) {
-      suffix = ' ${last[0].toUpperCase()}.';
-    }
-  }
-  return '$first$suffix'.withDirectionalMarks();
-}
-
-String _capitalizeNameWordLocal(String word) {
-  if (word.isEmpty) return word;
-  final hyphenParts = word.split('-');
-  return hyphenParts
-      .map((hyphenPart) {
-        if (hyphenPart.isEmpty) return hyphenPart;
-        final apostropheParts = hyphenPart.split("'");
-        return apostropheParts
-            .map((segment) {
-              if (segment.isEmpty) return segment;
-              final lower = segment.toLowerCase();
-              return '${lower[0].toUpperCase()}${lower.substring(1)}';
-            })
-            .join("'");
-      })
-      .join('-');
 }
 
 /// ---------------------------------------------------------------------------
@@ -1001,7 +964,9 @@ class UserProfile {
       'user_id': id,
       'bio': bio,
       'photos': photos,
-      'approved_primary_photos': null, // managed separately
+      // approved_primary_photos is deliberately omitted: it is owned by the
+      // photo-verification flow and must never be rewritten from a profile
+      // save (see saveProfile).
       'height': height,
       'height_unit': heightUnit,
       'occupation': occupation,
@@ -1445,10 +1410,13 @@ class ProfileSyncService {
   // shared timestamp, so the rest hit SKIP debounced and never refreshed).
   final Map<String, DateTime> _lastSuccessfulSyncAt = <String, DateTime>{};
   static const _debounceWindow = Duration(seconds: 5);
-  // Sources that should bypass debounce (explicit user actions)
+  // Sources that should bypass debounce (explicit user actions or a server
+  // change notification: a matched user's edit must not be dropped because
+  // another sync for that user finished moments earlier).
   static const _debounceBypassSources = {
     'manual-review-request',
     'admin-review-change',
+    'matched-user-realtime',
   };
 
   int _beginSync(String userId) {
@@ -1645,6 +1613,7 @@ class ProfileSyncService {
     if (session == null) {
       return _finishSync(userId, generation, ProfileSyncStatus.unauthenticated);
     }
+    final isCurrentUser = session.user.id == userId;
 
     debugPrint('ProfileSyncService.syncProfile START source=$source');
     _publishStarted(userId, generation);
@@ -2195,6 +2164,21 @@ class ProfileSyncService {
           final localMap = profile.toMap();
           localMap['_cached_at'] = DateTime.now().toIso8601String();
           await localDb.saveLocalProfile(userId, localMap);
+          // Matched users are rendered from the separate "other user" cache
+          // and its own realtime listener. Keep it in step with the same
+          // server snapshot so a fresh sync can't leave the matched-profile
+          // screen showing removed answers until the next cache TTL.
+          if (!isCurrentUser) {
+            try {
+              final otherMap = <String, dynamic>{
+                ...userData,
+                ...profileRowData,
+              };
+              if (otherMap.isNotEmpty) {
+                await localDb.saveOtherUserProfile(userId, otherMap);
+              }
+            } catch (_) {}
+          }
           // Mirror the Retro Matching opt-in + retention to local prefs.
           // The settings toggle shows the profile flag, but recording
           // (OfflineTrailService) and the native background service read
@@ -2487,10 +2471,11 @@ Map<String, dynamic> _mergeOtherUserProfileData(
   Map<String, dynamic> remote,
 ) {
   final merged = Map<String, dynamic>.from(cached)..remove('cached_at');
-  for (final entry in remote.entries) {
-    if (entry.value == null && merged.containsKey(entry.key)) continue;
-    merged[entry.key] = entry.value;
-  }
+  // Remote nulls are authoritative too: when a matched user clears an
+  // optional answer (religion, lifestyle, family, bio, ...), the refreshed
+  // row carries null and the cached copy must drop the old value. Skipping
+  // nulls left other users seeing removed answers forever.
+  merged.addAll(remote);
   return merged;
 }
 
@@ -2595,6 +2580,26 @@ userProfileProvider = StreamProvider.family<UserProfile?, String>((
   });
 });
 
+/// Mirrors [SessionService.deadSessionDetected] into Riverpod so providers
+/// that open server streams can rebuild the moment the re-login gate is armed
+/// or cleared by a new sign-in.
+class DeadSessionLatchNotifier extends Notifier<bool> {
+  @override
+  bool build() {
+    final notifier = SessionService.deadSessionDetected;
+    void onChange() => state = notifier.value;
+    notifier.addListener(onChange);
+    ref.onDispose(() => notifier.removeListener(onChange));
+    return notifier.value;
+  }
+}
+
+// Synchronous on purpose: an async* StreamProvider started in AsyncLoading and
+// its first emission rebuilt every watcher one frame later, so the users-table
+// stream was created twice on every warm launch (2026-10-30 16:23 log).
+final deadSessionLatchProvider =
+    NotifierProvider<DeadSessionLatchNotifier, bool>(DeadSessionLatchNotifier.new);
+
 /// --- currentUserUsersTableProvider -----------------------------------------
 /// Watches the current user's `users` table row via Supabase Realtime (.stream()).
 /// When the row changes (admin edits profile, changes verification, etc.), it
@@ -2604,6 +2609,12 @@ final currentUserUsersTableProvider = StreamProvider<Map<String, dynamic>?>((
 ) {
   final currentUserId = supabase.auth.currentUser?.id;
   if (currentUserId == null || currentUserId.isEmpty) return Stream.value(null);
+
+  // While the dead-session gate is armed the family is proven dead: a
+  // realtime join would execute as anon and every attempt is another 42501
+  // on `users` (20 in the 2026-10-30 relaunch minute). Watching the latch
+  // mirror rebuilds this provider with the new session right after sign-in.
+  if (ref.watch(deadSessionLatchProvider)) return Stream.value(null);
 
   final stream = supabase
       .from('users')
@@ -2644,12 +2655,12 @@ final currentUserUsersTableProvider = StreamProvider<Map<String, dynamic>?>((
         } catch (e) {
           debugPrint('[ProfileProvider] users table sync failed: $e');
         }
-        if (ref.mounted) {
-          ref.invalidate(userProfileProvider(currentUserId));
-          debugPrint(
-            '[ProfileProvider] ✅ users stream invalidated userProfileProvider',
-          );
-        }
+        // No invalidate of userProfileProvider here: it watches THIS provider
+        // (line ~2553), so invalidating it from inside this handler makes its
+        // rebuild re-enter the still-active notifier — Riverpod raises
+        // CircularDependencyError. It is also unnecessary: userProfileProvider
+        // derives from localDb.watchLocalProfile, and syncProfile just wrote
+        // the local DB, so the stream re-emits on its own.
         return row;
       })
       .handleError((e) {
@@ -2796,18 +2807,50 @@ final otherUserProfileProvider = FutureProvider.family<UserProfile?, String>((
   }
 });
 
+/// --- specificProfileProvider: refresh pacing -------------------------------
+/// Pacing for [specificProfileProvider]'s background refresh, keyed
+/// `userId|intentType`.
+///
+/// That provider starts its refresh from its own cache-hit branch, and the
+/// refresh invalidates the provider, which re-enters that branch — so without
+/// a gate the pair is a self-sustaining loop: one `user_profiles` GET per
+/// round-trip (~10/s) for as long as a match profile stays open, which is the
+/// 2026-10-26 PostgREST 503 burst. Same shape as
+/// `_shouldAttemptOtherUserProfileRefresh`, and the hazard
+/// `new_options_provider` calls out as "no invalidate loop".
+final Map<String, DateTime> _specificProfileRefreshedAt = <String, DateTime>{};
+const Duration _specificProfileRefreshInterval = Duration(seconds: 60);
+
+bool _shouldRefreshSpecificProfile(String userId, String intentType) {
+  final key = '$userId|$intentType';
+  final now = DateTime.now();
+  final last = _specificProfileRefreshedAt[key];
+  if (last != null && now.difference(last) < _specificProfileRefreshInterval) {
+    return false;
+  }
+  _specificProfileRefreshedAt[key] = now;
+  return true;
+}
+
 /// --- specificProfileProvider ----------------------------------------------
 /// Intent-specific profile slice (bio, sub-intents + interests).
 /// Cache-first (memory via provider + Hive local storage): returns cached
 /// snapshot instantly on UI startup, refreshes from Supabase in background.
-final specificProfileProvider =
-    FutureProvider.family<IntentProfileData?, Map<String, String>>((
-      ref,
-      params,
-    ) async {
+///
+/// Auto-dispose so that re-entering a match profile re-runs the fetch: nothing
+/// pushes other users' `user_profiles` rows, so an edit made after the first
+/// visit would otherwise stay invisible for the rest of the app session. The
+/// 60 s gate above keeps that re-entry at one request.
+final specificProfileProvider = FutureProvider.autoDispose
+    .family<IntentProfileData?, Map<String, String>>((ref, params) async {
       final userId = params['userId'] ?? '';
       final intentType = params['intentType'] ?? '';
       if (userId.isEmpty || intentType.isEmpty) return null;
+
+      // Read before the first await: auto-dispose means the provider can be
+      // disposed mid-fetch when the profile screen is popped, and a post-await
+      // ref.read would then be a use-after-dispose.
+      final localDb = ref.read(localDbProvider);
 
       IntentProfileData? fromResponse(Map<String, dynamic> response) {
         final bio = response['bio']?.toString() ?? 'No bio provided.';
@@ -2844,8 +2887,8 @@ final specificProfileProvider =
       }
 
       Future<void> refreshInBackground() async {
+        if (shouldSkipUserScopedSupabaseCalls()) return;
         try {
-          final localDb = ref.read(localDbProvider);
           // New schema: single-row user_profiles with sub_intents as JSONB map
           final response = await supabase
               .from('user_profiles')
@@ -2870,7 +2913,6 @@ final specificProfileProvider =
 
       // 1) Local storage first — instant.
       try {
-        final localDb = ref.read(localDbProvider);
         final cached = await localDb.getCachedSpecificProfile(
           userId,
           intentType,
@@ -2878,7 +2920,9 @@ final specificProfileProvider =
         if (cached != null && cached.isNotEmpty) {
           final parsed = fromResponse(cached);
           if (parsed != null) {
-            unawaited(refreshInBackground());
+            if (_shouldRefreshSpecificProfile(userId, intentType)) {
+              unawaited(refreshInBackground());
+            }
             return parsed;
           }
         }
@@ -2886,6 +2930,7 @@ final specificProfileProvider =
 
       // 2) No cache: fetch, then save to BOTH layers.
       // New schema: single-row user_profiles with sub_intents as JSONB map
+      if (shouldSkipUserScopedSupabaseCalls()) return null;
       final response = await supabase
           .from('user_profiles')
           .select('bio, sub_intents, personal_interests, business_interests')
@@ -2895,7 +2940,6 @@ final specificProfileProvider =
       if (response == null) return null;
 
       try {
-        final localDb = ref.read(localDbProvider);
         await localDb.saveCachedSpecificProfile(
           userId,
           intentType,
@@ -3082,6 +3126,7 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
   /// change made on another device is picked up even when its event was
   /// missed.
   Future<void> reconcileMatchPreferences() async {
+    if (shouldSkipUserScopedSupabaseCalls()) return;
     try {
       final row = await supabase
           .from('user_profiles')
@@ -4116,6 +4161,7 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     draftData['_wizard_uploaded_photo_paths'] = _wizardUploadedPhotoPaths
         .toList();
     draftData['_wizard_current_page_index'] = _wizardCurrentPageIndex;
+    draftData['_wizard_draft_version'] = _kWizardDraftVersion;
     await localDb.saveProfileWizardDraft(userId, draftData);
   }
 
@@ -4170,6 +4216,14 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     await localDb.clearProfileWizardDraft(userId);
   }
 
+  /// Draft format written by [saveWizardDraft].
+  ///
+  /// v2 drafts are complete snapshots of the wizard form. For those, an
+  /// absent/null/empty value is a deliberate removal by the user and must not
+  /// be merged back from the saved profile (older drafts are still merged
+  /// defensively so upgrading mid-session cannot wipe untouched fields).
+  static const int _kWizardDraftVersion = 2;
+
   Future<UserProfile> _mergeWizardDraft(UserProfile base) async {
     final localDb = ref.read(localDbProvider);
     final draft = await localDb.loadProfileWizardDraft(userId);
@@ -4183,6 +4237,9 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
     if (draft['_wizard_current_page_index'] is int) {
       _wizardCurrentPageIndex = draft['_wizard_current_page_index'] as int;
     }
+
+    final draftVersion = draft['_wizard_draft_version'];
+    final isCompleteDraft = draftVersion is int && draftVersion >= 2;
 
     final draftProfile = UserProfile.fromMap(normalized);
 
@@ -4267,6 +4324,25 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
         ? draftProfile.activeModes
         : base.activeModes;
 
+    // Complete drafts (v2+) are authoritative for everything the wizard owns:
+    // merging them with the saved profile resurrects answers the user removed
+    // (e.g. clearing religion, lifestyle, family, bio, height or interests).
+    Map<String, List<String>> preferDraftLists(
+      Map<String, List<String>> draftValue,
+      Map<String, List<String>> baseValue,
+    ) {
+      if (isCompleteDraft) return draftValue;
+      return draftValue.isNotEmpty ? {...baseValue, ...draftValue} : baseValue;
+    }
+
+    Map<String, Map<String, dynamic>> preferDraftNested(
+      Map<String, Map<String, dynamic>> draftValue,
+      Map<String, Map<String, dynamic>> baseValue,
+    ) {
+      if (isCompleteDraft) return draftValue;
+      return draftValue.isNotEmpty ? {...baseValue, ...draftValue} : baseValue;
+    }
+
     // Preserve stashed selections for inactive intents so re-activating an
     // intent restores its previous sub-intents/interests as checked.
     // Display layers filter by activeModes.
@@ -4278,58 +4354,84 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
           ? draftProfile.preferredLanguage
           : base.preferredLanguage,
       activeModes: mergedActiveModes,
-      subIntents: draftProfile.subIntents.isNotEmpty
-          ? {...base.subIntents, ...draftProfile.subIntents}
-          : base.subIntents,
-      personalInterests: draftProfile.personalInterests.isNotEmpty
-          ? {...base.personalInterests, ...draftProfile.personalInterests}
-          : base.personalInterests,
-      businessInterests: draftProfile.businessInterests.isNotEmpty
-          ? {...base.businessInterests, ...draftProfile.businessInterests}
-          : base.businessInterests,
-      languagesKnown: draftProfile.languagesKnown.isNotEmpty
-          ? {...base.languagesKnown, ...draftProfile.languagesKnown}
-          : base.languagesKnown,
+      subIntents: preferDraftLists(draftProfile.subIntents, base.subIntents),
+      personalInterests: preferDraftLists(
+        draftProfile.personalInterests,
+        base.personalInterests,
+      ),
+      businessInterests: preferDraftLists(
+        draftProfile.businessInterests,
+        base.businessInterests,
+      ),
+      languagesKnown: preferDraftLists(
+        draftProfile.languagesKnown,
+        base.languagesKnown,
+      ),
       matchRadiusDefault: draftProfile.matchRadiusDefault,
       gpsIntervalDefault: draftProfile.gpsIntervalDefault,
       smartGpsThrottlingEnabled: draftProfile.smartGpsThrottlingEnabled,
       sharedEventMatchingEnabled: draftProfile.sharedEventMatchingEnabled,
       sharedMovementMatchingEnabled: draftProfile.sharedMovementMatchingEnabled,
-      genderPreferences: draftProfile.genderPreferences.isNotEmpty
-          ? {...base.genderPreferences, ...draftProfile.genderPreferences}
-          : base.genderPreferences,
-      agePreferences: draftProfile.agePreferences.isNotEmpty
-          ? {...base.agePreferences, ...draftProfile.agePreferences}
-          : base.agePreferences,
-      bio: validDraftBio ? draftProfile.bio : base.bio,
+      genderPreferences: preferDraftLists(
+        draftProfile.genderPreferences,
+        base.genderPreferences,
+      ),
+      agePreferences: isCompleteDraft
+          ? draftProfile.agePreferences
+          : (draftProfile.agePreferences.isNotEmpty
+                ? {...base.agePreferences, ...draftProfile.agePreferences}
+                : base.agePreferences),
+      bio: isCompleteDraft
+          ? draftProfile.bio
+          : (validDraftBio ? draftProfile.bio : base.bio),
       photos: mergedPhotos.isNotEmpty ? mergedPhotos : base.photos,
-      instagramUrl: validDraftInsta
+      instagramUrl: isCompleteDraft
           ? draftProfile.instagramUrl
-          : base.instagramUrl,
-      linkedinUrl: validDraftLinkedin
+          : (validDraftInsta ? draftProfile.instagramUrl : base.instagramUrl),
+      linkedinUrl: isCompleteDraft
           ? draftProfile.linkedinUrl
-          : base.linkedinUrl,
-      facebookUrl: validDraftFb ? draftProfile.facebookUrl : base.facebookUrl,
-      height: draftProfile.height ?? base.height,
+          : (validDraftLinkedin ? draftProfile.linkedinUrl : base.linkedinUrl),
+      facebookUrl: isCompleteDraft
+          ? draftProfile.facebookUrl
+          : (validDraftFb ? draftProfile.facebookUrl : base.facebookUrl),
+      height: isCompleteDraft
+          ? draftProfile.height
+          : (draftProfile.height ?? base.height),
       heightUnit: draftProfile.heightUnit,
-      occupation: validDraftOcc ? draftProfile.occupation : base.occupation,
-      education: validDraftEdu ? draftProfile.education : base.education,
-      zodiacSign: validDraftZodiac ? draftProfile.zodiacSign : base.zodiacSign,
-      lifestyle: mergedLifestyle.isNotEmpty ? mergedLifestyle : base.lifestyle,
-      family: mergedFamily.isNotEmpty ? mergedFamily : base.family,
-      religion: mergedReligion.isNotEmpty ? mergedReligion : base.religion,
-      lifestyleFilters: draftProfile.lifestyleFilters.isNotEmpty
-          ? {...base.lifestyleFilters, ...draftProfile.lifestyleFilters}
-          : base.lifestyleFilters,
-      familyFilters: draftProfile.familyFilters.isNotEmpty
-          ? {...base.familyFilters, ...draftProfile.familyFilters}
-          : base.familyFilters,
-      religionFilters: draftProfile.religionFilters.isNotEmpty
-          ? {...base.religionFilters, ...draftProfile.religionFilters}
-          : base.religionFilters,
-      heightPreferences: draftProfile.heightPreferences.isNotEmpty
-          ? {...base.heightPreferences, ...draftProfile.heightPreferences}
-          : base.heightPreferences,
+      occupation: isCompleteDraft
+          ? draftProfile.occupation
+          : (validDraftOcc ? draftProfile.occupation : base.occupation),
+      education: isCompleteDraft
+          ? draftProfile.education
+          : (validDraftEdu ? draftProfile.education : base.education),
+      zodiacSign: isCompleteDraft
+          ? draftProfile.zodiacSign
+          : (validDraftZodiac ? draftProfile.zodiacSign : base.zodiacSign),
+      lifestyle: isCompleteDraft
+          ? draftProfile.lifestyle
+          : (mergedLifestyle.isNotEmpty ? mergedLifestyle : base.lifestyle),
+      family: isCompleteDraft
+          ? draftProfile.family
+          : (mergedFamily.isNotEmpty ? mergedFamily : base.family),
+      religion: isCompleteDraft
+          ? draftProfile.religion
+          : (mergedReligion.isNotEmpty ? mergedReligion : base.religion),
+      lifestyleFilters: preferDraftNested(
+        draftProfile.lifestyleFilters,
+        base.lifestyleFilters,
+      ),
+      familyFilters: preferDraftNested(
+        draftProfile.familyFilters,
+        base.familyFilters,
+      ),
+      religionFilters: preferDraftNested(
+        draftProfile.religionFilters,
+        base.religionFilters,
+      ),
+      heightPreferences: preferDraftNested(
+        draftProfile.heightPreferences,
+        base.heightPreferences,
+      ),
     );
     return merged;
   }
@@ -5811,6 +5913,15 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
       state = AsyncError("Name and DOB required.", StackTrace.current);
       return false;
     }
+    // The product has no display format for a single-word name: every save
+    // (first completion or edit) must carry a first and a last name.
+    if (!currentState.name.hasFirstAndLastName) {
+      state = AsyncError(
+        "First and last name required.",
+        StackTrace.current,
+      );
+      return false;
+    }
     // Hard gate: every save/completion (first-time or edit) requires at
     // least one photo, and the primary photo must have passed the local
     // prescreen and been approved by the AI validation
@@ -5970,12 +6081,15 @@ class ProfileEditNotifier extends _$ProfileEditNotifier {
         filteredPayload['background_matching_mode'] = true;
       }
 
-      // Build the user_profiles single-row upsert payload
-      final profilePayload = currentState.toJsonForProfileTableSave();
-      // Remove null-valued keys
-      final filteredProfilePayload = Map<String, dynamic>.fromEntries(
-        profilePayload.entries.where((e) => e.value != null),
-      );
+      // Build the user_profiles single-row upsert payload.
+      //
+      // Null values MUST be kept: the wizard lets the user clear optional
+      // fields (religion, lifestyle, family, bio, height, social links,
+      // languages, interests, preferences, ...). Omitting a null key from an
+      // upsert means "leave the stored value unchanged", so a removal only
+      // reached the local cache and the next server sync / other matched
+      // users kept showing the old value forever.
+      final filteredProfilePayload = currentState.toJsonForProfileTableSave();
 
       // Update local state to reflect completion immediately (offline-first).
       var localProfile = currentState.copyWith(

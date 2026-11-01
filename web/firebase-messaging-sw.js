@@ -12,12 +12,14 @@ firebase.initializeApp({
 
 const messaging = firebase.messaging();
 
+// v6: + the server's card wins - a locally joined history no longer replaces
+// the body of a chat card that collapsed because several messages are unread.
 // v5: tags aligned with the server contract (admin_<id>, expiry _<threshold>)
 // so a card delivered by FCM never doubles a locally-posted one.
 // v4: + silent edit/delete retraction closes the stale grouped card.
 // skipWaiting + claim so rebooted/offline browsers pick up the fix without
 // waiting for the old worker to release its clients.
-const SW_VERSION = 'v5-tag-align';
+const SW_VERSION = 'v6-server-copy-card';
 try {
   self.addEventListener('install', (event) => {
     try {
@@ -111,6 +113,11 @@ messaging.onBackgroundMessage(async (payload) => {
   const rawKind = (data.kind || data.type || data.notification_type || '').toString().trim().toLowerCase();
   const isExpiry = rawKind === 'match_expiry' || rawKind === 'pinned_expiry';
   const isMatch = rawKind === 'match' || rawKind === 'new_match';
+  const isMeetup = rawKind === 'meetup_signal' || rawKind === 'meetup_beacon' || rawKind === 'meetup_spot';
+  // A wave or beacon replaces the sender's live row server-side, so its card
+  // must replace the previous card too: keyed on who sent it, never on the row
+  // id, which changes with every resend. Mirrors the cron-jobs collapse tag.
+  const isLiveSignal = rawKind === 'meetup_signal' || rawKind === 'meetup_beacon';
   const isRetraction = rawKind === 'message_edited' || rawKind === 'message_deleted';
   // Retraction tick: close the stale grouped card instead of posting.
   // The next real message re-posts with correct text via its own tag.
@@ -148,7 +155,11 @@ messaging.onBackgroundMessage(async (payload) => {
       ? `${rawKind}_${matchId || broadcastId || 'warn'}${expiryThreshold ? `_${expiryThreshold}` : ''}`
       : isMatch
         ? (matchId ? `new_match_${matchId}` : 'new_match')
-        : (matchId ? `match_${matchId}` : (data.tag || data.collapseKey || data.collapse_key || '').toString().trim());
+        : isMeetup
+          ? (isLiveSignal && matchId && senderId
+              ? `${rawKind}_${matchId}_${senderId}`
+              : `${rawKind}_${(data.meetup_signal_id || data.meetup_spot_id || matchId || 'event').toString().trim()}`)
+          : (matchId ? `match_${matchId}` : (data.tag || data.collapseKey || data.collapse_key || '').toString().trim());
 
   if (_currentUserId) {
     if (recipientId && recipientId !== _currentUserId) {
@@ -160,13 +171,22 @@ messaging.onBackgroundMessage(async (payload) => {
   }
 
   const alreadyAggregated = data.aggregated_messages === 'true';
-  const history = (isAdminBroadcast || alreadyAggregated)
+  // The worker still keeps a per-chat history, because its tag replaces its
+  // own card and it needs to know whether this push opens a burst (ring) or
+  // continues one (stay quiet). It no longer supplies the body: the card the
+  // server built puts the unread total in the title and quotes nothing when
+  // the conversation holds more than one unread message, and joining the
+  // history here would show exactly the text that rule hides.
+  // Meet-up tool cards are standalone events, not chat lines: keeping them out
+  // of the per-chat history prevents them from merging into (or silencing)
+  // conversation cards for the same match.
+  const history = (isAdminBroadcast || alreadyAggregated || isMeetup)
     ? null
     : _pushMessageHistory(matchId, messageId, body);
   const mergedBody = history ? history.map((m) => (m && m.text) ? m.text : '').filter(Boolean).join('\n') : '';
 
   self.registration.showNotification(title, {
-    body: mergedBody || body,
+    body: body || mergedBody,
     icon: '/icons/Icon-192.png',
     badge: '/icons/Icon-192.png',
     data,

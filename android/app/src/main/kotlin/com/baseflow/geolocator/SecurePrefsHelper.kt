@@ -45,6 +45,9 @@ object SecurePrefsHelper {
         "flutter.user_token",
         "flutter.refresh_token",
         "flutter.user_id",
+        // Last refresh token GoTrue refused; a restarted service must never
+        // replay it (each replay is logged as an "abuse attempt").
+        "flutter.auth_rejected_refresh_token",
         "flutter.location_share_session_key",
         "flutter.location_share_match_id",
         "flutter.location_share_other_user_id",

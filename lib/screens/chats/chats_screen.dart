@@ -13,6 +13,8 @@ import 'package:matchme/widgets/multi_select.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/new_options_provider.dart';
+import 'package:matchme/providers/profile_provider.dart';
+import 'package:matchme/utils/gender_utils.dart';
 import 'package:matchme/utils/shared_intent_utils.dart';
 import 'package:matchme/utils/chat_inbox_utils.dart';
 import 'package:matchme/widgets/list_filter_bar.dart';
@@ -43,6 +45,7 @@ class ChatsScreen extends ConsumerStatefulWidget {
 
 class _ChatsScreenState extends ConsumerState<ChatsScreen> {
   String? _selectedIntentKey;
+  String? _genderFilter;
   bool _unreadOnly = false;
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
@@ -56,6 +59,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
   // state — the user can return to a filtered active list after browsing
   // archived chats, and vice versa.
   String? _archivedSelectedIntentKey;
+  String? _archivedGenderFilter;
   bool _archivedUnreadOnly = false;
   final TextEditingController _archivedSearchController =
       TextEditingController();
@@ -114,9 +118,9 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
       archived ? 'chatsArchivedCount' : 'chatsUnarchivedCount',
       ids.length,
     );
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   /// Sort orders the Chats screen offers, in sheet order.
@@ -136,10 +140,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
   /// Kept separate from the filtering pipeline so search, filters and sort
   /// compose in one readable order rather than interleaved. Takes [sortOption]
   /// because the active list and the Archived view each keep their own sort.
-  List<ChatModel> _sortChats(
-    List<ChatModel> chats,
-    ListSortOption sortOption,
-  ) {
+  List<ChatModel> _sortChats(List<ChatModel> chats, ListSortOption sortOption) {
     if (sortOption == ListSortOption.recent) return chats;
     final sorted = List<ChatModel>.from(chats);
     switch (sortOption) {
@@ -198,12 +199,14 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
       if (_showArchived) {
         _archivedSearchQuery = '';
         _archivedSelectedIntentKey = null;
+        _archivedGenderFilter = null;
         _archivedUnreadOnly = false;
         _archivedMatchTypeFilter = MatchTypeFilter.all;
         _archivedSortOption = ListSortOption.recent;
       } else {
         _searchQuery = '';
         _selectedIntentKey = null;
+        _genderFilter = null;
         _unreadOnly = false;
         _matchTypeFilter = MatchTypeFilter.all;
         _sortOption = ListSortOption.recent;
@@ -245,6 +248,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
     List<ChatModel> chats,
     Map<String, List<String>> matchIntentById,
     Map<String, String> matchTypeById,
+    Map<String, String> genderByUserId,
     ListFilterState draft,
   ) {
     String matchTypeOf(ChatModel chat) {
@@ -253,15 +257,22 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
     }
 
     final intent = draft.selectedIntentKey?.trim().toLowerCase();
+    final gender = normalizeGenderKey(draft.selectedGenderKey);
     return chats.where((chat) {
       if (draft.matchType != MatchTypeFilter.all &&
           !draft.matchType.matches(matchTypeOf(chat))) {
         return false;
       }
+      if (gender.isNotEmpty &&
+          normalizeGenderKey(genderByUserId[chat.otherUserId]) != gender) {
+        return false;
+      }
       if (draft.extraToggleActive && chat.unreadCount <= 0) return false;
       if (intent != null && intent.isNotEmpty) {
-        final keys = _intentKeysForChat(chat, matchIntentById)
-            .map((k) => k.toLowerCase());
+        final keys = _intentKeysForChat(
+          chat,
+          matchIntentById,
+        ).map((k) => k.toLowerCase());
         if (!keys.contains(intent)) return false;
       }
       return true;
@@ -280,9 +291,11 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
     required LocalizationState l10n,
     required List<String> intentKeys,
     required List<AppIntent> allIntents,
+    required List<Map<String, String>> genderOptions,
     required bool canFilterByMatchType,
     required int Function(ListFilterState draft) countFor,
     required String? selectedIntentKey,
+    required String? genderFilter,
     required MatchTypeFilter matchTypeFilter,
     required bool unreadOnly,
     required ListSortOption sortOption,
@@ -299,9 +312,11 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
       // types. Filtering by proximity or event against unknown values would
       // hide every row, which reads as data loss rather than as a filter.
       showMatchType: canFilterByMatchType,
+      genderOptions: genderOptions,
       sortOptions: _chatSortOptions,
       initial: ListFilterState(
         selectedIntentKey: selectedIntentKey,
+        selectedGenderKey: genderFilter,
         matchType: matchTypeFilter,
         extraToggleKey: 'unread',
         extraToggleLabel: unreadConversationCount == 0
@@ -311,6 +326,8 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                 params: {'count': '$unreadConversationCount'},
               ),
         extraToggleActive: unreadOnly,
+        // Nothing unread means the toggle would narrow nothing: hide it.
+        extraToggleVisible: unreadConversationCount > 0,
         sort: sortOption,
       ),
     );
@@ -323,6 +340,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
     final l10n = ref.watch(localizationProvider);
     final userId = supabase.auth.currentUser?.id;
     final allIntentsAsync = ref.watch(allIntentsProvider);
+    final genderOptionsAsync = ref.watch(genderOptionsProvider);
     final initialSyncAsync = userId != null
         ? ref.watch(initialHomeSyncProvider(userId))
         : const AsyncValue<void>.loading();
@@ -340,10 +358,8 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
         final matches = allMatchesAsync.asData?.value ?? const [];
         // Archive is per-user: split the cached list into what this screen
         // shows in its two views.
-        final activeChats =
-            filterArchivedChats(chats, archived: false);
-        final archivedChats =
-            filterArchivedChats(chats, archived: true);
+        final activeChats = filterArchivedChats(chats, archived: false);
+        final archivedChats = filterArchivedChats(chats, archived: true);
         final viewChats = _showArchived ? archivedChats : activeChats;
 
         // Map matchId -> intent keys that created that match.
@@ -376,23 +392,48 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
           return matchTypeById[(chat as dynamic).matchId as String] ?? '';
         }
 
+        // Gender lives on the other person's profile — the same provider each
+        // chat row already watches for its age/gender line. Resolved once per
+        // user id so the list, the live count and the sheet cannot disagree.
+        final chatGenderById = <String, String>{
+          for (final chat in viewChats)
+            if (chat.otherUserId.isNotEmpty)
+              chat.otherUserId: normalizeGenderKey(
+                ref
+                    .watch(userProfileProvider(chat.otherUserId))
+                    .asData
+                    ?.value
+                    ?.gender,
+              ),
+        };
+
         // ── View-specific filter/sort/search state ──
         //
         // The active list and the Archived view keep independent state. Pick
         // whichever view is currently on screen so the whole pipeline below
         // uses the right values without branching everywhere.
-        final viewSearchQuery =
-            _showArchived ? _archivedSearchQuery : _searchQuery;
-        final viewUnreadOnly =
-            _showArchived ? _archivedUnreadOnly : _unreadOnly;
-        final viewSelectedIntentKey =
-            _showArchived ? _archivedSelectedIntentKey : _selectedIntentKey;
-        final viewMatchTypeFilter =
-            _showArchived ? _archivedMatchTypeFilter : _matchTypeFilter;
-        final viewSortOption =
-            _showArchived ? _archivedSortOption : _sortOption;
-        final viewSearchProviderKey =
-            _showArchived ? 'chats_archived' : 'chats';
+        final viewSearchQuery = _showArchived
+            ? _archivedSearchQuery
+            : _searchQuery;
+        final viewUnreadOnly = _showArchived
+            ? _archivedUnreadOnly
+            : _unreadOnly;
+        final viewSelectedIntentKey = _showArchived
+            ? _archivedSelectedIntentKey
+            : _selectedIntentKey;
+        final viewGenderFilter = _showArchived
+            ? _archivedGenderFilter
+            : _genderFilter;
+        final normalizedGenderFilter = normalizeGenderKey(viewGenderFilter);
+        final viewMatchTypeFilter = _showArchived
+            ? _archivedMatchTypeFilter
+            : _matchTypeFilter;
+        final viewSortOption = _showArchived
+            ? _archivedSortOption
+            : _sortOption;
+        final viewSearchProviderKey = _showArchived
+            ? 'chats_archived'
+            : 'chats';
 
         final normalizedSearch = viewSearchQuery.trim().toLowerCase();
 
@@ -455,13 +496,22 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
             ? filteredChats
             : filteredChats
                   .where(
+                    (chat) => viewMatchTypeFilter.matches(chatMatchType(chat)),
+                  )
+                  .toList();
+
+        final afterGender = normalizedGenderFilter.isEmpty
+            ? afterMatchType
+            : afterMatchType
+                  .where(
                     (chat) =>
-                        viewMatchTypeFilter.matches(chatMatchType(chat)),
+                        normalizeGenderKey(chatGenderById[chat.otherUserId]) ==
+                        normalizedGenderFilter,
                   )
                   .toList();
 
         // Sort last: filters narrow, sort orders.
-        final finalChats = _sortChats(afterMatchType, viewSortOption);
+        final finalChats = _sortChats(afterGender, viewSortOption);
 
         // Newest body hit per chat: replaces the last-message preview with
         // the matching text and auto-scrolls the opened chat to it. Shared
@@ -483,8 +533,8 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
             .length;
         final hasIntentFilter =
             normalizedSelected != null && normalizedSelected.isNotEmpty;
-        final hasMatchTypeFilter =
-            viewMatchTypeFilter != MatchTypeFilter.all;
+        final hasGenderFilter = normalizedGenderFilter.isNotEmpty;
+        final hasMatchTypeFilter = viewMatchTypeFilter != MatchTypeFilter.all;
         final canFilterByMatchType = MatchTypeFilter.canFilter(
           viewChats.map(chatMatchType).toList(),
         );
@@ -492,6 +542,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
             hasSearch ||
             hasUnreadFilter ||
             hasIntentFilter ||
+            hasGenderFilter ||
             hasMatchTypeFilter;
         final selecting = _selection.isActive;
 
@@ -500,8 +551,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
             if (selecting)
               SelectionHeaderBar(
                 controller: _selection,
-                allIds:
-                    viewChats.map((c) => c.matchId).toList(growable: false),
+                allIds: viewChats.map((c) => c.matchId).toList(growable: false),
                 selectedLabel: l10n.getString(
                   'inboxSelectedCount',
                   params: {'count': _selection.count.toString()},
@@ -515,9 +565,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
               // one-line promise that archiving is display-only.
               Row(
                 children: [
-                  BackButton(
-                    onPressed: () => _setShowArchived(false),
-                  ),
+                  BackButton(onPressed: () => _setShowArchived(false)),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -525,20 +573,16 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                       children: [
                         Text(
                           l10n.getString('chatsArchived'),
-                          style: Theme.of(context)
-                              .textTheme
-                              .titleMedium
+                          style: Theme.of(context).textTheme.titleMedium
                               ?.copyWith(fontWeight: FontWeight.w700),
                         ),
                         SafeText(
                           l10n.getString('chatsArchivedHint'),
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
+                          style: Theme.of(context).textTheme.bodySmall
                               ?.copyWith(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurfaceVariant,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant,
                               ),
                         ),
                       ],
@@ -567,8 +611,9 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                   // inside the provider, and scoped to the chats on screen.
                   ref
                       .read(
-                        chatFullTextSearchProvider(viewSearchProviderKey)
-                            .notifier,
+                        chatFullTextSearchProvider(
+                          viewSearchProviderKey,
+                        ).notifier,
                       )
                       .search(
                         ChatSearchRequest(
@@ -586,14 +631,19 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                   intentKeys: sortedFilterOptions,
                   allIntents:
                       allIntentsAsync.asData?.value ?? const <AppIntent>[],
+                  genderOptions:
+                      genderOptionsAsync.asData?.value ??
+                      const <Map<String, String>>[],
                   canFilterByMatchType: canFilterByMatchType,
                   countFor: (draft) => _countChats(
                     viewChats,
                     matchIntentById,
                     matchTypeById,
+                    chatGenderById,
                     draft,
                   ),
                   selectedIntentKey: viewSelectedIntentKey,
+                  genderFilter: viewGenderFilter,
                   matchTypeFilter: viewMatchTypeFilter,
                   unreadOnly: viewUnreadOnly,
                   sortOption: viewSortOption,
@@ -601,11 +651,13 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                   apply: (result) => setState(() {
                     if (_showArchived) {
                       _archivedSelectedIntentKey = result.selectedIntentKey;
+                      _archivedGenderFilter = result.selectedGenderKey;
                       _archivedMatchTypeFilter = result.matchType;
                       _archivedUnreadOnly = result.extraToggleActive;
                       _archivedSortOption = result.sort;
                     } else {
                       _selectedIntentKey = result.selectedIntentKey;
+                      _genderFilter = result.selectedGenderKey;
                       _matchTypeFilter = result.matchType;
                       _unreadOnly = result.extraToggleActive;
                       _sortOption = result.sort;
@@ -614,6 +666,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                 ),
                 activeFilterCount: ListFilterState(
                   selectedIntentKey: viewSelectedIntentKey,
+                  selectedGenderKey: viewGenderFilter,
                   matchType: viewMatchTypeFilter,
                   extraToggleKey: 'unread',
                   extraToggleLabel: unreadConversationCount == 0
@@ -656,29 +709,21 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                       Expanded(
                         child: Text(
                           l10n.getString('chatsArchived'),
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodyMedium
+                          style: Theme.of(context).textTheme.bodyMedium
                               ?.copyWith(fontWeight: FontWeight.w600),
                         ),
                       ),
                       Text(
                         archivedChats.length.toString(),
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
                       ),
                       const SizedBox(width: 4),
                       Icon(
                         Icons.chevron_right,
                         size: 18,
-                        color:
-                            Theme.of(context).colorScheme.onSurfaceVariant,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
                     ],
                   ),
@@ -703,9 +748,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                       child: Text(
                         l10n.getString('chatsSearchingMessages'),
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.onSurfaceVariant,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                       ),
                     ),
@@ -715,80 +758,88 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
             Expanded(
               child: finalChats.isEmpty
                   ? viewChats.isEmpty && initialSyncAsync.isLoading
-                      ? Semantics(
-                          container: true,
-                          label: l10n.getString('generalLoading'),
-                          child: const AppSkeletonList(itemCount: 5),
-                        )
-                      : Column(
-                          children: [
-                            Expanded(
-                              child: _showArchived
-                                  ? AppEmptyState(
-                                      icon: Icons.archive_outlined,
-                                      title: l10n.getString(
-                                        'chatsArchivedEmptyTitle',
+                        ? Semantics(
+                            container: true,
+                            label: l10n.getString('generalLoading'),
+                            child: const AppSkeletonList(itemCount: 5),
+                          )
+                        : Column(
+                            children: [
+                              Expanded(
+                                child: _showArchived
+                                    ? AppEmptyState(
+                                        icon: Icons.archive_outlined,
+                                        title: l10n.getString(
+                                          'chatsArchivedEmptyTitle',
+                                        ),
+                                        message: l10n.getString(
+                                          'chatsArchivedEmptyMessage',
+                                        ),
+                                      )
+                                    : AppEmptyState(
+                                        icon: hasSearch
+                                            ? Icons.search_off
+                                            : hasUnreadFilter
+                                            ? Icons.mark_chat_unread_outlined
+                                            : Icons.chat_bubble_outline,
+                                        title: viewChats.isEmpty
+                                            ? l10n.getString('homeNoChats')
+                                            : hasSearch
+                                            ? l10n.getString(
+                                                'chatsNoSearchResults',
+                                              )
+                                            : hasUnreadFilter
+                                            ? l10n.getString(
+                                                'chatsNoUnreadResults',
+                                              )
+                                            : l10n.getString(
+                                                'chatsNoIntentResults',
+                                              ),
+                                        message: viewChats.isEmpty
+                                            ? l10n.getString(
+                                                'chatsNoConversationsMessage',
+                                              )
+                                            : hasSearch
+                                            ? l10n.getString(
+                                                'chatsNoSearchResultsMessage',
+                                              )
+                                            : hasUnreadFilter
+                                            ? l10n.getString(
+                                                'chatsNoUnreadResultsMessage',
+                                              )
+                                            : l10n.getString(
+                                                'chatsNoIntentResultsMessage',
+                                              ),
+                                        actionLabel: viewChats.isEmpty
+                                            ? l10n.getString(
+                                                'chatsBrowseMatches',
+                                              )
+                                            : hasActiveFilters
+                                            ? l10n.getString(
+                                                'chatsClearFilters',
+                                              )
+                                            : null,
+                                        onAction: viewChats.isEmpty
+                                            ? () => ref
+                                                  .read(
+                                                    navigationIndexProvider
+                                                        .notifier,
+                                                  )
+                                                  .setIndex(1)
+                                            : hasActiveFilters
+                                            ? _clearViewFilters
+                                            : null,
                                       ),
-                                      message: l10n.getString(
-                                        'chatsArchivedEmptyMessage',
-                                      ),
-                                    )
-                                  : AppEmptyState(
-                                      icon: hasSearch
-                                          ? Icons.search_off
-                                          : hasUnreadFilter
-                                          ? Icons.mark_chat_unread_outlined
-                                          : Icons.chat_bubble_outline,
-                                      title: viewChats.isEmpty
-                                          ? l10n.getString('homeNoChats')
-                                          : hasSearch
-                                          ? l10n.getString('chatsNoSearchResults')
-                                          : hasUnreadFilter
-                                          ? l10n.getString(
-                                              'chatsNoUnreadResults',
-                                            )
-                                          : l10n.getString(
-                                              'chatsNoIntentResults',
-                                            ),
-                                      message: viewChats.isEmpty
-                                          ? l10n.getString(
-                                              'chatsNoConversationsMessage',
-                                            )
-                                          : hasSearch
-                                          ? l10n.getString(
-                                              'chatsNoSearchResultsMessage',
-                                            )
-                                          : hasUnreadFilter
-                                          ? l10n.getString(
-                                              'chatsNoUnreadResultsMessage',
-                                            )
-                                          : l10n.getString(
-                                              'chatsNoIntentResultsMessage',
-                                            ),
-                                      actionLabel: viewChats.isEmpty
-                                          ? l10n.getString('chatsBrowseMatches')
-                                          : hasActiveFilters
-                                          ? l10n.getString('chatsClearFilters')
-                                          : null,
-                                      onAction: viewChats.isEmpty
-                                          ? () => ref
-                                                .read(
-                                                  navigationIndexProvider
-                                                      .notifier,
-                                                )
-                                                .setIndex(1)
-                                          : hasActiveFilters
-                                          ? _clearViewFilters
-                                          : null,
-                                    ),
-                            ),
-                            // Ad at the bottom of the content on the empty
-                            // state too — uniform with the Events screen.
-                            if (!_showArchived)
-                              const AdSlot(placement: AdPlacement.chatsInline),
-                            if (!_showArchived) const SizedBox(height: 32),
-                          ],
-                        )
+                              ),
+                              // Ad at the bottom of the content on the empty
+                              // state too — uniform with the Events screen.
+                              if (!_showArchived)
+                                const AdSlot(
+                                  placement: AdPlacement.chatsInline,
+                                ),
+                              if (!_showArchived) const SizedBox(height: 32),
+                            ],
+                          )
                   : ListView.builder(
                       primary: true,
                       itemCount:
@@ -804,9 +855,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                           );
                         }
                         final chat = finalChats[index];
-                        final hit = hasSearch
-                            ? newestHits[chat.matchId]
-                            : null;
+                        final hit = hasSearch ? newestHits[chat.matchId] : null;
                         return ChatListItem(
                           chat: chat,
                           showUnreadBorder: true,
@@ -821,8 +870,9 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                           // bottom bar covers these actions).
                           onRowMenuArchive: selecting
                               ? null
-                              : () => _setChatsArchived(
-                                  {chat.matchId}, !chat.isArchived),
+                              : () => _setChatsArchived({
+                                  chat.matchId,
+                                }, !chat.isArchived),
                           onRowMenuSelect: selecting
                               ? null
                               : () => _selection.toggle(chat.matchId),

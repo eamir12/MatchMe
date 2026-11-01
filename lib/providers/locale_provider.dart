@@ -5,15 +5,19 @@ import 'dart:developer' as developer;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+// intl also declares a TextDirection, which would shadow dart:ui's.
+import 'package:intl/intl.dart' hide TextDirection;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/services/my_user_realtime_service.dart';
 import 'package:matchme/utils/offline_utils.dart';
+import 'package:matchme/utils/chat_notification_copy.dart';
 import 'package:matchme/utils/plural_rules.dart';
 import 'package:matchme/utils/translation_edit_marker.dart';
 import 'package:matchme/utils/resume_diagnostics.dart';
 import 'package:matchme/services/chat_key_service.dart';
+import 'package:matchme/services/language_choice_store.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/offline_cache_manager.dart';
 import 'package:matchme/services/translation_service.dart';
@@ -142,6 +146,19 @@ String resolveContentLanguageCode({
 String translationContentMarkerKey(String langCode) =>
     'translations_${langCode}_content';
 
+/// How long a verified translation stamp is trusted when the stamp check
+/// cannot run. Past this, the next start does a full download.
+const _translationStampTtl = Duration(hours: 24);
+
+/// The key of the cached `translations.updated_at` maximum for [langCode].
+String translationStampKey(String langCode) =>
+    'translations_${langCode}_stamp';
+
+/// The key of the last successful stamp check or full fetch, in epoch
+/// milliseconds.
+String translationStampCheckedAtKey(String langCode) =>
+    'translations_${langCode}_stamp_checked_at';
+
 /// True when a cached string map holds translated rows rather than only the
 /// bundled English defaults.
 ///
@@ -205,15 +222,15 @@ class LocalizationState {
     String? contentLanguageCode,
     this.isLoading = false,
     this.dbKeys = const <String>{},
-  })  : contentLanguageCode = normalizeContentLanguageCode(
-          contentLanguageCode ?? currentLocale.languageCode,
-        ),
-        textDirection = _reconcileDirection(
-          normalizeContentLanguageCode(
-            contentLanguageCode ?? currentLocale.languageCode,
-          ),
-          textDirection,
-        );
+  }) : contentLanguageCode = normalizeContentLanguageCode(
+         contentLanguageCode ?? currentLocale.languageCode,
+       ),
+       textDirection = _reconcileDirection(
+         normalizeContentLanguageCode(
+           contentLanguageCode ?? currentLocale.languageCode,
+         ),
+         textDirection,
+       );
 
   /// Direction follows the language of the CONTENT, always.
   ///
@@ -431,10 +448,31 @@ class LocalizationState {
       ...?params,
       paramName: displayValue ?? count.toString(),
     };
-    return _getString(
-      key,
-      params: merged,
-      pluralCount: count,
+    return _getString(key, params: merged, pluralCount: count);
+  }
+
+  /// The chat notification card copy, as a function of the unread count.
+  ///
+  /// [maskedName] is embedded here rather than by the renderer, because the
+  /// name sits inside the sentence and its position depends on the language
+  /// ("3 messages from John S." / "3 הודעות מאת יוסי כ.").
+  ///
+  /// The plural form is picked from [count], so the noun agrees with the real
+  /// quantity: Hebrew grows a dual for two, Spanish a singular for one.
+  ChatCopyForms chatCardForms({required String maskedName}) {
+    // FSI/PDI around the name, exactly as the server does before it fills the
+    // template: an RTL name inside an English sentence must not drag the whole
+    // title right-to-left, and vice versa.
+    final isolatedName = maskedName.isEmpty
+        ? maskedName
+        : '\u2068$maskedName\u2069';
+    return ChatCopyForms(
+      title: (count) => getPluralString(
+        'pushMessagesTitle',
+        count,
+        params: {'name': isolatedName},
+      ),
+      openToReadBody: (count) => getPluralString('pushOpenToReadBody', count),
     );
   }
 
@@ -444,10 +482,7 @@ class LocalizationState {
   /// Hebrew — the dual form live under `<key>_one` and `<key>_two`. When the
   /// content language has no translation for the selected form the base key
   /// is returned, so a partially translated locale still renders a sentence.
-  String _resolvePluralKey(
-    String key,
-    num? count,
-  ) {
+  String _resolvePluralKey(String key, num? count) {
     if (count == null) return key;
 
     final category = pluralCategoryFor(
@@ -602,7 +637,7 @@ class LocalizationState {
     'attendees': 'Attendees',
     'attendingSharedEvent': 'Attending a shared event',
     'authAlreadyHaveAccountPrompt': 'Already have an account? Tap Log In.',
-    'authCaptchaCancelled': 'Security check was cancelled.',
+    'authCaptchaCancelled': 'Security check was canceled.',
     'authCaptchaComplete': 'Security check complete.',
     'authCaptchaEmptyToken': 'Security check returned an empty token.',
     'authCaptchaExpiredRetry': 'Security check expired. Please retry.',
@@ -680,7 +715,7 @@ class LocalizationState {
     'authOAuthAccessDenied':
         'OAuth access was denied. Please try again or choose a different sign-in method.',
     'authOAuthAccountExists': 'An account already exists with this email',
-    'authOAuthCancelled': 'Sign-in cancelled',
+    'authOAuthCancelled': 'Sign-in canceled',
     'authOAuthFailed': 'Authentication failed',
     'authOAuthInvalidState': 'An OAuth error occurred. Please try again.',
     'authOAuthProviderFailed':
@@ -695,7 +730,7 @@ class LocalizationState {
     'authPasskeyAvailable': 'Passkey sign-in available for this account',
     'authPasskeyBody':
         'Use the passkey saved on this device to sign in securely without a password.',
-    'authPasskeyCancelled': 'Passkey authentication was cancelled',
+    'authPasskeyCancelled': 'Passkey authentication was canceled',
     'authPasskeyEnterEmail': 'Enter your email to continue with a passkey.',
     'authPasskeyEnterValidEmail':
         'Enter a valid email to continue with a passkey.',
@@ -866,8 +901,8 @@ class LocalizationState {
     'billingActive': 'Active',
     'billingAmount': 'Amount',
     'billingCancellationReason': 'Cancellation reason',
-    'billingCancelled': 'Cancelled',
-    'billingCancelledOn': 'Cancelled on',
+    'billingCancelled': 'Canceled',
+    'billingCancelledOn': 'Canceled on',
     'billingCompleted': 'Completed',
     'billingCurrentPlan': 'Current Plan',
     'billingEmptyActive': 'No active subscriptions.',
@@ -1017,7 +1052,7 @@ class LocalizationState {
         'This Google account has not granted calendar access to the app. Please approve the requested permissions and try again.',
     'calendarSyncGoogleSignIn': 'Please sign in to Google to continue.',
     'calendarSyncGoogleSignInCancelled':
-        'Google sign-in was cancelled. Please try again.',
+        'Google sign-in was canceled. Please try again.',
     'calendarSyncImportRequiresLocationOrLink':
         'This event does not have either an event link or a physical location and therefore cannot be imported.',
     'calendarSyncListAnd': 'and',
@@ -2103,7 +2138,7 @@ class LocalizationState {
     'long_term': 'Long-term',
     'lowSimilarity': 'Low similarity',
     'manualInput': 'Manual input',
-    'mapApproxUsersHere': 'Approx users here: {count}',
+    'mapApproxUsersHere': 'About {count} users here',
     'mapZoomIn': 'Zoom in',
     'mapZoomOut': 'Zoom out',
     'nearbyLocationLoading': 'Finding your location…',
@@ -2117,7 +2152,7 @@ class LocalizationState {
     'mapLegendOnlineCountries': 'Online by country',
     'mapLegendYou': 'You',
     'mapLegendOnlineUsersApprox': 'Nearby users',
-    'mapShowingApproxUsers': 'Showing ~{count} online',
+    'mapShowingApproxUsers': 'Showing about {count} users',
     'matchChatStartExpiryWarningBody': 'You have {time} left to start a chat.',
     'matchChatStartExpiryWarningBodyWithName':
         'You have {time} left to start a chat with {name}.',
@@ -2150,7 +2185,7 @@ class LocalizationState {
     'pinnedLocationExpired': 'Pinned location expired — live GPS resumed.',
     'pinnedLocationExtend': 'Add time',
     'pinnedLocationExtended': 'Pinned time extended until {date}.',
-    'pinnedLocationLabelHint': 'Label (optional, e.g. Home)',
+    'pinnedLocationLabelHint': 'Label (optional, for example: Home)',
     'pinnedLocationMaxDurationReached':
         'The maximum total pinned time is 14 days.',
     'pinnedLocationManage': 'Manage',
@@ -2163,9 +2198,6 @@ class LocalizationState {
     'pinnedLocationPinAction': 'Pin current location',
     'pinnedLocationPinned': 'Location pinned until {date}.',
     'pinnedLocationRemaining': '{duration} left',
-    'pinnedLocationRemainingDays': '{count}d',
-    'pinnedLocationRemainingHours': '{count}h',
-    'pinnedLocationRemainingMinutes': '{count}m',
     'pinnedLocationSectionDesc':
         'Keep matching near home while you travel. GPS pauses and matches use your pinned spot until it expires.',
     'pinnedLocationSectionTitle': 'Home base (pinned location)',
@@ -2436,6 +2468,10 @@ class LocalizationState {
         'Invalid image format. Please use JPEG, PNG, or WEBP.',
     'photoErrorMultipleFaces':
         'Primary photo must show only you (no group photos).',
+    'photoErrorMultiplePeople':
+        'Only you can be in the selfie. Retake it with just yourself in the frame.',
+    'photoErrorPersonCheckUnavailable':
+        'This device can\'t check who is in the photo. Add outfit details or a note instead.',
     'photoErrorNoFaceOrBody':
         'Photo must show at least your face or body clearly.',
     'photoErrorNoFaceDetected':
@@ -2464,7 +2500,9 @@ class LocalizationState {
     'photoPrescreenDetailSharpness': 'Sharpness',
     'photoPrescreenDetailFaceConfidence': 'Face detection',
     'photoPrescreenDetailHeadTilt': 'Head tilt',
-    'photoPrescreenDetailMinimum': 'min',
+    'photoPrescreenDetailFaces': 'Faces detected',
+    'photoPrescreenDetailBodies': 'Bodies detected',
+    'photoPrescreenDetailMinimum': 'minimum',
     'photoPrescreenDetailAnalyzer': 'Analyzer',
     'permActionNotNow': 'Not now',
     'permActionOpenSettings': 'Open settings',
@@ -2523,11 +2561,24 @@ class LocalizationState {
     'profileAgeRequirementNote':
         'You must be at least 18 years old to use MatchMe.',
     'profileAppLanguage': 'App language',
+    'profileBadgesShownToOthers': 'Shown to others',
     'profileBasicsHelper':
         'Tell us a bit about yourself so people can get to know you.',
     'profileBasicsLockedNoteBody':
         'Some profile details cannot be edited at this time',
     'profileBasicsLockedNoteTitle': 'Profile locked',
+    'profileBasicsOneTimeBannerTitle':
+        'Name, birthday & gender can be set only once',
+    'profileBasicsOneTimeBannerBody':
+        "Once you confirm these details, they can't be changed later.",
+    'profileBasicsOneTimeDialogTitle': 'One-time details',
+    'profileBasicsOneTimeDialogBody':
+        "You can enter your name, birthday and gender once. After you confirm, they can't be changed later without approval from our team.",
+    'profileBasicsOneTimeDialogOk': 'I understand',
+    'profileBasicsOneTimeConfirmTitle': 'Confirm your details?',
+    'profileBasicsOneTimeConfirmBody':
+        "Your name, birthday and gender will be saved exactly as entered. Once you confirm, they can't be changed later without approval from our team.",
+    'profileBasicsOneTimeConfirmCta': 'Confirm',
     'profileBio': 'Bio',
     'happyBirthday': 'Happy Birthday',
     'profileBirthday': 'Birthday',
@@ -2577,6 +2628,7 @@ class LocalizationState {
     'profileEditFieldLabelDateOfBirth': 'date of birth',
     'profileEditFieldLabelGender': 'gender',
     'profileEditFieldLabelName': 'name',
+    'profileEditFullNameRequired': 'Enter both your first and last name.',
     'profileEditFileBytesMissing':
         'Could not read the selected file. Please pick another file.',
     'profileEditGenderRequired': 'Gender is required',
@@ -3092,10 +3144,12 @@ class LocalizationState {
     'promoDiscountSpecialOffer': 'Special Offer',
     'promoDiscountTierUpgradeFormat': 'Upgrade to {tier}',
     'Proximity': 'Proximity',
+    'pushMessagesTitle': '{count} messages from {name}',
     'pushNewMatchBody': 'You matched with {name}',
     'pushNewMatchTitle': 'New match!',
     'pushNewMessageBodyFallback': 'New message',
     'pushNewMessageTitleFallback': 'New message',
+    'pushOpenToReadBody': '{count} unread - open to read',
     'quickReview': 'Quick review',
     'quickReviewDescription': 'Verification typically takes 1-2 business days',
     'rangeFrom': 'From',
@@ -3334,7 +3388,7 @@ class LocalizationState {
     'settingsAccountManagement': 'Account management',
     'settingsAccountManagementDesc':
         'Change your password, update your email, or delete your account.',
-    'settingsAccuracyMeters': 'Accuracy: ~{meters} meters',
+    'settingsAccuracyMeters': 'Accuracy: about {meters} meters',
     'settingsActiveRules': 'Active Rules',
     'settingsAddNewRule': 'Add New Rule',
     'settingsAppDisplay': 'App display',
@@ -3657,6 +3711,9 @@ class LocalizationState {
         'Vibrate for match notifications',
     'settingsNotificationsMatrixTitle': 'Notification methods',
     'settingsNotificationsMatrixType': 'Type',
+    'settingsNotificationsMeetupTools': 'Meet-up alerts',
+    'settingsNotificationsMeetupToolsDesc':
+        'Waves, beacons, Spot me cards and meeting-point updates from your matches',
     'settingsNotificationsMethodBrowser': 'Browser',
     'settingsNotificationsMethodBrowserDesc':
         'A browser notification (Chrome/Safari), even when the tab is not focused.',
@@ -3904,6 +3961,7 @@ class LocalizationState {
     'sortTopRated': 'Top rated',
     'sortExpiringSoon': 'Expiring soon', 'listFiltersTitle': 'Filters',
     'listFilterInterestSection': 'What they are looking for',
+    'listFilterGenderSection': 'Gender',
     'listFilterOptionsSection': 'Options',
     'listFilterShowResults': 'Show {count} results',
     'listFilterActiveCount': '{count} active',
@@ -4012,7 +4070,7 @@ class LocalizationState {
     // A distance carries its unit in one string so the unit can take the
     // right plural form ("1 foot", not "1 feet").
     'distanceInFeet': '{count} feet',
-    'distanceInKilometers': '{count} Kilometers',
+    'distanceInKilometers': '{count} kilometers',
     'distanceInMeters': '{count} meters',
     'distanceInMiles': '{count} Miles',
     'unmatch': 'Unmatch',
@@ -4062,6 +4120,8 @@ class LocalizationState {
     'verificationComparisonMismatchHeader': "What didn't match",
     'verificationComparisonNoBoxes':
         'The AI found differences between your photos but could not mark their exact locations.',
+    'verificationComparisonPhotoUnavailable':
+        'For privacy, verification photos are deleted 7 days after review. Your verification photo is no longer available.',
     'verificationComparisonProfilePhotoLabel': 'Profile photo',
     'verificationComparisonTitle': 'Photo comparison',
     'verificationComparisonVerificationPhotoLabel': 'Verification photo',
@@ -4565,10 +4625,10 @@ class LocalizationState {
     'onboardingDemoGreeting': 'Hi there, Alex!',
     'onboardingDemoIntentFriends': 'Friends',
     'onboardingDemoIntentDating': 'Dating',
-    'onboardingDemoRadius': '2 km',
-    'onboardingDemoDaySat': 'SAT',
-    'onboardingDemoDaySun': 'SUN',
-    'onboardingDemoTimeLeft': '23h',
+    'onboardingDemoRadius': '2 kilometers',
+    'onboardingDemoDaySat': 'Saturday',
+    'onboardingDemoDaySun': 'Sunday',
+    'onboardingDemoTimeLeft': '23 hours',
     'demoName1': 'Maya, 28',
     'demoName2': 'Daniel, 31',
     'demoName3': 'Sofia, 26',
@@ -4605,7 +4665,8 @@ class LocalizationState {
     'calendarSyncDuplicateEventsFound_one': '{count} duplicate found',
     'calendarSyncDuplicateSelectedWillSkip_one':
         '{count} selected event will be skipped because it already exists.',
-    'calendarSyncSyncedEventsSuccess_one': 'Successfully imported {count} event.',
+    'calendarSyncSyncedEventsSuccess_one':
+        'Successfully imported {count} event.',
     'calendarSyncSyncedEventsSuccessWithSkipped_one':
         'Successfully imported {count} event. Skipped {skipped}.',
     'chatsArchivedCount_one': '{count} chat archived',
@@ -4634,6 +4695,8 @@ class LocalizationState {
     'listFilterShowResults_one': 'Show {count} result',
     'locationShareHours_one': '{count} hour',
     'locationShareMinutes_one': '{count} minute',
+    'mapApproxUsersHere_one': 'About {count} user here',
+    'mapShowingApproxUsers_one': 'Showing about {count} user',
     'matchExpiryBody_one':
         'You have {count} minute left to start a chat with {otherUserName}.',
     'matchExpiryTitle_one': '{count} minute left',
@@ -4666,11 +4729,14 @@ class LocalizationState {
     'profileWizardSubIntentMin_one':
         '{intent} requires at least {min} sub-intent',
     'profileSelectSubIntentsMinMax_one': 'Select {min} to {max} sub-intent',
+    'pushMessagesTitle_one': '{count} message from {name}',
+    'pushOpenToReadBody_one': '1 unread - open to read',
     'ratingRatedBy_one': 'Rated by {count} user',
     'ratingVerifiedCount_one': '{count} verified rating',
-    'rematchBanner_one': 'Rematch! This is your first time matching with {name}',
+    'rematchBanner_one':
+        'Rematch! This is your first time matching with {name}',
     'rematchIndicator_one': 'This is the first time you matched!',
-    'settingsAccuracyMeters_one': 'Accuracy: ~{meters} meter',
+    'settingsAccuracyMeters_one': 'Accuracy: about {meters} meter',
     'settingsMfaEmailCodeResendIn_one': 'Resend in {seconds} second',
     'settingsMfaRecoveryCodesCount_one': '{count} recovery code ready',
     'settingsRetroDays_one': '{count} day',
@@ -4678,7 +4744,7 @@ class LocalizationState {
     'translationCoverageWarningBody_one':
         'Supabase is missing {count} UI text entry for {locale}. The app is showing English fallbacks for that key.',
     'distanceInFeet_one': '{count} foot',
-    'distanceInKilometers_one': '{count} Kilometer',
+    'distanceInKilometers_one': '{count} kilometer',
     'distanceInMeters_one': '{count} meter',
     'distanceInMiles_one': '{count} Mile',
 
@@ -4690,6 +4756,12 @@ class LocalizationState {
         'Delete {count} selected notifications? This cannot be undone.',
     'inboxSelectedCount': '{count} selected',
     'inboxUnreadCount': '{count} unread',
+    'inboxTypeMeetupSignal': 'Gesture',
+    'inboxTypeMeetupBeacon': 'Beacon',
+    'inboxTypeMeetupSpot': 'Spot me',
+    'inboxTypeMeetupProposal': 'Meeting point proposal',
+    'inboxTypeMeetupPlaceChange': 'New meeting point',
+    'inboxOpenMeetup': 'Open Meet up',
 
     // --- Localized duration parts ------------------------------------------
     // A countdown that names several units ("1 hour, 5 minutes and 3 seconds")
@@ -4699,7 +4771,374 @@ class LocalizationState {
     'durationListCommaAnd': '{first}, {second} and {third}',
     'locationShareCountdownRemaining': 'for another {duration}',
 
+    // --- In-person meet-up ------------------------------------------------
+    'meetupTitle': 'Meet up',
+    'meetupIntroBody':
+        'Choose a public place to meet. We use your current location once to look up nearby public places; your location is not saved.',
+    'meetupPrivacyNote':
+        'Your exact location is not saved or shared with the other person. Only the public meeting point is shared.',
+    'meetupSafetyNote': 'Meet in a public, well-lit place.',
+    'meetupSuggestPlaces': 'Suggest meeting points',
+    'meetupFindingPlaces': 'Finding public places near you…',
+    'meetupNoPlacesFound':
+        'No suitable public places found nearby. Try again or move a little.',
+    'meetupLandmarkLookupFailed':
+        'We could not look up nearby places right now. Try again in a moment.',
+    'meetupRetry': 'Try again',
+    'meetupOffline': 'Meet-up needs a connection.',
+    'meetupLocationUnavailable':
+        'We could not get your location. Check location services and try again.',
+    'meetupSendOptions': 'Send meeting points',
+    'meetupSending': 'Sending…',
+    'meetupSuggestionRoundTitle': 'Choose where to meet',
+    'meetupSuggestionRoundBody':
+        'These public places are close to you. Send up to three options.',
+    'meetupCounterRoundTitle': 'Suggest other places',
+    'meetupCounterRoundBody':
+        'These public places are close to you. They can pick one, or end the meet-up.',
+    'meetupWaitingForOther': 'Waiting for {name} to choose',
+    'meetupChooseThisPlace': 'Meet here',
+    'meetupSuggestOtherPlaces': 'Suggest other places',
+    'meetupCounterSent': 'Your suggestions were sent',
+    'meetupCounterLimit': 'Only one counter-suggestion is allowed.',
+    'meetupInviteExpired': 'This meet-up invite expired.',
+    'meetupActiveTitle': 'Meet-up active',
+    'meetupActivityHintProposal': 'Choose a place together',
+    'meetupActivityHintProposalMine': 'They have been notified',
+    'meetupActivityHintPlaceChangeMine': 'You can withdraw it any time',
+    'meetupActivityHintLive': 'Open the map to see where they are',
+    'meetupActivityHintLiveMine': 'You can stop sharing at any time',
+    'meetupActivityHintSpotMine': 'They can see it until it expires',
+    'meetupActivityHintWaveMine': 'They can wave back',
+    'meetupActivityHintActive': 'Open the meet-up for the tools',
+    'meetupActivityYourWave': 'You waved',
+    'meetupActivityOneMoreTool': '1 more meet-up tool is active',
+    'meetupActivityMoreTools': '{count} more meet-up tools are active',
+    'meetupChosenPlace': 'Meeting point',
+    'meetupOpenInMaps': 'Open in maps',
+    'meetupDistanceAway': '{distance} away',
+    'meetupWalkDuration': '{duration} on foot',
+    'meetupTimeLeft': '{time} left',
+    'meetupBeacon': 'Beacon',
+    'meetupBeaconHint': 'Show a bright shape so they can spot you',
+    'meetupBeaconActiveTitle': 'Beacon on',
+    'meetupBeaconActiveBody':
+        'Hold up your screen. {name} is looking for this shape.',
+    'meetupBeaconIncomingTitle': '{name} is showing a beacon',
+    'meetupBeaconIncomingBody': 'Look for this shape on their screen.',
+    'meetupBeaconHide': 'Hide beacon',
+    'meetupBeaconEndsIn': 'Turns off in {duration}',
+    'meetupSpotMe': 'Spot me',
+    'meetupSpotMeHint': 'Take a selfie or share what you are wearing',
+    'meetupSpotMeTitle': 'Spot me card',
+    'meetupSpotMePhotoSelf': 'Photo of me',
+    'meetupSpotMePhotoPlace': 'Photo of the meeting point',
+    'meetupSpotMeNoPhoto': 'No photo',
+    'meetupSpotMePickPhoto': 'Add a photo (optional)',
+    'meetupSpotMeOutfit': 'What you are wearing (optional)',
+    'meetupSpotMeNote': 'A short clue (optional)',
+    'meetupSpotMeNoteHint': 'For example: I am by the north entrance',
+    'meetupSpotMeShare': 'Share card',
+    'meetupSpotMeSharing': 'Sharing…',
+    'meetupSpotMeLimit':
+        'You shared the maximum number of cards for this meet-up.',
+    'meetupSpotMeRateLimited': 'Wait a moment before sharing another card.',
+    'meetupSpotMeContentRequired': 'Add a photo or outfit details to share.',
+    'meetupSpotMeIncomingTitle': '{name} shared a spot card',
+    'meetupSpotMeIncomingBody': 'Open to see their Spot me card.',
+    'meetupSpotMeHide': 'Hide',
+    'meetupSpotMeDelete': 'Delete',
+    'meetupSpotMeReport': 'Report',
+    'meetupSpotMeHidden': 'Spot card hidden',
+    'meetupSpotMeReported': 'Report sent',
+    'meetupSpotMeReportConfirm': 'Report this spot card?',
+    'meetupSpotMeExpired': 'Expired',
+    'meetupSpotMeFromYou': 'Your spot card',
+    'meetupSpotMeNoDetails': 'No extra details',
+    'meetupSpotMeNew': 'New',
+    'meetupSpotMeWearing': 'What they’re wearing',
+    'meetupSpotMeNoOutfit': 'No outfit details shared',
+    'meetupSpotMeNoPhotoShared': 'No photo shared',
+    'meetupSpotMeViewPhoto': 'View photo',
+    'meetupSpotMeJustNow': 'just now',
+    'meetupSpotMeAgo': '{duration} ago',
+    'meetupOutfitShirt': 'Shirt',
+    'meetupOutfitPants': 'Pants',
+    'meetupOutfitShoes': 'Shoes',
+    'meetupOutfitColor': 'Color',
+    'meetupOutfitLongSleeve': 'Long sleeve',
+    'meetupOutfitShortSleeve': 'Short sleeve',
+    'meetupOutfitJacket': 'Jacket',
+    'meetupOutfitDress': 'Dress',
+    'meetupOutfitShorts': 'Shorts',
+    'meetupOutfitTrousers': 'Dress pants',
+    'meetupOutfitSkirt': 'Skirt',
+    'meetupOutfitSneakers': 'Sneakers',
+    'meetupOutfitBoots': 'Boots',
+    'meetupOutfitSandals': 'Sandals',
+    'meetupOutfitOther': 'Other',
+    'meetupWave': 'Wave',
+    'meetupWaveHint': 'Send a gesture so they can spot you',
+    'meetupWaveSent': 'Wave sent',
+    'meetupWaveIncomingTitle': '{name} waved at you',
+    'meetupWaveIncomingBody': 'Raise your hand so they can see you.',
+    'meetupWaveBack': 'Wave back',
+    'meetupWaveRateLimited': 'Wait a moment before waving again.',
+    'meetupEnd': 'End meet-up',
+    'meetupFound': 'I found them',
+    'meetupEndConfirmTitle': 'End this meet-up?',
+    'meetupEndFoundConfirmBody':
+        'This ends the meet-up for both of you and removes the beacon and spot cards.',
+    'meetupEndCancelConfirmBody':
+        'This cancels the meet-up for both of you and removes the beacon and spot cards.',
+    'meetupEndCancel': 'Cancel meet-up',
+    'meetupCancelInvite': 'Cancel invite',
+    'meetupEndedFound': 'Meet-up ended — they found you.',
+    'meetupEndedByYou': 'You ended the meet-up.',
+    'meetupEndedCancelled': 'Meet-up canceled.',
+    'meetupEndedExpired': 'Meet-up expired.',
+    'meetupEndedOther': '{name} ended the meet-up.',
+    'meetupStartAgain': 'Start again',
+    'meetupEventZonesTitle': 'Choose a zone at the venue',
+    'meetupEventZonesBody':
+        'Pick a place inside or just outside the venue. No coordinates are needed.',
+    'meetupEventZoneMainEntrance': 'Main entrance',
+    'meetupEventZoneBoxOffice': 'Box office / ticket desk',
+    'meetupEventZoneBar': 'Bar area',
+    'meetupEventZoneCloakroom': 'Cloakroom',
+    'meetupEventZoneSeating': 'Seating area',
+    'meetupEventZoneCustom': 'Other zone',
+    'meetupEventZoneCustomHint': 'For example: Zone C bar',
+    'meetupEventZone': 'Meeting zone',
+    'meetupCategoryPark': 'Park',
+    'meetupCategorySquare': 'Square',
+    'meetupCategoryLandmark': 'Landmark',
+    'meetupCategorySupermarket': 'Supermarket entrance',
+    'meetupCategoryMall': 'Mall entrance',
+    'meetupCategoryFuel': 'Fuel station forecourt',
+    'meetupCategoryTransit': 'Transit entrance',
+    'meetupCategoryPharmacy': 'Pharmacy entrance',
+    'meetupCategoryAttraction': 'Tourist spot',
+    'meetupCategoryLibrary': 'Public building',
+    'meetupCategoryOther': 'Public place',
+    'meetupBannerProposedByOther': '{name} suggested a meeting point',
+    'meetupBannerProposedByYou': 'Waiting for {name} to choose a meeting point',
+    'meetupBannerActive': 'Meet-up active — {place}',
+    'meetupBannerActiveEvent': 'Meet-up active — {zone}',
+    'meetupBannerWave': '{name} waved at you',
+    'meetupBannerBeacon': '{name} is showing a beacon',
+    'meetupOpen': 'Open',
+    'meetupActionFailed': 'Something went wrong. Try again.',
+    'meetupProposalSent': 'Meeting points sent',
+    'meetupAccepted': 'Meeting point confirmed',
+    'meetupEndedToast': 'Meet-up ended',
+    'meetupPlace': 'Meeting point',
+    'meetupYou': 'You',
+    'meetupSignalExpired': 'This signal expired.',
+    'meetupCounterWaiting': 'Waiting for {name} to choose your suggestion',
+    'meetupProposalWaiting': 'Waiting for {name}',
+    'meetupBeaconTapHint':
+        'You can signal, show a beacon, or share a Spot me card before and after you choose a meeting point.',
+    'meetupAlreadyActive': 'A meet-up is already active with this person.',
+    'meetupBeaconRateLimited': 'Wait a moment before showing the beacon again.',
+    'meetupBeaconExpired': 'This beacon expired.',
+    'meetupSpotMeShared': 'Spot card shared',
+    'meetupClose': 'Close',
+
+    // Tools work for any open meet-up (proposed or active).
+    'meetupSignal': 'Signal',
+    'meetupSignalHint':
+        'Wave, raise both hands, jump, or open your arms so they can spot you.',
+    'meetupGestureSheetTitle': 'Choose a gesture',
+    'meetupGestureSheetBody': 'They will see the gesture you choose.',
+    'meetupGestureWave': 'Wave',
+    'meetupGestureHandsUp': 'Both hands up',
+    'meetupGestureJumping': 'Jumping',
+    'meetupGestureArmsWide': 'Arms wide',
+    'meetupGestureSent': '{gesture} sent',
+    'meetupGestureIncomingTitle': '{name} is signaling: {gesture}',
+    'meetupGestureIncomingBody':
+        'Look for this gesture so you can spot each other.',
+    'meetupSignalBack': 'Signal back',
+    'meetupBannerGesture': '{name} is signaling: {gesture}',
+    // The sender's own copy of a live signal: what was sent and for how long
+    // the other device can still see it.
+    'meetupSignalOutgoingKicker': 'You sent {name} a signal',
+    'meetupSignalOutgoingVisible': 'Still visible {time}',
+    'meetupSignalOutgoingPill': 'Sent',
+
+    // Custom meeting places (name only, no coordinates stored).
+    'meetupCustomPlace': 'Enter a place',
+    'meetupCustomPlaceTitle': 'Name a meeting place',
+    'meetupCustomPlaceBody':
+        'Use a place the suggestions missed. Only the name is shared; no coordinates are saved.',
+    'meetupCustomPlaceLabel': 'Place name',
+    'meetupCustomPlaceHint': 'For example: Outside the corner bakery',
+    'meetupCustomPlaceAdd': 'Use this place',
+    'meetupCustomPlaceInvalid': 'Enter a place name.',
+    'meetupCategoryCustom': 'Custom place',
+
+    // Changing the meeting point while the meet-up is active.
+    'meetupChangePlace': 'Change meeting point',
+    'meetupChangePlaceTitle': 'Suggest a new meeting point',
+    'meetupChangePlaceBody':
+        'The current meeting point stays until they accept.',
+    'meetupChangePlaceSent': 'Change request sent',
+    'meetupChangePlacePropose': 'Suggest this place',
+    'meetupChangePlaceWaiting':
+        'Waiting for {name} to respond to your new meeting point',
+    'meetupChangePlaceIncomingTitle': '{name} suggested a new meeting point',
+    'meetupChangePlaceIncomingBody':
+        'The current meeting point stays until you decide.',
+    'meetupChangePlaceAccept': 'Use new place',
+    'meetupChangePlaceKeep': 'Keep current place',
+    'meetupChangePlaceWithdraw': 'Withdraw request',
+    'meetupChangePlaceDeclined': 'Current meeting point kept',
+    'meetupChangePlaceAccepted': 'Meeting point updated',
+    'meetupChangePlaceWithdrawn': 'Change request withdrawn',
+    'meetupChangePlacePendingLabel': 'Proposed new place',
+    'meetupChangePlaceNewPlace': 'New place: {place}',
+    'meetupChangePlaceUnavailable':
+        'The meeting point cannot be changed for this meet-up.',
+    'meetupChangePlacePendingError': 'A change request is already pending.',
+    'meetupChangePlaceNoPending': 'No change request is pending.',
+
+    // Editing your own pending proposal while the other side is deciding.
+    'meetupChangeProposal': 'Change meeting points',
+    'meetupChangeProposalSend': 'Update meeting points',
+    'meetupProposalUpdated': 'Meeting points updated',
+    'meetupRefreshPlaces': 'Find places near me',
+    'meetupProposalChanged': 'The proposed places were updated. Choose again.',
+
+    // Spot me selfie capture.
+    'meetupSpotMeSelfie': 'Take a selfie',
+    'meetupSpotMeRetake': 'Retake selfie',
+    'meetupSpotMeChecking': 'Checking selfie…',
+    'meetupSpotMeSelfieHint':
+        'Use your front camera and make sure you\'re the only person in the photo. Only the photo is shared.',
+    'meetupSpotMeCameraUnavailable':
+        'Camera is not available here. Add outfit details or a note instead.',
+    'meetupSpotMeCameraDenied':
+        'Camera access is needed for a selfie. You can add outfit details or a note instead.',
+    'meetupSpotMeCaptureFailed':
+        'Could not take the selfie. Try again, or add details instead.',
+    'meetupOutfitColorUnspecified': 'Not specified',
+    'meetupColorBlack': 'Black',
+    'meetupColorWhite': 'White',
+    'meetupColorGray': 'Gray',
+    'meetupColorBeige': 'Beige',
+    'meetupColorBrown': 'Brown',
+    'meetupColorNavy': 'Navy',
+    'meetupColorBlue': 'Blue',
+    'meetupColorLightBlue': 'Light blue',
+    'meetupColorGreen': 'Green',
+    'meetupColorOlive': 'Olive',
+    'meetupColorRed': 'Red',
+    'meetupColorBurgundy': 'Burgundy',
+    'meetupColorPink': 'Pink',
+    'meetupColorYellow': 'Yellow',
+    'meetupColorOrange': 'Orange',
+    'meetupColorPurple': 'Purple',
+    'meetupColorGold': 'Gold',
+    'meetupColorSilver': 'Silver',
+    'meetupColorMulticolor': 'Multicolor',
+    'meetupOsmAttribution': '© OpenStreetMap contributors',
+    'meetupGoogleAttribution': 'Google Maps',
+    'meetupShowOtherPlaces': 'Show other places',
+
+    // Consolidated meet-up hub: every in-person option in one place.
+    'meetupHubTitle': 'Meet up',
+    'meetupHubIntroTitle': 'Meet up with {name}',
+    'meetupHubIntroBody':
+        'Choose what helps right now. Nothing is shared until you choose it.',
+    'meetupHubNothingYet': 'Nothing set yet',
+    'meetupHubHowItWorks': 'How it works',
+    'meetupHubExplainYouDo': 'You do',
+    'meetupHubExplainNotNow': 'Not now',
+    'meetupHubPlanBody':
+        'Suggest public places nearby and agree on one together.',
+    'meetupHubPlanFacts':
+        'Your location is used once to find places · Not saved',
+    'meetupHubPlanAction': 'Suggest places',
+    'meetupHubPlanOpen': 'Open meet-up',
+    'meetupHubPlanAgreed': 'Meeting point agreed: {place}',
+    'meetupHubPlanProposedByMe': 'Waiting for {name} to choose',
+    'meetupHubPlanProposedByOther': '{name} suggested a meeting point',
+    'meetupHubExplainPlanDo': 'Suggest places and pick one together',
+    'meetupHubLiveBody':
+        '{name} sees your dot on a map. You see theirs if they share back.',
+    'meetupHubLiveFacts': 'Uses your location · Stops on its own',
+    'meetupHubLiveStart': 'Start sharing',
+    'meetupHubLiveView': 'View map',
+    'meetupHubLiveManage': 'Manage',
+    'meetupHubLiveMutual': 'You are both sharing location',
+    'meetupHubLiveOtherSharing': '{name} is sharing location',
+    'meetupHubLiveSharing': 'You are sharing location',
+    'meetupHubLiveSharingFor': 'You are sharing location {time}',
+    'meetupHubLiveUntilOff': 'until you stop',
+    'meetupHubLiveIdle': 'Not sharing',
+    'meetupHubExplainLiveDo': 'Tap "Start sharing" and choose how long',
+    'meetupHubCloseSection': 'When you are close',
+    'meetupHubCloseBody': 'Quick ways to catch their eye — no map needed.',
+    'meetupHubSignalTitle': 'Signal',
+    'meetupHubSignalBody':
+        'Wave, raise both hands, jump, or open your arms to catch their eye.',
+    'meetupHubSignalFacts': 'They see your gesture · No location',
+    'meetupHubSignalAction': 'Send a signal',
+    'meetupHubSignalAgain': 'Send again',
+    'meetupHubExplainSignalDo': 'Pick a gesture to show what you are doing',
+    'meetupHubBeaconTitle': 'Beacon',
+    'meetupHubBeaconBody':
+        'Hold up your phone with a bright shape they can look for.',
+    'meetupHubBeaconFacts': 'They see a shape on your screen · No location',
+    'meetupHubBeaconAction': 'Show beacon',
+    'meetupHubBeaconOpen': 'Open beacon',
+    'meetupHubExplainBeaconDo': 'Hold your phone up, screen facing them',
+    'meetupHubSpotTitle': 'Spot me',
+    'meetupHubSpotBody':
+        'Send a selfie and what you are wearing so they recognize you.',
+    'meetupHubSpotFacts': 'Private to this match · No location',
+    'meetupHubSpotAction': 'Send a Spot me',
+    'meetupHubExplainSpotDo': 'Take a selfie, add what you wear, share',
+    'meetupHubCompare': 'Compare these options',
+    'meetupHubCompareTitle': 'How these work',
+    'meetupHubCompareBody':
+        'Signal, Beacon and Spot me never use your location. Live location is the only option that tracks your GPS.',
+    'meetupHubCompareHelps': 'Best for',
+    'meetupHubCompareSee': 'They see',
+    'meetupHubCompareLasts': 'How it ends',
+    'meetupHubCompareLocation': 'Location',
+    'meetupHubCompareClose': 'Got it',
+    'meetupHubPlanName': 'Meeting point',
+    'meetupHubLiveName': 'Live location',
+    'meetupHubComparePlanHelps': 'Agreeing where to meet',
+    'meetupHubComparePlanSee': 'The public meeting point',
+    'meetupHubComparePlanLasts': 'You end it',
+    'meetupHubComparePlanLocation': 'Used once to find places',
+    'meetupHubCompareLiveHelps': 'Being followed on a map',
+    'meetupHubCompareLiveSee': 'Your moving dot',
+    'meetupHubCompareLiveLasts': 'Stops at the time you chose',
+    'meetupHubCompareLiveLocation': 'Uses your GPS',
+    'meetupHubCompareSignalHelps': 'Catching their eye',
+    'meetupHubCompareSignalSee': 'Your gesture',
+    'meetupHubCompareSignalLasts': 'Turns off on its own',
+    'meetupHubCompareSignalLocation': 'No location',
+    'meetupHubCompareBeaconHelps': 'Being seen in a crowd',
+    'meetupHubCompareBeaconSee': 'A bright shape',
+    'meetupHubCompareBeaconLasts': 'Turns off on its own, or you hide it',
+    'meetupHubCompareBeaconLocation': 'No location',
+    'meetupHubCompareSpotHelps': 'Being recognized',
+    'meetupHubCompareSpotSee': 'Your photo, outfit and note',
+    'meetupHubCompareSpotLasts': 'Goes away on its own, or you hide it',
+    'meetupHubCompareSpotLocation': 'No location',
+    'meetupHubFooter':
+        'These tools work only with {name}. You can use them in any order.',
+
     // Separator between the counters of a summary line.
+    'sessionExpiredTitle': 'Your session has expired',
+    'sessionExpiredBody':
+        'Sign in again to keep using MatchMe. Your matches, chats and photos are safe.',
+    'sessionExpiredSignInAgain': 'Sign in again',
     'summarySeparator': ' · ',
   };
 
@@ -4718,12 +5157,10 @@ class LocalizationState {
     return 'empty';
   }
 
-  /// Formats a count number with abbreviated units (e.g., 1.5k, 3M).
+  /// Formats a count as a full number with the locale's group separator
+  /// ("12,480" in English, "12.480" in Spanish) — never "12k" or "3M".
   String formatCount(int n) {
-    if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
-    if (n >= 10000) return '${(n / 1000).toStringAsFixed(0)}k';
-    if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}k';
-    return n.toString();
+    return NumberFormat.decimalPattern(currentLocale.toLanguageTag()).format(n);
   }
 }
 
@@ -4850,6 +5287,13 @@ class Localization extends _$Localization {
   bool _localeChangeInFlight = false;
   String? _localeChangeTarget;
 
+  final LanguageChoiceStore _languageChoices = LanguageChoiceStore();
+
+  // Bumped whenever setLocale applies a new locale. _initImpl captures the
+  // value before its first await and must not repaint a locale that a
+  // concurrent remote/local change already applied.
+  int _localeGeneration = 0;
+
   // Guards against overlapping smart retranslations when the language
   // changes before the previous retranslation completes.
   bool _retranslationInProgress = false;
@@ -4923,9 +5367,26 @@ class Localization extends _$Localization {
               _lastSyncedLanguageUserId = null;
               _lastRetranslatedLanguage = null;
               _lastRetranslatedUserId = null;
+              // The next sign-in must be able to push immediately; these
+              // guards belong to the previous session, not the device.
+              _lastLanguageSyncAttemptAt = null;
+              _lastLanguageSyncAttemptLang = null;
+              _lastLanguageSyncFailureAt = null;
+              _languageSyncInFlight = null;
             }
             _ensureLanguageRealtimeSubscription();
-            if (authEvent != AuthChangeEvent.signedIn) {
+            if (authEvent == AuthChangeEvent.signedIn) {
+              // A pending login-screen pick must reach the server before any
+              // other device can pull the account's previous language.
+              unawaited(
+                syncLanguageAfterLogin().catchError((
+                  Object error,
+                  StackTrace stackTrace,
+                ) {
+                  debugPrint('[L10N] Sign-in language sync failed: $error');
+                }),
+              );
+            } else {
               unawaited(_syncLanguageFromRemote());
             }
           },
@@ -4989,54 +5450,166 @@ class Localization extends _$Localization {
   /// Subscribes to the shared "my own user row" realtime channel.
   void _ensureLanguageRealtimeSubscription() {
     _myUserSubscription?.cancel();
-    _myUserSubscription = MyUserRealtimeService.instance.updates.listen((
-      update,
-    ) {
-      if (!update.changed('preferred_language') &&
-          !update.changed('preferred_language_explicit')) {
-        return;
-      }
-      final remoteLanguage = update.row['preferred_language'] as String?;
-      // Only an explicit in-app choice may move this device's UI.
-      // Seeds (the column default or a device-derived value another
-      // session wrote) must never override the device language.
-      final remoteExplicit =
-          update.row['preferred_language_explicit'] as bool? ?? false;
-      if (!remoteExplicit) return;
-      if (remoteLanguage == null || remoteLanguage.isEmpty) return;
-      if (remoteLanguage == state.currentLocale.languageCode) return;
-      if (_localeChangeInFlight && _localeChangeTarget == remoteLanguage) {
-        return;
-      }
-      unawaited(setLocale(remoteLanguage, null, false));
-    });
-    _languageResyncSubscription =
-        MyUserRealtimeService.instance.resyncRequests.listen((_) {
-          unawaited(_syncLanguageFromRemote());
-    });
+    _myUserSubscription = MyUserRealtimeService.instance.updates.listen(
+      (update) => unawaited(
+        _onMyUserLanguageUpdate(update).catchError((
+          Object error,
+          StackTrace stackTrace,
+        ) {
+          debugPrint('[L10N] Realtime language update failed: $error');
+        }),
+      ),
+    );
+    _languageResyncSubscription = MyUserRealtimeService.instance.resyncRequests
+        .listen((_) {
+          // Reconnected after missed events: flush any pending choice and
+          // re-pull the account value.
+          unawaited(
+            syncLanguageAfterLogin().catchError((
+              Object error,
+              StackTrace stackTrace,
+            ) {
+              debugPrint('[L10N] Language resync failed: $error');
+            }),
+          );
+        });
   }
 
+  Future<void> _onMyUserLanguageUpdate(MyUserUpdate update) async {
+    if (!update.changed('preferred_language') &&
+        !update.changed('preferred_language_explicit')) {
+      return;
+    }
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId == null) return;
+
+    // An unsynced local pick is newer than anything already on the server.
+    // Apply it and retry the push instead of letting the old row win.
+    final pending = await _pickPendingLanguage(userId);
+    if (pending != null) {
+      if (pending != state.currentLocale.languageCode) {
+        await setLocale(pending, null, false);
+      }
+      unawaited(
+        syncLanguageAfterLogin().catchError((
+          Object error,
+          StackTrace stackTrace,
+        ) {
+          debugPrint('[L10N] Pending language retry failed: $error');
+        }),
+      );
+      return;
+    }
+
+    // A trimmed UPDATE payload may omit unchanged columns, including the
+    // explicit flag. Pull the authoritative row rather than guessing.
+    if (!update.row.containsKey('preferred_language_explicit')) {
+      await _syncLanguageFromRemote();
+      return;
+    }
+
+    final remoteLanguage = update.row['preferred_language'] as String?;
+    // Only an explicit in-app choice may move this device's UI.
+    // Seeds (the column default or a device-derived value another
+    // session wrote) must never override the device language.
+    final remoteExplicit =
+        update.row['preferred_language_explicit'] as bool? ?? false;
+    if (!remoteExplicit) return;
+    if (remoteLanguage == null || remoteLanguage.isEmpty) return;
+    if (remoteLanguage == state.currentLocale.languageCode) return;
+    if (_localeChangeInFlight && _localeChangeTarget == remoteLanguage) {
+      return;
+    }
+    await setLocale(remoteLanguage, null, false);
+  }
+
+  /// Applies the account's explicit language, or replays an unsynced pick.
+  ///
+  /// Never seeds a value: callers that may write a non-explicit row go through
+  /// [syncLanguageAfterLogin].
   Future<void> _syncLanguageFromRemote() async {
     if (!offlineCacheManager.isSupabaseAvailable) return;
     final userId = Supabase.instance.client.auth.currentUser?.id;
     if (userId == null) return;
     try {
+      final pending = await _pickPendingLanguage(userId);
+      if (pending != null) {
+        if (pending != state.currentLocale.languageCode) {
+          await setLocale(pending, null, false);
+        }
+        if (!ref.mounted) return;
+        // Every pull trigger is also a retry point for an offline pick.
+        await syncLanguageAfterLogin();
+        return;
+      }
+
+      final remote = await _fetchRemoteLanguagePreference(userId);
+      if (!ref.mounted || remote == null) return;
+      if (Supabase.instance.client.auth.currentUser?.id != userId) return;
+      if (!remote.explicit) return;
+      final remoteLanguage = remote.language;
+      if (remoteLanguage == null || remoteLanguage.isEmpty) return;
+      if (remoteLanguage == state.currentLocale.languageCode) return;
+      if (!_supportsLanguage(remoteLanguage)) return;
+      await setLocale(remoteLanguage, null, false);
+    } catch (_) {}
+  }
+
+  Future<({String? language, bool explicit})?> _fetchRemoteLanguagePreference(
+    String userId,
+  ) async {
+    try {
       final response = await Supabase.instance.client
           .from('users')
           .select('preferred_language, preferred_language_explicit')
           .eq('id', userId)
-          .maybeSingle();
-      final remoteLanguage = response?['preferred_language'] as String?;
-      final remoteExplicit =
-          response?['preferred_language_explicit'] as bool? ?? false;
-      // Only an explicit in-app choice may move this device's UI language;
-      // a seeded/default value is not a choice and must not override the
-      // device language resolved at startup.
-      if (!remoteExplicit) return;
-      if (remoteLanguage == null || remoteLanguage.isEmpty) return;
-      if (remoteLanguage == state.currentLocale.languageCode) return;
-      await setLocale(remoteLanguage, null, false);
-    } catch (_) {}
+          .maybeSingle()
+          .timeout(const Duration(seconds: 5));
+      if (Supabase.instance.client.auth.currentUser?.id != userId) return null;
+      return (
+        language: response?['preferred_language'] as String?,
+        explicit: response?['preferred_language_explicit'] as bool? ?? false,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _supportsLanguage(String languageCode) {
+    final supported = state.supportedLanguages;
+    if (supported.isEmpty) return true;
+    return supported.any((language) => language.code == languageCode);
+  }
+
+  /// Reads the newest unconfirmed choice for [userId].
+  ///
+  /// A login-screen pick is newer than any pick saved before sign-out. Invalid
+  /// codes (a language an admin removed) are discarded rather than replayed
+  /// forever.
+  Future<String?> _pickPendingLanguage(String userId) async {
+    final loginPick = await _languageChoices.readLoginPick();
+    final userPick = await _languageChoices.readUserPick(userId);
+
+    var validLoginPick = loginPick;
+    if (validLoginPick != null && !_supportsLanguage(validLoginPick)) {
+      await _languageChoices.clearLoginPick(ifMatches: validLoginPick);
+      validLoginPick = null;
+    }
+    var validUserPick = userPick;
+    if (validUserPick != null && !_supportsLanguage(validUserPick)) {
+      await _languageChoices.clearUserPick(userId, ifMatches: validUserPick);
+      validUserPick = null;
+    }
+
+    if (validLoginPick != null) {
+      // The login-screen pick was made after any signed-in pick that was still
+      // waiting to sync, so it wins.
+      if (validUserPick != null && validUserPick != validLoginPick) {
+        await _languageChoices.clearUserPick(userId);
+      }
+      return validLoginPick;
+    }
+    return validUserPick;
   }
 
   Future<void> _init() async {
@@ -5051,6 +5624,11 @@ class Localization extends _$Localization {
   }
 
   Future<void> _initImpl() async {
+    // A remote pull or a setLocale can apply a newer locale while this init is
+    // awaiting I/O. Capturing the generation here stops the final state write
+    // below from repainting the language this session already moved away from.
+    final initGeneration = _localeGeneration;
+
     // Load missing keys display limit from config
     try {
       LocalizationState._missingKeysLimit = await appConfigService.getInt(
@@ -5090,6 +5668,9 @@ class Localization extends _$Localization {
     }
 
     final prefs = await SharedPreferences.getInstance();
+    // The previous marker was device-wide and permanently "explicit"; pending
+    // choices are now stored per login/user instead.
+    await _languageChoices.removeLegacyPickedFlag();
     String? langCode = prefs.getString('user_language_code');
     if (langCode != null && !supported.any((l) => l.code == langCode)) {
       // A persisted code the app no longer ships: treat it as no saved choice.
@@ -5164,6 +5745,7 @@ class Localization extends _$Localization {
     final cached = await _loadTranslationsFromCache(initialLang.code);
     if (cached.strings.isNotEmpty) {
       if (!ref.mounted) return;
+      if (_localeGeneration != initGeneration) return;
 
       state = LocalizationState(
         currentLocale: Locale(initialLang.code),
@@ -5179,9 +5761,18 @@ class Localization extends _$Localization {
       );
       _syncNativeBackgroundNotificationStrings(cached.strings);
 
-      // Refresh cache from DB in the background (only when online).
+      // Refresh cache from DB in the background (only when online). The
+      // stamp gate keeps this to 51 B unless the translations changed; a
+      // cached English fallback still forces the repair download.
       if (offlineCacheManager.isSupabaseAvailable) {
-        unawaited(_refreshTranslationCache(initialLang.code));
+        unawaited(
+          _refreshTranslationCacheIfStale(
+            initialLang.code,
+            force:
+                normalizeContentLanguageCode(cached.contentLanguageCode) !=
+                normalizeContentLanguageCode(initialLang.code),
+          ),
+        );
       }
     } else {
       // No cache (genuine first run, or a language never opened before).
@@ -5204,6 +5795,7 @@ class Localization extends _$Localization {
       var loadedFromDb = false;
       if (initialLang.code != 'en' && offlineCacheManager.isSupabaseAvailable) {
         try {
+          final stamp = await _fetchTranslationsStamp(initialLang.code);
           final fetched = await _fetchTranslationsFromDB(
             initialLang.code,
           ).timeout(const Duration(seconds: 6));
@@ -5217,6 +5809,7 @@ class Localization extends _$Localization {
               initialLang.code,
               fetched.strings,
               contentLanguageCode: contentLanguage,
+              stamp: stamp,
             );
             loadedFromDb = true;
           }
@@ -5227,6 +5820,7 @@ class Localization extends _$Localization {
         }
       }
       if (!ref.mounted) return;
+      if (_localeGeneration != initGeneration) return;
       state = LocalizationState(
         currentLocale: Locale(initialLang.code),
         textDirection: initialLang.direction,
@@ -5330,6 +5924,72 @@ class Localization extends _$Localization {
     }
   }
 
+  /// The server's current translation version for [langCode], or null when
+  /// the check cannot run. One 51 B row replaces a whole-table download.
+  Future<String?> _fetchTranslationsStamp(String langCode) async {
+    try {
+      final row = await Supabase.instance.client
+          .from('translations')
+          .select('updated_at')
+          .eq('locale', langCode)
+          .order('updated_at', ascending: false)
+          .limit(1)
+          .maybeSingle()
+          .timeout(const Duration(seconds: 2));
+      return row?['updated_at']?.toString();
+    } catch (e) {
+      if (!isAuthRateLimitFailure(e) && !isExpectedOfflineFailure(e)) {
+        debugPrint('[L10N] Translation stamp check failed for $langCode: $e');
+      }
+      return null;
+    }
+  }
+
+  /// Refreshes the cached translations only when the server stamp moved.
+  ///
+  /// A cached English fallback ([force]) must still be repaired immediately;
+  /// every other start pays 51 B instead of downloading the whole table.
+  /// When the stamp check keeps failing for 24 h, the full download is the
+  /// fallback: the cache may be arbitrarily old by then.
+  Future<void> _refreshTranslationCacheIfStale(
+    String langCode, {
+    bool force = false,
+  }) async {
+    if (!force) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final cachedStamp = prefs.getString(translationStampKey(langCode));
+        if (cachedStamp != null) {
+          final stamp = await _fetchTranslationsStamp(langCode);
+          if (stamp != null) {
+            await prefs.setInt(
+              translationStampCheckedAtKey(langCode),
+              DateTime.now().millisecondsSinceEpoch,
+            );
+            if (stamp == cachedStamp) return;
+            await _refreshTranslationCache(langCode, knownStamp: stamp);
+            return;
+          }
+          final checkedAtMs = prefs.getInt(
+            translationStampCheckedAtKey(langCode),
+          );
+          final checkedAt = checkedAtMs == null
+              ? null
+              : DateTime.fromMillisecondsSinceEpoch(checkedAtMs);
+          if (checkedAt != null &&
+              DateTime.now().difference(checkedAt) < _translationStampTtl) {
+            // Cannot verify right now: keep the cached strings. The TTL
+            // guarantees a full download eventually.
+            return;
+          }
+        }
+      } catch (e) {
+        debugPrint('[L10N] Translation stamp gate failed for $langCode: $e');
+      }
+    }
+    await _refreshTranslationCache(langCode);
+  }
+
   /// Background-refresh translation cache from DB (only call when online).
   ///
   /// The cache is only written when the server actually returned rows for the
@@ -5340,8 +6000,12 @@ class Localization extends _$Localization {
   /// The fresh strings are applied to the live state as well, so a member
   /// whose cached copy was an English fallback sees the real translations
   /// without having to restart the app.
-  Future<void> _refreshTranslationCache(String langCode) async {
+  Future<void> _refreshTranslationCache(
+    String langCode, {
+    String? knownStamp,
+  }) async {
     try {
+      final stamp = knownStamp ?? await _fetchTranslationsStamp(langCode);
       final fetched = await _fetchTranslationsFromDB(langCode);
       if (!fetched.hasLocalizedRows) return;
       final contentLanguage = resolveContentLanguageCode(
@@ -5352,6 +6016,7 @@ class Localization extends _$Localization {
         langCode,
         fetched.strings,
         contentLanguageCode: contentLanguage,
+        stamp: stamp,
       );
       if (!ref.mounted) return;
       if (state.currentLocale.languageCode != langCode) return;
@@ -5370,6 +6035,7 @@ class Localization extends _$Localization {
   /// server set without a reload.
   Future<void> _loadTranslationsInBackground(String langCode) async {
     try {
+      final stamp = await _fetchTranslationsStamp(langCode);
       final fetched = await _fetchTranslationsFromDB(langCode);
       final contentLanguage = resolveContentLanguageCode(
         localeCode: langCode,
@@ -5380,6 +6046,7 @@ class Localization extends _$Localization {
           langCode,
           fetched.strings,
           contentLanguageCode: contentLanguage,
+          stamp: stamp,
         );
       }
       if (!ref.mounted) return;
@@ -5407,6 +6074,7 @@ class Localization extends _$Localization {
   Future<void> refreshTranslations() async {
     final currentLang = state.currentLocale.languageCode;
     if (!offlineCacheManager.isSupabaseAvailable) return;
+    final stamp = await _fetchTranslationsStamp(currentLang);
     final fetched = await _fetchTranslationsFromDB(currentLang);
     final contentLanguage = resolveContentLanguageCode(
       localeCode: currentLang,
@@ -5417,9 +6085,14 @@ class Localization extends _$Localization {
         currentLang,
         fetched.strings,
         contentLanguageCode: contentLanguage,
+        stamp: stamp,
       );
     }
     if (!ref.mounted) return;
+    // The locale may have changed while the fetch was in flight; setLocale
+    // owns the state update in that case, and painting these older strings
+    // would leave the new locale showing the previous language.
+    if (state.currentLocale.languageCode != currentLang) return;
     state = state.copyWith(
       strings: fetched.strings,
       dbKeys: _lastFetchedDbKeys,
@@ -5542,9 +6215,7 @@ class Localization extends _$Localization {
   /// Legacy caches have no marker: their values are compared with the bundled
   /// English defaults to find out whether they hold translated rows at all.
   Future<({Map<String, String> strings, String contentLanguageCode})>
-  _loadTranslationsFromCache(
-    String langCode,
-  ) async {
+  _loadTranslationsFromCache(String langCode) async {
     // Fast path: the warm-launch bootstrap already decoded this language's
     // blob. Reuse it instead of re-reading SharedPreferences and re-decoding
     // several megabytes of JSON while the first Home frames are painting.
@@ -5571,7 +6242,10 @@ class Localization extends _$Localization {
           strings: predecoded,
           marker: prefs.getString(translationContentMarkerKey(langCode)),
         );
-        return (strings: Map<String, String>.from(predecoded), contentLanguageCode: content);
+        return (
+          strings: Map<String, String>.from(predecoded),
+          contentLanguageCode: content,
+        );
       } catch (e) {
         // ignore prefs errors — strings themselves are already in hand
         return (
@@ -5634,6 +6308,7 @@ class Localization extends _$Localization {
     String langCode,
     Map<String, String> strings, {
     required String contentLanguageCode,
+    String? stamp,
   }) async {
     if (normalizeContentLanguageCode(contentLanguageCode) !=
         normalizeContentLanguageCode(langCode)) {
@@ -5665,6 +6340,20 @@ class Localization extends _$Localization {
       } catch (e) {
         // ignore
       }
+      // Pair the blob with the version it came from. The stamp was read
+      // before the download, so a change in between can only make the next
+      // start refresh again, never skip an update.
+      if (stamp != null) {
+        try {
+          await prefs.setString(translationStampKey(langCode), stamp);
+          await prefs.setInt(
+            translationStampCheckedAtKey(langCode),
+            DateTime.now().millisecondsSinceEpoch,
+          );
+        } catch (e) {
+          // ignore
+        }
+      }
     } catch (e) {
       // Ignore cache save errors
     }
@@ -5673,9 +6362,9 @@ class Localization extends _$Localization {
   void _syncNativeBackgroundNotificationStrings(Map<String, String> strings) {
     // Persist the "MatchMe Active" foreground notification title/text in the
     // user's current display language so the Android service can show it
-    // localized even after process death / reboot. Also syncs the masked
-    // chat-notification body (message previews off) so the Kotlin poller
-    // doesn't fall back to English. Best-effort, never throw.
+    // localized even after process death / reboot. Also syncs the chat-card
+    // copy the service needs when it has to build a card itself.
+    // Best-effort, never throw.
     try {
       final title =
           strings['bgNotificationTitle'] ??
@@ -5685,16 +6374,25 @@ class Localization extends _$Localization {
           strings['bgNotificationText'] ??
           LocalizationState._defaultTranslations['bgNotificationText'] ??
           'You are visible and background matching is enabled.';
-      final genericBody =
-          strings['pushNewMessageBodyFallback'] ??
-          LocalizationState
-              ._defaultTranslations['pushNewMessageBodyFallback'] ??
-          'New message';
+      // The service picks a slot by the unread count alone, so the plural form
+      // for each count has to be resolved here, in the content language.
+      // `{count}` / `{name}` stay as tokens: the service fills the real number
+      // and name when the card is built.
+      String nativeForm(String key, int count) =>
+          state.getPluralString(key, count, displayValue: '{count}');
+      Map<String, String> nativeForms(String key) => {
+        'one': nativeForm(key, 1),
+        'two': nativeForm(key, 2),
+        'other': nativeForm(key, 5),
+      };
       unawaited(
         BackgroundService.setNativeBackgroundNotificationStrings(
           title: title,
           text: text,
-          genericBody: genericBody,
+          chatCopy: {
+            'messagesTitle': nativeForms('pushMessagesTitle'),
+            'openToReadBody': nativeForms('pushOpenToReadBody'),
+          },
         ),
       );
     } catch (_) {}
@@ -5743,7 +6441,14 @@ class Localization extends _$Localization {
         // during a previous offline session) gets overwritten — and applied
         // right away, so the member is not stuck on the English fallback.
         if (langCode != 'en' && offlineCacheManager.isSupabaseAvailable) {
-          unawaited(_refreshTranslationCache(langCode));
+          unawaited(
+            _refreshTranslationCacheIfStale(
+              langCode,
+              force:
+                  normalizeContentLanguageCode(contentLanguage) !=
+                  normalizeContentLanguageCode(langCode),
+            ),
+          );
         }
       } else {
         // No cache - fetch from DB (skipped when offline to avoid
@@ -5756,6 +6461,7 @@ class Localization extends _$Localization {
           state = state.copyWith(isLoading: false);
           return;
         }
+        final stamp = await _fetchTranslationsStamp(lang.code);
         final fetched = await _fetchTranslationsFromDB(lang.code);
         strings = fetched.strings;
         contentLanguage = resolveContentLanguageCode(
@@ -5768,6 +6474,7 @@ class Localization extends _$Localization {
             lang.code,
             strings,
             contentLanguageCode: contentLanguage,
+            stamp: stamp,
           );
         }
         debugPrint(
@@ -5781,16 +6488,23 @@ class Localization extends _$Localization {
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('user_language_code', lang.code);
+
+      // Record the choice until the server row confirms it. The login-screen
+      // pick is device-level because there is no account yet; a signed-in pick
+      // is scoped to that account so it cannot leak into another session. A
+      // signed-in pick also supersedes a leftover login-screen pick.
+      final currentUserId = Supabase.instance.client.auth.currentUser?.id;
       if (syncToDatabase) {
-        // syncToDatabase=true only for in-app language pickers. The marker
-        // lets syncLanguageAfterLogin push the choice as explicit later even
-        // when this first write happens before the user is signed in (auth
-        // screen) or while offline.
-        await prefs.setBool('user_language_picked', true);
+        if (currentUserId != null) {
+          await _languageChoices.writeUserPick(currentUserId, lang.code);
+        } else {
+          await _languageChoices.writeLoginPick(lang.code);
+        }
       }
       if (!ref.mounted) return;
 
       // Update UI immediately — don't block on DB sync.
+      _localeGeneration++;
       state = state.copyWith(
         currentLocale: Locale(lang.code),
         textDirection: lang.direction,
@@ -5804,15 +6518,15 @@ class Localization extends _$Localization {
 
       // Sync preferred_language to the database in the background.
       // This can block for 50+ seconds when offline (auth timeout), so
-      // never await it here.
-      final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+      // never await it here. A failed/offline push keeps the pending marker
+      // for the next sync trigger.
       if (syncToDatabase && currentUserId != null) {
         // This path only runs for in-app pickers (syncToDatabase=true), so
         // the row is being marked as an explicit choice.
         unawaited(_updateLanguageInDatabase(lang.code, explicit: true));
       } else if (syncToDatabase) {
         debugPrint(
-          '[L10N] Skipping DB language update: user not authenticated (login screen)',
+          '[L10N] Login-screen pick stored; will be pushed as explicit after sign-in',
         );
       }
     } finally {
@@ -5830,21 +6544,25 @@ class Localization extends _$Localization {
   /// user never picked) still write the value so notifications and broadcasts
   /// target the right locale, but they must never mark the row explicit and
   /// must never overwrite a value the user did pick.
-  Future<void> _updateLanguageInDatabase(
+  ///
+  /// Returns true when the server row is confirmed to hold the requested
+  /// value/flag; a false return keeps the pending-choice marker so the next
+  /// sync trigger retries.
+  Future<bool> _updateLanguageInDatabase(
     String langCode, {
     required bool explicit,
   }) async {
     // Skip entirely when offline to avoid noisy SocketException logs.
-    if (!offlineCacheManager.isSupabaseAvailable) return;
+    if (!offlineCacheManager.isSupabaseAvailable) return false;
     // A dead/rotated refresh token means every authenticated call fails.
     // Don't even start — the pre-check + 2 UPDATEs + retranslation scan
     // would just add fuel to a 429 rate-limit spiral.
-    if (Supabase.instance.client.auth.currentSession == null) return;
+    if (Supabase.instance.client.auth.currentSession == null) return false;
 
     try {
       final userId = Supabase.instance.client.auth.currentUser?.id;
       if (userId == null) {
-        return;
+        return false;
       }
 
       // Skip if we already pushed this exact language for this user during
@@ -5859,7 +6577,10 @@ class Localization extends _$Localization {
         debugPrint(
           '[L10N] Skipping DB update: language already synced this session',
         );
-        return;
+        if (explicit) {
+          await _languageChoices.clearConfirmed(userId, langCode);
+        }
+        return true;
       }
 
       // Cold-start short-circuit: if the DB already stores the language the
@@ -5867,7 +6588,7 @@ class Localization extends _$Localization {
       // the UPDATE + smart-retranslation pass even when nothing changed,
       // which on the moto g54 5G added a noticeable 1+ second after the
       // first frame was already rendered.
-      if (!ref.mounted) return;
+      if (!ref.mounted) return false;
       String? stored;
       var storedExplicit = false;
       try {
@@ -5876,7 +6597,7 @@ class Localization extends _$Localization {
             .select('preferred_language, preferred_language_explicit')
             .eq('id', userId)
             .maybeSingle();
-        if (!ref.mounted) return;
+        if (!ref.mounted) return false;
         stored =
             (existing == null
                     ? null
@@ -5894,7 +6615,7 @@ class Localization extends _$Localization {
           debugPrint(
             '[L10N] Skipping DB update: pre-check failed with auth/rate-limit, backing off: $e',
           );
-          return;
+          return false;
         }
         debugPrint(
           '[L10N] Could not pre-check stored language, proceeding with update: $e',
@@ -5911,13 +6632,17 @@ class Localization extends _$Localization {
         _lastSyncedLanguageInDb = langCode;
         _lastSyncedLanguageUserId = userId;
         _lastSyncedLanguageExplicit = storedExplicit;
+        if (explicit) {
+          // The row already holds the choice; the local marker is confirmed.
+          await _languageChoices.clearConfirmed(userId, langCode);
+        }
         // NOTE: Do NOT set _lastRetranslatedLanguage here. That flag is only set
         // after _retranslateAllMessages() actually completes. Setting it here
         // would cause a subsequent call to _retranslateAllMessages() with the same
         // language to skip due to the dedup guard, even though retranslation never
         // actually happened. This bug manifests on the 3rd+ language switch when
         // the user switches to a previously-used language that's already in the DB.
-        return;
+        return true;
       }
 
       if (!valueChanged) {
@@ -5935,13 +6660,14 @@ class Localization extends _$Localization {
             _lastLanguageSyncFailureAt = DateTime.now();
           }
           debugPrint('[L10N] Could not mark stored language as explicit: $e');
-          return;
+          return false;
         }
         _lastSyncedLanguageInDb = langCode;
         _lastSyncedLanguageUserId = userId;
         _lastSyncedLanguageExplicit = true;
+        await _languageChoices.clearConfirmed(userId, langCode);
         debugPrint('[L10N] Marked $langCode as an explicit language choice');
-        return;
+        return true;
       }
 
       if (!explicit && storedExplicit) {
@@ -5949,7 +6675,7 @@ class Localization extends _$Localization {
         debugPrint(
           '[L10N] Skipping DB update: stored language was explicitly chosen by the user',
         );
-        return;
+        return false;
       }
 
       debugPrint(
@@ -5979,7 +6705,7 @@ class Localization extends _$Localization {
           debugPrint(
             '[L10N] Skipping DB update: write rejected with auth/rate-limit, backing off: $e',
           );
-          return;
+          return false;
         }
         rethrow;
       }
@@ -5987,6 +6713,9 @@ class Localization extends _$Localization {
       _lastSyncedLanguageInDb = langCode;
       _lastSyncedLanguageUserId = userId;
       _lastSyncedLanguageExplicit = explicit;
+      if (explicit) {
+        await _languageChoices.clearConfirmed(userId, langCode);
+      }
 
       debugPrint('[L10N] Successfully updated language in database');
       debugPrint('[L10N] Synced language preference to database: $langCode');
@@ -6001,12 +6730,14 @@ class Localization extends _$Localization {
       await _retranslateAllMessages(userId, langCode);
       // Full success — lift any earlier failure backoff.
       _lastLanguageSyncFailureAt = null;
+      return true;
     } catch (e) {
       if (isAuthRateLimitFailure(e) || isExpectedOfflineFailure(e)) {
         _lastLanguageSyncFailureAt = DateTime.now();
       }
       debugPrint('[L10N] Error updating language in database: $e');
       // Don't throw - language update is not critical for UI to continue
+      return false;
     }
   }
 
@@ -6557,9 +7288,15 @@ class Localization extends _$Localization {
     }
   }
 
-  /// Sync current language preference to the database.
+  /// Reconciles this session's language with the account and the server.
+  ///
   /// Safe to call on any auth event (initialSession or signedIn) — the name
   /// intentionally avoids "afterLogin" since it also fires on session restore.
+  ///
+  /// Priority:
+  ///   1. a pending login-screen or unsynced in-app pick (the newest intent),
+  ///   2. the account's explicit language (so all devices agree),
+  ///   3. this device's resolved language, seeded without marking it explicit.
   Future<void> syncLanguageAfterLogin() async {
     // Coalesce concurrent callers onto a single in-flight sync instead of
     // firing N parallel DB storms.
@@ -6576,8 +7313,43 @@ class Localization extends _$Localization {
     // wrong locale to the DB.
     await whenInitialized;
     if (!ref.mounted) return;
-    final currentLangCode = state.currentLocale.languageCode;
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId == null) return;
     final now = DateTime.now();
+
+    // An unconfirmed choice is the newest intent and must not be suppressed
+    // by the failure backoff / cooldown that protects ordinary seeding.
+    final pending = await _pickPendingLanguage(userId);
+    if (pending != null) {
+      _lastLanguageSyncFailureAt = null;
+      _lastLanguageSyncAttemptAt = now;
+      _lastLanguageSyncAttemptLang = pending;
+      if (pending != state.currentLocale.languageCode) {
+        await setLocale(pending, null, false);
+        if (!ref.mounted) return;
+      }
+      debugPrint('[L10N] Pushing pending language choice: $pending');
+      await _pushLanguage(userId, pending, explicit: true);
+      return;
+    }
+
+    // No local pending choice: the account row decides. Only an explicit
+    // account choice overrides this device's language; a seed leaves it alone
+    // (the device language was already resolved in _initImpl).
+    final remote = await _fetchRemoteLanguagePreference(userId);
+    if (!ref.mounted) return;
+    if (Supabase.instance.client.auth.currentUser?.id != userId) return;
+    if (remote != null && remote.explicit) {
+      final remoteLanguage = remote.language;
+      if (remoteLanguage != null &&
+          remoteLanguage.isNotEmpty &&
+          remoteLanguage != state.currentLocale.languageCode &&
+          _supportsLanguage(remoteLanguage)) {
+        await setLocale(remoteLanguage, null, false);
+      }
+      return;
+    }
+
     // Failure backoff: a dead refresh token / 429 / RLS denial will fail
     // every retry — don't hammer Supabase, just use cache until it lifts.
     if (_lastLanguageSyncFailureAt != null &&
@@ -6588,8 +7360,9 @@ class Localization extends _$Localization {
       );
       return;
     }
-    // Cooldown for repeat calls with an unchanged language (auth event
-    // flaps, duplicate initialSession, pull-to-refresh, login screen).
+    // Cooldown for repeat seeds with an unchanged language (auth event flaps,
+    // duplicate initialSession, pull-to-refresh).
+    final currentLangCode = state.currentLocale.languageCode;
     if (_lastLanguageSyncAttemptAt != null &&
         _lastLanguageSyncAttemptLang == currentLangCode &&
         now.difference(_lastLanguageSyncAttemptAt!) < _languageSyncCooldown) {
@@ -6600,28 +7373,34 @@ class Localization extends _$Localization {
     }
     _lastLanguageSyncAttemptAt = now;
     _lastLanguageSyncAttemptLang = currentLangCode;
-    debugPrint(
-      '[L10N] syncLanguageAfterLogin: currentLangCode=$currentLangCode',
-    );
+    debugPrint('[L10N] Seeding account language: $currentLangCode');
 
-    // Update database with current language preference. Push as an explicit
-    // choice only when the user actually picked a language on this device
-    // (see setLocale); otherwise this is just re-seeding the resolved UI
-    // language for notifications/broadcasts and must not lock the account to
-    // it over the next device's language.
-    final prefs = await SharedPreferences.getInstance();
-    final pickedOnThisDevice = prefs.getBool('user_language_picked') ?? false;
-    final future = _updateLanguageInDatabase(
-      currentLangCode,
-      explicit: pickedOnThisDevice,
-    );
+    // The account never chose a language: write the resolved UI language so
+    // notifications/broadcasts target the right locale, but never mark the
+    // row explicit and never overwrite a value the user did pick.
+    await _pushLanguage(userId, currentLangCode, explicit: false);
+  }
+
+  Future<void> _pushLanguage(
+    String userId,
+    String langCode, {
+    required bool explicit,
+  }) async {
+    if (!ref.mounted) return;
+    final future = _updateLanguageInDatabase(langCode, explicit: explicit);
     _languageSyncInFlight = future;
     try {
       await future;
     } finally {
-      _languageSyncInFlight = null;
+      if (identical(_languageSyncInFlight, future)) {
+        _languageSyncInFlight = null;
+      }
     }
   }
+
+  /// Re-pulls the account language after the app resumes or connectivity
+  /// returns, and retries any pending choice.
+  Future<void> refreshLanguageFromRemote() => _syncLanguageFromRemote();
 }
 
 // --- REALTIME PROVIDER ---
@@ -6674,4 +7453,3 @@ final translationsRealtimeProvider = StreamProvider<List<Map<String, dynamic>>>(
 
 // --- 4. The Main Provider ---
 // Generated by @riverpod
-

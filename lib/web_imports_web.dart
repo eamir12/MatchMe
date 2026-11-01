@@ -345,6 +345,8 @@ Future<Uint8List?> pickImageBytesFromCamera({
   String capture = 'user',
   String? captureButtonText,
   String? cancelButtonText,
+  bool allowFileFallback = true,
+  void Function(String error)? onError,
 }) async {
   try {
     // Use getUserMedia API to access camera directly.
@@ -472,14 +474,16 @@ Future<Uint8List?> pickImageBytesFromCamera({
         );
         final blob = await blobCompleter.future;
         if (blob == null) {
-          return null;
+          onError?.call('failed');
+          result = null;
+        } else {
+          final reader = web.FileReader();
+          final pending = _readBytes(reader);
+          reader.readAsArrayBuffer(blob);
+          result = await pending;
         }
-
-        final reader = web.FileReader();
-        final pending = _readBytes(reader);
-        reader.readAsArrayBuffer(blob);
-        result = await pending;
       } catch (_) {
+        onError?.call('failed');
         result = null;
       }
     }
@@ -492,8 +496,14 @@ Future<Uint8List?> pickImageBytesFromCamera({
     overlay.remove();
 
     return result;
-  } catch (_) {
-    // Fallback to file input method if getUserMedia fails
+  } catch (error) {
+    final message = error.toString().toLowerCase();
+    onError?.call(
+      message.contains('notallowed') || message.contains('permission')
+          ? 'denied'
+          : 'unavailable',
+    );
+    if (!allowFileFallback) return null;
     return _pickImageBytesFromFileInput(capture);
   }
 }

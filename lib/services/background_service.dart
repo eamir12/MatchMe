@@ -1,5 +1,6 @@
 // lib/services/background_service.dart
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -42,14 +43,16 @@ class BackgroundService {
   /// notification so it appears in the user's chosen display language, and
   /// refresh the notification if the service is currently in the foreground.
   ///
-  /// [genericBody] is the masked chat-notification body shown when the user
-  /// disabled message previews; the Kotlin poller reads it from prefs
-  /// (flutter.notifications_generic_message_body) so killed/background trays
-  /// match the display language instead of falling back to English.
+  /// [chatCopy] is the plural table the native service uses to build a chat
+  /// card when no push delivered one (the poll that runs after a push never
+  /// landed). It maps `messagesTitle` / `openToReadBody` to the `one` / `two` /
+  /// `other` forms already resolved for the display language, and is stored as
+  /// JSON under flutter.notifications_chat_copy so it survives process death
+  /// and reboot.
   static Future<void> setNativeBackgroundNotificationStrings({
     required String title,
     required String text,
-    String? genericBody,
+    Map<String, Object>? chatCopy,
   }) async {
     if (kIsWeb || !Platform.isAndroid) return;
     try {
@@ -60,11 +63,8 @@ class BackgroundService {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('bgNotificationTitle', title);
       await prefs.setString('bgNotificationText', text);
-      if (genericBody != null && genericBody.isNotEmpty) {
-        await prefs.setString(
-          'notifications_generic_message_body',
-          genericBody,
-        );
+      if (chatCopy != null && chatCopy.isNotEmpty) {
+        await prefs.setString('notifications_chat_copy', jsonEncode(chatCopy));
       }
     } catch (_) {}
     try {
@@ -157,6 +157,12 @@ class BackgroundService {
   }
 
   /// Trigger immediate notification check in Android background service
+  ///
+  /// [title], [previewLines], [unreadCount] and [previewsEnabled] are the
+  /// push-message content model. Pass them whenever the payload holds them:
+  /// the service then draws the card from finished, server-localized copy
+  /// instead of querying the RPC, which cannot decrypt chat content and would
+  /// have to fall back to a count-only card.
   static Future<void> triggerNotificationCheck({
     String? messageId,
     String? translatedContent,
@@ -164,6 +170,10 @@ class BackgroundService {
     String? senderName,
     String? matchId,
     bool? shouldAlert,
+    String? title,
+    List<String>? previewLines,
+    int? unreadCount,
+    bool? previewsEnabled,
   }) async {
     if (kIsWeb || !Platform.isAndroid) {
       // print('🔄 [BACKGROUND] Skipping notification trigger - not Android platform');
@@ -182,6 +192,10 @@ class BackgroundService {
         'senderName': senderName,
         'matchId': matchId,
         'shouldAlert': shouldAlert,
+        'title': title,
+        'previewLines': previewLines,
+        'unreadCount': unreadCount,
+        'previewsEnabled': previewsEnabled,
         'currentViewingChatId': currentViewingChatId,
       });
       // print('🔄 [BACKGROUND] Android background service notification check triggered successfully');
@@ -1191,7 +1205,7 @@ class BackgroundService {
     final longitude = data['longitude'] as double?;
 
     if (userId == null || latitude == null || longitude == null) return;
-    if (shouldSkipSupabaseCalls()) return;
+    if (shouldSkipUserScopedSupabaseCalls()) return;
 
     // Pinned home-base: never forward native GPS fixes while a pin is active.
     // (The server RPC would ignore them anyway; this avoids needless writes.)

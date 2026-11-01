@@ -11,6 +11,8 @@
         <exclude domain="sharedpref" path="matchme_prefs.xml"/>
         <exclude domain="database" path="."/>
         <exclude domain="file" path="hive_boxes/"/>
+        <!-- Notification tray avatars (plain JPEG faces); see backup_rules.xml. -->
+        <exclude domain="file" path="no_backup/notification_avatars/"/>
         <exclude domain="external" path="."/>
     </cloud-backup>
     <device-transfer>
@@ -20,6 +22,8 @@
         <exclude domain="sharedpref" path="matchme_prefs.xml"/>
         <exclude domain="database" path="."/>
         <exclude domain="file" path="hive_boxes/"/>
+        <!-- Notification tray avatars (plain JPEG faces); see backup_rules.xml. -->
+        <exclude domain="file" path="no_backup/notification_avatars/"/>
         <exclude domain="external" path="."/>
     </device-transfer>
 </data-extraction-rules>

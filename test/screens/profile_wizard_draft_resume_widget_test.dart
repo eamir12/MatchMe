@@ -346,4 +346,59 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+
+  testWidgets(
+    'edit wizard on an unchanged complete profile shows no review page',
+    (tester) async {
+      const unchangedUserId = 'wizard-unchanged-user';
+      await tester.runAsync(
+        () => db.saveCachedAppIntents([
+          {
+            'id': 1,
+            'key': 'romantic',
+            'translation_key': 'intentRomantic',
+            'parent_id': null,
+            'sort_order': 1,
+            'is_social': true,
+            'is_business': false,
+          },
+        ]),
+      );
+      await tester.runAsync(
+        () => db.saveLocalProfile(unchangedUserId, {
+          'id': unchangedUserId,
+          'name': 'Dana Levi',
+          'dateOfBirth': '1995-04-12T00:00:00.000',
+          'gender': 'female',
+          'bio': 'Hello there',
+          'activeModes': ['romantic'],
+          'subIntents': {
+            'romantic': ['long_term'],
+          },
+          'personalInterests': {
+            'romantic': ['hiking'],
+          },
+          'photos': <String>['photo-1', 'photo-2'],
+          'isProfileComplete': true,
+          'subscription_expires_at': '2027-01-01T00:00:00.000Z',
+        }),
+      );
+
+      final container = makeContainer();
+      await mountWizard(tester, container, unchangedUserId, isEditing: true);
+      await settle(tester);
+
+      // 1 intent → main intents, sub-intents, basics, details, photos,
+      // interests, lifestyle, family, religion, match prefs, social links.
+      // A 12th page would be the review page, which must only exist once the
+      // draft actually differs from the saved profile.
+      final pageView = tester.widget<PageView>(find.byType(PageView).first);
+      expect(pageView.childrenDelegate.estimatedChildCount, 11);
+
+      await tester.pump(const Duration(seconds: 9));
+      await tester.pumpWidget(const SizedBox.shrink());
+      await drainIo(tester);
+      container.dispose();
+    },
+  );
 }

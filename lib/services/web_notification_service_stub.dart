@@ -1,11 +1,16 @@
 // lib/services/web_notification_service_stub.dart
 // Stub implementation for non-web platforms
 
+import 'package:matchme/utils/chat_notification_copy.dart';
+
 /// Web notification service stub - does nothing on non-web platforms
 class WebNotificationService {
   static String? _currentViewingChatId;
   static final Map<String, List<String>> _messageHistory = {};
   static final Map<String, int> _lastNotifiedChatIds = {};
+
+  /// Handler for route payloads from clicked web cards (no-op on non-web).
+  static void Function(String route)? onOpenRoute;
 
   /// Set the ProviderContainer to access preferences (no-op on non-web)
   static void setProviderContainer(_) {
@@ -28,6 +33,9 @@ class WebNotificationService {
     required String matchId,
     bool alreadyAggregated = false,
     bool? shouldAlertOverride,
+    ChatPushCardModel? card,
+    int? unreadCount,
+    String? photoSource,
   }) async {
     // No-op on non-web platforms
   }
@@ -53,6 +61,16 @@ class WebNotificationService {
     required String title,
     required String body,
     bool silent = false,
+  }) async {
+    // No-op on non-web platforms
+  }
+
+  static Future<void> showMeetupNotification({
+    required String notificationId,
+    required String title,
+    required String body,
+    String? matchId,
+    String? kind,
   }) async {
     // No-op on non-web platforms
   }

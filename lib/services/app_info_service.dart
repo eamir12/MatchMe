@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 class AppInfo {
   final String appName;
@@ -61,6 +62,24 @@ class AppInfoService {
         buildNumber: (buildNumber != null && buildNumber.isNotEmpty)
             ? buildNumber
             : _defaultBuild,
+      );
+    } catch (_) {
+      // Windows/macOS/Linux have no `matchme/app_info` channel; read the same
+      // version/build from the platform bundle instead of reporting unknown.
+      return _fromPackageInfo();
+    }
+  }
+
+  static Future<AppInfo> _fromPackageInfo() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      final appName = info.appName.trim();
+      final version = info.version.trim();
+      final buildNumber = info.buildNumber.trim();
+      return AppInfo(
+        appName: appName.isNotEmpty ? appName : _defaultAppName,
+        version: version.isNotEmpty ? version : _defaultVersion,
+        buildNumber: buildNumber.isNotEmpty ? buildNumber : _defaultBuild,
       );
     } catch (_) {
       return const AppInfo(

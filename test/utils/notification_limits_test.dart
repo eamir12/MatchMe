@@ -41,8 +41,11 @@ void main() {
       // The marks are invisible, so only they differ from the SQL output.
       expect(maskFullName('John Smith'), '‎John S.‎');
       expect(maskFullName('John Michael Smith'), '‎John S.‎');
-      expect(maskFullName('Prince'), '‎Prince‎');
+      // A single word cannot produce "First L.": it is never shown bare.
+      expect(maskFullName('Prince'), 'Someone');
       expect(maskFullName(''), 'Someone');
+      // A repeated name is still masked, never returned bare.
+      expect(maskFullName('John John'), '‎John J.‎');
       // Idempotent: already-masked server/RPC titles pass through unchanged.
       expect(maskFullName('John S.'), '‎John S.‎');
       expect(maskFullName('‎John S.‎'), '‎John S.‎');

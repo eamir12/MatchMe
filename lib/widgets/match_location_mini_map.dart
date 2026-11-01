@@ -136,7 +136,7 @@ class MatchLocationMiniMap extends ConsumerWidget {
                     child: Text(
                       effectiveTitle,
                       style: TextStyle(
-                        fontSize: 11,
+                        fontSize: 12,
                         fontWeight: FontWeight.w600,
                         color: Theme.of(context).colorScheme.onSurface,
                       ),
@@ -149,7 +149,7 @@ class MatchLocationMiniMap extends ConsumerWidget {
                     Text(
                       '• ${_formatDateTime(context, ref, location.createdAt!, l10n)}',
                       style: TextStyle(
-                        fontSize: 10,
+                        fontSize: 12,
                         color: Theme.of(
                           context,
                         ).colorScheme.onSurfaceVariant,
@@ -361,7 +361,7 @@ class MatchLocationMiniMapList extends ConsumerWidget {
               const SizedBox(width: 6),
               Text(
                 l10n.getString('matchMiniMapDescProximity'),
-                style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+                style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
               ),
             ],
           ),
@@ -651,7 +651,7 @@ class _MatchLocationFullMapScreenState
                         return '$datePart, $at $timePart';
                       }(),
                       style: TextStyle(
-                        fontSize: 11,
+                        fontSize: 12,
                         color: Colors.grey.shade700,
                         fontWeight: FontWeight.w600,
                       ),
@@ -773,7 +773,7 @@ class _ScaleBarPainter extends CustomPainter {
       text: TextSpan(
         text: label,
         style: TextStyle(
-          fontSize: 10,
+          fontSize: 12,
           color: color,
           fontWeight: FontWeight.w500,
         ),

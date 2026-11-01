@@ -13,6 +13,7 @@ import 'package:matchme/providers/app_config_provider.dart';
 import 'package:matchme/providers/external_ad_provider.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/locale_provider.dart';
+import 'package:matchme/providers/meetup_alerts_provider.dart';
 import 'package:matchme/providers/new_options_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/typing_provider.dart';
@@ -25,6 +26,11 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 class _TestUserPreferencesNotifier extends UserPreferencesNotifier {
   @override
   UserPreferencesState build() => UserPreferencesState.defaults();
+}
+
+class _StubMeetupAlerts extends MeetupAlertsNotifier {
+  @override
+  MeetupAlertsState build() => MeetupAlertsState(now: DateTime.now());
 }
 
 class _StubAppConfigNotifier extends AppConfigNotifier {
@@ -98,6 +104,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
           localizationProvider.overrideWithValue(l10n),
           recentChatsProvider(
             userId,
@@ -173,6 +180,7 @@ void main() {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
+            meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
             localizationProvider.overrideWithValue(l10n),
             recentChatsProvider(
               userId,
@@ -205,7 +213,7 @@ void main() {
             externalAdsEnabledProvider.overrideWithValue(false),
             internalAdsEnabledProvider.overrideWithValue(false),
             adDisplayOrderProvider.overrideWithValue('external_first'),
-          appConfigProvider.overrideWith(_StubAppConfigNotifier.new),
+            appConfigProvider.overrideWith(_StubAppConfigNotifier.new),
             userPreferencesProvider.overrideWith(
               _TestUserPreferencesNotifier.new,
             ),
@@ -234,6 +242,11 @@ void main() {
       await tester.tap(find.byIcon(Icons.tune_rounded).first);
       await tester.pumpAndSettle();
       expect(find.text('HOW YOU MET'), findsOneWidget);
+
+      // Neither conversation has unread messages, so the unread switch would
+      // narrow nothing and must not be offered.
+      expect(find.text('Unread only'), findsNothing);
+      expect(find.text('OPTIONS'), findsNothing);
 
       // Selecting Event narrows the live count to the one event conversation.
       await tester.tap(find.text('Event').last);
@@ -272,6 +285,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
           localizationProvider.overrideWithValue(l10n),
           recentChatsProvider(
             userId,
@@ -317,6 +331,96 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('chats gender filter narrows to the chosen gender', (
+    tester,
+  ) async {
+    const userId = 'test-user';
+    final femaleChat = ChatModel(
+      matchId: 'match-f',
+      otherUserId: 'female-user',
+      otherUserName: 'Dana F.',
+      lastMessage: 'Hi',
+      lastMessageId: 'f1',
+      lastMessageAt: DateTime(2026, 1, 2),
+      unreadCount: 0,
+    );
+    final maleChat = ChatModel(
+      matchId: 'match-m',
+      otherUserId: 'male-user',
+      otherUserName: 'Mike R.',
+      lastMessage: 'Hello',
+      lastMessageId: 'm1',
+      lastMessageAt: DateTime(2026, 1, 1),
+      unreadCount: 0,
+    );
+
+    UserProfile profile(String id, String name, String gender) =>
+        UserProfile.fromMap({'id': id, 'name': name, 'gender': gender});
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
+          localizationProvider.overrideWithValue(LocalizationState.loading()),
+          recentChatsProvider(
+            userId,
+          ).overrideWith((ref) => Stream.value([femaleChat, maleChat])),
+          initialHomeSyncProvider(userId).overrideWith((ref) async {}),
+          recentMatchesProvider(
+            userId,
+          ).overrideWith((ref) => Stream.value(const <MatchModel>[])),
+          allIntentsProvider.overrideWith((ref) async => const []),
+          genderOptionsProvider.overrideWith(
+            (ref) async => const [
+              {'key': 'female', 'displayKey': 'gender_female'},
+              {'key': 'male', 'displayKey': 'gender_male'},
+            ],
+          ),
+          externalAdsRealtimeProvider.overrideWith((ref) {}),
+          externalAdsEnabledProvider.overrideWithValue(false),
+          internalAdsEnabledProvider.overrideWithValue(false),
+          adDisplayOrderProvider.overrideWithValue('external_first'),
+          appConfigProvider.overrideWith(_StubAppConfigNotifier.new),
+          userPreferencesProvider.overrideWith(
+            _TestUserPreferencesNotifier.new,
+          ),
+          userUnitSystemProvider.overrideWithValue(UnitSystemPreference.metric),
+          userProfileProvider('female-user').overrideWith(
+            (ref) => Stream.value(profile('female-user', 'Dana F.', 'female')),
+          ),
+          userProfileProvider('male-user').overrideWith(
+            (ref) => Stream.value(profile('male-user', 'Mike R.', 'male')),
+          ),
+        ],
+        child: MaterialApp(home: Scaffold(body: ChatsScreen())),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Dana F.'), findsOneWidget);
+    expect(find.text('Mike R.'), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.tune_rounded).first);
+    await tester.pumpAndSettle();
+    expect(find.text('GENDER'), findsOneWidget);
+
+    // The live count follows the draft before anything is applied.
+    await tester.tap(find.text('Female'));
+    await tester.pumpAndSettle();
+    expect(find.text('Show 1 result'), findsOneWidget);
+
+    await tester.tap(find.text('Show 1 result'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Dana F.'), findsOneWidget);
+    expect(find.text('Mike R.'), findsNothing);
+
+    // Unmount so provider-owned periodic timers are cancelled, then let the
+    // clock run past the screen's 50 s revalidation timer.
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 60));
+  });
+
   testWidgets('empty chats remain announced while initial sync is pending', (
     tester,
   ) async {
@@ -326,6 +430,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
+          meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
           localizationProvider.overrideWithValue(LocalizationState.loading()),
           recentChatsProvider(
             userId,

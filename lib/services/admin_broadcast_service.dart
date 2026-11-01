@@ -413,7 +413,9 @@ class AdminBroadcastService {
           .from('admin_broadcast_deliveries')
           .update({
             'delivery_status': 'delivered',
-            'delivered_at': DateTime.now().toIso8601String(),
+            // toUtc keeps the trailing Z; a local-time string is parsed as UTC
+            // by PostgREST and shifts delivered_at by the device offset.
+            'delivered_at': DateTime.now().toUtc().toIso8601String(),
           })
           .eq('broadcast_id', broadcastId)
           .eq('user_id', userId);

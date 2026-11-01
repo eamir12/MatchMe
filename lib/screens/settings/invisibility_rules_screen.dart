@@ -282,7 +282,7 @@ class _InvisibilityRulesScreenState
               Text(
                 l10n.getString('settingsRuleExpired'),
                 style: TextStyle(
-                  fontSize: 11,
+                  fontSize: 12,
                   color: Theme.of(context).disabledColor,
                 ),
               ),
@@ -1175,7 +1175,7 @@ class _InvisibilityRulesScreenState
                         child: Text(
                           l10n.getString('settingsTimesDefaultAllDay'),
                           style: TextStyle(
-                            fontSize: 11,
+                            fontSize: 12,
                             color: Theme.of(
                               context,
                             ).colorScheme.onSurface.withValues(alpha: 0.9),
@@ -1480,7 +1480,7 @@ class _InvisibilityRulesScreenState
                         child: Text(
                           l10n.getString('settingsTimesDefaultAllDay'),
                           style: TextStyle(
-                            fontSize: 11,
+                            fontSize: 12,
                             color: Theme.of(
                               context,
                             ).colorScheme.onSurface.withValues(alpha: 0.9),

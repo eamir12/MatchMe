@@ -22,6 +22,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.example.matchme.MatchMeBadgeController
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import kotlinx.coroutines.tasks.await
@@ -45,6 +46,12 @@ class LocationWorker(
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
+        // Attribute native traffic in Supabase edge logs.
+        .addInterceptor(
+            SupabaseIdentity.interceptor(applicationContext) {
+                SecurePrefsHelper.getString(applicationContext, "flutter.user_id", null)
+            }
+        )
         .build()
 
     private fun getPrefs(): SharedPreferences {
@@ -424,7 +431,7 @@ class LocationWorker(
         try {
             val fusedLocationClient = LocationServices.getFusedLocationProviderClient(applicationContext)
             val location = fusedLocationClient.getCurrentLocation(
-                Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+                Priority.PRIORITY_HIGH_ACCURACY,
                 null
             ).await()
             if (location != null) {
@@ -440,9 +447,8 @@ class LocationWorker(
         try {
             val fusedLocationClient = LocationServices.getFusedLocationProviderClient(applicationContext)
             
-            // Use PRIORITY_BALANCED_POWER_ACCURACY for periodic updates to save battery
             val location = fusedLocationClient.getCurrentLocation(
-                Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+                Priority.PRIORITY_HIGH_ACCURACY,
                 null
             ).await()
 
@@ -601,14 +607,12 @@ class LocationWorker(
             }
 
             // unreadMessages > 0
-            // The RPC returns no message bodies anymore (E2E encryption; the
-            // server sends a generic placeholder). org.json's optString
-            // fallback only applies when the key is MISSING, so a JSON null
-            // would render as the literal text "null" - sanitize defensively.
+            // org.json's optString fallback only applies when the key is
+            // MISSING, so a JSON null would render as the literal text "null" -
+            // sanitize defensively. The RPC masks the name itself
+            // (public.mask_full_name); re-masking passes it through.
             val rawSender = data.optString("latest_message_sender", "Someone")
             val sender = if (rawSender.isBlank() || rawSender == "null") "Someone" else rawSender
-            val rawContent = data.optString("latest_message_content", "Sent a message")
-            val content = if (rawContent.isBlank() || rawContent == "null") "Sent a message" else rawContent
             val messageId = data.optString("latest_message_id", "")
             val matchId = data.optString("latest_match_id", "")
             // This polling path only has the encrypted-message placeholder.
@@ -650,11 +654,24 @@ class LocationWorker(
                     .putString("flutter.last_notified_message_id", messageId)
                     .apply()
             } catch (_: Exception) {}
+            // This branch runs only when previews are off, and the RPC has sent
+            // this path no message body to begin with - so there is no text
+            // here that the rule would allow on any setting. What it does have
+            // is the real backlog for this conversation, which is exactly what
+            // a collapsed card is meant to say: "<N> message(s) from <masked
+            // name>" over "<N> unread - open to read". Same copy, same
+            // language and same numbers the foreground service builds from the
+            // payload, so a member cannot tell which path woke up.
+            val chatUnread = ChatNotificationCopy.unreadCount(
+                data.optInt("latest_chat_unread_count", 0)
+            )
+            val maskedSender = ChatNotificationCopy.maskFullName(sender)
             showFallbackNotification(
-                title = sender.ifBlank { "New message" },
-                content = content.ifBlank { "Sent a message" },
-                notifyId = (if (matchId.isNotBlank()) matchId else sender).hashCode(),
+                title = ChatNotificationCopy.messagesTitle(prefs, chatUnread, maskedSender),
+                content = ChatNotificationCopy.openToReadBody(prefs, chatUnread),
+                notifyId = (if (matchId.isNotBlank()) matchId else maskedSender).hashCode(),
                 matchId = matchId.ifBlank { null },
+                groupId = MatchMeBadgeController.GROUP_KEY_CHATS,
             )
             // Fall through to admin check (a device can have both).
             try {
@@ -735,6 +752,7 @@ class LocationWorker(
         matchId: String?,
         channelId: String = "chat_messages",
         channelName: String = "Chat Messages",
+        groupId: String? = null,
     ) {
         try {
             val nm = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -771,7 +789,7 @@ class LocationWorker(
             val builder = NotificationCompat.Builder(applicationContext, channelId)
                 .setSmallIcon(validIcon)
                 .setContentTitle(title.ifBlank { "MatchMe" })
-                .setContentText(content.ifBlank { "New message" })
+                .setContentText(content)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setCategory(NotificationCompat.CATEGORY_MESSAGE)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -779,6 +797,32 @@ class LocationWorker(
                 .setDefaults(NotificationCompat.DEFAULT_ALL)
                 .setContentIntent(pi)
             try { if (color != 0) builder.setColor(color) } catch (_: Exception) {}
+            // Bundle with the other conversation cards under the unread-badge
+            // carrier, which MatchMeBadgeController posts as this group's
+            // summary - the same grouping the foreground service applies, so a
+            // card from either path joins the same bundle instead of floating
+            // alone next to a standalone "N unread" card.
+            if (groupId != null) {
+                builder.setGroup(groupId)
+                builder.setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
+                // Same cleanup contract as the foreground service's cards: the
+                // group summary must not outlive the last conversation card.
+                builder.setDeleteIntent(
+                    MatchMeBadgeController.deleteIntent(applicationContext)
+                )
+            }
+            // The sender's face in the largeIcon slot, which is the one place a
+            // tray card shows a picture beside the name rather than per row.
+            // Read from the same mirror the foreground service uses, so the two
+            // Android cards can never show different pictures. A conversation
+            // whose avatar was never mirrored posts the same card without one.
+            if (safeMatchId.isNotEmpty()) {
+                try {
+                    NotificationAvatarStore.bitmapFor(applicationContext, safeMatchId)
+                        ?.let { builder.setLargeIcon(it) }
+                } catch (_: Exception) {
+                }
+            }
             nm.notify(notifyId, builder.build())
         } catch (_: Exception) {}
     }

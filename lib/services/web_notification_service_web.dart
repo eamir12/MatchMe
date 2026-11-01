@@ -6,8 +6,12 @@ import 'package:web/web.dart' as web;
 import 'dart:js_interop';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:matchme/providers/meetup_alerts_provider.dart';
 import 'package:matchme/providers/user_preferences_provider.dart';
 import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/services/storage_helper.dart';
+import 'package:matchme/utils/chat_notification_copy.dart';
+import 'package:matchme/utils/notification_copy_source.dart';
 import 'package:matchme/utils/notification_limits.dart';
 
 /// Web notification service that provides similar functionality to mobile notifications
@@ -15,9 +19,16 @@ import 'package:matchme/utils/notification_limits.dart';
 class WebNotificationService {
   static bool _isSupported = false;
   static ProviderContainer? _container;
+  /// Handler for route payloads from clicked cards ('/meetup/<id>' and
+  /// '/meetup/<id>/plan'). Installed by main.dart, which owns the navigator.
+  static void Function(String route)? onOpenRoute;
   static String? _currentViewingChatId;
   static final Map<String, List<String>> _messageHistory = {};
   static final Map<String, int> _lastNotifiedChatIds = {};
+  // The conversation's picture, once a caller has named it. Kept so a card that
+  // arrives from a push - which knows the chat, not the photo - still shows the
+  // face the member has already seen.
+  static final Map<String, String> _avatarSources = {};
   static final Map<String, web.Notification> _activeChatNotifications = {};
   // Live-countdown location share notification state. Tracks the most recent
   // notification so per-second silent updates can replace it via the same
@@ -87,6 +98,12 @@ class WebNotificationService {
   /// Every message updates the tray (history-merged) instead of dropping
   /// 2nd+ messages per chat — the old once-per-chat `return` made
   /// foreground web miss all follow-ups until the chat was re-entered.
+  ///
+  /// [card] is the copy the server computed for this recipient; when a push
+  /// carried it, the card repeats the server. Otherwise the card is built from
+  /// the lines this tab has collected, with the same two rules the server
+  /// applies (count in the title, no quoted text once the backlog is more than
+  /// one message).
   static Future<void> showMessageNotification({
     required String chatId,
     required String senderName,
@@ -94,6 +111,9 @@ class WebNotificationService {
     required String matchId,
     bool alreadyAggregated = false,
     bool? shouldAlertOverride,
+    ChatPushCardModel? card,
+    int? unreadCount,
+    String? photoSource,
   }) async {
     if (!isSupported) {
       return;
@@ -120,22 +140,44 @@ class WebNotificationService {
       final last = history.isNotEmpty ? history.last : null;
       if (last != messageContent) {
         history.add(messageContent);
-        while (history.length > 5) {
+        while (history.length > NotifLimits.chatHistoryMaxItems) {
           history.removeAt(0);
         }
       }
     }
-    final mergedBody = alreadyAggregated
-        ? messageContent
-        : (history.isNotEmpty ? history.join('\n') : messageContent);
     // Updates replace silently via the same tag so follow-ups never go
     // missing. Record first post per chat for badge/count parity with mobile.
     _lastNotifiedChatIds.putIfAbsent(chatId, () => chatId.hashCode);
 
     try {
-      final enforced = enforceTitleBody(
-        '💬 New message from ${maskFullName(senderName)}',
-        mergedBody,
+      final previewsEnabled = card?.previewsEnabled ??
+          messagePreviewsEnabled(_container);
+      // Remember which picture belongs to which conversation: a card signalled
+      // by a push knows the chat but not the photo, and the face belongs to the
+      // conversation, not to the message that happened to arrive.
+      final rememberedAvatar = _avatarSources[chatId];
+      if (photoSource != null && photoSource.trim().isNotEmpty) {
+        _avatarSources[chatId] = photoSource.trim();
+      }
+      // The server's total wins: it counts messages this tab never saw. A
+      // locally-signalled message falls back to the lines this tab holds,
+      // which is the same window the member can read in the chat list.
+      final count = card?.unreadCount ??
+          unreadCount ??
+          (history.isEmpty ? 1 : history.length);
+      final maskedName = maskFullName(senderName);
+      // An aggregated push without a card of its own carries only its body —
+      // that body already stands for the whole batch, so nothing is re-merged.
+      final served = card ??
+          (alreadyAggregated && messageContent.trim().isNotEmpty
+              ? ChatPushCardModel(body: messageContent.trim())
+              : null);
+      final model = buildChatNotificationCard(
+        unreadCount: count,
+        previewsEnabled: previewsEnabled,
+        candidateLines: history,
+        forms: chatCardForms(_container, maskedName),
+        payload: served,
       );
       // Close the previous notification with the same tag before posting the
       // merged update (some browsers stack instead of replacing).
@@ -143,13 +185,17 @@ class WebNotificationService {
         _activeChatNotifications[chatId]?.close();
       } catch (_) {}
       final options = web.NotificationOptions(
-        body: enforced.body,
-        icon: '/icons/Icon-192.png',
+        body: model.body,
+        icon: await _avatarIcon(
+          (photoSource?.trim().isNotEmpty ?? false)
+              ? photoSource
+              : rememberedAvatar,
+        ),
         tag: 'match_$chatId',
         renotify: shouldAlertOverride ?? false,
       );
 
-      final notification = web.Notification(enforced.title, options);
+      final notification = web.Notification(model.title, options);
       _activeChatNotifications[chatId] = notification;
 
       // Keep notification visible for 15 seconds to ensure user sees it
@@ -234,6 +280,29 @@ class WebNotificationService {
       NotificationType.chatMessages,
       NotificationMethod.push,
     );
+  }
+
+  /// The picture every card falls back to when this conversation has no avatar
+  /// this session can show.
+  static const String _appIcon = '/icons/Icon-192.png';
+
+  /// The sender's face in the slot a browser puts beside the title.
+  ///
+  /// `profile-photos` is private, so an object path means nothing to the
+  /// notification API — it needs a signed URL, and the only one worth using is
+  /// one this session already holds from painting the photo. A conversation
+  /// whose picture was never opened posts the app icon instead: turning a tray
+  /// card into a photo fetch would delay it and spend a request on a face the
+  /// member has not looked at.
+  static Future<String> _avatarIcon(String? photoSource) async {
+    final source = (photoSource ?? '').trim();
+    if (source.isEmpty) return _appIcon;
+    final cached = StorageHelper.getCachedUrl(source);
+    if (cached != null && cached.isNotEmpty) return cached;
+    if (source.startsWith('http://') || source.startsWith('https://')) {
+      return source;
+    }
+    return _appIcon;
   }
 
   /// Check if match expiry notifications should be shown
@@ -357,7 +426,7 @@ class WebNotificationService {
       );
       final options = web.NotificationOptions(
         body: enforced.body,
-        icon: matchPhotoUrl.isNotEmpty ? matchPhotoUrl : '/icons/Icon-192.png',
+        icon: await _avatarIcon(matchPhotoUrl),
         // Default matches the legacy local identity; callers pass the
         // server push tag (e.g. the expiry collapse tag) so an already
         // delivered server card is replaced instead of doubled.
@@ -414,7 +483,7 @@ class WebNotificationService {
       final enforced = enforceTitleBody('📢 $title', message);
       final options = web.NotificationOptions(
         body: enforced.body,
-        icon: '/icons/Icon-192.png',
+        icon: _appIcon,
         tag: 'admin_$notificationId',
       );
 
@@ -488,7 +557,7 @@ class WebNotificationService {
 
       final options = web.NotificationOptions(
         body: body,
-        icon: '/icons/Icon-192.png',
+        icon: _appIcon,
         tag: 'location_share',
       );
 
@@ -534,6 +603,77 @@ class WebNotificationService {
       notification.onclick = ((web.Event e) {
         web.window.focus();
         notification.close();
+      }).toJS;
+    } catch (e) {
+      // Ignore notification errors
+    }
+  }
+
+  static bool _shouldShowMeetupNotification() {
+    final notifs = _getNotifs();
+    if (notifs == null) return true;
+    if (notifs.isPausedNow) return false;
+    return notifs.isMethodEnabled(
+      NotificationType.meetupTools,
+      NotificationMethod.push,
+    );
+  }
+
+  static Future<void> showMeetupNotification({
+    required String notificationId,
+    required String title,
+    required String body,
+    String? matchId,
+    String? kind,
+  }) async {
+    if (!isSupported) return;
+    if (!_shouldShowMeetupNotification()) return;
+
+    try {
+      final enforced = enforceTitleBody(title, body);
+      final options = web.NotificationOptions(
+        body: enforced.body,
+        icon: _appIcon,
+        tag: 'meetup_$notificationId',
+      );
+      final notification = web.Notification(enforced.title, options);
+
+      final route = (matchId ?? '').trim();
+      // Proposal and place-change cards open the planning screen, where the
+      // accept/counter decision lives; every other kind opens the hub.
+      final isDecision =
+          kind == kMeetupAlertProposal || kind == kMeetupAlertPlaceChange;
+      final openRoute = route.isEmpty
+          ? null
+          : (isDecision ? '/meetup/$route/plan' : '/meetup/$route');
+
+      final delay = await (() async {
+        try {
+          final seconds = await appConfigService.getInt(
+            'notification.web_delay_seconds',
+            defaultValue: 15,
+          );
+          return Duration(seconds: seconds);
+        } catch (e) {
+          return const Duration(seconds: 15);
+        }
+      })();
+      Future.delayed(delay, () {
+        try {
+          notification.close();
+        } catch (e) {
+          // Ignore
+        }
+      });
+
+      notification.onclick = ((web.Event e) {
+        web.window.focus();
+        notification.close();
+        if (openRoute != null) {
+          try {
+            onOpenRoute?.call(openRoute);
+          } catch (_) {}
+        }
       }).toJS;
     } catch (e) {
       // Ignore notification errors

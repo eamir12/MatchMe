@@ -120,7 +120,7 @@ class _WebInFeedAdWidgetState extends ConsumerState<WebInFeedAdWidget> {
                           l10n.getString('webAdSponsored'),
                           style: TextStyle(
                             color: sponsoredForeground,
-                            fontSize: 9,
+                            fontSize: 12,
                             fontWeight: FontWeight.w500,
                           ),
                         ),
@@ -143,7 +143,7 @@ class _WebInFeedAdWidgetState extends ConsumerState<WebInFeedAdWidget> {
                           color: Theme.of(context)
                               .colorScheme
                               .onSurfaceVariant,
-                          fontSize: 11,
+                          fontSize: 12,
                         ),
                         maxLines: 2,
                         overflow: TextOverflow.visible,

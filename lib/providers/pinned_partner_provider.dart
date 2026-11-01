@@ -213,10 +213,12 @@ class PinnedPartnerRealtimeNotifier extends Notifier<int> {
     final userId = _channelUserId;
     if (userId == null || userId.isEmpty) return;
 
-    // 1) Public broadcast — primary path for pin/unpin/extend.
-    SupabaseRealtimeManager.instance.register(
-      '${kPinnedUpdatesChannel}_$userId',
-      () {
+    // 1) Public broadcast — primary path for pin/unpin/extend. Registered
+    // under the channel's real topic (the bare name the server broadcasts
+    // on): the manager's health check verifies channels by registered name,
+    // so a suffixed registration here would never match the live topic and
+    // the channel would be torn down and re-created forever.
+    SupabaseRealtimeManager.instance.register(kPinnedUpdatesChannel, () {
         if (Supabase.instance.client.auth.currentSession == null) {
           throw Exception(
             'No active session — skipping pinned broadcast subscription',
@@ -424,13 +426,9 @@ class PinnedPartnerRealtimeNotifier extends Notifier<int> {
     // verdicts fetched for the previous one.
     _pinnedCache.clear();
     final userId = _channelUserId;
+    SupabaseRealtimeManager.instance.unregister(kPinnedUpdatesChannel);
     if (userId != null && userId.isNotEmpty) {
-      SupabaseRealtimeManager.instance.unregister(
-        '${kPinnedUpdatesChannel}_$userId',
-      );
       SupabaseRealtimeManager.instance.unregister('pinned_users_for_$userId');
-    } else {
-      SupabaseRealtimeManager.instance.unregister(kPinnedUpdatesChannel);
     }
   }
 }

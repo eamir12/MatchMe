@@ -106,6 +106,14 @@
             </intent-filter>
         </receiver>
 
+        <!-- Delete intent of the conversation cards: clears the badge carrier
+             once the last card is dismissed. Not exported: only the app's own
+             PendingIntent broadcasts to it. -->
+        <receiver
+            android:name=".MatchMeBadgeCleanupReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -121,6 +129,15 @@
             <meta-data
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
+            <!-- Deep links are delivered by app_links (and exchanged by
+                 supabase_flutter's own URI detector). Flutter's route-based
+                 deep linking is OFF on purpose: with it on, every
+                 com.example.matchme:// intent is pushed as a named route,
+                 appOnGenerateRoute returns null for it, and _onUnknownRoute
+                 throws "Null check operator used on a null value". -->
+            <meta-data
+                android:name="flutter_deeplinking_enabled"
+                android:value="false" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>

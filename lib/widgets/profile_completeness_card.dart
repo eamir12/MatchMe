@@ -210,7 +210,7 @@ class _ProfileCompletenessBannerState
                     Text(
                       '$score%',
                       style: TextStyle(
-                        fontSize: 11,
+                        fontSize: 12,
                         fontWeight: FontWeight.w700,
                         color: colorScheme.primary,
                       ),

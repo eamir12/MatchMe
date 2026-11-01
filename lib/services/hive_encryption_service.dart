@@ -21,6 +21,9 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:matchme/services/crypto_service.dart';
+// TEMP-FORENSICS: remove together with hive_forensic_dump*.dart.
+import 'package:matchme/services/hive_forensic_dump.dart'
+    if (dart.library.io) 'package:matchme/services/hive_forensic_dump_io.dart';
 import 'package:matchme/services/native_secure_store.dart';
 import 'package:matchme/services/secure_storage_service.dart';
 
@@ -100,6 +103,67 @@ class HiveEncryptionService {
     return null;
   }
 
+  /// True when the box cannot be salvaged by the plaintext migration path:
+  /// it was written with a Hive adapter that is no longer registered (e.g. a
+  /// removed @HiveType), or it is too large to read into memory. Probing it
+  /// in plaintext is pointless — worse, Hive's own corruption recovery can
+  /// wipe the box while we probe it. It is cache data, so discard it.
+  static bool _isUnrecoverableBoxError(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('unknown typeid') ||
+        text.contains('cannot read, unknown type') ||
+        text.contains('out of memory') ||
+        text.contains('cannot allocate memory');
+  }
+
+  Future<Box<T>> _discardAndReopen<T>(String name, HiveAesCipher cipher) async {
+    debugPrint(
+      '[HiveCrypto] Discarding $name (unrecoverable cache state); '
+      'cached data will be rebuilt',
+    );
+    try {
+      if (Hive.isBoxOpen(name)) await Hive.box(name).close();
+    } catch (_) {}
+    try {
+      await Hive.deleteBoxFromDisk(name);
+    } catch (_) {}
+    return Hive.openBox<T>(name, encryptionCipher: cipher);
+  }
+
+  Future<Box> _discardAndReopenDynamic(
+    String name,
+    HiveAesCipher cipher,
+  ) async {
+    debugPrint(
+      '[HiveCrypto] Discarding $name (unrecoverable cache state); '
+      'cached data will be rebuilt',
+    );
+    try {
+      if (Hive.isBoxOpen(name)) await Hive.box(name).close();
+    } catch (_) {}
+    try {
+      await Hive.deleteBoxFromDisk(name);
+    } catch (_) {}
+    return Hive.openBox(name, encryptionCipher: cipher);
+  }
+
+  // TEMP-FORENSICS: frame-walk the corrupt file; the caller appends the
+  // result to the proven-surviving '[HiveCrypto] Encrypted open failed' line.
+  Future<String> _collectForensics(String name, HiveCipher cipher) async {
+    try {
+      final basePath = (Hive as dynamic).homePath;
+      final lines = await hiveForensicDump(
+        name,
+        '$basePath/$name.hive',
+        cipher,
+        (_) {},
+      );
+      return lines.isEmpty ? '' : lines.join(' ');
+    } catch (e) {
+      return 'fxerr=$e';
+    }
+  }
+
   /// Open a Hive box with encryption, migrating legacy unencrypted data.
   ///
   /// - Tries encrypted open first.
@@ -118,10 +182,14 @@ class HiveEncryptionService {
       }
       return await Hive.openBox<T>(name, encryptionCipher: cipher);
     } catch (e) {
+      final fx = await _collectForensics(name, cipher);
       debugPrint(
         '[HiveCrypto] Encrypted open failed for $name, '
-        'attempting migration: $e',
+        'attempting migration: $e${fx.isEmpty ? '' : ' || FX: $fx'}',
       );
+      if (_isUnrecoverableBoxError(e)) {
+        return _discardAndReopen<T>(name, cipher);
+      }
     }
 
     // Salvage path: try plaintext open.
@@ -171,10 +239,14 @@ class HiveEncryptionService {
       }
       return await Hive.openBox(name, encryptionCipher: cipher);
     } catch (e) {
+      final fx = await _collectForensics(name, cipher);
       debugPrint(
         '[HiveCrypto] Encrypted open failed for $name, '
-        'attempting migration: $e',
+        'attempting migration: $e${fx.isEmpty ? '' : ' || FX: $fx'}',
       );
+      if (_isUnrecoverableBoxError(e)) {
+        return _discardAndReopenDynamic(name, cipher);
+      }
     }
     Map<dynamic, dynamic> salvaged = {};
     try {

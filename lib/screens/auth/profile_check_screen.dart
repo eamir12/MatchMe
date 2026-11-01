@@ -19,6 +19,7 @@ import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/offline_cache_manager.dart';
 import 'package:matchme/utils/profile_sync_result.dart';
+import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/widgets/startup_loader.dart';
 import 'package:matchme/widgets/please_wait_dialog.dart';
 
@@ -166,6 +167,13 @@ class _ProfileCheckScreenState extends ConsumerState<ProfileCheckScreen> {
         if (profile != null) {
           _gapSection = null;
           if (!profile.isProfileComplete) {
+            // A legacy one-word name must be fixed before anything else:
+            // open the wizard directly on Basics instead of resuming the
+            // last draft page.
+            if (profile.name.trim().isNotEmpty &&
+                !profile.name.hasFirstAndLastName) {
+              _gapSection = ProfileWizardSection.basics;
+            }
             _screen = _PcsScreen.wizard;
           } else {
             final gap = profileCriticalGapSection(profile);
@@ -196,10 +204,11 @@ class _ProfileCheckScreenState extends ConsumerState<ProfileCheckScreen> {
         // (complete local snapshot) passes within a frame or two.
         // The no-cached-profile escape hatch bypasses this hold.
         if (!_enteredViaNoProfileEscape && !_hasEnteredAppShell) {
-          final hasCompleteCache = ref
-              .watch(homeHasCompleteCacheProvider(widget.user.id))
-              .asData
-              ?.value ??
+          final hasCompleteCache =
+              ref
+                  .watch(homeHasCompleteCacheProvider(widget.user.id))
+                  .asData
+                  ?.value ??
               false;
           if (!hasCompleteCache &&
               ref.watch(initialHomeSyncProvider(widget.user.id)).isLoading) {
@@ -280,12 +289,14 @@ class _ProfileCheckScreenState extends ConsumerState<ProfileCheckScreen> {
         return;
       }
       final newScreen = _evaluateScreen(profile);
-      if (newScreen == _PcsScreen.wizard && _screen == _PcsScreen.mainNavigation) {
+      if (newScreen == _PcsScreen.wizard &&
+          _screen == _PcsScreen.mainNavigation) {
         _incompleteEmitsSinceComplete += 1;
         if (_incompleteEmitsSinceComplete < 2) {
           debugPrint(
             '👤 ProfileCheckScreen: ignoring transient isProfileComplete=false emit '
-            '($_incompleteEmitsSinceComplete/2) while on main navigation',          );
+            '($_incompleteEmitsSinceComplete/2) while on main navigation',
+          );
           return;
         }
       } else {
@@ -302,10 +313,15 @@ class _ProfileCheckScreenState extends ConsumerState<ProfileCheckScreen> {
           // Record which gap sent a *completed* profile back to the wizard
           // so it opens on the offending page; an ordinary incomplete
           // profile keeps the draft-restore behavior (no gap override).
-          _gapSection = (newScreen == _PcsScreen.wizard &&
-                  profile.isProfileComplete)
+          // A non-empty one-word name is always a Basics gap.
+          _gapSection =
+              (newScreen == _PcsScreen.wizard && profile.isProfileComplete)
               ? profileCriticalGapSection(profile)
-              : null;
+              : (newScreen == _PcsScreen.wizard &&
+                        profile.name.trim().isNotEmpty &&
+                        !profile.name.hasFirstAndLastName
+                    ? ProfileWizardSection.basics
+                    : null);
           _screen = newScreen;
         });
         if (completingWizard) {
@@ -372,7 +388,11 @@ class _ProfileCheckScreenState extends ConsumerState<ProfileCheckScreen> {
           return ProfileWizardScreen(
             user: widget.user,
             isEditing: false,
-            initialSection: _gapSection,
+            initialSection:
+                (cachedProfile.name.trim().isNotEmpty &&
+                    !cachedProfile.name.hasFirstAndLastName)
+                ? ProfileWizardSection.basics
+                : _gapSection,
           );
         }
 
@@ -432,11 +452,11 @@ class _ProfileCheckScreenState extends ConsumerState<ProfileCheckScreen> {
     final initialRoute = await BackgroundService.getInitialRoute();
     if (initialRoute != null && initialRoute['route'] != null) {
       final route = initialRoute['route'] as String;
-      if (route.startsWith('/chat/')) {
+      if (route.startsWith('/chat/') || route.startsWith('/meetup/')) {
         final matchId = (initialRoute['matchId'] as String?)?.trim();
         if (matchId != null && matchId.isNotEmpty && mounted) {
-          // Use deep-link route so we don't depend on argument maps.
-          Navigator.of(context).pushNamed('/chat/$matchId');
+          // Use the deep-link route so we don't depend on argument maps.
+          Navigator.of(context).pushNamed(route);
         }
       }
     }

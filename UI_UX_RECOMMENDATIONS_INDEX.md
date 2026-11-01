@@ -1,7 +1,11 @@
 # MatchMe — UI/UX & Product Recommendations: Index and Current State
 
-**Last updated:** 28 September 2026
+**Last updated:** 27 October 2026
 **Purpose:** one page that says which document is current, what has been decided, what is built, and what is still only a recommendation. Read this first.
+
+**Current UI/UX deliverable: `UI_UX_AUDIT_2026-10-27.md`** — independent re-measurement of the tree, combined with the September findings, with 22 already-addressed concerns explicitly struck (§10) and 4 root causes named for the first time. §11 indexes nine before/after mockups (`mm-01` … `mm-09`) rendered at 302 × 620 using the *measured* before values.
+
+The framing changed: in September the diagnosis was "the app has no design system." **It now has one and ~80% of the UI doesn't import it** — 601 lines of component/card styles have zero importers, and 17 `ThemeData` sub-themes are unconfigured. The plan is therefore "wire it up and delete the parallel unused system," not "invent one."
 
 ---
 
@@ -9,9 +13,10 @@
 
 | Document | Status | Read it for |
 |---|---|---|
-| **`UI_UX_TEMPORAL_MODEL_AND_GREENFIELD_PLAN.md`** | **Authoritative** | The two-lane match model, the pre-launch rebuild plan, the priority list, build status |
-| `UI_UX_DEEP_DIVE_AND_REDESIGN.md` | Partly superseded | The 324-file code audit, design-debt measurements, the bulk of the visual recommendations |
-| `PRIVACY_PRESERVING_DESIGN_CONSTRAINTS.md` | Current | The verified privacy architecture, the one open storage issue, the three-language enforcement |
+| **`UI_UX_TEMPORAL_MODEL_AND_GREENFIELD_PLAN.md`** | **Authoritative on product constraints** | The two-lane match model, the 24h commitment filter, the pre-launch rebuild rule, the withdrawn recommendations |
+| **`UI_UX_AUDIT_2026-10-27.md`** | **Current on UI state** | Screen-by-screen findings, the verified closed/open ledger, mockups, batch plan |
+| `UI_UX_DEEP_DIVE_AND_REDESIGN.md` | Partly superseded (28 Sep) | The bulk of the visual recommendations; its measurements and its "no design system" framing are both obsolete |
+| `PRIVACY_PRESERVING_DESIGN_CONSTRAINTS.md` | Current | The verified privacy architecture — **wins over any benchmark pattern** |
 | `UI_UX_REDESIGN_PROPOSAL.md` (25 Sep) | **Archived** | Superseded — now at `docs/archive/superseded-uiux/UI_UX_REDESIGN_PROPOSAL.md` |
 
 **165 older point-in-time documents** (fix summaries, test guides, setup notes from Dec 2025 – Sep 2026) were moved to `docs/archive/` on 28 September 2026. See `docs/archive/README.md` — they are historical, not current, and should be verified against source before use.

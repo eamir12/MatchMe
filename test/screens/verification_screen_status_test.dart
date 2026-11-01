@@ -53,6 +53,12 @@ const _rejectedPayload = <String, dynamic>{
   },
 };
 
+/// The same rejection after the 7-day retention sweep has purged the selfie.
+final _purgedRejectedPayload = <String, dynamic>{
+  ..._rejectedPayload,
+  'verification_photo_path': null,
+};
+
 String _fakeAccessToken() {
   final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
   String encode(Map<String, dynamic> value) =>
@@ -152,6 +158,8 @@ void main() {
   /// and prove the screen renders from the on-device copy alone.
   Completer<void>? gate;
 
+  Map<String, dynamic> serverPayload = _rejectedPayload;
+
   setUpAll(() async {
     SharedPreferences.setMockInitialValues({
       // The screen must find the rejection on disk, exactly as it was left
@@ -181,7 +189,7 @@ void main() {
           // The server copy of the status: held back on purpose.
           await gate?.future;
           return http.Response(
-            jsonEncode(_rejectedPayload),
+            jsonEncode(serverPayload),
             200,
             headers: {'content-type': 'application/json'},
           );
@@ -339,5 +347,36 @@ void main() {
     expect(tester.takeException(), isNull);
 
     await releaseServer(tester);
+  });
+
+  testWidgets('a purged selfie is explained instead of shown as an empty slot', (
+    tester,
+  ) async {
+    serverPayload = _purgedRejectedPayload;
+    // Both the on-device copy and the server agree: the retention sweep has
+    // already nulled the selfie path.
+    SharedPreferences.setMockInitialValues({
+      'verification_status_cache_$_userId': jsonEncode(_purgedRejectedPayload),
+    });
+
+    await tester.pumpWidget(buildApp());
+    await releaseServer(tester);
+    await tester.pump();
+
+    // The comparison drops the missing selfie slot and says why, while the
+    // profile photo and the mismatch explanation stay visible.
+    expect(find.text('Verification photo'), findsNothing);
+    expect(find.text('Profile photo'), findsOneWidget);
+    expect(
+      find.text(
+        'For privacy, verification photos are deleted 7 days after review. '
+        'Your verification photo is no longer available.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text("What didn't match"), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    serverPayload = _rejectedPayload;
   });
 }

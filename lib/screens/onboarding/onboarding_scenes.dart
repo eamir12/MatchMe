@@ -2928,7 +2928,7 @@ class EventsReplica extends StatelessWidget {
         children: [
           // Date chip.
           Container(
-            width: 30,
+            width: 40,
             padding: const EdgeInsets.symmetric(vertical: 4),
             decoration: BoxDecoration(
               color: (alt ? colors.secondary : colors.primary).withValues(
@@ -2942,6 +2942,9 @@ class EventsReplica extends StatelessWidget {
                   data.text(
                     alt ? 'onboardingDemoDaySun' : 'onboardingDemoDaySat',
                   ),
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.visible,
                   style: TextStyle(
                     fontSize: 6.5,
                     fontWeight: FontWeight.bold,

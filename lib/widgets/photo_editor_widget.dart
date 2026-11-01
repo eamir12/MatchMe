@@ -465,7 +465,7 @@ class _ImageEditorDialogState extends ConsumerState<ImageEditorDialog> {
   }
 }
 
-enum PrescreenFailureAction { adjust, chooseAnother }
+enum PrescreenFailureAction { adjust, chooseAnother, retake }
 
 /// Visual failure dialog: shows the rejected photo large, with the problem
 /// regions (face + offending text/object boxes) highlighted when the native
@@ -473,11 +473,16 @@ enum PrescreenFailureAction { adjust, chooseAnother }
 /// once, so a single retake can fix everything), and actions to fix the
 /// current photo or pick a different one. Returns what the user chose (null
 /// when dismissed).
+///
+/// [retakeMode] replaces the profile-photo actions with "Cancel" and "Retake
+/// selfie" — the Spot me composer reopens its camera for the latter. There is
+/// no editor in that flow.
 Future<PrescreenFailureAction?> showPrescreenFailureDialog(
   BuildContext context,
   PhotoPrescreenResult result,
   WidgetRef ref, {
   Uint8List? photoBytes,
+  bool retakeMode = false,
 }) async {
   final l10n = ref.read(localizationProvider);
 
@@ -525,6 +530,7 @@ Future<PrescreenFailureAction?> showPrescreenFailureDialog(
         reason == PrescreenFailureReason.textOverFace ||
         reason == PrescreenFailureReason.objectOverFace ||
         reason == PrescreenFailureReason.multipleFaces ||
+        reason == PrescreenFailureReason.multiplePeople ||
         reason == PrescreenFailureReason.noFaceOrBody ||
         reason == PrescreenFailureReason.noFaceDetected ||
         reason == PrescreenFailureReason.faceNotVisible ||
@@ -581,6 +587,14 @@ Future<PrescreenFailureAction?> showPrescreenFailureDialog(
     PrescreenFailureReason.objectOverFace ||
     PrescreenFailureReason.documentDetected => (
       Icons.face_retouching_off,
+      Colors.orange.shade700,
+    ),
+    PrescreenFailureReason.multiplePeople => (
+      Icons.group_off_outlined,
+      Colors.orange.shade700,
+    ),
+    PrescreenFailureReason.personCheckUnavailable => (
+      Icons.no_photography_outlined,
       Colors.orange.shade700,
     ),
     PrescreenFailureReason.imageTooBlurry ||
@@ -647,12 +661,8 @@ Future<PrescreenFailureAction?> showPrescreenFailureDialog(
                 const SizedBox(height: 8),
                 Text(
                   l10n.getString('photoPrescreenOverlayCaption'),
-                  style: Theme.of(
-                    dialogContext,
-                  ).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(
-                      dialogContext,
-                    ).colorScheme.onSurfaceVariant,
+                  style: Theme.of(dialogContext).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(dialogContext).colorScheme.onSurfaceVariant,
                   ),
                 ),
               ],
@@ -703,19 +713,33 @@ Future<PrescreenFailureAction?> showPrescreenFailureDialog(
             ],
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(
-              dialogContext,
-            ).pop(PrescreenFailureAction.chooseAnother),
-            child: Text(l10n.getString('photoPrescreenChooseAnother')),
-          ),
-          ElevatedButton(
-            onPressed: () =>
-                Navigator.of(dialogContext).pop(PrescreenFailureAction.adjust),
-            child: Text(l10n.getString('photoPrescreenAdjustPhoto')),
-          ),
-        ],
+        actions: retakeMode
+            ? [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: Text(l10n.getString('cancel')),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.of(
+                    dialogContext,
+                  ).pop(PrescreenFailureAction.retake),
+                  child: Text(l10n.getString('meetupSpotMeRetake')),
+                ),
+              ]
+            : [
+                TextButton(
+                  onPressed: () => Navigator.of(
+                    dialogContext,
+                  ).pop(PrescreenFailureAction.chooseAnother),
+                  child: Text(l10n.getString('photoPrescreenChooseAnother')),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.of(
+                    dialogContext,
+                  ).pop(PrescreenFailureAction.adjust),
+                  child: Text(l10n.getString('photoPrescreenAdjustPhoto')),
+                ),
+              ],
       );
     },
   );
@@ -762,6 +786,18 @@ List<String> _prescreenDetailRows(
     final tilt = face.headTiltDegrees;
     if (tilt != null) {
       rows.add('${getString('photoPrescreenDetailHeadTilt')} ${tilt.round()}°');
+    }
+  }
+  // Person counts behind the Spot me single-person gate, so a false "more
+  // than one person" rejection can be reported with numbers.
+  final body = result.bodyAnalysis;
+  if (reasons.contains(PrescreenFailureReason.multiplePeople) ||
+      reasons.contains(PrescreenFailureReason.noFaceOrBody)) {
+    if (face != null) {
+      rows.add('${getString('photoPrescreenDetailFaces')} ${face.faceCount}');
+    }
+    if (body != null) {
+      rows.add('${getString('photoPrescreenDetailBodies')} ${body.bodyCount}');
     }
   }
   final version = result.nativePrescreenVersion;

@@ -25,7 +25,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 const _currentUserId = 'rating-viewer';
 const _otherUserId = 'rating-partner';
-const _longName = 'Aleksandra Konstantinova V.';
+const _longName = 'Aleksandra V.';
 
 String _accessToken() {
   final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;

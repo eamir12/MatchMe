@@ -10,6 +10,8 @@ import 'package:image/image.dart' as img;
 import 'package:crypto/crypto.dart';
 import 'photo_prescreen_web_stub.dart'
     if (dart.library.html) 'photo_prescreen_web.dart';
+import 'photo_prescreen_windows_stub.dart'
+    if (dart.library.io) 'photo_prescreen_windows.dart';
 
 /// Result of photo prescreening analysis
 class PhotoPrescreenResult {
@@ -111,6 +113,7 @@ class PhotoPrescreenResult {
     List<Map<String, dynamic>> issueBoxes = const [],
     ImageQuality? imageQuality,
     FaceAnalysis? faceAnalysis,
+    BodyAnalysis? bodyAnalysis,
     TextAnalysis? textAnalysis,
     int? nativePrescreenVersion,
   }) {
@@ -124,6 +127,7 @@ class PhotoPrescreenResult {
       issueBoxes: issueBoxes,
       imageQuality: imageQuality,
       faceAnalysis: faceAnalysis,
+      bodyAnalysis: bodyAnalysis,
       textAnalysis: textAnalysis,
       nativePrescreenVersion: nativePrescreenVersion,
       errorMessage: errorMessage,
@@ -144,6 +148,8 @@ const List<PrescreenFailureReason> _prescreenFailureOrder = [
   PrescreenFailureReason.noFaceOrBody,
   PrescreenFailureReason.noFaceDetected,
   PrescreenFailureReason.multipleFaces,
+  PrescreenFailureReason.multiplePeople,
+  PrescreenFailureReason.personCheckUnavailable,
   PrescreenFailureReason.bodyShotNotAllowed,
   PrescreenFailureReason.faceNotVisible,
   PrescreenFailureReason.faceTooSmall,
@@ -165,6 +171,25 @@ List<PrescreenFailureReason> orderPrescreenFailures(
   // Keep any reason not yet in the canonical list (defensive) at the end.
   ordered.addAll(seen.difference(ordered.toSet()));
   return ordered;
+}
+
+/// Single-person gate for the Spot me selfie: pass with exactly one person,
+/// whether the detector found a face, a body, or both. A second face or body
+/// fails the gate. Platform body counts can be conservative (Android's pose
+/// model is single-person), in which case group detection relies on the face
+/// count.
+List<PrescreenFailureReason> singlePersonGateFailures({
+  required int faceCount,
+  required int bodyCount,
+}) {
+  final failures = <PrescreenFailureReason>[];
+  if (faceCount > 1 || bodyCount > 1) {
+    failures.add(PrescreenFailureReason.multiplePeople);
+  }
+  if (faceCount < 1 && bodyCount < 1) {
+    failures.add(PrescreenFailureReason.noFaceOrBody);
+  }
+  return failures;
 }
 
 /// Hamming distance between two 64-char dHash bit strings. Returns a large
@@ -265,12 +290,19 @@ class BodyAnalysis {
   /// At least one body includes head, torso, legs, and feet inside the frame.
   final bool completeBodyDetected;
 
+  /// Bodies detected in the frame. Android's ML Kit pose model is
+  /// single-person, so it reports at most 1; iOS Vision and the web
+  /// PoseLandmarker can report more. Platforms that do not report a count
+  /// fall back to "1 when a body was detected".
+  final int bodyCount;
+
   const BodyAnalysis({
     required this.bodyDetected,
     required this.bodyConfidence,
     required this.upperBodyOnly,
     required this.fullBodyVisible,
     required this.completeBodyDetected,
+    required this.bodyCount,
   });
 
   bool get hasClearBody => bodyDetected && bodyConfidence >= 0.6;
@@ -324,6 +356,10 @@ String prescreenFailureL10nKey(PrescreenFailureReason? reason) {
       return 'photoErrorBodyShotNotAllowed';
     case PrescreenFailureReason.multipleFaces:
       return 'photoErrorMultipleFaces';
+    case PrescreenFailureReason.multiplePeople:
+      return 'photoErrorMultiplePeople';
+    case PrescreenFailureReason.personCheckUnavailable:
+      return 'photoErrorPersonCheckUnavailable';
     case PrescreenFailureReason.faceTooSmall:
       return 'photoErrorFaceTooSmall';
     case PrescreenFailureReason.faceNotVisible:
@@ -388,6 +424,14 @@ enum PrescreenFailureReason {
   // must never pass the primary prescreen, even when a body is detected.
   noFaceDetected,
   bodyShotNotAllowed,
+  // Single-person gate (Spot me selfie): either the face count or the body
+  // count exceeded one, so someone else is in the frame. Kept distinct from
+  // [multipleFaces] because a second body may be the only signal.
+  multiplePeople,
+  // Single-person gate could not run: no local detector on this platform or
+  // the detector failed. The gate fails closed instead of sharing an
+  // unchecked photo.
+  personCheckUnavailable,
 }
 
 /// Prescreening configuration
@@ -640,20 +684,20 @@ Future<double> _faceRegionBrightness(
   }
 }
 
-double _faceRegionBrightnessIsolate(
-  (Uint8List, Map<String, double>) args,
-) {
+double _faceRegionBrightnessIsolate((Uint8List, Map<String, double>) args) {
   final (bytes, rect) = args;
   final image = img.decodeImage(bytes);
   if (image == null) return 0.0;
   final left = (rect['x']! * image.width).round().clamp(0, image.width - 1);
   final top = (rect['y']! * image.height).round().clamp(0, image.height - 1);
-  final right = ((rect['x']! + rect['w']!) * image.width)
-      .round()
-      .clamp(left + 1, image.width);
-  final bottom = ((rect['y']! + rect['h']!) * image.height)
-      .round()
-      .clamp(top + 1, image.height);
+  final right = ((rect['x']! + rect['w']!) * image.width).round().clamp(
+    left + 1,
+    image.width,
+  );
+  final bottom = ((rect['y']! + rect['h']!) * image.height).round().clamp(
+    top + 1,
+    image.height,
+  );
   var total = 0.0;
   var count = 0;
   for (var y = top; y < bottom; y += 4) {
@@ -682,6 +726,12 @@ class PhotoPrescreenService {
   /// [existingPerceptualHashes] - dHash bit strings of session photos; a
   ///   Hamming distance of <= 10 flags a re-encoded duplicate of an already
   ///   added photo (catches what the exact-byte MD5 check cannot).
+  /// [singlePersonOnly] - run the Spot me selfie gate instead of profile
+  ///   rules: pass when exactly one face or one body is detected, reject a
+  ///   second person, and ignore text/quality/over-face profile rules (those
+  ///   exist to pre-approve profile photos; a meet-up selfie is judged only
+  ///   on who is in it). Fails closed when no local detector is available
+  ///   because there is no server-side AI fallback for this gate.
   ///
   /// Every rule runs and all failures are reported together, so the user can
   /// fix everything in a single retake instead of discovering issues one at a
@@ -691,6 +741,7 @@ class PhotoPrescreenService {
     bool isPrimary = false,
     Set<String>? existingHashes,
     Set<String>? existingPerceptualHashes,
+    bool singlePersonOnly = false,
   }) async {
     final config = isPrimary
         ? PrescreenConfig.primaryPhoto
@@ -736,12 +787,14 @@ class PhotoPrescreenService {
       brightnessScore: metrics.brightnessScore,
     );
 
-    if (metrics.width < config.minResolution ||
-        metrics.height < config.minResolution) {
+    if (!singlePersonOnly &&
+        (metrics.width < config.minResolution ||
+            metrics.height < config.minResolution)) {
       failures.add(PrescreenFailureReason.resolutionTooLow);
     }
-    if (quality.aspectRatio < config.minAspectRatio ||
-        quality.aspectRatio > config.maxAspectRatio) {
+    if (!singlePersonOnly &&
+        (quality.aspectRatio < config.minAspectRatio ||
+            quality.aspectRatio > config.maxAspectRatio)) {
       failures.add(PrescreenFailureReason.aspectRatioInvalid);
     }
     // The primary image is a clear face photo. Gallery images can be wide,
@@ -788,6 +841,60 @@ class PhotoPrescreenService {
     final bodyAnalysis = mlResult.bodyAnalysis;
     final hasNativeData = faceAnalysis != null && bodyAnalysis != null;
 
+    // 4.5. Spot me selfie gate: exactly one person, face or body. Runs
+    //      instead of the profile rules below — a meet-up selfie is not a
+    //      profile photo, so text/blur/over-face/size rules do not apply.
+    //      Fails closed when the platform has no local detector (desktop,
+    //      unavailable web bridge), because no server-side AI reviews this.
+    if (singlePersonOnly) {
+      if (!hasNativeData) {
+        debugPrint(
+          '[photoPrescreen] single-person gate unavailable '
+          '(no local detector) nativeV=${mlResult.nativePrescreenVersion}',
+        );
+        return PhotoPrescreenResult.failed(
+          reasons: const [PrescreenFailureReason.personCheckUnavailable],
+          imageQuality: quality,
+          nativePrescreenVersion: mlResult.nativePrescreenVersion,
+        );
+      }
+
+      final gate = singlePersonGateFailures(
+        faceCount: faceAnalysis.faceCount,
+        bodyCount: bodyAnalysis.bodyCount,
+      );
+      if (gate.isEmpty) {
+        return PhotoPrescreenResult.passedWithConfidence(
+          confidence: mlResult.confidence,
+          faceAnalysis: faceAnalysis,
+          bodyAnalysis: bodyAnalysis,
+          imageQuality: quality,
+          faceBox: mlResult.faceBox,
+          issueBoxes: mlResult.issueBoxes,
+          perceptualHash: metrics.perceptualHash,
+          nativePrescreenVersion: mlResult.nativePrescreenVersion,
+        );
+      }
+
+      debugPrint(
+        '[photoPrescreen] single-person gate failed '
+        'reasons=${gate.join(',')} '
+        'faces=${faceAnalysis.faceCount} '
+        'bodies=${bodyAnalysis.bodyCount} '
+        'nativeV=${mlResult.nativePrescreenVersion}',
+      );
+      return PhotoPrescreenResult.failed(
+        reasons: gate,
+        confidence: mlResult.confidence,
+        faceBox: mlResult.faceBox,
+        issueBoxes: mlResult.issueBoxes,
+        imageQuality: quality,
+        faceAnalysis: faceAnalysis,
+        bodyAnalysis: bodyAnalysis,
+        nativePrescreenVersion: mlResult.nativePrescreenVersion,
+      );
+    }
+
     // 5. On-device text gate: cards, signs, watermarks, screenshots caught
     // before upload — zero AI calls for the most common bad photo. Only runs
     // when the native detector reported text metrics; web/desktop and older
@@ -822,7 +929,12 @@ class PhotoPrescreenService {
     // 7. Photo-type specific person rules.
     if (hasNativeData) {
       if (isPrimary) {
-        _collectPrimaryPhotoFailures(failures, faceAnalysis, bodyAnalysis, config);
+        _collectPrimaryPhotoFailures(
+          failures,
+          faceAnalysis,
+          bodyAnalysis,
+          config,
+        );
       } else {
         _collectSecondaryPhotoFailures(failures, faceAnalysis, bodyAnalysis);
       }
@@ -882,6 +994,7 @@ class PhotoPrescreenService {
       issueBoxes: mlResult.issueBoxes,
       imageQuality: quality,
       faceAnalysis: faceAnalysis,
+      bodyAnalysis: bodyAnalysis,
       textAnalysis: textAnalysis,
       nativePrescreenVersion: mlResult.nativePrescreenVersion,
     );
@@ -930,8 +1043,10 @@ class PhotoPrescreenService {
   ///
   /// Mobile uses ML Kit / Vision over a MethodChannel. Web uses the MediaPipe
   /// JS still-image detector (web/photo_prescreen.js, same face/body rules).
-  /// Desktop has no local ML yet. Any unavailable/failed detector falls back
-  /// to Gemini validation instead of falsely rejecting.
+  /// Windows runs that same detector in a headless WebView2 (see
+  /// photo_prescreen_windows.dart). Linux/macOS have no local ML. Any
+  /// unavailable/failed detector falls back to Gemini validation instead of
+  /// falsely rejecting.
   Future<PhotoPrescreenResult> _performNativeDetection(
     Uint8List bytes,
     PrescreenConfig config,
@@ -942,7 +1057,13 @@ class PhotoPrescreenService {
       // Bridge/models unavailable: skip person checks, Gemini still validates.
       return PhotoPrescreenResult.passedWithConfidence(confidence: 0.0);
     }
-    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    if (Platform.isWindows) {
+      final windowsResult = await _performWindowsDetection(bytes, config);
+      if (windowsResult != null) return windowsResult;
+      // Runtime/models unavailable: skip person checks, Gemini still validates.
+      return PhotoPrescreenResult.passedWithConfidence(confidence: 0.0);
+    }
+    if (Platform.isLinux || Platform.isMacOS) {
       // No local ML on desktop: skip person checks, Gemini still validates.
       return PhotoPrescreenResult.passedWithConfidence(confidence: 0.0);
     }
@@ -989,6 +1110,24 @@ class PhotoPrescreenService {
     }
   }
 
+  /// Runs the same MediaPipe detector in the Windows WebView2 host, with a
+  /// bounded wait for the first-run model download. Returns null when the
+  /// runtime, page, or models are unavailable.
+  Future<PhotoPrescreenResult?> _performWindowsDetection(
+    Uint8List bytes,
+    PrescreenConfig config,
+  ) async {
+    try {
+      final map = await analyzePhotoPrescreenWindows(
+        bytes,
+      ).timeout(const Duration(seconds: 30));
+      if (map == null) return null;
+      return _parseNativeResult(Map<Object?, Object?>.from(map), config);
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Parse native ML detection result
   PhotoPrescreenResult _parseNativeResult(
     Map<Object?, Object?> result,
@@ -1020,8 +1159,7 @@ class PhotoPrescreenService {
               faceTouchesImageEdge: result['faceTouchesImageEdge'] == true,
               completeFaceDetected: result['completeFaceDetected'] == true,
               faceObstructed: result['faceObstructed'] == true,
-              headTiltDegrees:
-                  (result['headTiltDegrees'] as num?)?.toDouble(),
+              headTiltDegrees: (result['headTiltDegrees'] as num?)?.toDouble(),
               bothEyesClosed: result['bothEyesClosed'] == true,
             )
           : FaceAnalysis(
@@ -1041,12 +1179,16 @@ class PhotoPrescreenService {
         upperBodyOnly: result['upperBodyOnly'] == true,
         fullBodyVisible: result['fullBodyVisible'] == true,
         completeBodyDetected: result['completeBodyDetected'] == true,
+        // Older native binaries do not report a count; presence still means
+        // one body, which is all Android's single-pose model can detect.
+        bodyCount:
+            (result['bodyCount'] as num?)?.toInt() ?? (containsBody ? 1 : 0),
       );
 
       // Text metrics are optional: absent on the web bridge, desktop, and
       // native builds older than the text-recognition rollout.
-      final textContentAreaRatio =
-          (result['textContentAreaRatio'] as num?)?.toDouble();
+      final textContentAreaRatio = (result['textContentAreaRatio'] as num?)
+          ?.toDouble();
       TextAnalysis? textAnalysis;
       if (textContentAreaRatio != null) {
         final rawBlocks = result['textBlocks'];

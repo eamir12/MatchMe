@@ -17,8 +17,8 @@ import android.provider.Settings
 import java.util.concurrent.TimeUnit
 import android.util.Base64
 import androidx.core.app.NotificationCompat
-import androidx.core.app.Person
 import androidx.core.content.ContextCompat
+import com.example.matchme.MatchMeBadgeController
 import com.example.matchme.R
 import com.google.android.gms.location.*
 import io.flutter.plugin.common.MethodChannel
@@ -72,6 +72,11 @@ class MatchMeBackgroundService : Service() {
     private var isVisible = false
     private var isOnline = true // Default to true until told otherwise
     private var authPermanentlyFailed = false // Track if refresh token was invalidated
+    // The exact refresh token the auth server already refused. Kept after the
+    // failure flag is re-evaluated: a rejected token must never re-arm auth
+    // work, because every replay is logged as another abuse attempt
+    // (2026-10-30: 38 replays in four minutes while the app sat on the gate).
+    @Volatile private var rejectedRefreshToken: String? = null
     // Tracks whether the UI process is in the foreground. This is not the same as the user's
     // discoverability/visibility setting.
     @Volatile private var appInForeground: Boolean = false
@@ -321,8 +326,10 @@ class MatchMeBackgroundService : Service() {
     private val activeMatchNotificationIds = mutableMapOf<String, Int>() // matchId -> notificationId
     private var currentlyViewingChatId: String? = null // Track which chat the user is currently viewing
 
-    // Message history for MessagingStyle (Sender -> List of Messages)
-    private val messageHistory = mutableMapOf<String, MutableList<String>>() // matchId -> messages
+    // Unread lines one chat card expands to. Equal to the server's
+    // CHAT_PREVIEW_MAX_LINES so the card can never show a different backlog
+    // than the push payload described.
+    private val maxPreviewLines = 5
 
     // Throttling for notification checks to prevent duplicate concurrent calls
     @Volatile private var lastNotificationCheckTime: Long = 0
@@ -357,6 +364,9 @@ class MatchMeBackgroundService : Service() {
         .writeTimeout(30, TimeUnit.SECONDS)
         .pingInterval(20, TimeUnit.SECONDS) // Keep connection alive (reduced to 20s)
         .retryOnConnectionFailure(true)
+        // Attribute native traffic in Supabase edge logs (uid resolved lazily
+        // per request — userId is restored from secure prefs in onCreate).
+        .addInterceptor(SupabaseIdentity.interceptor(this) { userId })
         .build()
 
     companion object {
@@ -671,6 +681,16 @@ class MatchMeBackgroundService : Service() {
             context.startService(intent)
         }
 
+        /**
+         * Post a chat card from content the server already produced.
+         *
+         * [title], [previewLines] and [unreadCount] are the push-message
+         * content model (localized, plural-resolved, byte-capped and masked
+         * according to the recipient's preview setting). Clients that hold it
+         * must pass it through instead of re-deriving copy locally: the
+         * server is the only party that knows whether previews are on AND
+         * that can pluralize for the recipient's language.
+         */
         fun showTranslatedNotification(
             context: Context,
             messageId: String,
@@ -679,6 +699,10 @@ class MatchMeBackgroundService : Service() {
             senderName: String,
             matchId: String? = null,
             shouldAlert: Boolean? = null,
+            title: String? = null,
+            previewLines: List<String>? = null,
+            unreadCount: Int = 0,
+            previewsEnabled: Boolean? = null,
         ) {
             val intent = Intent(context, MatchMeBackgroundService::class.java).apply {
                 action = "SHOW_TRANSLATED_NOTIFICATION"
@@ -688,6 +712,12 @@ class MatchMeBackgroundService : Service() {
                 putExtra("senderName", senderName)
                 putExtra("matchId", matchId)
                 shouldAlert?.let { putExtra("shouldAlert", it) }
+                if (!title.isNullOrBlank()) putExtra("title", title)
+                if (!previewLines.isNullOrEmpty()) {
+                    putExtra("previewLines", ArrayList(previewLines))
+                }
+                if (unreadCount > 0) putExtra("unreadCount", unreadCount)
+                previewsEnabled?.let { putExtra("previewsEnabled", it) }
             }
             context.startService(intent)
         }
@@ -811,17 +841,18 @@ class MatchMeBackgroundService : Service() {
         }
     }
 
-    /** Generic, localized body used when previews are disabled. Dart writes the
-     *  localized string (flutter.notifications_generic_message_body); fall back
-     *  to English when it has not been synced yet. */
-    private fun genericMessageBody(): String {
-        val localized = try {
-            securePrefs().getString("flutter.notifications_generic_message_body", null)
-        } catch (_: Exception) {
-            null
-        }
-        return if (!localized.isNullOrBlank()) localized else "New message"
-    }
+    /**
+     * Localized, plural-aware chat copy for the cards this service builds.
+     *
+     * The wording itself lives in [ChatNotificationCopy], shared with the
+     * WorkManager fallback card: a message that arrived by push and a message
+     * that arrived by poll must not say different things about the same chat.
+     */
+    private fun chatMessagesTitle(count: Int, senderName: String): String =
+        ChatNotificationCopy.messagesTitle(securePrefs(), count, senderName)
+
+    private fun openToReadBody(count: Int): String =
+        ChatNotificationCopy.openToReadBody(securePrefs(), count)
 
     private fun chatPushEnabled(): Boolean =
         isNotifTypePushEnabled("chat_messages", "flutter.notifications_chat")
@@ -905,6 +936,15 @@ class MatchMeBackgroundService : Service() {
             supabaseKey = SecurePrefsHelper.getString(this, "flutter.supabase_key", null)
             userToken = SecurePrefsHelper.getString(this, "flutter.user_token", null)
             refreshToken = SecurePrefsHelper.getString(this, "flutter.refresh_token", null)
+            // Restore the auth failure state synchronously too: the heartbeat
+            // starts before the delayed restoreCredentialsAndConnect(), so a
+            // process restarted into the background could otherwise spend
+            // the revoked token once per wake-up.
+            authPermanentlyFailed = prefs.getBoolean("flutter.auth_permanently_failed", false)
+            rejectedRefreshToken = try {
+                SecurePrefsHelper.getString(this, "flutter.auth_rejected_refresh_token", null)
+                    ?.trim()?.takeIf { it.isNotEmpty() }
+            } catch (_: Exception) { null }
             
             logEvent("onCreate: restored state: bgMatching=$backgroundMatchingMode isVisible=$isVisible isOnline=$isOnline appInForeground=$appInForeground gpsInterval=$gpsInterval smartThrottling=$smartThrottlingEnabled userId=${userId != null}")
             // Restore stationary history so 60s throttling survives process kill / reboot / UI shutdown / screen off
@@ -1521,7 +1561,14 @@ class MatchMeBackgroundService : Service() {
         isOnline = prefs.getBoolean("flutter.is_online", true)
         appInForeground = prefs.getBoolean(PREF_APP_IN_FOREGROUND, false)
         authPermanentlyFailed = prefs.getBoolean("flutter.auth_permanently_failed", false)
-        if (!userToken.isNullOrBlank()) authPermanentlyFailed = false
+        rejectedRefreshToken = try {
+            SecurePrefsHelper.getString(this, "flutter.auth_rejected_refresh_token", null)
+                ?.trim()?.takeIf { it.isNotEmpty() }
+        } catch (_: Exception) { null }
+        // Deliberately NOT cleared here by mere token presence: a revoked
+        // family keeps its token strings forever, and clearing on restore is
+        // what let the 2026-10-30 storm replay a revoked token on every
+        // launch. Only a successful refresh or a new sign-in clears it.
         gpsInterval = when {
             prefs.contains("flutter.gps_interval") -> prefs.getInt("flutter.gps_interval", 5)
             prefs.contains("gps_interval") -> prefs.getInt("gps_interval", 5)
@@ -1586,9 +1633,27 @@ class MatchMeBackgroundService : Service() {
                 userId = intent.getStringExtra(EXTRA_USER_ID)
                 supabaseUrl = intent.getStringExtra(EXTRA_SUPABASE_URL)
                 supabaseKey = intent.getStringExtra(EXTRA_SUPABASE_KEY)
+                // Only a CHANGED refresh token proves the session is alive
+                // (a new sign-in, or a rotation Dart already completed).
+                // A revoked family keeps replaying the same token on every
+                // launch, so token presence alone must never clear the flag —
+                // and a token the server already refused never clears it even
+                // when its string differs from the one this process holds.
+                val incomingRefreshToken =
+                    intent.getStringExtra(EXTRA_REFRESH_TOKEN)?.trim()
+                if (!incomingRefreshToken.isNullOrBlank() &&
+                    incomingRefreshToken != refreshToken?.trim() &&
+                    !isRejectedRefreshToken(incomingRefreshToken)
+                ) {
+                    authPermanentlyFailed = false
+                    try {
+                        securePrefs().edit()
+                            .putBoolean("flutter.auth_permanently_failed", false)
+                            .apply()
+                    } catch (_: Exception) {}
+                }
                 userToken = intent.getStringExtra(EXTRA_USER_TOKEN)
                 refreshToken = intent.getStringExtra(EXTRA_REFRESH_TOKEN)
-                authPermanentlyFailed = false // Reset auth failure when new tokens are provided
                 // Load persisted config for other values
                 val prefs = securePrefs()
 
@@ -1807,7 +1872,12 @@ class MatchMeBackgroundService : Service() {
                 } else {
                     userToken = newToken
                     refreshToken = nextRefreshToken
-                    authPermanentlyFailed = false // Reset auth failure when new tokens are provided
+                    // A changed token only proves a live session when the
+                    // server has not already refused it; the dead family's
+                    // token keeps arriving here on every Dart re-push.
+                    if (!isRejectedRefreshToken(nextRefreshToken)) {
+                        authPermanentlyFailed = false
+                    }
                     // Log.d(TAG, "JWT token updated: accessChanged=$accessTokenChanged refreshChanged=$refreshTokenChanged")
 
                     // Persist refreshed token so a process restart doesn't revert to an expired JWT.
@@ -1894,11 +1964,6 @@ class MatchMeBackgroundService : Service() {
                         edit.apply()
                     } catch (_: Exception) {
                     }
-
-                    // Clear message history for this specific chat so expanded notifications only show new messages
-                    // This ensures expanded notifications only show messages that arrived after entering the chat
-                    messageHistory.remove(matchId)
-                    // Log.d(TAG, "Cleared message history for chat: $matchId")
                 }
             }
             ACTION_DISMISS_CHAT_NOTIFICATION -> {
@@ -1959,6 +2024,14 @@ class MatchMeBackgroundService : Service() {
                 } else {
                     null
                 }
+                val modelTitle = intent.getStringExtra("title")
+                val previewLines = intent.getStringArrayListExtra("previewLines")
+                val unreadCount = intent.getIntExtra("unreadCount", 0)
+                val previewsEnabled = if (intent.hasExtra("previewsEnabled")) {
+                    intent.getBooleanExtra("previewsEnabled", true)
+                } else {
+                    null
+                }
 
                 // Log.d(TAG, "[ANDROID] Show translated notification: sender='$senderName', translated='$translatedContent', original='$originalContent', matchId='$matchId'")
 
@@ -1969,6 +2042,10 @@ class MatchMeBackgroundService : Service() {
                     messageId,
                     matchId,
                     shouldAlert,
+                    modelTitle,
+                    previewLines.orEmpty(),
+                    unreadCount,
+                    previewsEnabled,
                 )
             }
             ACTION_PROCESS_LOCATION_UPDATE -> {
@@ -2180,6 +2257,7 @@ class MatchMeBackgroundService : Service() {
     }
 
     private fun clearCredentials() {
+        forgetRejectedRefreshToken()
         try {
             SecurePrefsHelper.removeSensitive(this, listOf("flutter.user_id", "flutter.user_token", "flutter.refresh_token"))
         } catch (_: Exception) {}
@@ -3085,6 +3163,10 @@ class MatchMeBackgroundService : Service() {
         messageId: String,
         matchId: String? = null,
         shouldAlertOverride: Boolean? = null,
+        modelTitle: String? = null,
+        previewLines: List<String> = emptyList(),
+        unreadCount: Int = 0,
+        previewsEnabledFlag: Boolean? = null,
     ) {
         // Log.d(TAG, "[ANDROID] Showing translated notification: sender='$senderName', content='$content', matchId='$matchId'")
 
@@ -3101,14 +3183,49 @@ class MatchMeBackgroundService : Service() {
             return
         }
 
-        // Previews off → mask the body with a generic localized string.
-        val effectiveContent = if (isMessagePreviewsEnabled()) content else genericMessageBody()
-
         val effectiveMatchId = matchId ?: "unknown"
+
+        // Previews off is checked twice on purpose: the server masks the copy
+        // it puts in the payload, and the local preference is re-read here
+        // because it can have changed since that push was produced. Either one
+        // off means the card quotes no text, only the backlog.
+        val previewsOff = !isMessagePreviewsEnabled() || previewsEnabledFlag == false
+        val hasCount = unreadCount > 0
+        // Previews off and no count in the payload (the Realtime path reports one
+        // message, not a backlog): this card may only state how much is waiting,
+        // so hand over to the poll, which reads the real per-chat count.
+        if (previewsOff && !hasCount) {
+            serviceScope.launch {
+                checkForNotifications(messageId, effectiveMatchId)
+            }
+            return
+        }
+        val lines = if (previewsOff) {
+            emptyList()
+        } else {
+            previewLines.map { it.trim() }.filter { it.isNotEmpty() }.takeLast(maxPreviewLines)
+        }
+        val maskedSender = maskFullName(senderName)
+        // A payload that carries no count must not claim one: the card names the
+        // sender instead of inventing a total.
+        val count = if (hasCount) unreadCount else 1
 
         // Check if we should show notification alert (skip alert if viewing chat AND app is in foreground)
         val isViewingThisChat = effectiveMatchId == currentlyViewingChatId
         if (isViewingThisChat && appInForeground) return
+
+        val title = when {
+            !modelTitle.isNullOrBlank() -> modelTitle
+            hasCount -> chatMessagesTitle(count, maskedSender)
+            else -> maskedSender
+        }
+        val body = when {
+            previewsOff -> openToReadBody(count)
+            content.isNotBlank() -> content
+            lines.size == 1 -> lines[0]
+            else -> openToReadBody(count)
+        }
+
         val shouldAlert = shouldAlertOverride ?: !wasChatNotificationAlerted(effectiveMatchId)
 
         if (!wasMessageBuzzed(messageId)) {
@@ -3124,16 +3241,14 @@ class MatchMeBackgroundService : Service() {
             val replacedFreshServerCard = removeServerChatCard(effectiveMatchId)
 
             // Log.d(TAG, "[ANDROID] Showing notification: sender='$senderName', content='$content', silent=$isViewingThisChat")
-            // Pass content as-is; showNotification's MessagingStyle will render the
-            // sender as the title and the message as the body.
             showNotification(
-                title = senderName,
-                content = effectiveContent,
+                title = title,
+                content = body,
                 notificationId = notificationId,
-                senderName = senderName,
                 matchId = effectiveMatchId,
                 silent = isViewingThisChat || !shouldAlert || (replacedFreshServerCard && !appInForeground),
                 soundEnabled = shouldAlert && chatSoundEnabled(),
+                previewLines = lines,
             )
             activeNotificationIds[effectiveMatchId] = notificationId
 
@@ -3242,12 +3357,14 @@ class MatchMeBackgroundService : Service() {
                                 } else {
                                     // Log.d(TAG, "Found new unread match: $matchName (ID: $effectiveMatchId)")
                                     // Use match name hash as ID to group match notifications.
-                                    // senderName stays null: showNotification titles
-                                    // sender-less (match/system) alerts with safeTitle
-                                    // ("New Match!") instead of the maskFullName
-                                    // fallback ("Someone").
                                     val matchNotifyId = matchName.hashCode()
-                                    showNotification("New Match!", "You matched with $matchName!", matchNotifyId, null, effectiveMatchId, soundEnabled = matchSoundEnabled())
+                                    showNotification(
+                                        "New Match!",
+                                        "You matched with $matchName!",
+                                        matchNotifyId,
+                                        effectiveMatchId,
+                                        soundEnabled = matchSoundEnabled(),
+                                    )
                                     activeMatchNotificationIds[effectiveMatchId] = matchNotifyId
                                     recordMatchBuzzed(effectiveMatchId)
                                 }
@@ -3268,27 +3385,25 @@ class MatchMeBackgroundService : Service() {
                                 }
                             }
                         } else if (unreadMessages > 0) {
-                            // The RPC no longer returns message bodies (chats
-                            // are end-to-end encrypted; the server sends a
-                            // generic placeholder). JSON null renders as the
-                            // literal "null" via org.json's optString because
-                            // its fallback only applies when the key is
-                            // MISSING - sanitize both fields so old and new
-                            // payloads always render a sane notification.
+                            // The RPC cannot decrypt (chats are end-to-end
+                            // encrypted) and returns no message body, so this
+                            // path builds the card from the backlog alone: how
+                            // many are waiting in this chat, never what they
+                            // say. Step aside when previews are on or an
+                            // enabled translation is still pending, because
+                            // then the push payload is the only source allowed
+                            // to quote text.
                             val rawSender = data.optString("latest_message_sender", "Someone")
-                                            val sender = if (rawSender.isBlank() || rawSender == "null") "Someone" else rawSender
-                            val rawContent = data.optString("latest_message_content", "Sent a message")
-                            val content = if (rawContent.isBlank() || rawContent == "null") "Sent a message" else rawContent
-            // Previews off → mask the body; keep the sender title intact.
-            val displayContent = if (isMessagePreviewsEnabled()) content else genericMessageBody()
-            // The RPC cannot decrypt E2E content. Do not surface its generic
-            // placeholder when previews are enabled, or before an enabled
-            // translation has been produced by translate-proxy.
-            if (isMessagePreviewsEnabled() || data.optBoolean("translation_enabled", false)) {
-                return@checkForNotifications
-            }
-            val messageId = data.optString("latest_message_id", "")
-            val matchId = data.optString("latest_match_id", "")
+                            val sender = if (rawSender.isBlank() || rawSender == "null") "Someone" else rawSender
+                            if (isMessagePreviewsEnabled() || data.optBoolean("translation_enabled", false)) {
+                                return@checkForNotifications
+                            }
+                            val messageId = data.optString("latest_message_id", "")
+                            val matchId = data.optString("latest_match_id", "")
+                            // unread_messages_count is the total across chats and
+                            // the specific-message branch pins it at 1, so the
+                            // per-chat figure comes from its own column.
+                            val chatUnreadCount = data.optInt("latest_chat_unread_count", 0).coerceAtLeast(1)
 
 
                             // Validate that this is actually an unread message
@@ -3324,23 +3439,6 @@ class MatchMeBackgroundService : Service() {
                             // This is because Realtime triggered it, so it MUST be new
                             val isSpecificRequest = specificMessageId != null && specificMessageId == messageId
 
-                            // Always add message to history for expanded notifications, regardless of whether we show notification
-                            if (matchId != null) {
-                                val history = messageHistory.getOrPut(matchId) { mutableListOf() }
-                                val rawText = if (content.startsWith("$sender: ")) content.substring(sender.length + 2) else content
-                                // Cap each message so history can't overflow tray/FCM budget.
-                                val messageText = truncateNotifBytes(rawText.trim(), 500)
-                                // Avoid duplicates in history
-                                if (!history.contains(messageText)) {
-                                    history.add(messageText)
-                                    // Limit history to last 5 messages
-                                    if (history.size > 5) history.removeAt(0)
-                                    // Log.d(TAG, "Added message to history for chat $matchId: $messageText (history size: ${history.size})")
-                                } else {
-                                    // Log.d(TAG, "Skipped duplicate message in history for chat $matchId: $messageText")
-                                }
-                            }
-
                             // Don't show notifications when viewing the chat AND app is in foreground
                             val isViewingThisChat = effectiveChatId == currentlyViewingChatId
                             if (isViewingThisChat && appInForeground) {
@@ -3354,7 +3452,6 @@ class MatchMeBackgroundService : Service() {
                             val shouldAlert = !wasChatNotificationAlerted(effectiveChatId)
 
                             if (isSpecificRequest || !wasMessageBuzzed(messageId)) {
-                                // Log.d(TAG, "[ANDROID] Processing message from $sender (Chat ID: $effectiveChatId, viewing: $isViewingThisChat, shouldAlert: $shouldAlert, content: '$content')")
                                 // Use the chat ID hash as the notification ID so all messages from the same
                                 // chat group together (was previously sender.hashCode(), which could
                                 // collide when two chats have senders with the same name hash).
@@ -3369,16 +3466,10 @@ class MatchMeBackgroundService : Service() {
                                     (capturedServerCardFresh &&
                                         serverCardMatchId == effectiveChatId) ||
                                         removeServerChatCard(effectiveChatId)
-                                // Pass content as-is; showNotification's MessagingStyle will render the
-                                // sender as the title and the message as the body. Previously we passed
-                                // "$sender: $content" as the body, which produced notifications that
-                                // always said "New Message" as title and "John S.: Hello" as body.
-                                // Log.d(TAG, "[ANDROID] Showing notification: sender='$sender', content='$content', silent=$isViewingThisChat")
                                 showNotification(
-                                    title = sender,
-                                    content = displayContent,
+                                    title = chatMessagesTitle(chatUnreadCount, maskFullName(sender)),
+                                    content = openToReadBody(chatUnreadCount),
                                     notificationId = notificationId,
-                                    senderName = sender,
                                     matchId = matchId,
                                     silent = isViewingThisChat || !shouldAlert || (replacedFreshServerCard && !appInForeground),
                                     soundEnabled = shouldAlert && chatSoundEnabled(),
@@ -3438,25 +3529,23 @@ class MatchMeBackgroundService : Service() {
         return "$out…"
     }
 
-    // Mirrors public.mask_full_name(TEXT): "FirstName L." for multi-word names
-    // (first name + last initial, e.g. "John S."), the first name alone for
-    // single-word names. Empty falls back to "Someone". Idempotent: the RPC and
-    // server pushes already return "John S." - re-masking passes it through -
-    // so every tray title matches what the app's other screens show.
-    private fun maskFullName(raw: String?): String {
-        val parts = raw?.trim()?.split(Regex("\\s+"))?.filter { it.isNotEmpty() }.orEmpty()
-        if (parts.isEmpty()) return "Someone"
-        if (parts.size == 1) return parts[0]
-        val first = parts[0]
-        val last = parts[parts.size - 1]
-        if (last.isEmpty() || last == first) return first
-        return "$first ${last[0].uppercaseChar()}."
-    }
+    // See ChatNotificationCopy.maskFullName - the same rule the server's
+    // mask_full_name applies, shared with the WorkManager fallback card.
+    private fun maskFullName(raw: String?): String =
+        ChatNotificationCopy.maskFullName(raw)
 
-    private fun showNotification(title: String, content: String, notificationId: Int? = null, senderName: String? = null, matchId: String? = null, silent: Boolean = false, soundEnabled: Boolean = true) {
+    private fun showNotification(
+        title: String,
+        content: String,
+        notificationId: Int? = null,
+        matchId: String? = null,
+        silent: Boolean = false,
+        soundEnabled: Boolean = true,
+        previewLines: List<String> = emptyList(),
+    ) {
         // Transport/display guard: never overflow tray or FCM 4KB budget.
         val safeTitle = truncateNotifBytes(title.trim(), 500)
-        val safeContent = truncateNotifBytes(content.trim().ifEmpty { "New message" }, 1500)
+        val safeContent = truncateNotifBytes(content.trim(), 1500)
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         
         // Use provided ID or fallback to timestamp (unique per call)
@@ -3507,43 +3596,50 @@ class MatchMeBackgroundService : Service() {
             .setDefaults(if (silent || !soundEnabled) 0 else NotificationCompat.DEFAULT_ALL) // Respect sound preference
             .setOnlyAlertOnce(silent) // Silent notifications don't alert
             .setContentIntent(pendingIntent)
+            // Bundle with the other conversation cards under the unread-badge
+            // carrier, which is posted as this group's summary
+            // (MatchMeBadgeController). Without a group every chat sits in the
+            // tray on its own next to a standalone "N unread" card.
+            .setGroup(MatchMeBadgeController.GROUP_KEY_CHATS)
+            // This card, not the summary, is the one allowed to alert.
+            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
+            // Lets the badge carrier (this group's summary) disappear with the
+            // last conversation card instead of outliving it as a standalone
+            // "N unread" card. See MatchMeBadgeCleanupReceiver.
+            .setDeleteIntent(MatchMeBadgeController.deleteIntent(this))
 
-        // Use MessagingStyle if senderName and matchId are non-empty (WhatsApp style).
-        // Kotlin's `String?` is never `null` for parameters typed as non-nullable, so we
-        // must check isNullOrEmpty() — otherwise an empty matchId would still take the
-        // MessagingStyle branch with a broken key and miss the history.
-        // A null/blank senderName means a match or system alert (never a
-        // "Someone"): keep it empty so the standard branch below uses the
-        // real title instead of the maskFullName fallback.
-        val effectiveSenderName = senderName?.trim().takeIf { !it.isNullOrEmpty() }?.let { maskFullName(it) }.orEmpty()
-        val effectiveMatchId = matchId?.trim().orEmpty()
-        if (effectiveSenderName.isNotEmpty() && effectiveMatchId.isNotEmpty()) {
-            // Get message history for this chat (already populated when messages arrived)
-            val history = messageHistory[effectiveMatchId] ?: mutableListOf()
-
-            // Only use MessagingStyle if we have messages in history
-            if (history.isNotEmpty()) {
-                val person = Person.Builder().setName(effectiveSenderName).build()
-                val style = NotificationCompat.MessagingStyle(person)
-
-                // Add all messages from history (these are unread messages since history is cleared when chat is entered)
-                // Cap each to 500B so 5x history can't overflow the tray.
-                for (msg in history.takeLast(5)) {
-                    style.addMessage(truncateNotifBytes(msg, 500), System.currentTimeMillis(), person)
-                }
-
-                notificationBuilder.setStyle(style)
-                notificationBuilder.setContentTitle(effectiveSenderName) // Title is sender name
-                notificationBuilder.setContentText(safeContent) // Most recent message body
-            } else {
-                // Fallback to standard style if no history available
-                notificationBuilder.setContentTitle(effectiveSenderName)
-                notificationBuilder.setContentText(safeContent)
+        // The sender's face in the largeIcon slot, which is the one place a
+        // tray card shows a picture beside the name rather than per row. Plain
+        // decoration: a conversation whose avatar was never mirrored, or was
+        // evicted with the chat, posts the same card without it.
+        if (safeMatchId.isNotEmpty()) {
+            try {
+                NotificationAvatarStore.bitmapFor(this, safeMatchId)
+                    ?.let { notificationBuilder.setLargeIcon(it) }
+            } catch (_: Exception) {
             }
-        } else {
-            // Standard style for matches or system alerts
-            notificationBuilder.setContentTitle(safeTitle.ifEmpty { effectiveSenderName })
-            notificationBuilder.setContentText(safeContent)
+        }
+
+        // The collapsed card is title + body; expanding adds the unread lines
+        // the server already ordered oldest-first and byte-capped. One line is
+        // the body itself, so a style would repeat it.
+        //
+        // InboxStyle and not MessagingStyle: MessagingStyle draws the sender's
+        // Person icon on every row and ignores largeIcon, so it can never give
+        // the one-avatar-beside-the-name layout the tray is moving to, and it
+        // titles itself "N messages" from its own count rather than the
+        // server's localized copy.
+        val lines = previewLines
+            .map { truncateNotifBytes(it.trim(), 500) }
+            .filter { it.isNotEmpty() }
+            .takeLast(maxPreviewLines)
+
+        notificationBuilder.setContentTitle(safeTitle)
+        notificationBuilder.setContentText(safeContent)
+        if (lines.size > 1) {
+            val style = NotificationCompat.InboxStyle().setBigContentTitle(safeTitle)
+            lines.forEach { style.addLine(it) }
+            notificationBuilder.setStyle(style)
         }
 
         val notification = notificationBuilder.build()
@@ -3562,6 +3658,13 @@ class MatchMeBackgroundService : Service() {
                     ensureValidJwt()
                     updateUserActivity()
                     checkVisibilityFromDbIfNeeded()
+                    // Cards posted through flutter_local_notifications cannot
+                    // carry a delete intent, so a swipe of the last one would
+                    // leave the badge carrier alone in the tray until the next
+                    // badge update. Cheap idempotent sweep, once per heartbeat.
+                    try {
+                        MatchMeBadgeController.syncCarrierPresence(applicationContext)
+                    } catch (_: Throwable) {}
 
                     // Pinned-state transition watcher. isPinnedLocationActive()
                     // is time-based, so this catches both scheduled expiry and
@@ -3630,45 +3733,90 @@ class MatchMeBackgroundService : Service() {
         }
     }
 
+    /**
+     * Adopts the newest token pair this device knows about.
+     *
+     * Dart and this service rotate the same single-use refresh token from
+     * different processes. Spending a copy the other side already rotated
+     * returns `refresh_token_already_used`, and GoTrue then revokes the whole
+     * family. Refresh tokens are opaque, so the paired access token's `exp` is
+     * the only freshness signal: the newest pair wins and is written back to
+     * the shared prefs so both sides converge.
+     */
+    private fun adoptNewestKnownTokens(): Boolean {
+        val ownExp = userToken?.let { decodeJwtExpSeconds(it) } ?: Long.MIN_VALUE
+        var bestAccess = userToken
+        var bestRefresh = refreshToken
+        var bestExp = ownExp
+
+        // Dart's writeAuthTokens mirror, written atomically with the pair.
+        val prefsAccess = try { SecurePrefsHelper.getString(this, "flutter.user_token", null)?.trim() } catch (_: Exception) { null }
+        val prefsRefresh = try { SecurePrefsHelper.getString(this, "flutter.refresh_token", null)?.trim() } catch (_: Exception) { null }
+        val prefsExp = prefsAccess?.takeIf { it.isNotBlank() }?.let { decodeJwtExpSeconds(it) }
+        if (!prefsAccess.isNullOrBlank() && prefsExp != null && prefsExp > bestExp) {
+            bestAccess = prefsAccess
+            bestRefresh = prefsRefresh
+            bestExp = prefsExp
+        }
+
+        // The dual-stored session snapshot, written by Dart on every auth
+        // event and by this service after its own rotations.
+        try {
+            val raw = SecurePrefsHelper.getString(this, "persisted_supabase_session", null)
+            if (!raw.isNullOrBlank()) {
+                val current = JSONObject(raw).optJSONObject("currentSession")
+                val snapAccess = current?.optString("access_token", "")?.trim()
+                val snapRefresh = current?.optString("refresh_token", "")?.trim()
+                val snapExp = snapAccess?.takeIf { it.isNotBlank() }?.let { decodeJwtExpSeconds(it) }
+                if (!snapAccess.isNullOrBlank() && snapExp != null && snapExp > bestExp) {
+                    bestAccess = snapAccess
+                    if (!snapRefresh.isNullOrBlank()) bestRefresh = snapRefresh
+                    bestExp = snapExp
+                }
+            }
+        } catch (_: Exception) {}
+
+        if (bestAccess.isNullOrBlank() || bestExp <= ownExp) return false
+        userToken = bestAccess
+        if (!bestRefresh.isNullOrBlank()) refreshToken = bestRefresh
+        // Adoption is not proof of life: the adopted pair may be just as
+        // revoked as the one this process held. The flag clears only on a
+        // successful refresh or an explicit new/changed token from Dart
+        // (ACTION_START / ACTION_UPDATE_TOKEN).
+        try {
+            SecurePrefsHelper.putString(this, "flutter.user_token", userToken)
+            if (!refreshToken.isNullOrBlank()) {
+                SecurePrefsHelper.putString(this, "flutter.refresh_token", refreshToken)
+            }
+        } catch (_: Exception) {}
+        return true
+    }
+
     private suspend fun ensureValidJwt() {
-        val token = userToken
-        val rt = refreshToken
-        
+        // Never spend a token the other process already rotated: adopt the
+        // newest known pair before deciding whether a refresh is due.
+        adoptNewestKnownTokens()
+
         if (authPermanentlyFailed) {
-            // Log.w(TAG, "Skipping JWT validation (auth permanently failed)")
             return
         }
-        
+
+        val token = userToken
+        val rt = refreshToken
+
         if (rt.isNullOrBlank() || supabaseUrl.isNullOrBlank() || supabaseKey.isNullOrBlank()) {
             return
         }
 
         // When the Flutter UI is in the foreground, Dart is the sole owner of
-        // token refresh (autoRefreshToken). Let Dart handle rotation to avoid
-        // concurrent refresh_token reuse (GoTrue rotating tokens are single-use).
+        // token rotation; its newest pair was already adopted above.
         if (appInForeground) {
-            // If Dart already refreshed, adopt its newer tokens from prefs.
-            try {
-                val latestRt = SecurePrefsHelper.getString(this, "flutter.refresh_token", null)?.trim()
-                val latestAt = SecurePrefsHelper.getString(this, "flutter.user_token", null)?.trim()
-                if (!latestRt.isNullOrBlank() && latestRt != rt) {
-                    refreshToken = latestRt
-                    if (!latestAt.isNullOrBlank()) userToken = latestAt
-                    authPermanentlyFailed = false
-                }
-            } catch (_: Exception) {}
             return
         }
 
         // If token is missing but we have a refresh token, try to refresh immediately
         if (token.isNullOrBlank()) {
-            // Re-read latest from prefs in case Dart just wrote it.
-            val latestRt = try { SecurePrefsHelper.getString(this, "flutter.refresh_token", null)?.trim() } catch (_: Exception) { null }
-            val effectiveRt = if (!latestRt.isNullOrBlank() && latestRt != rt) latestRt else rt
-            if (!latestRt.isNullOrBlank() && latestRt != rt) {
-                refreshToken = latestRt
-            }
-            refreshJwtToken(effectiveRt!!)
+            refreshJwtToken(rt)
             return
         }
 
@@ -3684,13 +3832,7 @@ class MatchMeBackgroundService : Service() {
         } else {
             // Log.d(TAG, "JWT expiring soon ($secondsLeft s). Refreshing in background service...")
         }
-        // Re-read latest before refresh to avoid using stale token if Dart won race
-        val latestRt = try { SecurePrefsHelper.getString(this, "flutter.refresh_token", null)?.trim() } catch (_: Exception) { null }
-        val effectiveRt = if (!latestRt.isNullOrBlank() && latestRt != rt) latestRt!! else rt
-        if (!latestRt.isNullOrBlank() && latestRt != rt) {
-            refreshToken = latestRt
-        }
-        refreshJwtToken(effectiveRt)
+        refreshJwtToken(rt)
     }
 
     /**
@@ -3720,6 +3862,15 @@ class MatchMeBackgroundService : Service() {
                 return response
             }
             try { response.close() } catch (_: Exception) {}
+
+            // A newer pair may have arrived from Dart since this request was
+            // built; retry with it instead of spending the older refresh token.
+            if (adoptNewestKnownTokens()) {
+                val adoptedExp = userToken?.let { decodeJwtExpSeconds(it) } ?: 0L
+                if (adoptedExp - System.currentTimeMillis() / 1000L > 120L) {
+                    return@repeat
+                }
+            }
 
             // Access token rejected: refresh once, then rebuild with the new
             // bearer header and retry.
@@ -3854,6 +4005,30 @@ class MatchMeBackgroundService : Service() {
         } catch (_: Exception) {}
     }
 
+    /** True when [token] is the exact refresh token the auth server refused. */
+    private fun isRejectedRefreshToken(token: String?): Boolean {
+        val candidate = token?.trim()
+        return !candidate.isNullOrEmpty() && candidate == rejectedRefreshToken
+    }
+
+    /** Remembers a server-rejected refresh token across process restarts. */
+    private fun rememberRejectedRefreshToken(token: String?) {
+        val candidate = token?.trim()
+        if (candidate.isNullOrEmpty()) return
+        rejectedRefreshToken = candidate
+        try {
+            SecurePrefsHelper.putString(this, "flutter.auth_rejected_refresh_token", candidate)
+        } catch (_: Exception) {}
+    }
+
+    /** A successful refresh proves a new family; stop blocking the old token. */
+    private fun forgetRejectedRefreshToken() {
+        rejectedRefreshToken = null
+        try {
+            SecurePrefsHelper.putString(this, "flutter.auth_rejected_refresh_token", null)
+        } catch (_: Exception) {}
+    }
+
     private suspend fun refreshJwtToken(currentRefreshToken: String) {
         if (supabaseUrl == null || supabaseKey == null) return
         // Serialize concurrent refreshes to avoid rotating token reuse
@@ -3862,23 +4037,17 @@ class MatchMeBackgroundService : Service() {
             return
         }
         try {
-            // Re-check latest token from prefs in case Dart won a race just before we locked
-            val prefsLatest = try { SecurePrefsHelper.getString(this, "flutter.refresh_token", null)?.trim() } catch (_: Exception) { null }
-            val tokenToUse = if (!prefsLatest.isNullOrBlank() && prefsLatest != currentRefreshToken) prefsLatest else currentRefreshToken
-            if (tokenToUse != currentRefreshToken) {
-                refreshToken = prefsLatest
-                // Also sync userToken if available
-                try {
-                    val latestAt = SecurePrefsHelper.getString(this, "flutter.user_token", null)?.trim()
-                    if (!latestAt.isNullOrBlank()) userToken = latestAt
-                } catch (_: Exception) {}
-                // If token changed, the new one is already fresh; no need to refresh now
-                val expCheck = userToken?.let { decodeJwtExpSeconds(it) }
-                if (expCheck != null) {
-                    val secsLeft = expCheck - System.currentTimeMillis() / 1000L
-                    if (secsLeft > 120) return
-                }
+            // Adopt the newest pair Dart wrote before spending anything:
+            // replaying a rotated token makes GoTrue revoke the whole family.
+            if (adoptNewestKnownTokens()) {
+                val adoptedExp = userToken?.let { decodeJwtExpSeconds(it) } ?: 0L
+                if (adoptedExp - System.currentTimeMillis() / 1000L > 120L) return
             }
+            val tokenToUse = refreshToken?.trim().takeUnless { it.isNullOrBlank() }
+                ?: currentRefreshToken
+            // Chokepoint for every caller (heartbeat, realtime connect, 401
+            // retry): never send a token the server has already refused.
+            if (authPermanentlyFailed && isRejectedRefreshToken(tokenToUse)) return
 
             val url = "${supabaseUrl}/auth/v1/token?grant_type=refresh_token"
             val jsonBody = JSONObject().apply {
@@ -3901,15 +4070,13 @@ class MatchMeBackgroundService : Service() {
                     if (body?.contains("refresh_token_already_used") == true ||
                         body?.contains("invalid_grant") == true ||
                         body?.contains("refresh_token_not_found") == true) {
-                        val latestRtAfter = try { SecurePrefsHelper.getString(this, "flutter.refresh_token", null)?.trim() } catch (_: Exception) { null }
-                        val latestAtAfter = try { SecurePrefsHelper.getString(this, "flutter.user_token", null)?.trim() } catch (_: Exception) { null }
-                        if (!latestRtAfter.isNullOrBlank() && latestRtAfter != tokenToUse) {
-                            // Dart refreshed concurrently and wrote new token - adopt it
-                            refreshToken = latestRtAfter
-                            if (!latestAtAfter.isNullOrBlank()) userToken = latestAtAfter
-                            authPermanentlyFailed = false
+                        if (adoptNewestKnownTokens() &&
+                            refreshToken != tokenToUse &&
+                            !isRejectedRefreshToken(refreshToken)
+                        ) {
+                            // Dart refreshed concurrently and wrote a newer pair
+                            // - adopt it and reconnect instead of marking failed.
                             try { securePrefs().edit().putBoolean("flutter.auth_permanently_failed", false).apply() } catch (_: Exception) {}
-                            // Reconnect with adopted token
                             disconnectRealtime()
                             connectToRealtime()
                             response.close()
@@ -3917,6 +4084,7 @@ class MatchMeBackgroundService : Service() {
                         }
                         // Do not clear tokens destructively - just mark failed without deleting valid new tokens
                         // Keep current tokens for potential recovery, only set flag
+                        rememberRejectedRefreshToken(tokenToUse)
                         authPermanentlyFailed = true
                         try { securePrefs().edit().putBoolean("flutter.auth_permanently_failed", true).apply() } catch (_: Exception) {}
                         // Do NOT remove flutter.user_token/refresh_token here - Dart may still have valid session
@@ -3954,6 +4122,7 @@ class MatchMeBackgroundService : Service() {
                 } catch (_: Exception) {}
 
                 authPermanentlyFailed = false
+                forgetRejectedRefreshToken()
 
                 // Reconnect realtime with the new token.
                 disconnectRealtime()
@@ -3965,6 +4134,35 @@ class MatchMeBackgroundService : Service() {
         }
     }
 
+    /**
+     * True when the cached access token is usable right now.
+     *
+     * This tick (every 30 s, and on resume) can run while the token Dart just
+     * refreshed is still being persisted, so the request used to go out with a
+     * JWT that had already expired and spend its one attempt on a 401 (the
+     * edge-log line at 2026-10-29T13:11:42Z carried a token 25 min past
+     * `exp`). Refreshing first - which adopts Dart's newer pair before
+     * spending the rotation - removes that round trip; skipping the tick when
+     * no fresh token can be obtained is safe because the next tick retries in
+     * 30 s.
+     *
+     * Tokens whose `exp` cannot be parsed are sent as before and left to the
+     * 401 retry in [executeWithFreshJwt].
+     */
+    private suspend fun ensureFreshAccessToken(): Boolean {
+        val secondsLeft = accessTokenSecondsLeft() ?: return true
+        if (secondsLeft > 60L) return true
+        refreshToken?.takeIf { it.isNotBlank() }?.let { refreshJwtToken(it) }
+        if (authPermanentlyFailed) return false
+        return (accessTokenSecondsLeft() ?: 0L) > 60L
+    }
+
+    private fun accessTokenSecondsLeft(): Long? {
+        val token = userToken ?: return null
+        val exp = decodeJwtExpSeconds(token) ?: return null
+        return exp - System.currentTimeMillis() / 1000L
+    }
+
     private suspend fun updateUserActivity() {
         if (userId == null || supabaseUrl == null || supabaseKey == null) return
         if (authPermanentlyFailed) {
@@ -3973,6 +4171,10 @@ class MatchMeBackgroundService : Service() {
         }
         if (userToken.isNullOrBlank()) {
             // Log.w(TAG, "Skipping update_user_activity RPC (missing user JWT)")
+            return
+        }
+        if (!ensureFreshAccessToken()) {
+            // Log.w(TAG, "Skipping update_user_activity RPC (no fresh JWT yet)")
             return
         }
 
@@ -4048,7 +4250,9 @@ class MatchMeBackgroundService : Service() {
             // Log.w(TAG, "Skipping Realtime connect (auth permanently failed)")
             return
         }
-        // Don't connect with null token; try refresh once so post-boot we get a token before joining
+        // Don't connect with a null token; adopt the newest known pair first
+        // (Dart may have rotated it while this service held the old one).
+        adoptNewestKnownTokens()
         if (userToken.isNullOrBlank()) {
             val rt = refreshToken
             if (!rt.isNullOrBlank()) {

@@ -79,7 +79,7 @@ subprojects {
             // A few AGP 9-aware plugins otherwise compile an empty AAR when
             // built-in Kotlin is disabled.
             sourceSets.getByName("main").java.srcDir("src/main/kotlin")
-            compileSdk = 36
+            compileSdk = 37
             // Third-party dependency lint crashes under the AGP 9 toolchain
             // must not block assembling this app's release artifact.
             lint {

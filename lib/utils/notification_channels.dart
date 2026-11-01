@@ -68,3 +68,19 @@ class AdminBroadcastChannels {
     _ => 'Admin broadcast announcements',
   };
 }
+
+/// Android notification **group** keys.
+///
+/// A group is what makes the tray bundle several per-conversation cards into
+/// one stack, and it is what lets the unread-badge carrier render as the
+/// stack's summary instead of as its own always-visible card.
+///
+/// Mirrored by `MatchMeBadgeController.GROUP_KEY_CHATS` (Kotlin); keep both in
+/// sync. Only conversation cards (chat messages, new match, match extended)
+/// belong here — expiry, admin broadcasts and live-location cards are not
+/// conversations and stay ungrouped so they never hide behind a chat summary.
+class NotificationGroups {
+  const NotificationGroups._();
+
+  static const String chats = 'matchme_chats';
+}

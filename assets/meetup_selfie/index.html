@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Selfie</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; background: #000; color: #fff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+  }
+  #stage {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 16px; padding: 24px;
+  }
+  #title { font-size: 22px; font-weight: 700; margin: 0; }
+  #hint { font-size: 14px; color: #c7c7cc; margin: 0; text-align: center; max-width: 520px; }
+  #wrap {
+    position: relative; width: min(78vw, 560px); aspect-ratio: 3 / 4;
+    border-radius: 18px; overflow: hidden; background: #111;
+    border: 1px solid #2c2c2e;
+  }
+  #video {
+    width: 100%; height: 100%; object-fit: cover;
+    transform: scaleX(-1);
+  }
+  #error {
+    display: none; position: absolute; inset: 0; align-items: center;
+    justify-content: center; padding: 24px; text-align: center; font-size: 15px;
+    color: #ffd60a; background: #111;
+  }
+  .controls { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+  button {
+    min-width: 160px; padding: 14px 22px; font-size: 16px; font-weight: 600;
+    border: none; border-radius: 12px; cursor: pointer;
+  }
+  #capture { background: #0a84ff; color: #fff; }
+  #capture:disabled { background: #3a3a3c; color: #8e8e93; cursor: default; }
+  #cancel { background: #3a3a3c; color: #fff; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <p id="title"></p>
+  <p id="hint"></p>
+  <div id="wrap">
+    <video id="video" autoplay playsinline muted></video>
+    <div id="error"></div>
+  </div>
+  <div class="controls">
+    <button id="capture" disabled></button>
+    <button id="cancel"></button>
+  </div>
+</div>
+<script>
+(function () {
+  const TITLE = __TITLE_JSON__;
+  const HINT = __HINT_JSON__;
+  const CAPTURE = __CAPTURE_JSON__;
+  const CANCEL = __CANCEL_JSON__;
+  const ERROR_TEXT = __ERROR_JSON__;
+
+  document.title = TITLE;
+  document.getElementById('title').textContent = TITLE;
+  document.getElementById('hint').textContent = HINT;
+  document.getElementById('capture').textContent = CAPTURE;
+  document.getElementById('cancel').textContent = CANCEL;
+
+  const video = document.getElementById('video');
+  const capture = document.getElementById('capture');
+  const cancel = document.getElementById('cancel');
+  const errorBox = document.getElementById('error');
+  let stream = null;
+  let stopping = false;
+
+  function post(channel, payload) {
+    try {
+      if (window[channel] && typeof window[channel].postMessage === 'function') {
+        window[channel].postMessage(payload);
+      }
+    } catch (_) {}
+  }
+
+  function report(code) {
+    post('ValidationLog', JSON.stringify({ type: 'selfieError', code: code }));
+  }
+
+  function fail(code) {
+    if (stopping) return;
+    stopping = true;
+    errorBox.textContent = ERROR_TEXT;
+    errorBox.style.display = 'flex';
+    capture.disabled = true;
+    report(code);
+  }
+
+  function stopStream() {
+    if (stream) {
+      stream.getTracks().forEach(function (track) { track.stop(); });
+      stream = null;
+    }
+  }
+
+  cancel.addEventListener('click', function () {
+    if (stopping) return;
+    stopping = true;
+    stopStream();
+    post('ValidationLog', JSON.stringify({ type: 'selfieCancel' }));
+  });
+
+  capture.addEventListener('click', function () {
+    if (stopping || !video.videoWidth || !video.videoHeight) return;
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      // Mirror the frame so the saved selfie matches the mirrored preview.
+      ctx.translate(canvas.width, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+      const base64 = dataUrl.split(',')[1] || '';
+      if (!base64) {
+        report('failed');
+        return;
+      }
+      stopping = true;
+      stopStream();
+      post('PhotoCapture', base64);
+    } catch (_) {
+      report('failed');
+    }
+  });
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    fail('unavailable');
+    return;
+  }
+
+  navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: {
+      facingMode: 'user',
+      width: { ideal: 1280 },
+      height: { ideal: 1707 }
+    }
+  }).then(function (mediaStream) {
+    stream = mediaStream;
+    video.srcObject = mediaStream;
+    video.onloadedmetadata = function () {
+      video.play().then(function () {
+        capture.disabled = false;
+      }).catch(function () {
+        capture.disabled = false;
+      });
+    };
+  }).catch(function (error) {
+    const name = (error && error.name) || '';
+    const denied = name === 'NotAllowedError' || name === 'PermissionDeniedError';
+    fail(denied ? 'denied' : 'unavailable');
+  });
+
+  window.addEventListener('beforeunload', stopStream);
+})();
+</script>
+</body>
+</html>

@@ -90,40 +90,6 @@ class ChatModel {
         ? DateTime.parse(json['match_created_at'])
         : DateTime.now());
 
-    String capWord(String word) {
-      if (word.isEmpty) return word;
-      final hyphenParts = word.split('-');
-      return hyphenParts
-          .map((h) {
-            if (h.isEmpty) return h;
-            return h
-                .split("'")
-                .map((s) {
-                  if (s.isEmpty) return s;
-                  final lower = s.toLowerCase();
-                  return '${lower[0].toUpperCase()}${lower.substring(1)}';
-                })
-                .join("'");
-          })
-          .join('-');
-    }
-
-    String maskNameLocal(dynamic raw) {
-      final s = (raw?.toString() ?? '').replaceAll(bidiControls, '');
-      if (s.trim().isEmpty) return 'Unknown User';
-      final parts = s
-          .trim()
-          .split(RegExp(r'\s+'))
-          .where((p) => p.isNotEmpty)
-          .toList();
-      if (parts.length > 1 &&
-          parts.last.toLowerCase() != parts.first.toLowerCase()) {
-        return '${capWord(parts.first)} ${parts.last.substring(0, 1).toUpperCase()}.'
-            .withDirectionalMarks();
-      }
-      return capWord(parts.first).withDirectionalMarks();
-    }
-
     // Accept preview/preview field from new RPC, legacy `last_message_content`, or local DB `last_message`
     final rawLastMessage =
         json['last_message_content'] ?? json['last_message'] ?? '';
@@ -132,10 +98,11 @@ class ChatModel {
     return ChatModel(
       matchId: json['match_id'] ?? '',
       otherUserId: json['other_user_id'] ?? '',
-      // Accept either server-side name column (`other_name`) or the legacy `other_user_name`
-      otherUserName: maskNameLocal(
-        json['other_user_name'] ?? json['other_name'] ?? 'Unknown User',
-      ),
+      // Accept either server-side name column (`other_name`) or the legacy
+      // `other_user_name`; both may be raw (local cache) or already masked.
+      otherUserName: (json['other_user_name'] ?? json['other_name'] ?? '')
+          .toString()
+          .formatAsFirstNameLastInitial(fallback: 'Unknown User'),
       otherUserPhotos: json['other_user_photos'] is List
           ? (json['other_user_photos'] as List)
                 .map((photo) => photo.toString().trim())
@@ -185,44 +152,6 @@ class ChatModel {
     if (trimmed.isEmpty || trimmed == 'null') return null;
     return trimmed;
   }
-
-  // --- NEW: Helper to format name as "First L." ---
-  String getFormattedName() {
-    if (otherUserName.isEmpty || otherUserName == 'Unknown User') {
-      return 'User...';
-    }
-
-    final cleaned = otherUserName.replaceAll(bidiControls, '').trim();
-    final parts = cleaned
-        .split(RegExp(r'\s+'))
-        .where((p) => p.isNotEmpty)
-        .toList();
-    if (parts.isEmpty) return 'User...';
-    String capWord(String word) {
-      if (word.isEmpty) return word;
-      final hyphenParts = word.split('-');
-      return hyphenParts
-          .map((h) {
-            if (h.isEmpty) return h;
-            return h
-                .split("'")
-                .map((s) {
-                  if (s.isEmpty) return s;
-                  final lower = s.toLowerCase();
-                  return '${lower[0].toUpperCase()}${lower.substring(1)}';
-                })
-                .join("'");
-          })
-          .join('-');
-    }
-
-    if (parts.length > 1 && parts.last.isNotEmpty) {
-      return '${capWord(parts.first)} ${parts.last[0].toUpperCase()}.'
-          .withDirectionalMarks();
-    }
-    return capWord(parts[0]).withDirectionalMarks();
-  }
-  // --- END NEW ---
 
   /// Sentinel letting [copyWith] tell "argument omitted" apart from
   /// "explicitly set this field to null".

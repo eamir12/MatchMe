@@ -11,12 +11,18 @@ import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/translation_version_provider.dart';
 import 'package:matchme/screens/chats/chat_screen.dart';
 
-ChatMessageModel _incomingMessage({String id = 'message-1'}) {
+ChatMessageModel _incomingMessage({
+  String id = 'message-1',
+  String? sourceLanguage,
+  String? translationStatus,
+}) {
   return ChatMessageModel(
     id: id,
     matchId: 'match-1',
     senderId: 'peer-user',
     contentOriginal: 'Hola',
+    detectedSourceLanguage: sourceLanguage,
+    translationStatus: translationStatus,
     createdAt: DateTime(2026, 1, 1, 12),
   );
 }
@@ -55,16 +61,50 @@ Finder _richTextWith(String text) {
 
 void main() {
   testWidgets(
-    'incoming bubble shows the original while its translation is pending',
+    'incoming bubble hides the original while its translation is pending',
     (tester) async {
       // Translation enabled, but no result yet (e.g. just toggled on and
-      // the provider is still re-evaluating). The bubble must render the
-      // original instead of collapsing to zero height.
+      // the provider is still re-evaluating). The bubble must show the
+      // translating placeholder instead of exposing the original.
       final pending = Completer<String>();
       await tester.pumpWidget(_wrap((ref, params) => pending.future));
       await tester.pump();
 
+      expect(_richTextWith('Hola'), findsNothing);
+      expect(_richTextWith('Translating…'), findsOneWidget);
+    },
+  );
+
+  testWidgets('incoming bubble shows the original after translation failed', (
+    tester,
+  ) async {
+    final pending = Completer<String>();
+    await tester.pumpWidget(
+      _wrap(
+        (ref, params) => pending.future,
+        message: _incomingMessage(translationStatus: 'failed'),
+      ),
+    );
+    await tester.pump();
+
+    expect(_richTextWith('Hola'), findsOneWidget);
+    expect(_richTextWith('Translating…'), findsNothing);
+  });
+
+  testWidgets(
+    'incoming bubble shows the original when source matches the UI language',
+    (tester) async {
+      final pending = Completer<String>();
+      await tester.pumpWidget(
+        _wrap(
+          (ref, params) => pending.future,
+          message: _incomingMessage(sourceLanguage: 'en'),
+        ),
+      );
+      await tester.pump();
+
       expect(_richTextWith('Hola'), findsOneWidget);
+      expect(_richTextWith('Translating…'), findsNothing);
     },
   );
 

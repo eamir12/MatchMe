@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<!--
+  Headless host page for the Windows on-device photo prescreen.
+
+  lib/services/photo_prescreen_windows.dart copies this page and
+  web/photo_prescreen.js into a temp directory, serves it through a virtual
+  https host (WebView2 needs a secure origin for the MediaPipe module imports)
+  and posts images in with postWebMessage. The detector returns the same map
+  the mobile ML Kit / Vision analyzers produce, so the Dart prescreen rules
+  behave identically on Windows.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MatchMe photo prescreen</title>
+<style>
+html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+</style>
+</head>
+<body>
+<script src="photo_prescreen.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  function post(payload) {
+    try {
+      window.chrome.webview.postMessage(JSON.stringify(payload));
+    } catch (_) {}
+  }
+
+  function analyze(id, base64) {
+    var api = window.MatchMePhotoPrescreen;
+    if (!api || typeof api.analyze !== 'function') {
+      post({
+        channel: 'PrescreenResult',
+        id: id,
+        result: { supported: false, error: 'detector-unavailable' }
+      });
+      return;
+    }
+    Promise.resolve()
+      .then(function () { return api.analyze(base64); })
+      .then(
+        function (result) {
+          post({ channel: 'PrescreenResult', id: id, result: result });
+        },
+        function (err) {
+          post({
+            channel: 'PrescreenResult',
+            id: id,
+            result: { supported: false, error: String(err) }
+          });
+        }
+      );
+  }
+
+  window.MatchMePrescreenHost = { analyze: analyze };
+
+  // postWebMessage delivers JSON as an object; tolerate a string too.
+  window.chrome.webview.addEventListener('message', function (event) {
+    var msg;
+    try {
+      msg = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+    } catch (_) {
+      return;
+    }
+    if (!msg || msg.type !== 'analyze') return;
+    analyze(msg.id, msg.image || '');
+  });
+
+  post({ channel: 'PrescreenReady' });
+})();
+</script>
+</body>
+</html>

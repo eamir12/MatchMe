@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/services/public_reference_data_service.dart';
-import 'package:matchme/services/supabase_realtime_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:matchme/utils/offline_utils.dart';
@@ -316,16 +315,16 @@ class AppConfigNotifier extends Notifier<Map<String, String>>
     } catch (e) {
       debugPrint('[AppConfig] Error setting up realtime stream: $e');
     }
-
-    SupabaseRealtimeManager.instance.register('app_config_stream', () {
-      return supabase.channel('app_config_stream');
-    });
+    // No SupabaseRealtimeManager registration here: the manager's health
+    // check verifies channels by name and expects factories that subscribe.
+    // This stream is a `.from('app_config').stream()` channel with its own
+    // auto-generated topic — a bare registered name would never match it and
+    // the manager would endlessly re-create a dead channel.
   }
 
   void _clearRealtimeSubscription() {
     _configStreamSub?.cancel();
     _configStreamSub = null;
-    SupabaseRealtimeManager.instance.unregister('app_config_stream');
   }
 
   /// Manually refresh config (e.g., after app comes to foreground)

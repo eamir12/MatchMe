@@ -199,8 +199,15 @@ bool sendAuthenticatedOfflineBeacon(
 void safeVibrate(Object pattern) {}
 
 /// No camera is available off the web.
+///
+/// [allowFileFallback] exists for strict camera flows (for example a selfie
+/// that must not come from the gallery). [onError] receives `unavailable`,
+/// `denied` or `failed`; a plain null result without an error means the user
+/// canceled.
 Future<Uint8List?> pickImageBytesFromCamera({
   String capture = 'user',
   String? captureButtonText,
   String? cancelButtonText,
+  bool allowFileFallback = true,
+  void Function(String error)? onError,
 }) async => null;

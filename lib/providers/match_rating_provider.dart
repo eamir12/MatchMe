@@ -171,9 +171,11 @@ class RatingSummaryRealtimeNotifier extends Notifier<int> {
     if (userId == null || userId.isEmpty) return;
 
     // 1) Public broadcast — the primary path for "B got rated by C, notify A".
-    SupabaseRealtimeManager.instance.register(
-      '${kRatingUpdatesChannel}_$userId',
-      () {
+    // Registered under the channel's real topic (the bare name the server
+    // broadcasts on): the manager's health check verifies channels by
+    // registered name, so a suffixed registration here would never match the
+    // live topic and the channel would be torn down and re-created forever.
+    SupabaseRealtimeManager.instance.register(kRatingUpdatesChannel, () {
         if (Supabase.instance.client.auth.currentSession == null) {
           throw Exception(
             'No active session — skipping rating broadcast subscription',
@@ -321,17 +323,11 @@ class RatingSummaryRealtimeNotifier extends Notifier<int> {
     _resumeDispose?.call();
     _resumeDispose = null;
     final userId = _channelUserId;
+    SupabaseRealtimeManager.instance.unregister(kRatingUpdatesChannel);
     if (userId != null && userId.isNotEmpty) {
-      SupabaseRealtimeManager.instance.unregister(
-        '${kRatingUpdatesChannel}_$userId',
-      );
       SupabaseRealtimeManager.instance.unregister(
         'match_ratings_for_user_$userId',
       );
-    } else {
-      // Best-effort: unregister the shared broadcast if user unknown
-      // (does not affect other users' suffixed registrations).
-      SupabaseRealtimeManager.instance.unregister(kRatingUpdatesChannel);
     }
   }
 }

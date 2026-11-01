@@ -20,6 +20,11 @@ class SignedImage extends StatefulWidget {
   final String
   source; // either "https://..." or "userId/123.jpg" or a public supabase URL
   final String? bucket; // optional bucket name, defaults to 'profile-photos'
+
+  /// Signed-URL lifetime. When null (the default), resolution goes through
+  /// AppConfigService's TTL lookup, which can block on a slow config fetch;
+  /// callers that know their TTL (ephemeral photos) pass it to skip that.
+  final int? ttlSeconds;
   final BoxFit fit;
   final double? width;
   final double? height;
@@ -37,6 +42,7 @@ class SignedImage extends StatefulWidget {
     super.key,
     required this.source,
     this.bucket,
+    this.ttlSeconds,
     this.fit = BoxFit.cover,
     this.width,
     this.height,
@@ -51,7 +57,7 @@ class SignedImage extends StatefulWidget {
   State<SignedImage> createState() => _SignedImageState();
 }
 
-class _SignedImageState extends State<SignedImage> {
+class _SignedImageState extends State<SignedImage> with WidgetsBindingObserver {
   Uint8List? _bytes;
   bool _failed = false;
   int _loadGeneration = 0;
@@ -60,6 +66,23 @@ class _SignedImageState extends State<SignedImage> {
   Uint8List? _lastNotifiedBytes;
   ValueChanged<Uint8List?>? _lastNotifiedCallback;
   bool _hasNotifiedBytes = false;
+
+  /// Backoff for transient load failures (no session yet, network blip,
+  /// signing timeout). Total budget ~2 minutes per failure, then the tile
+  /// gives up until the app resumes. A single failed attempt used to be
+  /// terminal, which left avatars faceless for the rest of the session.
+  static const List<Duration> _autoRetryDelays = [
+    Duration(milliseconds: 500),
+    Duration(seconds: 1),
+    Duration(seconds: 2),
+    Duration(seconds: 4),
+    Duration(seconds: 8),
+    Duration(seconds: 15),
+    Duration(seconds: 30),
+    Duration(seconds: 60),
+  ];
+  Timer? _autoRetryTimer;
+  int _autoRetryCount = 0;
 
   void _notifyBytesLoaded() {
     final callback = widget.onBytesLoaded;
@@ -82,6 +105,7 @@ class _SignedImageState extends State<SignedImage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _lastCacheKey = StorageHelper.cacheKeyForSource(
       widget.source,
       bucket: widget.bucket,
@@ -104,6 +128,9 @@ class _SignedImageState extends State<SignedImage> {
     );
     if (oldWidget.source != widget.source || _lastCacheKey != newCacheKey) {
       _loadGeneration++;
+      _autoRetryTimer?.cancel();
+      _autoRetryTimer = null;
+      _autoRetryCount = 0;
       _failed = false;
       _retryCount = 0;
       _lastCacheKey = newCacheKey;
@@ -117,6 +144,98 @@ class _SignedImageState extends State<SignedImage> {
       return;
     }
     _lastCacheKey = newCacheKey;
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _autoRetryTimer?.cancel();
+    _autoRetryTimer = null;
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    if (_bytes != null) return;
+    // Resume often follows a re-login (e.g. OAuth) that restores the
+    // session, so a failed tile gets a fresh retry budget.
+    if (!_failed && _autoRetryTimer == null) return;
+    _retryCount = 0;
+    _scheduleAutoRetry(immediate: true);
+  }
+
+  /// Schedules the next backoff attempt. [immediate] resets the budget and
+  /// retries on the next event-loop turn (app resume).
+  void _scheduleAutoRetry({bool immediate = false}) {
+    _autoRetryTimer?.cancel();
+    _autoRetryTimer = null;
+    if (immediate) {
+      _autoRetryCount = 0;
+    } else if (_autoRetryCount >= _autoRetryDelays.length) {
+      return;
+    }
+    final delay = immediate
+        ? Duration.zero
+        : _autoRetryDelays[_autoRetryCount++];
+    _autoRetryTimer = Timer(delay, () {
+      _autoRetryTimer = null;
+      if (!mounted) return;
+      if (_failed) setState(() => _failed = false);
+      unawaited(_load());
+    });
+  }
+
+  void _markLoaded(Uint8List bytes) {
+    _autoRetryTimer?.cancel();
+    _autoRetryTimer = null;
+    _autoRetryCount = 0;
+    _retryCount = 0;
+    if (!mounted) return;
+    setState(() {
+      _bytes = bytes;
+      _failed = false;
+    });
+  }
+
+  /// Called when an attempt produced no bytes. Keeps the placeholder up and
+  /// retries with backoff while the budget lasts; only exhausts to the error
+  /// tile (and logs why) once every delay has been used.
+  void _applyLoadFailure() {
+    if (!mounted) return;
+    final knownMissing = StorageHelper.isKnownMissing(
+      widget.source,
+      bucket: widget.bucket,
+    );
+    if (!knownMissing && _autoRetryCount < _autoRetryDelays.length) {
+      _scheduleAutoRetry();
+      if (_failed || _bytes != null) {
+        setState(() {
+          _bytes = null;
+          _failed = false;
+        });
+      }
+      return;
+    }
+    _autoRetryTimer?.cancel();
+    _autoRetryTimer = null;
+    if (!knownMissing) {
+      debugPrint(
+        '[IMG] gave up on ${_describeSource()} '
+        'after ${_autoRetryDelays.length} retries',
+      );
+    }
+    setState(() {
+      _bytes = null;
+      _failed = true;
+    });
+  }
+
+  /// Path only: a signed-URL source carries its token in the query string.
+  String _describeSource() {
+    final uri = Uri.tryParse(widget.source);
+    if (uri != null && uri.hasScheme) return uri.path;
+    return widget.source;
   }
 
   /// Physical-pixel width to decode at, derived from the widget's logical
@@ -135,16 +254,29 @@ class _SignedImageState extends State<SignedImage> {
   }
 
   String? _fallbackUrl() {
-    if (widget.source.isEmpty) return null;
-    if (StorageHelper.isKnownMissing(widget.source, bucket: widget.bucket)) {
+    final source = widget.source;
+    if (source.isEmpty) return null;
+    if (StorageHelper.isKnownMissing(source, bucket: widget.bucket)) {
       return null;
     }
-    if (widget.source.startsWith('http://') ||
-        widget.source.startsWith('https://')) {
-      return widget.source;
+    if (source.startsWith('http://') || source.startsWith('https://')) {
+      // A public-object URL for a private bucket answers 400 by design;
+      // requesting it can never succeed.
+      const marker = '/storage/v1/object/public/';
+      final path = Uri.tryParse(source)?.path ?? '';
+      final markerIndex = path.indexOf(marker);
+      if (markerIndex >= 0) {
+        final bucketInUrl = path
+            .substring(markerIndex + marker.length)
+            .split('/')
+            .first;
+        if (StorageHelper.isPrivateBucket(bucketInUrl)) return null;
+      }
+      return source;
     }
+    if (StorageHelper.isPrivateBucket(widget.bucket)) return null;
     return StorageHelper.buildPublicObjectUrl(
-      widget.source,
+      source,
       bucket: widget.bucket,
     );
   }
@@ -169,10 +301,7 @@ class _SignedImageState extends State<SignedImage> {
     final cached = await OfflineImageCache.instance.read(cacheKey);
     if (!mounted || generation != _loadGeneration) return;
     if (cached != null) {
-      setState(() {
-        _bytes = cached;
-        _failed = false;
-      });
+      _markLoaded(cached);
       return;
     }
 
@@ -181,10 +310,11 @@ class _SignedImageState extends State<SignedImage> {
     if (offlineCacheManager.shouldUseCachedData()) {
       final bytes = await _fetchDirectOrFallback(cacheKey);
       if (!mounted || generation != _loadGeneration) return;
-      setState(() {
-        _bytes = bytes;
-        _failed = bytes == null;
-      });
+      if (bytes != null) {
+        _markLoaded(bytes);
+      } else {
+        _applyLoadFailure();
+      }
       return;
     }
 
@@ -195,6 +325,7 @@ class _SignedImageState extends State<SignedImage> {
       request = await StorageHelper.resolveImageRequest(
         src,
         bucket: widget.bucket,
+        ttlSeconds: widget.ttlSeconds,
       );
     } catch (_) {
       request = null;
@@ -212,10 +343,11 @@ class _SignedImageState extends State<SignedImage> {
       }
       final bytes = await _fetchDirectOrFallback(cacheKey);
       if (!mounted || generation != _loadGeneration) return;
-      setState(() {
-        _bytes = bytes;
-        _failed = bytes == null;
-      });
+      if (bytes != null) {
+        _markLoaded(bytes);
+      } else {
+        _applyLoadFailure();
+      }
       return;
     }
 
@@ -229,14 +361,15 @@ class _SignedImageState extends State<SignedImage> {
     if (!mounted || generation != _loadGeneration) return;
     if (bytes == null) {
       // Signed URL fetch failed (expired, revoked, network blip): try the
-      // public/fallback URL once before giving up.
+      // direct/fallback URL once before scheduling a backoff retry.
       bytes = await _fetchDirectOrFallback(cacheKey);
       if (!mounted || generation != _loadGeneration) return;
     }
-    setState(() {
-      _bytes = bytes;
-      _failed = bytes == null;
-    });
+    if (bytes != null) {
+      _markLoaded(bytes);
+    } else {
+      _applyLoadFailure();
+    }
   }
 
   /// Best-effort fetch used when signed-URL creation is unavailable (offline
@@ -291,10 +424,7 @@ class _SignedImageState extends State<SignedImage> {
     // errorBuilder runs during build; defer the state change one frame.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      setState(() {
-        _bytes = null;
-        _failed = true;
-      });
+      _applyLoadFailure();
     });
   }
 

@@ -184,10 +184,18 @@ class OfflineMutationQueue {
           '[OfflineMutationQueue] ✅ Synced: ${mutation.type} on ${mutation.table}',
         );
       } on PostgrestException catch (e) {
+        // A 42501 while the client has NO session is the anon-fallback: the
+        // SDK dropped its in-memory session (refresh race / expired token)
+        // and PostgREST executed the call as `anon`, which has no grants.
+        // That is transient — the session ladder restores the session within
+        // seconds — so the mutation must be retried, not discarded. Only a
+        // 42501 with a session actually present is a genuine RLS denial for
+        // this user and can be treated as permanent.
+        final hasSession = supabase.auth.currentSession != null;
         final isPermanent =
-            e.code == '42501' || // RLS violation
             e.code == '23503' || // Foreign key violation
-            e.code == '42P01'; // Table not found
+            e.code == '42P01' || // Table not found
+            (e.code == '42501' && hasSession); // RLS violation (authed)
 
         if (isPermanent) {
           print(

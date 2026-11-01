@@ -2,14 +2,17 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/providers/chat_provider.dart';
 import 'package:matchme/providers/user_preferences_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/theme_provider.dart';
+import 'package:matchme/services/list_sync_gate.dart';
 import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/match_rating_service.dart';
+import 'package:matchme/services/notification_avatar_service.dart';
 import 'package:matchme/services/map_tile_cache_service.dart';
 import 'package:matchme/services/offline_cache_manager.dart';
 import 'package:matchme/services/storage_helper.dart';
@@ -76,6 +79,15 @@ class GlobalHomeSyncManager {
 
   // Fingerprint cache: skips save when server data hasn't changed
   static final Map<String, String> _lastSyncFingerprints = {};
+
+  // 12.1 list delta. The first sync of a process is a delta whenever a
+  // watermark exists; the full reconcile is deferred and jittered so a mass
+  // app open does not re-send every full list. Latched when the deployed RPC
+  // does not accept p_since yet, so the client keeps working before the
+  // migration lands.
+  final ListSyncGate _chatsListGate = ListSyncGate(kind: 'chats');
+  final ListSyncGate _matchesListGate = ListSyncGate(kind: 'matches');
+  static bool _listDeltaRpcUnsupported = false;
 
   // PostgREST caps a single response page (normally at 1,000 rows).
   static const int _chatHistoryPageSize = 1000;
@@ -400,9 +412,7 @@ class GlobalHomeSyncManager {
         debugPrint('✅ [SYNC] All sync tasks completed successfully');
         // Pick up tiles for any newly synced match locations (de-duplicated
         // per session; no-op when nothing is new).
-        unawaited(
-          MapTileCacheService.instance.warmCachedMatchMinimaps(),
-        );
+        unawaited(MapTileCacheService.instance.warmCachedMatchMinimaps());
       } else {
         debugPrint(
           '⚠️ [SYNC] Some sync tasks failed - keeping current connectivity state',
@@ -471,9 +481,7 @@ class GlobalHomeSyncManager {
   Future<void> _syncUserSettings(String userId) async {
     if (shouldSkipSupabaseCalls()) return;
     try {
-      await _ref
-          .read(userPreferencesProvider.notifier)
-          .reconcileFromServer();
+      await _ref.read(userPreferencesProvider.notifier).reconcileFromServer();
     } catch (_) {
       // Best effort: the next cycle retries.
     }
@@ -493,7 +501,8 @@ class GlobalHomeSyncManager {
   }
 
   /// Sync all pending mutations to Supabase
-  Future<void> _syncPendingMutations() async {    final pendingCount = await offlineCacheManager.getPendingMutationCount();
+  Future<void> _syncPendingMutations() async {
+    final pendingCount = await offlineCacheManager.getPendingMutationCount();
     if (pendingCount == 0) return;
 
     debugPrint('🔄 [SYNC] Syncing $pendingCount pending mutations...');
@@ -719,9 +728,9 @@ class GlobalHomeSyncManager {
       // Fire-and-forget: never blocks sync.
       unawaited(_warmMatchedUsersCache(userId, transformedMatches));
       unawaited(
-        MapTileCacheService.instance
-            .warmCachedMatchMinimaps()
-            .catchError((_) {}),
+        MapTileCacheService.instance.warmCachedMatchMinimaps().catchError(
+          (_) {},
+        ),
       );
     } catch (e) {
       if (!isExpectedOfflineFailure(e) && !isAuthRateLimitFailure(e)) {
@@ -842,6 +851,123 @@ class GlobalHomeSyncManager {
     }
   }
 
+  Future<({String? watermark, DateTime? lastFullAt})> _readListCursor(
+    ListSyncGate gate,
+    String userId,
+  ) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final watermark = prefs.getString(gate.watermarkKey(userId));
+      final fullAtMs = prefs.getInt(gate.fullSyncAtKey(userId));
+      return (
+        watermark: watermark,
+        lastFullAt: fullAtMs == null
+            ? null
+            : DateTime.fromMillisecondsSinceEpoch(fullAtMs, isUtc: true),
+      );
+    } catch (_) {
+      return (watermark: null, lastFullAt: null);
+    }
+  }
+
+  Future<void> _writeListCursor(
+    ListSyncGate gate,
+    String userId, {
+    required String? watermark,
+    required bool fullSynced,
+  }) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final key = gate.watermarkKey(userId);
+      if (watermark == null || watermark.isEmpty) {
+        await prefs.remove(key);
+      } else {
+        await prefs.setString(key, watermark);
+      }
+      if (fullSynced) {
+        await prefs.setInt(
+          gate.fullSyncAtKey(userId),
+          DateTime.now().toUtc().millisecondsSinceEpoch,
+        );
+      }
+    } catch (_) {}
+  }
+
+  // A watermark cannot see a deleted match. On a full fetch whose page is not
+  // capped, the rows are the complete server list, so cached matches missing
+  // from it no longer exist (unmatch) and must go.
+  static void _pruneMissingMatches(
+    List<Map<String, dynamic>> cached,
+    Iterable<Map<String, dynamic>> fetched,
+  ) {
+    final ids = <String>{
+      for (final row in fetched)
+        (row['match_id'] ?? row['id'])?.toString() ?? '',
+    }..remove('');
+    cached.removeWhere((m) {
+      final id = (m['match_id'] ?? m['id'])?.toString() ?? '';
+      return id.isNotEmpty && !ids.contains(id);
+    });
+  }
+
+  static bool _isMissingRpcSignature(Object error) {
+    if (error is PostgrestException) {
+      return error.code == 'PGRST202' ||
+          error.message.contains('Could not find the function');
+    }
+    return false;
+  }
+
+  Future<({List<dynamic> rows, bool isFull})> _fetchRecentChats({
+    required String userId,
+    required int limit,
+    required String? since,
+  }) async {
+    if (since != null && !_listDeltaRpcUnsupported) {
+      try {
+        final rows = await supabase.rpc(
+          'get_user_recent_chats',
+          params: {'p_user_id': userId, 'p_limit': limit, 'p_since': since},
+        );
+        return (rows: rows is List ? rows : const <dynamic>[], isFull: false);
+      } catch (e) {
+        if (!_isMissingRpcSignature(e)) rethrow;
+        _listDeltaRpcUnsupported = true;
+        debugPrint('[SYNC] p_since RPC not deployed yet; using the full list');
+      }
+    }
+    final rows = await supabase.rpc(
+      'get_user_recent_chats',
+      params: {'p_user_id': userId, 'p_limit': limit},
+    );
+    return (rows: rows is List ? rows : const <dynamic>[], isFull: true);
+  }
+
+  Future<({List<dynamic> rows, bool isFull})> _fetchRecentMatches({
+    required String userId,
+    required int limit,
+    required String? since,
+  }) async {
+    if (since != null && !_listDeltaRpcUnsupported) {
+      try {
+        final rows = await supabase.rpc(
+          'get_user_recent_matches',
+          params: {'p_user_id': userId, 'p_limit': limit, 'p_since': since},
+        );
+        return (rows: rows is List ? rows : const <dynamic>[], isFull: false);
+      } catch (e) {
+        if (!_isMissingRpcSignature(e)) rethrow;
+        _listDeltaRpcUnsupported = true;
+        debugPrint('[SYNC] p_since RPC not deployed yet; using the full list');
+      }
+    }
+    final rows = await supabase.rpc(
+      'get_user_recent_matches',
+      params: {'p_user_id': userId, 'p_limit': limit},
+    );
+    return (rows: rows is List ? rows : const <dynamic>[], isFull: true);
+  }
+
   Future<void> syncChatsNow(String userId, {bool force = false}) async {
     if (_disposed) {
       final currentAuthUser = supabase.auth.currentUser?.id;
@@ -854,8 +980,8 @@ class GlobalHomeSyncManager {
       }
     }
 
-    // Skip sync if Supabase communication is paused
-    if (shouldSkipSupabaseCalls()) {
+    // Skip sync if Supabase communication is paused or the session is dead
+    if (shouldSkipUserScopedSupabaseCalls()) {
       debugPrint(
         '⏸️ [SYNC] syncChatsNow: Skipped - Supabase communication paused',
       );
@@ -956,16 +1082,38 @@ class GlobalHomeSyncManager {
               'sync.full_items_limit',
               defaultValue: 500,
             );
-            final recent = await supabase.rpc(
-              'get_user_recent_chats',
-              params: {'p_user_id': userId, 'p_limit': fullLimit},
+            final cursor = await _readListCursor(_chatsListGate, userId);
+            final plan = _chatsListGate.plan(
+              userId: userId,
+              watermark: cursor.watermark,
+              lastFullAt: cursor.lastFullAt,
+              now: DateTime.now().toUtc(),
             );
+            var fetch = await _fetchRecentChats(
+              userId: userId,
+              limit: fullLimit,
+              since: plan.since,
+            );
+            var isFullList = fetch.isFull;
+            var recent = fetch.rows;
+            if (!isFullList && recent.length >= fullLimit) {
+              // More changes than one page can express: a full fetch is the
+              // authoritative answer and the watermark must not advance past
+              // the rows this page would have dropped.
+              fetch = await _fetchRecentChats(
+                userId: userId,
+                limit: fullLimit,
+                since: null,
+              );
+              isFullList = true;
+              recent = fetch.rows;
+            }
 
             await keyReady;
 
             if (kDebugMode) {
               debugPrint(
-                '📊 syncChatsNow: Server returned ${recent.length} chats',
+                '📊 syncChatsNow: ${isFullList ? 'full' : 'delta'} fetch returned ${recent.length} chats',
               );
               for (final row in recent) {
                 if (row is Map) {
@@ -977,11 +1125,13 @@ class GlobalHomeSyncManager {
               }
             } else {
               debugPrint(
-                '📊 syncChatsNow: Server returned ${recent.length} chats',
+                '📊 syncChatsNow: ${isFullList ? 'full' : 'delta'} fetch returned ${recent.length} chats',
               );
             }
 
-            if (recent is List) {
+            // A delta with no rows has already returned; an empty full result
+            // still has to clear the local list.
+            if (recent.isNotEmpty || isFullList) {
               final List<Map<String, dynamic>> transformed = [];
 
               for (final row in recent) {
@@ -1299,8 +1449,38 @@ class GlobalHomeSyncManager {
                 } catch (_) {}
               }
 
+              if (!isFullList && transformed.isEmpty) {
+                // Nothing changed since the watermark: keep the cache and the
+                // watermark exactly as they are.
+                await _writeListCursor(
+                  _chatsListGate,
+                  userId,
+                  watermark: plan.since,
+                  fullSynced: false,
+                );
+                return;
+              }
+
+              // A delta page carries only the changed chats, and saveChats
+              // replaces the stored list; merge with the cache first so
+              // unchanged chats survive.
+              var chatsToSave = transformed;
+              if (!isFullList) {
+                final existingChats = await localDb.watchChats(userId).first;
+                final mergedById = <String, Map<String, dynamic>>{
+                  for (final c in existingChats)
+                    (c['match_id']?.toString() ?? ''): c,
+                };
+                for (final c in transformed) {
+                  final id = c['match_id']?.toString() ?? '';
+                  if (id.isNotEmpty) mergedById[id] = c;
+                }
+                mergedById.remove('');
+                chatsToSave = mergedById.values.toList();
+              }
+
               // Fingerprint check: skip save if data hasn't changed
-              final fingerprint = _computeChatsFingerdebugPrint(transformed);
+              final fingerprint = _computeChatsFingerdebugPrint(chatsToSave);
               final previousFingerprint = _lastSyncFingerprints[userId];
               if (previousFingerprint == fingerprint) {
                 if (transformed.isEmpty && recent.isNotEmpty) {
@@ -1312,31 +1492,38 @@ class GlobalHomeSyncManager {
                 _lastSyncFingerprints[userId] = fingerprint;
 
                 debugPrint(
-                  '📊 syncChatsNow: About to save ${transformed.length} chats to local DB',
+                  '📊 syncChatsNow: About to save ${chatsToSave.length} chats to local DB',
                 );
-                for (final chat in transformed) {
+                for (final chat in chatsToSave) {
                   debugPrint(
                     '📊 syncChatsNow: Saving chat ${chat['match_id']}: unread_count=${chat['unread_count']}',
                   );
                 }
                 // Guard: don't overwrite valid local cache with empty server response.
                 // A transient RPC blip (e.g. auth refresh, RLS race, connection pool)
-                // can return zero rows even though the user has chats.
-                if (transformed.isEmpty) {
+                // can return zero rows even though the user has chats. An empty delta
+                // returned earlier, so reaching here with an empty list means a full
+                // fetch confirmed the account has no chats.
+                if (chatsToSave.isEmpty) {
                   if (kIsWeb) {
                     debugPrint(
                       '🔍 [WEB] syncChatsNow: Server returned 0 chats — clearing local cache',
                     );
                   }
-                  await localDb.saveChats(userId, transformed);
+                  await localDb.saveChats(userId, chatsToSave);
                 } else {
-                  await localDb.saveChats(userId, transformed);
+                  await localDb.saveChats(userId, chatsToSave);
                 }
                 if (kIsWeb) {
                   debugPrint(
                     '🔍 [WEB] syncChatsNow: Completed saving chats to local DB',
                   );
                 }
+                // The tray card's avatar: mirror what these rows point at,
+                // from bytes already cached, off the sync's critical path.
+                unawaited(
+                  NotificationAvatarService.instance.syncFromChats(transformed),
+                );
 
                 // Sync translation settings from server for each chat to ensure
                 // they match database state. Hive writes are independent, so run
@@ -1397,6 +1584,16 @@ class GlobalHomeSyncManager {
                   debugPrint('⚠️ Failed to update translation provider: $e');
                 }
               }
+
+              // Advance only after the fetch succeeded. A delta carries the
+              // newest updated_at it saw; an empty full result clears the
+              // watermark so the next sync re-checks a list that was empty.
+              await _writeListCursor(
+                _chatsListGate,
+                userId,
+                watermark: maxUpdatedAt(recent) ?? plan.since,
+                fullSynced: isFullList,
+              );
             }
           } catch (e) {
             if (!isExpectedOfflineFailure(e) && !isAuthRateLimitFailure(e)) {
@@ -1427,9 +1624,10 @@ class GlobalHomeSyncManager {
       // `last_message_edited_at` is part of the fingerprint: an edit changes
       // neither the preview text nor the message id, so without it a sync that
       // only observed an edit would be skipped and the stale cached
-      // translation would never be re-evaluated.
+      // translation would never be re-evaluated. `archived_at` and `updated_at`
+      // cover the delta rows whose only change is one of those columns.
       buffer.write(
-        '${chat['match_id']}|${chat['unread_count']}|${chat['last_message_id']}|${chat['last_message']}|${chat['translation_enabled']}|${chat['translation_language']}|${chat['last_message_translated']}|${chat['last_message_target_language']}|${chat['last_message_translated_edited_at']}|${chat['last_message_edited_at']}|${chat['matched_intent']}|',
+        '${chat['match_id']}|${chat['unread_count']}|${chat['last_message_id']}|${chat['last_message']}|${chat['translation_enabled']}|${chat['translation_language']}|${chat['last_message_translated']}|${chat['last_message_target_language']}|${chat['last_message_translated_edited_at']}|${chat['last_message_edited_at']}|${chat['matched_intent']}|${chat['archived_at']}|${chat['updated_at']}|',
       );
     }
     return buffer.toString();
@@ -1475,12 +1673,46 @@ class GlobalHomeSyncManager {
           'sync.full_items_limit',
           defaultValue: 500,
         );
-        final recent = await supabase.rpc(
-          'get_user_recent_matches',
-          params: {'p_user_id': userId, 'p_limit': fullLimit},
+        final cursor = await _readListCursor(_matchesListGate, userId);
+        final plan = _matchesListGate.plan(
+          userId: userId,
+          watermark: cursor.watermark,
+          lastFullAt: cursor.lastFullAt,
+          now: DateTime.now().toUtc(),
+        );
+        var fetch = await _fetchRecentMatches(
+          userId: userId,
+          limit: fullLimit,
+          since: plan.since,
+        );
+        var isFullList = fetch.isFull;
+        var recent = fetch.rows;
+        if (!isFullList && recent.length >= fullLimit) {
+          fetch = await _fetchRecentMatches(
+            userId: userId,
+            limit: fullLimit,
+            since: null,
+          );
+          isFullList = true;
+          recent = fetch.rows;
+        }
+
+        debugPrint(
+          '📊 syncMatchesNow: ${isFullList ? 'full' : 'delta'} fetch returned ${recent.length} matches',
         );
 
-        if (recent is List) {
+        if (!isFullList && recent.isEmpty) {
+          // Nothing changed since the watermark: keep the cached matches.
+          await _writeListCursor(
+            _matchesListGate,
+            userId,
+            watermark: plan.since,
+            fullSynced: false,
+          );
+          return;
+        }
+
+        if (recent.isNotEmpty || isFullList) {
           final rows = recent
               .whereType<Map>()
               .map((e) => Map<String, dynamic>.from(e))
@@ -1585,12 +1817,21 @@ class GlobalHomeSyncManager {
             }
             mergedById.remove('');
             final mergedList = mergedById.values.toList();
+            if (isFullList && recent.length < fullLimit) {
+              _pruneMissingMatches(mergedList, normalized);
+            }
             await localDb.saveMatches(userId, mergedList);
             unawaited(_warmMatchedUsersCache(userId, mergedList));
             unawaited(
-              MapTileCacheService.instance
-                  .warmCachedMatchMinimaps()
-                  .catchError((_) {}),
+              MapTileCacheService.instance.warmCachedMatchMinimaps().catchError(
+                (_) {},
+              ),
+            );
+            await _writeListCursor(
+              _matchesListGate,
+              userId,
+              watermark: maxUpdatedAt(rows) ?? plan.since,
+              fullSynced: isFullList,
             );
             return;
           }
@@ -1794,12 +2035,25 @@ class GlobalHomeSyncManager {
             }
             mergedById.remove('');
             final mergedList2 = mergedById.values.toList();
+            // Only trust the list as complete when every RPC row resolved to a
+            // table row; a partial resolve must not delete the missing ones.
+            if (isFullList &&
+                recent.length < fullLimit &&
+                transformedMatches.length == rows.length) {
+              _pruneMissingMatches(mergedList2, transformedMatches);
+            }
             await localDb.saveMatches(userId, mergedList2);
             unawaited(_warmMatchedUsersCache(userId, mergedList2));
             unawaited(
-              MapTileCacheService.instance
-                  .warmCachedMatchMinimaps()
-                  .catchError((_) {}),
+              MapTileCacheService.instance.warmCachedMatchMinimaps().catchError(
+                (_) {},
+              ),
+            );
+            await _writeListCursor(
+              _matchesListGate,
+              userId,
+              watermark: maxUpdatedAt(rows) ?? plan.since,
+              fullSynced: isFullList,
             );
             return;
           }

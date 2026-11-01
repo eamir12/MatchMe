@@ -439,6 +439,18 @@ class AppThemeTokens {
       displayColor: scheme.onSurface,
     );
     return applied.copyWith(
+      // The Material 3 small styles are sized for dense toolbars, not for the
+      // list rows this app is built out of. These are the sizes WhatsApp,
+      // Telegram and the iOS list styles ship: 16 for a row title, 14 for its
+      // status line, and nothing user-facing under 12.
+      titleSmall: applied.titleSmall?.copyWith(
+        inherit: true,
+        fontSize: 16,
+        fontWeight: FontWeight.w600,
+      ),
+      bodySmall: applied.bodySmall?.copyWith(inherit: true, fontSize: 14),
+      labelLarge: applied.labelLarge?.copyWith(inherit: true, fontSize: 15),
+      labelSmall: applied.labelSmall?.copyWith(inherit: true, fontSize: 12),
       headlineLarge: applied.headlineLarge?.copyWith(
         inherit: true,
         fontWeight: FontWeight.w700,

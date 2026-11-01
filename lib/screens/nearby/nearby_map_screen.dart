@@ -9,6 +9,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:proj4dart/proj4dart.dart' as proj4;
+import 'package:matchme/providers/auth_provider.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/providers/current_location_provider.dart';
 import 'package:matchme/providers/home_providers.dart';
@@ -28,6 +29,7 @@ import 'package:matchme/services/user_activity_service.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/utils/country_localized_names.dart';
 import 'package:matchme/utils/map_theme_utils.dart';
+import 'package:matchme/utils/lat_lng_smoother.dart';
 import 'package:matchme/utils/unit_utils.dart';
 import 'package:matchme/utils/nearby_map_camera.dart';
 import 'package:matchme/utils/nearby_map_counts.dart';
@@ -178,6 +180,11 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
   LatLng? _followAnimFrom;
   LatLng? _followAnimTarget;
   static const Duration _followAnimDuration = Duration(milliseconds: 900);
+  late final LatLngSmoother _userLatLngSmoother;
+  final ValueNotifier<LatLng?> _displayUserLatLng = ValueNotifier<LatLng?>(
+    null,
+  );
+  LatLng? _lastRawUserLatLng;
 
   /// Starts/stops the service-owned live stream according to the current
   /// gates. Both directions are idempotent, so it is safe to call from any
@@ -221,6 +228,10 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
     _pulseController = AnimationController(
       duration: const Duration(milliseconds: 2000),
       vsync: this,
+    );
+    _userLatLngSmoother = LatLngSmoother(
+      vsync: this,
+      onChanged: (position) => _displayUserLatLng.value = position,
     );
     _pulseAnimation = Tween<double>(
       begin: 0.0,
@@ -601,6 +612,8 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
     } catch (_) {}
     _cameraZoom.dispose();
     _cameraCenter.dispose();
+    _userLatLngSmoother.dispose();
+    _displayUserLatLng.dispose();
     _stopFollowAnimation();
     _pulseController.dispose();
     super.dispose();
@@ -1160,7 +1173,11 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
   @override
   Widget build(BuildContext context) {
     final l10n = ref.watch(localizationProvider);
-    final userId = Supabase.instance.client.auth.currentUser?.id;
+    // Same transient-null guard as home/profile: the raw auth client can be
+    // empty for a few hundred ms while the recovery ladder re-seeds it, and
+    // the auth provider still holds the session throughout that window.
+    final userId = Supabase.instance.client.auth.currentUser?.id ??
+        ref.watch(authStateProvider).value?.session?.user.id;
     final isOnline = ref.watch(connectivityProvider).value ?? true;
     // The "Showing ~N users" pill must state exactly what the map plots, so
     // it is derived from the SAME query as the markers below.
@@ -1183,9 +1200,7 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
         : null;
 
     if (userId == null) {
-      return Scaffold(
-        body: Center(child: Text(l10n.getString('generalError'))),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     final profileAsync = ref.watch(userProfileProvider(userId));
@@ -1221,6 +1236,17 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
             ? (pinnedLatLng ?? gpsLatLng ?? _lastKnownUserCenter)
             : (gpsLatLng ?? _lastKnownUserCenter);
         if (userLatLng != null) {
+          final rawUserLatLng = userLatLng;
+          if (_lastRawUserLatLng != rawUserLatLng) {
+            _lastRawUserLatLng = rawUserLatLng;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted || _lastRawUserLatLng != rawUserLatLng) return;
+              _userLatLngSmoother.update(
+                rawUserLatLng,
+                immediate: pin.isActive || _reduceMotion,
+              );
+            });
+          }
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
             if (gpsLatLng != null) _lastKnownUserCenter = gpsLatLng;
@@ -1501,16 +1527,22 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                                     ],
                                   ),
                                   AnimatedBuilder(
-                                    animation: _pulseAnimation,
+                                    animation: Listenable.merge([
+                                      _pulseAnimation,
+                                      _displayUserLatLng,
+                                    ]),
                                     builder: (context, _) {
                                       final t = _pulseAnimation.value;
+                                      final center =
+                                          _displayUserLatLng.value ??
+                                          userLatLng;
                                       final fullRadius =
                                           defaultRadiusKm * 1000.0;
                                       return CircleLayer(
                                         circles: [
                                           // Static faint fill at full radius
                                           CircleMarker(
-                                            point: userLatLng,
+                                            point: center,
                                             radius: fullRadius,
                                             useRadiusInMeter: true,
                                             color: Colors.blueAccent.withValues(
@@ -1522,7 +1554,7 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                                           ),
                                           // Expanding ring from center to full radius
                                           CircleMarker(
-                                            point: userLatLng,
+                                            point: center,
                                             radius: fullRadius * t,
                                             useRadiusInMeter: true,
                                             color: Colors.blueAccent.withValues(
@@ -1545,8 +1577,16 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                                       radiusKm: defaultRadiusKm,
                                     ),
                                   ),
-                                  MarkerLayer(
-                                    markers: [_buildUserMarker(userLatLng)],
+                                  AnimatedBuilder(
+                                    animation: _displayUserLatLng,
+                                    builder: (context, _) {
+                                      final center =
+                                          _displayUserLatLng.value ??
+                                          userLatLng;
+                                      return MarkerLayer(
+                                        markers: [_buildUserMarker(center)],
+                                      );
+                                    },
                                   ),
                                 ],
                               );
@@ -3083,15 +3123,9 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
     }
   }
 
-  String _formatCount(int n) {
-    if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
-    if (n >= 10000) return '${(n / 1000).toStringAsFixed(0)}k';
-    if (n >= 1000) return '${(n / 1000).toStringAsFixed(1)}k';
-    return n.toString();
-  }
-
   List<Marker> _buildMarkers(BuildContext context) {
     final markers = <Marker>[];
+    final l10n = ref.read(localizationProvider);
     for (final entry in _counts) {
       final center = _countryCenters[entry.countryCode];
       if (center == null) continue;
@@ -3120,7 +3154,7 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
                     name,
                     style: const TextStyle(
                       color: Colors.white,
-                      fontSize: 10,
+                      fontSize: 12,
                       fontWeight: FontWeight.w500,
                     ),
                     overflow: TextOverflow.visible,
@@ -3143,7 +3177,7 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
                       vertical: 4,
                     ),
                     child: Text(
-                      _formatCount(entry.count),
+                      l10n.formatCount(entry.count),
                       style: Theme.of(context).textTheme.labelMedium?.copyWith(
                         color: Colors.white,
                         fontWeight: FontWeight.w700,
@@ -3385,7 +3419,7 @@ Widget _buildScaleIndicator(
   final labelPainter = TextPainter(
     text: TextSpan(
       text: label,
-      style: TextStyle(fontSize: 10, color: color),
+      style: TextStyle(fontSize: 12, color: color),
     ),
     textDirection: TextDirection.ltr,
     textScaler: textScaler,
@@ -3460,7 +3494,7 @@ class _ScaleBarPainter extends CustomPainter {
       text: TextSpan(
         text: label,
         style: TextStyle(
-          fontSize: 10,
+          fontSize: 12,
           color: color,
           fontWeight: FontWeight.w500,
         ),

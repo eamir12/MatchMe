@@ -61,11 +61,59 @@ extension StringExtension on String {
     return false;
   }
 
-  /// Capitalizes a person's name, handling multiple first/last names
-  /// (e.g. Spanish "ana maria hernandez martinez"), hyphenated names
-  /// ("jean-pierre"), and apostrophes ("o'brien" -> "O'Brien").
-  /// Common particles (de, del, la, y, van, von, ...) stay lowercase unless
-  /// they are the first word.
+  /// True when this string holds a first and a last name — at least two
+  /// whitespace-separated words, ignoring the bidi marks the app adds.
+  ///
+  /// Single-word names are not allowed anywhere in the product: they cannot
+  /// be displayed as "First L.", so every name entry point and the users
+  /// trigger require both parts.
+  bool get hasFirstAndLastName {
+    final cleaned = replaceAll(bidiControls, '').trim();
+    if (cleaned.isEmpty) return false;
+    final parts = cleaned
+        .split(RegExp(r'\s+'))
+        .where((p) => p.isNotEmpty)
+        .length;
+    return parts >= 2;
+  }
+
+  /// The one and only display-name formatter of the app: "John S.".
+  ///
+  /// It takes the first word of the name and the initial of the last word.
+  /// A name that cannot produce that shape — empty, whitespace, or a single
+  /// word — returns [fallback] instead. A bare first name and a full last
+  /// name must never reach the UI, so this method never returns either of
+  /// them.
+  ///
+  /// Capitalizes the displayed word regardless of how it was typed
+  /// ("jOHN dOE" -> "John D."), handles hyphens and apostrophes
+  /// ("jean-pierre" -> "Jean-Pierre", "o'brien" -> "O'Brien"), and keeps the
+  /// directional mark of the name's own script, so the trailing period stays
+  /// glued to the initial in a Hebrew UI too. Idempotent: re-formatting an
+  /// already-masked "John S." returns it unchanged.
+  String formatAsFirstNameLastInitial({String fallback = ''}) {
+    final cleaned = replaceAll(bidiControls, '').trim();
+    if (cleaned.isEmpty) return fallback;
+    final parts = cleaned
+        .split(RegExp(r'\s+'))
+        .where((p) => p.isNotEmpty)
+        .toList(growable: false);
+    if (parts.length < 2) return fallback;
+    final last = parts.last;
+    final initial = last.isEmpty ? '' : last[0].toUpperCase();
+    if (initial.isEmpty) return fallback;
+    return '${_capitalizeNameWord(parts.first)} $initial.'
+        .withDirectionalMarks();
+  }
+
+  /// Capitalizes a person's own full name for the surfaces where only the
+  /// signed-in user sees it (their profile, the home greeting).
+  ///
+  /// Handles multiple first/last names (e.g. Spanish "ana maria hernandez
+  /// martinez"), hyphenated names ("jean-pierre"), and apostrophes
+  /// ("o'brien" -> "O'Brien"). Common particles (de, del, la, y, van, von, ...)
+  /// stay lowercase unless they are the first word. Never use this for another
+  /// person's name — those are shown with [formatAsFirstNameLastInitial].
   String capitalizeName() {
     final cleaned = replaceAll(bidiControls, '').trim();
     if (cleaned.isEmpty) return '';
@@ -88,63 +136,8 @@ extension StringExtension on String {
         .join(' ');
   }
 
-  /// Formats a full name as "First LastInitial." (e.g., "John Doe" -> "John D.")
-  /// For Latin American names with multiple names, returns all first names
-  /// plus the initial of the last name. Example: "Ana Maria Hernandez Martinez"
-  /// -> "Ana Maria H."
-  /// Capitalizes every displayed name part regardless of how the user typed it:
-  /// "jOHN dOE" -> "John D.", "ana maria hernandez martinez" -> "Ana Maria H."
-  ///
-  /// The result carries the directional mark of the name's own script, so the
-  /// trailing period stays glued to the initial wherever the name is shown —
-  /// on its own or inside a sentence, in a Hebrew or an English UI.
-  String formatAsFirstNameLastInitial() {
-    final cleaned = replaceAll(bidiControls, '').trim();
-    if (cleaned.isEmpty) return this;
-    final parts = cleaned
-        .split(RegExp(r'\s+'))
-        .where((p) => p.isNotEmpty)
-        .toList();
-    if (parts.isEmpty) return this;
-
-    String capFirstName(String word, bool isFirst) {
-      if (!isFirst && _nameParticles.contains(word.toLowerCase())) {
-        return word.toLowerCase();
-      }
-      return _capitalizeNameWord(word);
-    }
-
-    if (parts.length == 1) {
-      // Single word name, capitalize it
-      return _capitalizeNameWord(parts[0]).withDirectionalMarks();
-    } else if (parts.length == 2) {
-      // Simple case: "John Doe" -> "John D."
-      final first = capFirstName(parts[0], true);
-      final initial = parts[1].isNotEmpty ? parts[1][0].toUpperCase() : '';
-      if (initial.isEmpty) return first.withDirectionalMarks();
-      return '$first $initial.'.withDirectionalMarks();
-    } else {
-      // Multiple names: "Ana Maria Hernandez Martinez" -> "Ana Maria H."
-      // First names = all words except the last one
-      final firstNames = parts
-          .sublist(0, parts.length - 1)
-          .asMap()
-          .entries
-          .map((e) {
-            return capFirstName(e.value, e.key == 0);
-          })
-          .join(' ');
-      final lastInitial = parts.last.isNotEmpty
-          ? parts.last[0].toUpperCase()
-          : '';
-      if (lastInitial.isEmpty) return firstNames.withDirectionalMarks();
-      return '$firstNames $lastInitial.'.withDirectionalMarks();
-    }
-  }
-
   /// This string without the explicit bidi controls the app adds around names.
   String get withoutBidiControls => replaceAll(bidiControls, '');
-
   /// Wraps this string in the directional mark of its own script.
   ///
   /// A masked display name ends in a period ("First L."). That period is a

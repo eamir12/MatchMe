@@ -14,6 +14,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:hive/hive.dart';
 import 'package:matchme/services/hive_encryption_service.dart';
 
@@ -82,6 +83,14 @@ class OfflineApiCache {
     'content-profile',
   ];
 
+  /// Hive writes the frame key length as a single byte
+  /// (`BinaryWriter.writeByte(utf8.length)`), so any string key over 255 bytes
+  /// silently wraps (290 → 34). The frame's CRC still validates, but the next
+  /// open parses the value from the wrong offset and throws
+  /// `unknown typeId: <garbage>` — which looks like cache corruption and forces
+  /// a discard/rebuild on every launch. Oversized keys are hashed instead.
+  static const int _maxKeyBytes = 255;
+
   /// Stable cache identity for a request.
   ///
   /// The auth subject is part of the key so cached rows can never leak between
@@ -112,7 +121,29 @@ class OfflineApiCache {
         buffer.write(' | ${identity.join(';')}');
       }
     }
-    return buffer.toString();
+    return _boundedKey(buffer.toString());
+  }
+
+  /// Keeps keys at or under [_maxKeyBytes] UTF-8 bytes.
+  ///
+  /// Long URLs (big `select=`/filter queries) exceed Hive's one-byte key
+  /// length field, which corrupts frame parsing on the next open. Oversized
+  /// keys keep a readable rune-safe prefix plus the full SHA-256 digest, so
+  /// they stay deterministic (cache hits still work) and unique.
+  static String _boundedKey(String full) {
+    final bytes = utf8.encode(full);
+    if (bytes.length <= _maxKeyBytes) return full;
+    final digest = sha256.convert(bytes).toString();
+    final prefix = StringBuffer();
+    var used = 0;
+    for (final rune in full.runes) {
+      final char = String.fromCharCode(rune);
+      final charBytes = utf8.encode(char).length;
+      if (used + charBytes > _maxKeyBytes - digest.length - 1) break;
+      prefix.write(char);
+      used += charBytes;
+    }
+    return '$prefix#$digest';
   }
 
   static String? subjectFromAuthorizationHeader(String? header) {

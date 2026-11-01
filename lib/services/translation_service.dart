@@ -189,6 +189,8 @@ class TranslationProxy {
         : const <String>[];
     return jsonEncode({
       'kind': 'batch',
+      'action': body['action']?.toString(),
+      'request_id': body['request_id']?.toString(),
       'match_id': body['match_id']?.toString(),
       'target_language': body['target_language']?.toString(),
       'source_language': body['source_language']?.toString(),

@@ -12,6 +12,7 @@ import 'package:matchme/models/match_model.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/match_rating_provider.dart';
+import 'package:matchme/providers/meetup_alerts_provider.dart';
 import 'package:matchme/providers/notification_inbox_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/screens/notifications/notification_inbox_screen.dart';
@@ -56,6 +57,11 @@ class _TestLocalization extends Localization {
 
   @override
   Future<void> syncLanguageAfterLogin() async {}
+}
+
+class _StubMeetupAlerts extends MeetupAlertsNotifier {
+  @override
+  MeetupAlertsState build() => MeetupAlertsState(now: DateTime.now());
 }
 
 /// An inbox that only serves the rows a test hands it — the real notifier
@@ -299,6 +305,7 @@ void main() {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
+            meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
             localizationProvider.overrideWithValue(_l10n(TextDirection.ltr)),
             otherUserProfileProvider(
               _otherUserId,
@@ -338,6 +345,7 @@ void main() {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
+            meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
             localizationProvider.overrideWithValue(_l10n(TextDirection.rtl)),
             otherUserProfileProvider(
               _otherUserId,

@@ -12,5 +12,12 @@
     <exclude domain="sharedpref" path="matchme_prefs.xml"/>
     <exclude domain="database" path="."/>
     <exclude domain="file" path="hive_boxes/"/>
+    <!--
+      Notification tray avatars. Plain JPEGs of members' faces, deliberately
+      unencrypted so the native card can read them. Under no_backup, which
+      Android never restores anyway; named again here so the exclusion survives
+      any change to that directory's meaning.
+    -->
+    <exclude domain="file" path="no_backup/notification_avatars/"/>
     <exclude domain="external" path="."/>
 </full-backup-content>

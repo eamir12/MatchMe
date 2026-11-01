@@ -2507,7 +2507,7 @@ class _AuthScreenState extends ConsumerState<AuthScreen>
                     l10n.getString('youAreOffline'),
                     style: TextStyle(
                       color: color,
-                      fontSize: 11,
+                      fontSize: 12,
                       fontWeight: FontWeight.w500,
                     ),
                     maxLines: 2,

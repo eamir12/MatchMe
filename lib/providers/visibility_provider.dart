@@ -38,6 +38,20 @@ class IsVisible extends _$IsVisible {
       false; // Flag to attempt start only once initially
   static const String _manualPrefsKey = 'manual_visibility';
   static const String _effectivePrefsKey = 'effective_visibility';
+  // Per-user copies so one account's choice never carries over to another
+  // account signing in on the same device. The unsuffixed keys above remain a
+  // mirror for the native background service, which reads
+  // `flutter.manual_visibility` / `flutter.effective_visibility`.
+  static String _manualPrefsKeyFor(String userId) =>
+      '${_manualPrefsKey}_$userId';
+  static String _effectivePrefsKeyFor(String userId) =>
+      '${_effectivePrefsKey}_$userId';
+  static const String _perUserPrefsMigratedKey = 'visibility_prefs_per_user';
+  // Marks a per-user choice that has not reached the server yet. Unlike the
+  // outbox this survives sign-out (which wipes the outbox), so an offline
+  // toggle is still authoritative on the next login.
+  static String _manualPrefsPendingKeyFor(String userId) =>
+      '${_manualPrefsKey}_pending_$userId';
   static const String _gpsIntervalPrefsKey = 'flutter.gps_interval';
   static const String _smartThrottlingPrefsKey =
       'flutter.smart_throttling_enabled';
@@ -50,8 +64,10 @@ class IsVisible extends _$IsVisible {
       'flutter.background_matching_backup';
   static bool?
   _cachedManualVisibility; // survives provider rebuilds for sync access
+  static String? _cachedManualVisibilityUserId;
   bool? _manualVisibility;
   Future<void>? _manualVisibilityLoadFuture;
+  String? _manualVisibilityLoadUserId;
   String? _lastRestoredUserId;
   late Future<void> _initializationFuture;
   bool? _lastConnectivityOnline;
@@ -108,8 +124,14 @@ class IsVisible extends _$IsVisible {
     ref.keepAlive();
     // Reuse the previous load immediately on rebuilds. On the very first
     // build _updateEffectiveVisibility() awaits the async load instead of
-    // treating a null preference as a real value.
-    _manualVisibility ??= _cachedManualVisibility;
+    // treating a null preference as a real value. The cache is per user so a
+    // rebuild after an account switch never reuses the previous account's
+    // choice.
+    final cachedUserId = Supabase.instance.client.auth.currentUser?.id;
+    if (cachedUserId != null &&
+        _cachedManualVisibilityUserId == cachedUserId) {
+      _manualVisibility ??= _cachedManualVisibility;
+    }
     if (kDebugMode) {
       debugPrint(
         '[${DateTime.now().toIso8601String()}] 👁️ [IsVisible] build: manual=$_manualVisibility kIsWeb=$kIsWeb',
@@ -216,10 +238,11 @@ class IsVisible extends _$IsVisible {
       final userId = Supabase.instance.client.auth.currentUser?.id;
 
       // 1. Load from local storage FIRST for immediate correct display (avoids flash of Invisible)
-      await loadManualVisibility();
+      await loadManualVisibility(userId: userId);
       try {
-        final prefs = await SharedPreferences.getInstance();
-        final effectiveFromLocal = prefs.getBool(_effectivePrefsKey);
+        final effectiveFromLocal = await _readEffectiveVisibilityFromLocal(
+          userId,
+        );
         final displayValue = effectiveFromLocal ?? _manualVisibility ?? true;
         state = displayValue;
         _locationService?.setVisibility(displayValue);
@@ -471,6 +494,7 @@ class IsVisible extends _$IsVisible {
         try {
           await BackgroundService.stop();
         } catch (_) {}
+        await _resetVisibilityStateForSignOut();
         return;
       }
 
@@ -491,12 +515,13 @@ class IsVisible extends _$IsVisible {
       _lastRestoredUserId = userId;
 
       Future.microtask(() async {
-        await loadManualVisibility();
+        await loadManualVisibility(userId: userId);
 
         bool displayValue;
         try {
-          final prefs = await SharedPreferences.getInstance();
-          final effectiveFromLocal = prefs.getBool(_effectivePrefsKey);
+          final effectiveFromLocal = await _readEffectiveVisibilityFromLocal(
+            userId,
+          );
           displayValue = effectiveFromLocal ?? _manualVisibility ?? true;
         } catch (_) {
           displayValue = _manualVisibility ?? true;
@@ -973,59 +998,167 @@ class IsVisible extends _$IsVisible {
     }
   }
 
-  Future<void> loadManualVisibility() {
+  Future<void> loadManualVisibility({String? userId}) {
+    final resolvedUserId =
+        userId ?? Supabase.instance.client.auth.currentUser?.id;
     final existing = _manualVisibilityLoadFuture;
-    if (existing != null) return existing;
+    if (existing != null && _manualVisibilityLoadUserId == resolvedUserId) {
+      return existing;
+    }
 
     late final Future<void> tracked;
-    tracked = _loadManualVisibilityInternal().whenComplete(() {
+    tracked = _loadManualVisibilityInternal(resolvedUserId).whenComplete(() {
       if (identical(_manualVisibilityLoadFuture, tracked)) {
         _manualVisibilityLoadFuture = null;
+        _manualVisibilityLoadUserId = null;
       }
     });
     _manualVisibilityLoadFuture = tracked;
+    _manualVisibilityLoadUserId = resolvedUserId;
     return tracked;
   }
 
-  Future<void> _loadManualVisibilityInternal() async {
+  Future<void> _loadManualVisibilityInternal(String? userId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      // Check for old key first
-      final oldSaved = prefs.getBool('user_visibility');
-      if (oldSaved != null) {
-        _manualVisibility = oldSaved;
-        await _saveManualVisibility(oldSaved);
-        await prefs.remove('user_visibility'); // Migrate
+      bool? loaded;
+
+      if (userId != null) {
+        loaded = prefs.getBool(_manualPrefsKeyFor(userId));
+        if (loaded == null &&
+            !(prefs.getBool(_perUserPrefsMigratedKey) ?? false)) {
+          // One-time migration: adopt the old device-global preference for the
+          // account signed in at upgrade time. Afterwards the shared key is
+          // only a native-service mirror and is never read back.
+          loaded =
+              prefs.getBool('user_visibility') ??
+              prefs.getBool(_manualPrefsKey);
+        }
+        await prefs.setBool(_perUserPrefsMigratedKey, true);
+        await prefs.remove('user_visibility');
+        if (loaded != null) {
+          await prefs.setBool(_manualPrefsKeyFor(userId), loaded);
+        }
+        if (Supabase.instance.client.auth.currentUser?.id != userId) {
+          // Signed out (or switched accounts) while the read was in flight.
+          return;
+        }
+        if (loaded != null) {
+          await prefs.setBool(_manualPrefsKey, loaded);
+        }
       } else {
-        _manualVisibility = prefs.getBool(_manualPrefsKey) ?? true;
+        // No session yet (login screen): display-only fallback.
+        loaded = prefs.getBool(_manualPrefsKey);
       }
-      _cachedManualVisibility = _manualVisibility;
+
+      _manualVisibility = loaded;
+      _cachedManualVisibility = loaded;
+      _cachedManualVisibilityUserId = userId;
       print(
-        '🔵 [IsVisible] _loadManualVisibility: _manualVisibility=$_manualVisibility',
+        '🔵 [IsVisible] _loadManualVisibility($userId): _manualVisibility=$_manualVisibility',
       );
     } catch (e) {
-      _manualVisibility = true;
-      _cachedManualVisibility = true;
+      _manualVisibility = null;
+      _cachedManualVisibility = null;
+      _cachedManualVisibilityUserId = null;
       print('🔴 [IsVisible] _loadManualVisibility error: $e');
     }
   }
 
-  Future<void> _saveManualVisibility(bool manual) async {
+  Future<bool?> _readEffectiveVisibilityFromLocal(String? userId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool(_manualPrefsKey, manual);
+      if (userId != null) {
+        return prefs.getBool(_effectivePrefsKeyFor(userId));
+      }
+      return prefs.getBool(_effectivePrefsKey);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _saveManualVisibility(bool manual, {String? userId}) async {
+    final resolvedUserId =
+        userId ?? Supabase.instance.client.auth.currentUser?.id;
+    if (resolvedUserId == null) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_manualPrefsKeyFor(resolvedUserId), manual);
+      // Mirror only for the account signed in right now; the native background
+      // service reads this shared key and must never see another user's value.
+      if (Supabase.instance.client.auth.currentUser?.id == resolvedUserId) {
+        await prefs.setBool(_manualPrefsKey, manual);
+      }
+      _cachedManualVisibility = manual;
+      _cachedManualVisibilityUserId = resolvedUserId;
     } catch (e) {
       // Ignore
     }
+  }
+
+  Future<void> _setManualVisibilityPending(
+    String userId, {
+    required bool pending,
+  }) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final key = _manualPrefsPendingKeyFor(userId);
+      if (pending) {
+        await prefs.setBool(key, true);
+      } else {
+        await prefs.remove(key);
+      }
+    } catch (_) {}
+  }
+
+  Future<bool> _isManualVisibilityPending(String userId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getBool(_manualPrefsPendingKeyFor(userId)) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _persistEffectiveVisibility(bool effective) async {
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId == null) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_effectivePrefsKeyFor(userId), effective);
+      await prefs.setBool(_effectivePrefsKey, effective);
+    } catch (e) {
+      if (kDebugMode) {
+        print('🔴 [IsVisible] Failed to persist effective visibility: $e');
+      }
+    }
+  }
+
+  /// Clears the in-memory copy and the shared native-service mirror on
+  /// sign-out. The per-user keys are intentionally kept so the account gets
+  /// its visibility choice back on the next login, while a different account
+  /// signing in on this device can never inherit it.
+  Future<void> _resetVisibilityStateForSignOut() async {
+    _manualVisibility = null;
+    _cachedManualVisibility = null;
+    _cachedManualVisibilityUserId = null;
+    _manualVisibilityLoadFuture = null;
+    _manualVisibilityLoadUserId = null;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_manualPrefsKey);
+      await prefs.remove(_effectivePrefsKey);
+      await prefs.remove('user_visibility');
+    } catch (_) {}
   }
 
   Future<void> _updateEffectiveVisibility() async {
     // Check mounted state before proceeding with any provider reads
     // The provider might be disposed while awaiting async operations
     if (_manualVisibility == null) {
-      // First launch: the provider can be asked to evaluate rules before the
-      // async preference read finishes. Await the shared load instead of
-      // treating null as "visible" or emitting repeated warnings.
+      // The preference may still be loading, or this account has never made a
+      // choice on this device. Await the shared load; a user without a stored
+      // choice defaults to visible once the remote snapshot arrives.
       await loadManualVisibility();
       if (_manualVisibility == null) return;
     }
@@ -1079,12 +1212,7 @@ class IsVisible extends _$IsVisible {
         );
 
         // Persist effective visibility so background service can start in correct state
-        try {
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setBool(_effectivePrefsKey, effective);
-        } catch (e) {
-          print('🔴 [IsVisible] Failed to persist effective visibility: $e');
-        }
+        await _persistEffectiveVisibility(effective);
 
         _locationService?.setVisibility(effective);
 
@@ -1279,6 +1407,7 @@ class IsVisible extends _$IsVisible {
     final userId = Supabase.instance.client.auth.currentUser?.id;
     if (userId == null) return;
 
+    await _setManualVisibilityPending(userId, pending: true);
     try {
       // First update the user's visibility setting in the users table
       await Supabase.instance.client
@@ -1291,6 +1420,11 @@ class IsVisible extends _$IsVisible {
         'update_user_visibility',
         params: {'p_user_id': userId},
       );
+      if (_manualVisibility == isVisible) {
+        // A newer toggle may have raced this write; only the latest choice
+        // may clear the pending marker.
+        await _setManualVisibilityPending(userId, pending: false);
+      }
     } catch (e) {
       await ref
           .read(localDbProvider)
@@ -1380,6 +1514,11 @@ class IsVisible extends _$IsVisible {
           )
           .eq('id', resolvedUserId)
           .maybeSingle();
+      if (Supabase.instance.client.auth.currentUser?.id != resolvedUserId) {
+        // Session changed while the fetch was in flight; don't apply (or
+        // persist) one account's setting to another.
+        return;
+      }
       if (response == null || response['user_visibility_setting'] == null) {
         // No visibility setting in DB. A user whose profile is not complete
         // yet (e.g. still in the onboarding wizard) has never made a
@@ -1393,6 +1532,7 @@ class IsVisible extends _$IsVisible {
         await _applyRemoteVisibilitySnapshot(
           manualVisible: profileComplete,
           systemVisibilityStatus: 'visible',
+          userId: resolvedUserId,
         );
         return;
       }
@@ -1402,6 +1542,7 @@ class IsVisible extends _$IsVisible {
       await _applyRemoteVisibilitySnapshot(
         manualVisible: remoteManual,
         systemVisibilityStatus: remoteSystem,
+        userId: resolvedUserId,
       );
     } catch (_) {}
   }
@@ -1454,33 +1595,57 @@ class IsVisible extends _$IsVisible {
     required bool manualVisible,
     String? systemVisibilityStatus,
     bool fromRealtime = false,
+    String? userId,
   }) async {
-    // The local preference is the user's explicit choice on THIS device.
-    // If it disagrees with the remote value AND the update did not come
-    // from a Realtime change (i.e. another device), the local pref wins —
-    // the polled/remote value is likely stale (the DB write from the
-    // original toggle failed offline and was queued to the outbox).
-    // Push the local value back to the DB to heal the stale record
-    // instead of flipping the user's visibility against their will on
-    // every resume.  Realtime updates from another device DO override.
+    final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+    final prefsUserId = userId ?? currentUserId;
+    if (userId != null && currentUserId != userId) {
+      // Session changed while the snapshot was in flight; applying it would
+      // write one account's setting over another's.
+      return;
+    }
+
+    // The local per-user preference is the user's explicit choice on THIS
+    // device. It only overrides the remote value while that choice has not
+    // reached the server yet (offline toggle): the polled value is then stale.
+    // Otherwise the server is authoritative — it may hold a newer choice made
+    // on another device while this one was logged out. Realtime updates from
+    // another device always win.
+    var localTogglePending = false;
     if (!fromRealtime &&
         _manualVisibility != null &&
-        _manualVisibility != manualVisible) {
-      if (kDebugMode) {
-        print(
-          '🔵 [IsVisible] Remote visibility ($manualVisible) overridden by '
-          'local pref ($_manualVisibility) — pushing local to DB',
-        );
+        _manualVisibility != manualVisible &&
+        prefsUserId != null) {
+      localTogglePending = await _isManualVisibilityPending(prefsUserId);
+      if (!localTogglePending) {
+        try {
+          localTogglePending = await ref
+              .read(localDbProvider)
+              .hasPendingVisibilityUpdate(prefsUserId);
+        } catch (_) {}
       }
-      unawaited(_syncManualVisibilityChange(_manualVisibility!));
-      manualVisible = _manualVisibility!;
+      if (localTogglePending) {
+        if (kDebugMode) {
+          print(
+            '🔵 [IsVisible] Remote visibility ($manualVisible) overridden by '
+            'pending local toggle ($_manualVisibility) — pushing local to DB',
+          );
+        }
+        unawaited(_syncManualVisibilityChange(_manualVisibility!));
+        manualVisible = _manualVisibility!;
+      }
     }
     _manualVisibility = manualVisible;
     _systemVisibilityStatus =
         (systemVisibilityStatus == null || systemVisibilityStatus.isEmpty)
         ? 'visible'
         : systemVisibilityStatus;
-    await _saveManualVisibility(manualVisible);
+    await _saveManualVisibility(manualVisible, userId: prefsUserId);
+    if (prefsUserId != null && !localTogglePending) {
+      // The applied value came from the server (or the local choice is
+      // already there), so nothing is waiting to be pushed.
+      await _setManualVisibilityPending(prefsUserId, pending: false);
+    }
     await _updateEffectiveVisibility();
   }
 
@@ -1965,10 +2130,7 @@ class IsVisible extends _$IsVisible {
             .clearType('stationary_throttle');
       } catch (_) {}
       unawaited(_disableBackgroundMatchingForInvisibility());
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setBool(_effectivePrefsKey, false);
-      } catch (_) {}
+      await _persistEffectiveVisibility(false);
       try {
         await BackgroundService.updateVisibility(false);
       } catch (_) {}
@@ -1981,10 +2143,7 @@ class IsVisible extends _$IsVisible {
       // Bypass updateLocationStreamInterval 3s debounce for this critical transition.
       _lastIntervalUpdateCall = null;
       unawaited(_restoreBackgroundMatchingMode());
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setBool(_effectivePrefsKey, true);
-      } catch (_) {}
+      await _persistEffectiveVisibility(true);
       try {
         await BackgroundService.updateVisibility(true);
       } catch (_) {}
@@ -2035,53 +2194,6 @@ class IsVisible extends _$IsVisible {
       return;
     }
     _lastAppStateChange = DateTime.now();
-  }
-
-  Future<void> _clearPersistedVisibilityForLogout() async {
-    _manualVisibility = true;
-    _cachedManualVisibility = true;
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('manual_visibility');
-      await prefs.remove('effective_visibility');
-      await prefs.remove('user_visibility');
-      await prefs.setBool('manual_visibility', true);
-      await prefs.setBool('effective_visibility', false);
-      print(
-        '🔴 [IsVisible] cleared persisted visibility for logout (next login defaults to visible); local prefs reset',
-      );
-    } catch (e) {
-      print(
-        '🔴 [IsVisible] failed to clear persisted visibility for logout: $e',
-      );
-    }
-  }
-
-  Future<void> onLogout() async {
-    _locationService?.stopLocationStream();
-    state = false; // Set state to invisible on logout
-    _locationService?.setVisibility(false);
-    _initialStartAttempted = false;
-    _recentPositions.clear();
-    _consecutiveMovementCount = 0;
-    _lastThrottlingChange = null;
-    _currentAppliedInterval = null;
-    _isBatteryThrottled = false;
-    ref.read(systemNotificationProvider.notifier).clearType('battery_throttle');
-    ref
-        .read(systemNotificationProvider.notifier)
-        .clearType('stationary_throttle');
-    await _clearPersistedVisibilityForLogout();
-    print('🔴 [IsVisible] onLogout: state set to false');
-
-    // Local teardown only. Remote presence/session revocation is performed
-    // by the logout screen while the JWT is still valid. Calling it here can
-    // run after auth.signOut() and fail as `anon`.
-    try {
-      await BackgroundService.stop();
-    } catch (e) {
-      print('onLogout: BackgroundService.stop failed: $e');
-    }
   }
 
   void _setupBrowserFocusDetection() {

@@ -28,15 +28,34 @@ WHERE t.tgrelid = 'public.chat_messages'::regclass
   AND NOT t.tgisinternal
 ORDER BY t.tgname;
 
--- 2. Check for edge function webhooks (Supabase database webhooks)
--- Note: Database webhooks are stored differently
-SELECT 
-    w.name as webhook_name,
-    w.uri as webhook_url,
-    w.events as events,
-    w.table_name
-FROM supabase_extensions.webhooks w
-WHERE w.table_name = 'chat_messages';
+-- 2. Inspect database webhooks (Supabase implements them as triggers using
+-- supabase_functions.http_request). URL/method only: headers can contain
+-- secrets, so this query reports header presence without printing values.
+WITH trigger_args AS (
+    SELECT
+        t.tgname,
+        t.tgenabled,
+        encode(t.tgargs, 'escape') AS raw_args,
+        string_to_array(encode(t.tgargs, 'escape'), E'\\000') AS args
+    FROM pg_trigger t
+    WHERE t.tgrelid = 'public.chat_messages'::regclass
+      AND NOT t.tgisinternal
+)
+SELECT
+    tgname AS webhook_name,
+    CASE tgenabled
+        WHEN 'O' THEN 'enabled'
+        WHEN 'D' THEN 'disabled'
+        ELSE tgenabled::text
+    END AS enabled,
+    args[1] AS webhook_url,
+    args[2] AS http_method,
+    raw_args LIKE '%x-matchme-webhook-secret%' AS has_webhook_secret_header,
+    raw_args LIKE '%Authorization%' AS has_authorization_header
+FROM trigger_args
+WHERE args[1] LIKE '%translate-proxy%'
+   OR raw_args LIKE '%translate-proxy%'
+ORDER BY tgname;
 
 -- 3. Check for functions that might be calling HTTP (like the old auto_translate)
 SELECT proname, prosrc
@@ -54,7 +73,11 @@ WHERE proname LIKE '%auto%'
 -- ============================================================================
 -- EXPECTED RESULT AFTER FIX:
 -- ============================================================================
--- 1. No triggers with 'translate' or 'auto_translate' in the name should exist
--- 2. A webhook named 'chat_messages_translation_webhook' should exist (via Supabase Dashboard)
--- 3. No functions calling http_post to translate-proxy should exist (the old trigger method)
+-- 1. No auto_translate_on_insert trigger/function should exist.
+-- 2. Exactly one enabled webhook trigger (for example "Chat Translation")
+--    should point to /functions/v1/translate-proxy on INSERT.
+-- 3. The reset_translation_status_on_edit trigger should exist.
+-- 4. Old call_translate_proxy_edge_function overloads may remain, but must not
+--    be attached to a trigger or called by the client. They can be dropped
+--    after verifying no dependencies.
 -- ============================================================================

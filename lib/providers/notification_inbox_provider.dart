@@ -325,10 +325,7 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
     if (item.deletedAt != null) return;
     if (state.items.any((n) => n.id == item.id)) return;
     final items = [item, ...state.items];
-    state = state.copyWith(
-      items: items,
-      unreadCount: _countUnread(items),
-    );
+    state = state.copyWith(items: items, unreadCount: _countUnread(items));
     unawaited(_cacheItems(items));
     _realtimeInsertedAt[item.id] = ++_realtimeInsertSeq;
     if (_realtimeInsertedAt.length > 200) {
@@ -351,10 +348,7 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
     if (index == -1) return;
     final items = [...state.items];
     items[index] = item;
-    state = state.copyWith(
-      items: items,
-      unreadCount: _countUnread(items),
-    );
+    state = state.copyWith(items: items, unreadCount: _countUnread(items));
     unawaited(_cacheItems(items));
   }
 
@@ -362,10 +356,7 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
     if (!ref.mounted) return;
     if (!state.items.any((n) => n.id == id)) return;
     final items = state.items.where((n) => n.id != id).toList();
-    state = state.copyWith(
-      items: items,
-      unreadCount: _countUnread(items),
-    );
+    state = state.copyWith(items: items, unreadCount: _countUnread(items));
     unawaited(_cacheItems(items));
   }
 
@@ -398,8 +389,7 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
       );
       if (!ref.mounted) return;
       final existingIds = state.items.map((n) => n.id).toSet();
-      final newItems =
-          more.where((n) => !existingIds.contains(n.id)).toList();
+      final newItems = more.where((n) => !existingIds.contains(n.id)).toList();
       final items = [...state.items, ...newItems];
       await _cacheItems(items);
       state = state.copyWith(
@@ -417,7 +407,10 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
 
   /// Returns [item] with [readAt] applied — the optimistic shape used by the
   /// single and batch read/unread mutations below.
-  NotificationInboxItem _withReadAt(NotificationInboxItem item, DateTime? readAt) {
+  NotificationInboxItem _withReadAt(
+    NotificationInboxItem item,
+    DateTime? readAt,
+  ) {
     return NotificationInboxItem(
       id: item.id,
       type: item.type,
@@ -432,8 +425,9 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
 
   Future<void> markRead(String id) async {
     final items = state.items
-        .map((n) =>
-            n.id == id && n.isUnread ? _withReadAt(n, DateTime.now()) : n)
+        .map(
+          (n) => n.id == id && n.isUnread ? _withReadAt(n, DateTime.now()) : n,
+        )
         .toList();
     state = state.copyWith(items: items, unreadCount: _countUnread(items));
     await _cacheItems(items);
@@ -447,8 +441,11 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
   Future<void> markReadMany(Set<String> ids) async {
     if (ids.isEmpty) return;
     final items = state.items
-        .map((n) =>
-            ids.contains(n.id) && n.isUnread ? _withReadAt(n, DateTime.now()) : n)
+        .map(
+          (n) => ids.contains(n.id) && n.isUnread
+              ? _withReadAt(n, DateTime.now())
+              : n,
+        )
         .toList();
     state = state.copyWith(items: items, unreadCount: _countUnread(items));
     await _cacheItems(items);
@@ -459,10 +456,36 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
     }
   }
 
+  /// Marks every unread row for [matchId] whose kind (data `kind`, falling
+  /// back to the row type) is in [kinds] read. Surfaces that display the item
+  /// itself — the live-location map, the chat — call this so the bell, the
+  /// Matches badge and the OS icon clear the moment the item is seen, even
+  /// when the row was never opened in the inbox.
+  Future<void> markMatchKindsRead(String matchId, Set<String> kinds) async {
+    final id = matchId.trim();
+    if (id.isEmpty || kinds.isEmpty) return;
+    final ids = state.items
+        .where((n) {
+          if (!n.isUnread || n.deletedAt != null) return false;
+          final kind = n.data['kind']?.toString() ?? n.type;
+          if (!kinds.contains(kind)) return false;
+          final rowMatchId =
+              (n.data['matchId'] ?? n.data['match_id'])?.toString().trim() ??
+              '';
+          return rowMatchId == id;
+        })
+        .map((n) => n.id)
+        .toSet();
+    if (ids.isEmpty) return;
+    await markReadMany(ids);
+  }
+
   Future<void> markUnreadMany(Set<String> ids) async {
     if (ids.isEmpty) return;
     final items = state.items
-        .map((n) => ids.contains(n.id) && !n.isUnread ? _withReadAt(n, null) : n)
+        .map(
+          (n) => ids.contains(n.id) && !n.isUnread ? _withReadAt(n, null) : n,
+        )
         .toList();
     state = state.copyWith(items: items, unreadCount: _countUnread(items));
     await _cacheItems(items);
@@ -488,8 +511,7 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
   Future<void> deleteMany(Set<String> ids) async {
     if (ids.isEmpty) return;
     final idSet = ids.toSet();
-    final items =
-        state.items.where((n) => !idSet.contains(n.id)).toList();
+    final items = state.items.where((n) => !idSet.contains(n.id)).toList();
     state = state.copyWith(items: items, unreadCount: _countUnread(items));
     await _cacheItems(items);
     try {
@@ -503,8 +525,8 @@ class NotificationInboxNotifier extends Notifier<NotificationInboxState> {
 
 final notificationInboxProvider =
     NotifierProvider<NotificationInboxNotifier, NotificationInboxState>(() {
-  return NotificationInboxNotifier();
-});
+      return NotificationInboxNotifier();
+    });
 
 final unreadInboxCountProvider = Provider<int>((ref) {
   return ref.watch(notificationInboxProvider).unreadCount;

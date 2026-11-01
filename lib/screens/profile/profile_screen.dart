@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'dart:ui' as ui;
+import 'package:matchme/providers/auth_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/providers/unit_provider.dart';
@@ -744,6 +745,109 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     );
   }
 
+  /// Public status markers (Primary Photo Verified / New here / Profile
+  /// Complete) in one band under the photos, mirroring the match cards. They
+  /// describe the profile as a whole, so they no longer sit inside the Name
+  /// row. The caption tells the owner these chips are visible to other users.
+  Widget _buildStatusBand(
+    BuildContext context,
+    LocalizationState l10n,
+    UserProfile profile,
+  ) {
+    final normalizedGender = profile.gender?.trim().toLowerCase();
+    final badges = <Widget>[];
+    if (profile.isVerified) {
+      // Use gender-specific translation key based on user's gender
+      final translationKey = normalizedGender == 'female'
+          ? 'profileVerifiedBadgeFemale'
+          : (normalizedGender == 'non_binary' ||
+                normalizedGender == 'nonbinary')
+          ? 'profileVerifiedBadgeNeutral'
+          : 'profileVerifiedBadge';
+      badges.add(
+        VerifiedBadge(
+          size: 18,
+          showText: true,
+          text: _t(l10n, translationKey),
+        ),
+      );
+    }
+    // Check if user is new (under 1 week) - cache the result to avoid repeated computations
+    if (_isNewUserCached == null && profile.createdAt != null) {
+      final now = DateTime.now();
+      final difference = now.difference(profile.createdAt!);
+      _isNewUserCached = difference.inDays < 7;
+      if (kDebugMode) {
+        debugPrint(
+          '[ProfileScreen] Account age: ${difference.inDays} days, isNewUser: $_isNewUserCached',
+        );
+      }
+    }
+    if (_isNewUserCached == true) {
+      // Use gender-specific translation key based on user's gender
+      final translationKey = normalizedGender == 'female'
+          ? 'profileNewUserBadgeFemale'
+          : (normalizedGender == 'non_binary' ||
+                normalizedGender == 'nonbinary')
+          ? 'profileNewUserBadgeNeutral'
+          : 'profileNewUserBadge';
+      badges.add(
+        NewUserBadge(
+          size: 18,
+          showText: true,
+          text: _t(l10n, translationKey),
+          gender: profile.gender,
+        ),
+      );
+    }
+    if (ProfileCompleteness.isFull(profile)) {
+      badges.add(ProfileCompletePill(l10n: l10n, size: 18));
+    }
+    if (badges.isEmpty) return const SizedBox.shrink();
+
+    final scheme = Theme.of(context).colorScheme;
+    final textDirection = Directionality.of(context);
+    return Padding(
+      padding: const EdgeInsetsDirectional.fromSTEB(16, 10, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            textDirection: textDirection,
+            children: [
+              ExcludeSemantics(
+                child: Icon(
+                  Icons.visibility_outlined,
+                  size: 14,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(width: 4),
+              Flexible(
+                child: Text(
+                  _t(l10n, 'profileBadgesShownToOthers'),
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Wrap(
+            textDirection: textDirection,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 6,
+            children: badges,
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildVerificationStatusCard(
     BuildContext context,
     LocalizationState l10n,
@@ -860,9 +964,13 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     final usesImperialUnits = ref
         .watch(unitSystemProvider)
         .maybeWhen(data: (value) => value, orElse: () => false);
-    final user = supabase.auth.currentUser;
+    // Same transient-null guard as home: the raw auth client can be empty
+    // for a few hundred ms while the recovery ladder re-seeds it, and the
+    // auth provider still holds the session throughout that window.
+    final user = supabase.auth.currentUser ??
+        ref.watch(authStateProvider).value?.session?.user;
     if (user == null) {
-      return Scaffold(body: Center(child: Text(_t(l10n, 'generalError'))));
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
     final userId = user.id;
     // Watched for its rebuild side-effect only — the value is not read here
@@ -915,7 +1023,11 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
         builder: (context) => FloatingActionButton.extended(
           heroTag: 'profile_edit_fab',
           onPressed: () async {
-            final currentUser = supabase.auth.currentUser;
+            // Fall back to the session the auth provider keeps alive — the raw
+            // client is transiently null during a refresh-race repair, and a
+            // false "Something went wrong" here would block profile editing.
+            final currentUser = supabase.auth.currentUser ??
+                ref.read(authStateProvider).value?.session?.user;
             if (currentUser == null) {
               ScaffoldMessenger.of(
                 context,
@@ -1074,7 +1186,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                               textAlign: TextAlign.center,
                                               style: const TextStyle(
                                                 color: Colors.white,
-                                                fontSize: 10,
+                                                fontSize: 12,
                                                 fontWeight: FontWeight.bold,
                                               ),
                                             ),
@@ -1098,76 +1210,18 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                       ),
                     ),
 
+                  _buildStatusBand(context, l10n, profile),
+
                   const SizedBox(height: 16),
 
-                  // Name (always capitalized regardless of how the user typed it)
-                  // Badges sit directly next to the name (same Wrap) so there is
-                  // no far-edge gap, and the whole unit stays aligned to the
-                  // start side in both RTL and LTR. The name value itself is
-                  // bidi-isolated so a Latin name in a Hebrew UI (or vice versa)
-                  // keeps correct order without pulling the alignment.
+                  // Name (own profile: shown in full, always capitalized).
+                  // The status chips live in the band above — they describe the
+                  // profile, not the name — so this row stays a plain detail
+                  // row like Birthday. The name value is bidi-isolated so a
+                  // Latin name in a Hebrew UI (or vice versa) keeps correct
+                  // order without pulling the alignment.
                   (() {
                     final displayName = profile.name.capitalizeName();
-                    final badgeWidgets = <Widget>[];
-                    if (profile.isVerified) {
-                      // Use gender-specific translation key based on user's gender
-                      final normalizedGender = profile.gender
-                          ?.trim()
-                          .toLowerCase();
-                      final translationKey = normalizedGender == 'female'
-                          ? 'profileVerifiedBadgeFemale'
-                          : (normalizedGender == 'non_binary' ||
-                                normalizedGender == 'nonbinary')
-                          ? 'profileVerifiedBadgeNeutral'
-                          : 'profileVerifiedBadge';
-                      badgeWidgets.add(
-                        VerifiedBadge(
-                          size: 20,
-                          showText: true,
-                          text: _t(l10n, translationKey),
-                        ),
-                      );
-                    }
-                    // Check if user is new (under 1 week) - cache the result to avoid repeated computations
-                    if (_isNewUserCached == null && profile.createdAt != null) {
-                      final now = DateTime.now();
-                      final difference = now.difference(profile.createdAt!);
-                      _isNewUserCached = difference.inDays < 7;
-                      if (kDebugMode) {
-                        debugPrint(
-                          '[ProfileScreen] Account age: ${difference.inDays} days, isNewUser: $_isNewUserCached',
-                        );
-                      }
-                    }
-
-                    if (_isNewUserCached == true) {
-                      // Use gender-specific translation key based on user's gender
-                      final normalizedGender = profile.gender
-                          ?.trim()
-                          .toLowerCase();
-                      final translationKey = normalizedGender == 'female'
-                          ? 'profileNewUserBadgeFemale'
-                          : (normalizedGender == 'non_binary' ||
-                                normalizedGender == 'nonbinary')
-                          ? 'profileNewUserBadgeNeutral'
-                          : 'profileNewUserBadge';
-                      badgeWidgets.add(
-                        NewUserBadge(
-                          size: 20,
-                          showText: true,
-                          text: _t(l10n, translationKey),
-                          gender: profile.gender,
-                        ),
-                      );
-                    }
-                    // "Profile Complete" is a status chip too: it joins the
-                    // other two in the same row, at the same size, so the
-                    // three always read as one set.
-                    if (ProfileCompleteness.isFull(profile)) {
-                      badgeWidgets.add(
-                        ProfileCompletePill(l10n: l10n, size: 20),
-                      );
-                    }
                     final uiDirection = Directionality.of(context);
                     final nameLabel = _t(l10n, 'profileName');
                     return Card(
@@ -1198,38 +1252,27 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                             ),
                             const SizedBox(width: 12),
                             Expanded(
-                              child: Wrap(
-                                textDirection: uiDirection,
-                                alignment: WrapAlignment.start,
-                                crossAxisAlignment: WrapCrossAlignment.center,
-                                spacing: 8,
-                                runSpacing: 6,
-                                children: [
-                                  Text.rich(
+                              child: Text.rich(
+                                TextSpan(
+                                  children: [
                                     TextSpan(
-                                      children: [
-                                        TextSpan(
-                                          text: '$nameLabel: '),
-                                        // Mark the user-entered name with the
-                                        // direction of its own script so mixed
-                                        // RTL/LTR content orders correctly.
-                                        TextSpan(
-                                          text: displayName
-                                              .withDirectionalMarks(),
-                                        ),
-                                      ],
+                                      text: '$nameLabel: '),
+                                    // Mark the user-entered name with the
+                                    // direction of its own script so mixed
+                                    // RTL/LTR content orders correctly.
+                                    TextSpan(
+                                      text: displayName.withDirectionalMarks(),
                                     ),
-                                    // Paragraph follows the UI direction so the
-                                    // row aligns like every other profile row
-                                    // (right in RTL, left in LTR).
-                                    textDirection: uiDirection,
-                                    textAlign: TextAlign.start,
-                                    style: Theme.of(
-                                      context,
-                                    ).textTheme.bodyMedium,
-                                  ),
-                                  ...badgeWidgets,
-                                ],
+                                  ],
+                                ),
+                                // Paragraph follows the UI direction so the
+                                // row aligns like every other profile row
+                                // (right in RTL, left in LTR).
+                                textDirection: uiDirection,
+                                textAlign: TextAlign.start,
+                                style: Theme.of(
+                                  context,
+                                ).textTheme.bodyMedium,
                               ),
                             ),
                           ],

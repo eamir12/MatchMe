@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, debugDefaultTargetPlatformOverride;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:matchme/services/session_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -38,6 +40,38 @@ void main() {
       expect(prefs.getString(_legacySdkTokenKey), isNull);
     },
   );
+
+  group('session platform key', () {
+    tearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    test('each target maps to its own platform key', () {
+      const expected = {
+        TargetPlatform.android: 'android',
+        TargetPlatform.iOS: 'ios',
+        TargetPlatform.macOS: 'macos',
+        TargetPlatform.windows: 'windows',
+        TargetPlatform.linux: 'linux',
+        TargetPlatform.fuchsia: 'unknown',
+      };
+      for (final entry in expected.entries) {
+        debugDefaultTargetPlatformOverride = entry.key;
+        expect(
+          SessionService.detectPlatform(),
+          entry.value,
+          reason: '${entry.key} must not collapse into the wrong key',
+        );
+      }
+    });
+
+    test('windows never falls back to unknown', () {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      expect(
+        SessionService.detectPlatform(),
+        'windows',
+        reason: 'match push finds Windows WNS targets only on platform=windows',
+      );
+    });
+  });
 
   group('session policy: what may sign the user out', () {
     test(

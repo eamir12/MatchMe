@@ -25,7 +25,7 @@ void main() {
     });
   });
 
-  test('the "Showing ~N users" pill states the number of plotted users', () {
+  test('the "Showing about N users" pill states the number of plotted users', () {
     final l10n = LocalizationState.loading();
     const cells = [
       NearbyMapCell(lat: 32.1, lng: 34.8, count: 1),
@@ -37,6 +37,6 @@ void main() {
       params: {'count': nearbyUsersPlottedOnMap(cells).toString()},
     );
 
-    expect(pill, 'Showing ~3 online');
+    expect(pill, 'Showing about 3 users');
   });
 }

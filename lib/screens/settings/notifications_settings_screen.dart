@@ -106,7 +106,7 @@ class NotificationsSettingsScreen extends ConsumerWidget {
                   child: Text(
                     l10n.getString('settingsNotificationsInfo'),
                     style: TextStyle(
-                      fontSize: 11,
+                      fontSize: 12,
                       color: colors.onSurface.withValues(alpha: 0.9),
                     ),
                   ),
@@ -322,6 +322,7 @@ Widget _notificationMatrixCard(
     NotificationType.matchExtended,
     NotificationType.adminAnnouncements,
     NotificationType.locationSharing,
+    NotificationType.meetupTools,
   ];
   final methods = _methodsForPlatform();
 
@@ -672,6 +673,9 @@ String _typeLabel(LocalizationState l10n, NotificationType type) {
     NotificationType.locationSharing => l10n.getString(
       'settingsNotificationsLocationSharing',
     ),
+    NotificationType.meetupTools => l10n.getString(
+      'settingsNotificationsMeetupTools',
+    ),
   };
 }
 
@@ -683,6 +687,7 @@ IconData _typeIcon(NotificationType type) {
     NotificationType.matchExtended => Icons.more_time_outlined,
     NotificationType.adminAnnouncements => Icons.campaign_outlined,
     NotificationType.locationSharing => Icons.share_location,
+    NotificationType.meetupTools => Icons.waving_hand_outlined,
   };
 }
 

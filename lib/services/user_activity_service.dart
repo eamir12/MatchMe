@@ -49,7 +49,7 @@ class UserActivityService {
   }) async {
     final uid = userId.trim();
     if (uid.isEmpty) return;
-    if (shouldSkipSupabaseCalls()) return;
+    if (shouldSkipUserScopedSupabaseCalls()) return;
 
     final now = DateTime.now();
     if (!force &&

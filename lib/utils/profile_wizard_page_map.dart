@@ -1,4 +1,5 @@
 import 'package:matchme/providers/profile_provider.dart';
+import 'package:matchme/utils/string_extensions.dart';
 
 enum ProfileWizardSection {
   mainIntents,
@@ -162,8 +163,11 @@ ProfileWizardSection? profileCriticalGapSection(UserProfile profile) {
     if (!hasSub) return ProfileWizardSection.subIntents;
   }
 
-  // Basics: name and date of birth.
+  // Basics: name and date of birth. A single-word name is a critical gap:
+  // the product has no display format for it, so the wizard must collect the
+  // missing first or last name before the profile can be used.
   if (profile.name.trim().isEmpty) return ProfileWizardSection.basics;
+  if (!profile.name.hasFirstAndLastName) return ProfileWizardSection.basics;
   if (profile.dateOfBirth == null) return ProfileWizardSection.basics;
 
   // Details: occupation/education are mandatory for Business/Networking.

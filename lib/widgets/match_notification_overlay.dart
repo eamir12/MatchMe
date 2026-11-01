@@ -140,7 +140,9 @@ class _MatchNotificationOverlayState
         .asData
         ?.value;
     final otherName =
-        cachedProfile?.name.formatAsFirstNameLastInitial() ??
+        cachedProfile?.name.formatAsFirstNameLastInitial(
+          fallback: l10n.getString('newMatchPlaceholderName'),
+        ) ??
         l10n.getString('newMatchPlaceholderName');
 
     // Mark as viewed
@@ -350,7 +352,9 @@ class _MatchNotificationOverlayState
                             profileAsync.when(
                               data: (profile) {
                                 final displayName =
-                                    profile?.name.formatAsFirstNameLastInitial() ??
+                                    profile?.name.formatAsFirstNameLastInitial(
+                                      fallback: l10n.getString('generalUnknown'),
+                                    ) ??
                                     l10n.getString('generalUnknown');
                                 final layout = displayName.displayTextLayout(
                                   Directionality.of(context),

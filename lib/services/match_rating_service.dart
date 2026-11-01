@@ -128,25 +128,11 @@ class DueRatingPrompt {
   });
 
   factory DueRatingPrompt.fromRpcRow(Map<String, dynamic> row) {
-    String maskName(String raw) {
-      final s = raw.toString().replaceAll(bidiControls, '').trim();
-      if (s.isEmpty) return s;
-      final parts = s
-          .split(RegExp(r'\s+'))
-          .where((p) => p.trim().isNotEmpty)
-          .toList(growable: false);
-      if (parts.isEmpty) return s;
-      if (parts.length == 1) return parts.first.withDirectionalMarks();
-      final first = parts.first;
-      final last = parts.last;
-      if (last.isEmpty) return first.withDirectionalMarks();
-      return '$first ${last[0].toUpperCase()}.'.withDirectionalMarks();
-    }
-
     return DueRatingPrompt(
       matchId: (row['match_id'] ?? '').toString(),
       otherUserId: (row['other_user_id'] ?? '').toString(),
-      otherName: maskName(row['other_name'] ?? ''),
+      otherName: (row['other_name'] ?? '').toString()
+          .formatAsFirstNameLastInitial(fallback: 'Someone'),
       matchCreatedAt: row['match_created_at'] != null
           ? DateTime.parse(row['match_created_at'].toString())
           : DateTime.now(),

@@ -41,6 +41,7 @@ import 'package:matchme/providers/user_preferences_provider.dart';
 import 'package:matchme/providers/visibility_provider.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/utils/resume_diagnostics.dart';
+import 'package:matchme/utils/chat_notification_copy.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/theme/app_theme_tokens.dart';
 import 'package:matchme/screens/auth/auth_screen.dart';
@@ -96,6 +97,8 @@ import 'package:quick_actions/quick_actions.dart';
 // (flutter/services.dart already imported above)
 
 import 'package:matchme/screens/chats/chat_screen.dart';
+import 'package:matchme/screens/meetup/meetup_hub_screen.dart';
+import 'package:matchme/screens/meetup/meetup_screen.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/icon_badge_provider.dart';
 import 'package:matchme/providers/chat_provider.dart'
@@ -106,6 +109,7 @@ import 'package:matchme/providers/chat_provider.dart'
 import 'package:matchme/providers/match_notification_provider.dart'
     show matchNotificationProvider;
 import 'package:matchme/providers/notification_inbox_provider.dart';
+import 'package:matchme/providers/meetup_alerts_provider.dart';
 import 'package:matchme/services/global_sync_manager.dart';
 import 'package:matchme/providers/event_provider.dart';
 import 'package:matchme/utils/app_shortcuts.dart';
@@ -117,6 +121,8 @@ import 'package:matchme/services/supabase_realtime_manager.dart';
 import 'package:matchme/services/my_user_realtime_service.dart';
 import 'package:matchme/widgets/startup_loader.dart';
 import 'package:matchme/widgets/birthday_overlay.dart';
+import 'package:matchme/widgets/meetup_alert_overlay.dart';
+import 'package:matchme/widgets/system_notification_overlay.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
 import 'package:timezone/timezone.dart' as tz;
 // ignore: unnecessary_import - Kept for compatibility with other files that depend on it
@@ -139,6 +145,11 @@ final ChatRouteObserver chatRouteObserver = ChatRouteObserver();
 // MainActivity (Android) can deliver notification taps while the app is running.
 // If we receive one before Navigator is ready, keep it here and replay post-frame.
 String? _pendingNotificationRoute;
+// One meet-up notification tap can arrive through several channels at once
+// (FCM initial message, local-notification payload and the native launch
+// intent); this keeps the hub from being pushed on top of itself.
+String? _lastMeetupRoutePushed;
+DateTime? _lastMeetupRoutePushedAt;
 bool _fcmHandlersInstalled = false;
 Timer? _fcmResyncTimer;
 
@@ -365,35 +376,6 @@ void _mainSync() {
     }
     prevFlutterErrorHandler?.call(details);
     FlutterError.presentError(details);
-  };
-  final originalDebugPrint = debugPrint;
-  debugPrint = (String? message, {int? wrapWidth}) {
-    if (message == null) return;
-    final lower = message.toLowerCase();
-    if (!lower.contains('translation') &&
-        !lower.contains('l10n') &&
-        !lower.contains('missing message') &&
-        !lower.contains('missing translation') &&
-        !lower.contains('calendarsync') &&
-        !lower.contains('resume-diag') &&
-        !lower.contains('bootstrap') &&
-        !lower.contains('maptiles') &&
-        !lower.contains('hivecrypto') &&
-        !lower.contains('profileedit') &&
-        !lower.contains('matchmeapp') &&
-        !lower.contains('[settings]') &&
-        !lower.contains('profilesyncservice') &&
-        !lower.contains('cache_warm') &&
-        !lower.contains('connectivity') &&
-        // Session/auth diagnostics: these decide whether the user ends up on
-        // the login screen, so they must survive a release build. They were
-        // filtered out before, which made a "logged out at startup"
-        // incident impossible to diagnose from the device log.
-        !lower.contains('[auth]') &&
-        !lower.contains('[session]')) {
-      return;
-    }
-    originalDebugPrint(message, wrapWidth: wrapWidth);
   };
   ResumeDiagnostics.setEnabled(kDebugMode);
   ResumeDiagnostics.log('main() started');
@@ -722,15 +704,15 @@ void _applyNavigationFromPushData(
   Map<String, dynamic> data, {
   bool isUserInteraction = false,
 }) {
+  final pushType =
+      ((data['type'] ?? data['kind'] ?? data['notification_type']) as Object?)
+          ?.toString()
+          .trim()
+          .toLowerCase();
   // Defense-in-depth: server now stamps match_expiry pushes with the target
   // user_id. Drop pushes meant for a different account sharing this device's
   // old FCM token (multi-account testing left stale user_session rows).
   try {
-    final pushType =
-        ((data['type'] ?? data['kind'] ?? data['notification_type']) as Object?)
-            ?.toString()
-            .trim()
-            .toLowerCase();
     if (pushType == 'match_expiry' || pushType == 'pinned_expiry') {
       final targetUid =
           ((data['user_id'] ?? data['userId']) as Object?)?.toString().trim() ??
@@ -745,11 +727,18 @@ void _applyNavigationFromPushData(
   final routeFromData = ((data['route'] ?? data['deep_link']) as String?)
       ?.trim();
   final tabIndex = _parseTabIndexFromAny(data['tabIndex'] ?? data['tab_index']);
+  final isMeetupPush = kMeetupAlertKinds.contains(pushType);
+  // Proposal and place-change taps land on the planning screen, where the
+  // accept/counter decision lives; the other kinds open the hub.
+  final isMeetupDecision =
+      pushType == kMeetupAlertProposal || pushType == kMeetupAlertPlaceChange;
 
   final effectiveRoute = (routeFromData != null && routeFromData.isNotEmpty)
       ? routeFromData
       : (matchId != null && matchId.isNotEmpty)
-      ? '/chat/$matchId'
+      ? (isMeetupPush
+            ? (isMeetupDecision ? '/meetup/$matchId/plan' : '/meetup/$matchId')
+            : '/chat/$matchId')
       : null;
 
   if (!isUserInteraction) {
@@ -801,7 +790,23 @@ void _applyNavigationFromPushData(
     return;
   }
 
-  if (effectiveRoute == null || !effectiveRoute.startsWith('/chat/')) return;
+  if (effectiveRoute == null ||
+      (!effectiveRoute.startsWith('/chat/') &&
+          !effectiveRoute.startsWith('/meetup/'))) {
+    return;
+  }
+
+  // The same meet-up tap can reach the app through several channels at once.
+  if (effectiveRoute.startsWith('/meetup/')) {
+    final now = DateTime.now();
+    final duplicate =
+        _lastMeetupRoutePushed == effectiveRoute &&
+        _lastMeetupRoutePushedAt != null &&
+        now.difference(_lastMeetupRoutePushedAt!) < const Duration(seconds: 2);
+    if (duplicate) return;
+    _lastMeetupRoutePushed = effectiveRoute;
+    _lastMeetupRoutePushedAt = now;
+  }
 
   final nav = navigatorKey.currentState;
   if (nav == null) {
@@ -818,6 +823,26 @@ void _applyNavigationFromPushData(
   }
 
   nav.pushNamed(effectiveRoute);
+}
+
+/// Opens a route carried by a clicked local notification or web card
+/// ('/chat/<id>', '/meetup/<id>', '/meetup/<id>/plan').
+void _openNotificationRoute(String route) {
+  final isMeetup = route.startsWith('/meetup/');
+  if (!route.startsWith('/chat/') && !isMeetup) return;
+  var rest = route.substring((isMeetup ? '/meetup/' : '/chat/').length).trim();
+  // '/meetup/<matchId>/plan' carries the planning-screen suffix; the match id
+  // is its first segment only.
+  if (isMeetup) {
+    final slash = rest.indexOf('/');
+    if (slash >= 0) rest = rest.substring(0, slash);
+  }
+  final matchId = rest;
+  if (matchId.isEmpty) return;
+  _applyNavigationFromPushData({
+    'matchId': matchId,
+    'route': route,
+  }, isUserInteraction: true);
 }
 
 /// Threshold (seconds) of an expiry push payload.
@@ -1018,6 +1043,16 @@ Future<void> _showForegroundMatchPush({
   } catch (_) {}
 }
 
+/// The chat card fields push-message computed for this recipient.
+///
+/// Every platform entry point reads them so the card the app draws is the
+/// server's copy - the same title, the same collapsed body, the same unread
+/// count - instead of a locally invented "New message". `preview_lines` is a
+/// JSON array because FCM data values are strings.
+ChatPushCardModel _chatPushCardFrom(Map<String, dynamic> data) {
+  return ChatPushCardModel.tryFromMap(data) ?? const ChatPushCardModel();
+}
+
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   try {
@@ -1046,6 +1081,13 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
           ?.toString()
           .trim()
           .toLowerCase();
+
+      // Meet-up pushes carry senderId for routing, but they are not chat:
+      // the OS already drew their FCM card and the chat pipeline would
+      // replace it with a conversation card built from an unrelated RPC.
+      if (kind != null && kMeetupAlertKinds.contains(kind)) {
+        return;
+      }
 
       // NOTE: previously this only ran when message.notification == null,
       // but the server always sends notification+data so the branch never
@@ -1085,21 +1127,32 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       }
 
       if (isChat && !isMatch && !isExpiry) {
-        // Chat pushes: route through the native RPC path WITHOUT the server
-        // body. push-message always sends the localized placeholder ("New
-        // message" etc.) since it can't decrypt — passing it would clobber
-        // the real card the Realtime/native path posts. messageId marks an
-        // immediate trigger; the native service fetches the stored
-        // plaintext/translated text and drops the FCM SDK's tagged card
-        // (tag match_<matchId>) before posting, so background states
-        // converge on a single tray entry per chat.
+        // Chat pushes: hand the native service the card the server already
+        // composed (title, body, unread lines, count). It replaces the FCM
+        // SDK's plain card with the styled one - cancel-and-replace - and only
+        // falls back to its own RPC check when the payload carries no copy.
+        // The RPC cannot decrypt (chats are end-to-end encrypted), so a card
+        // built there can state the backlog but never quote text.
         if ((messageId != null && messageId.isNotEmpty) ||
             (matchId != null && matchId.isNotEmpty)) {
+          final card = _chatPushCardFrom(data);
           await BackgroundService.triggerNotificationCheck(
             messageId: (messageId != null && messageId.isNotEmpty)
                 ? messageId
                 : null,
             matchId: (matchId != null && matchId.isNotEmpty) ? matchId : null,
+            translatedContent: card.body,
+            originalContent: card.body,
+            senderName: (data['sender_name'] ?? data['senderName'])?.toString(),
+            title: card.title,
+            previewLines: card.previewLines,
+            unreadCount: card.unreadCount,
+            previewsEnabled: card.previewsEnabled,
+            shouldAlert: (data['should_alert'] ?? '').toString() == 'true'
+                ? true
+                : (data['should_alert'] ?? '').toString() == 'false'
+                ? false
+                : null,
           );
         }
       } else if (isMatch) {
@@ -1134,14 +1187,20 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
           data['should_alert'] == 'false') {
         // Follow-up unread messages arrive data-only. Rebuild the same local
         // conversation card silently instead of asking iOS to alert again.
+        // The card is the server's: its title already carries the total and its
+        // body already stands for the batch. The name travels separately,
+        // because the title is a sentence and not a sender.
+        final card = _chatPushCardFrom(data);
         await MobileLocalNotificationService.showMessageNotification(
           chatId: matchId,
           matchId: matchId,
-          senderName: (data['notification_title'] ?? 'Someone').toString(),
-          messageContent: (data['notification_body'] ?? '').toString(),
+          senderName: (data['sender_name'] ?? data['senderName'] ?? 'Someone')
+              .toString(),
+          messageContent: card.body ?? '',
           messageId: messageId,
           alreadyAggregated: true,
           shouldAlertOverride: false,
+          card: card,
         );
       }
     }
@@ -1347,6 +1406,11 @@ Future<void> _initializeFcmForCurrentUser() async {
     } catch (_) {}
 
     try {
+      MobileLocalNotificationService.onOpenRoute = _openNotificationRoute;
+      WebNotificationService.onOpenRoute = _openNotificationRoute;
+    } catch (_) {}
+
+    try {
       FirebaseMessaging.onMessage.listen((message) {
         // Handle admin broadcast messages
         AdminBroadcastService.handleBroadcastMessage(message);
@@ -1532,6 +1596,80 @@ Future<void> _initializeFcmForCurrentUser() async {
               );
             }
           }
+        } else if (type != null && kMeetupAlertKinds.contains(type)) {
+          // Foreground meet-up push: Android/iOS do not auto-present FCM
+          // alerts, so post the card ourselves. The same event also wrote the
+          // inbox row server-side. The tap route opens the meet-up hub, where
+          // the incoming card and the coordination tools are.
+          final matchId =
+              (data['matchId'] ?? data['match_id'])?.toString().trim() ?? '';
+          final senderId =
+              (data['senderId'] ?? data['sender_id'])?.toString().trim() ?? '';
+          final rowId =
+              (data['meetup_signal_id'] ??
+                      data['meetup_spot_id'] ??
+                      data['meetup_session_id'] ??
+                      '')
+                  .toString()
+                  .trim();
+          final isLiveSignal =
+              type == 'meetup_signal' || type == 'meetup_beacon';
+          // A resend replaces the sender's live row server-side, so this card
+          // must replace the old one rather than stack under it: keyed on who
+          // sent it, never on the row id, which changes with every resend.
+          // Mirrors the collapse tag the server push carries.
+          final eventId = !isLiveSignal || matchId.isEmpty || senderId.isEmpty
+              ? rowId
+              : '${matchId}_$senderId';
+          final isBeacon = type == 'meetup_beacon';
+          final isSpot = type == 'meetup_spot';
+          final isProposal = type == 'meetup_proposal';
+          final fallbackTitle = isBeacon
+              ? '📡 MatchMe'
+              : isSpot
+              ? '📸 MatchMe'
+              : isProposal
+              ? '📍 MatchMe'
+              : '👋 MatchMe';
+          final fallbackBody = isBeacon
+              ? 'A beacon is on. Open to find each other.'
+              : isSpot
+              ? 'A Spot me card was shared.'
+              : isProposal
+              ? 'A meeting point was proposed. Open to review.'
+              : type == 'meetup_place_change'
+              ? 'A new meeting point was suggested. Open to review.'
+              : 'A gesture was sent. Open to see it.';
+          final title = message.notification?.title?.trim().isNotEmpty == true
+              ? message.notification!.title!.trim()
+              : fallbackTitle;
+          final body = message.notification?.body?.trim().isNotEmpty == true
+              ? message.notification!.body!.trim()
+              : fallbackBody;
+          final notificationId = eventId.isNotEmpty ? eventId : matchId;
+          if (notificationId.isNotEmpty) {
+            if (kIsWeb) {
+              unawaited(
+                WebNotificationService.showMeetupNotification(
+                  notificationId: notificationId,
+                  title: title,
+                  body: body,
+                  matchId: matchId,
+                  kind: type,
+                ),
+              );
+            } else {
+              unawaited(
+                MobileLocalNotificationService.showMeetupNotification(
+                  notificationId: '${type}_$notificationId',
+                  title: title,
+                  body: body,
+                  matchId: matchId,
+                  kind: type,
+                ),
+              );
+            }
+          }
         } else if (type == 'message_edited' || type == 'message_deleted') {
           // Silent retraction tick in foreground: Realtime already merged the
           // edit/delete locally; drop the stale tray card and rebuild from
@@ -1569,20 +1707,18 @@ Future<void> _initializeFcmForCurrentUser() async {
           final messageId =
               (data['messageId'] ?? data['message_id'])?.toString().trim() ??
               '';
+          final card = _chatPushCardFrom(data);
+          // The sender's name and nothing else. A push title is a sentence
+          // ("3 messages from John S."), and reading it as a name put that
+          // sentence in the slot a name belongs.
           final sender =
-              (data['senderName'] ??
-                      data['sender_name'] ??
-                      data['notification_title'] ??
-                      message.notification?.title ??
-                      'Someone')
+              (data['senderName'] ?? data['sender_name'] ?? 'Someone')
                   .toString();
+          // The body the server composed, else the notification block it sent
+          // with it, else nothing - and "nothing" is a card that states its
+          // count, never a canned "New message".
           final text =
-              (data['notification_body'] ??
-                      data['body'] ??
-                      data['message'] ??
-                      message.notification?.body ??
-                      'New message')
-                  .toString();
+              card.body ?? (message.notification?.body ?? '').toString().trim();
           final alreadyAggregated = data['aggregated_messages'] == 'true';
           final alertValue = data['should_alert']?.toString();
           final bool? shouldAlert = alertValue == 'true'
@@ -1600,9 +1736,12 @@ Future<void> _initializeFcmForCurrentUser() async {
                   matchId: matchId,
                   alreadyAggregated: alreadyAggregated,
                   shouldAlertOverride: shouldAlert,
+                  card: card,
                 ),
               );
             } else if (defaultTargetPlatform == TargetPlatform.android) {
+              // Same contract as the background isolate: the server's card,
+              // drawn by the native service over the FCM SDK's plain one.
               unawaited(
                 BackgroundService.triggerNotificationCheck(
                   matchId: matchId,
@@ -1611,6 +1750,10 @@ Future<void> _initializeFcmForCurrentUser() async {
                   originalContent: text,
                   senderName: sender,
                   shouldAlert: shouldAlert,
+                  title: card.title,
+                  previewLines: card.previewLines,
+                  unreadCount: card.unreadCount,
+                  previewsEnabled: card.previewsEnabled,
                 ),
               );
             } else {
@@ -1623,6 +1766,7 @@ Future<void> _initializeFcmForCurrentUser() async {
                   messageId: messageId.isNotEmpty ? messageId : null,
                   alreadyAggregated: alreadyAggregated,
                   shouldAlertOverride: shouldAlert,
+                  card: card,
                 ),
               );
             }
@@ -2999,6 +3143,12 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
   await ensurePluginsReady();
   traceBootstrap('plugins_ready');
 
+  // Arm the dead-session gate before any screen can render cached data: a
+  // known-dead refresh-token family must never paint a signed-in UI, not even
+  // for the first frame.
+  await SessionService.restoreDeadSessionLatch();
+  traceBootstrap('dead_session_latch_restored');
+
   // Apply an initial system-bar style that matches the user's saved theme so
   // the startup frames never flash a light status bar in dark mode. The runtime
   // theme builder re-applies the same style on every rebuild.
@@ -3149,6 +3299,14 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
     '⏱️ [BOOTSTRAP] Starting Supabase.initialize at ${DateTime.now().millisecondsSinceEpoch}',
   );
 
+  // The SDK spends its own persisted refresh token during initialize's
+  // recovery. On Android the background service may have rotated it in
+  // another process, leaving the SDK's copy one generation behind — a replay
+  // there revokes the whole family. Give the SDK the freshest copy first.
+  await SessionService.alignSdkPersistedSessionBeforeInit(
+    supabaseUrl: supabaseUrl,
+  );
+
   // Single init attempt with a short timeout (client is created synchronously;
   // the await is only for recoverSession). Relaxed to 5s for mobile release
   // cold starts (2s caused spurious timeouts on slow TLS).
@@ -3216,6 +3374,10 @@ Future<_BootstrapInitResult> _bootstrapInitialize(
   // parallel with Hive — a warm relaunch then routes on the seeded session
   // without ever awaiting Supabase.initialize (whose secure-storage reads +
   // deep-link platform channels cost 1.4-2.3s on cold Keychain/Keystore).
+  //
+  // Publish the runtime config first: the seed's candidate list prefers the
+  // SDK's own persisted session, whose storage key is derived from this URL.
+  setRuntimeSupabaseConfig(url: supabaseUrl, anonKey: supabaseAnonKey);
   Future<bool>? sessionSeedFuture;
   if (!forceSequentialPath) {
     sessionSeedFuture = SessionService.seedSessionFromLocalStorage();
@@ -3505,13 +3667,7 @@ Future<String?> _runPostSupabaseInitBackground(
           WebNotificationService.setServiceWorkerUserId(bootstrapUser.id);
         } catch (_) {}
       }
-      final platformText = kIsWeb
-          ? 'web'
-          : defaultTargetPlatform == TargetPlatform.android
-          ? 'android'
-          : defaultTargetPlatform == TargetPlatform.iOS
-          ? 'ios'
-          : 'unknown';
+      final platformText = SessionService.detectPlatform();
       final capturedUserId = bootstrapUser.id;
       unawaited(
         Future<void>.delayed(const Duration(milliseconds: 50), () {
@@ -3534,11 +3690,21 @@ Future<String?> _runPostSupabaseInitBackground(
 
     if (isNetwork) {
       debugPrint(
-        '⚠️ [BOOTSTRAP] Supabase initialization failed (network/timeout) - will use offline mode with cached data: $e',
+        '⏱️ [BOOTSTRAP] Supabase initialization did not settle within budget ($e) — staying optimistic-online, reachability gate decides',
       );
-      // Supabase never came up, so it cannot be reached: offline, and the gate
-      // below is skipped because there is nothing left to confirm.
-      offlineCacheManager.setSupabaseAvailability(false, force: true);
+      // DO NOT force the app offline here. The initialize future only awaits
+      // the SDK's session recovery — a network round trip that regularly
+      // exceeds 5s on a cold, slow connection when the stored session is
+      // expired — while the client itself is already constructed (its sync
+      // prologue ran before the first await). A slow-but-alive network
+      // (probe answered 4.5s into the 5s budget) used to get punished with a
+      // forced-offline start: every provider skipped its server fetch, the
+      // startup avatar warm silently skipped, and the once-per-process warm
+      // guard kept it that way after the online flip — the home screen then
+      // painted from a nearly empty cache. Supabase reachability has exactly
+      // one owner (the reachability gate + runtime monitor), so run the
+      // gate: a genuinely dead network flips the app offline within its
+      // budget anyway.
       // Ensure runtime config is still set so providers can read cached data paths
       try {
         setRuntimeSupabaseConfig(url: supabaseUrl, anonKey: supabaseAnonKey);
@@ -3549,6 +3715,13 @@ Future<String?> _runPostSupabaseInitBackground(
           timeout: const Duration(seconds: 1),
         );
       } catch (_) {}
+      // Same deferred gate + session validation the success path runs.
+      _traceBootstrap('reachability_gate_deferred');
+      unawaited(_runPostReachabilityGate());
+      final recoveredSession = Supabase.instance.client.auth.currentSession;
+      if (recoveredSession != null) {
+        unawaited(_runBackgroundSessionValidation(recoveredSession, container));
+      }
     } else {
       debugPrint(
         '❌ [BOOTSTRAP] Supabase initialization error (not timeout/network): $e',
@@ -3633,9 +3806,18 @@ Future<void> _runPostFrameChatKeyInit(String userId) async {
     );
     // Key rotation removed: Keys are never automatically replaced to ensure all messages remain readable
     if (keyState.isLoaded && keyState.activeKey == null) {
-      // Only set up encryption if no key exists at all (new user)
-      await chatKeyNotifier.setupEncryption();
-      debugPrint('⏱️ [BOOTSTRAP] Chat encryption set up for new user');
+      if (Supabase.instance.client.auth.currentSession == null) {
+        // No session means setupEncryption would throw "Not authenticated"
+        // and log a misleading deferred exception. The resume-refresh or the
+        // next successful token renewal will run setup when a session exists.
+        debugPrint(
+          '⏱️ [BOOTSTRAP] Chat key setup deferred — no active session',
+        );
+      } else {
+        // Only set up encryption if no key exists at all (new user)
+        await chatKeyNotifier.setupEncryption();
+        debugPrint('⏱️ [BOOTSTRAP] Chat encryption set up for new user');
+      }
     }
     debugPrint('⏱️ [BOOTSTRAP] ChatKeyProvider initialized');
   } catch (e, st) {
@@ -3720,14 +3902,57 @@ Future<void> _runBackgroundSessionValidation(
       return;
     }
 
-    // Proactively check token expiry and attempt refresh before calling getUser().
-    // This avoids a 403 error from the server for an expired access token.
+    // Re-read the session instead of trusting the captured one:
+    // `Supabase.initialize` fires its own unawaited `recoverSession()` refresh
+    // for an expired persisted session, and that refresh may land while the
+    // first frame paints. Refreshing on the captured (already stale) session
+    // would rotate a token that was just rotated.
+    final liveSession =
+        Supabase.instance.client.auth.currentSession ?? recoveredSession;
     final now = DateTime.now().millisecondsSinceEpoch / 1000;
-    final expiresAt = recoveredSession.expiresAt;
+    final expiresAt = liveSession.expiresAt;
     if (expiresAt != null && expiresAt <= now + 30) {
       debugPrint(
         '⏱️ [BOOTSTRAP] Token expired or expiring soon (exp=$expiresAt), attempting refresh...',
       );
+      // SINGLE REFRESH OWNER: give the SDK's startup recovery first refusal.
+      // Two refreshers spending the same single-use token produce
+      // already_used responses, and a replay outside GoTrue's reuse window
+      // revokes the whole session family.
+      final sdkRenewed = await SessionService.awaitSdkStartupRecovery(
+        staleExpiresAt: expiresAt,
+      );
+      if (sdkRenewed != null && !sdkRenewed.isExpired) {
+        debugPrint(
+          '✅ [BOOTSTRAP] Session renewed by the SDK startup recovery (no second refresh)',
+        );
+        // This rotation happened inside the SDK, possibly before the auth
+        // listener was attached; mirror it so the native background service
+        // never holds the pre-rotation token.
+        await SessionService.mirrorCurrentSessionToStores();
+        invalidateTokenProviders();
+        return;
+      }
+      // Before spending the single-use rotating refresh token (which races
+      // the native background service), adopt the service's fresh token pair
+      // from the native store — no network, no spend, no race.
+      await SessionService.adoptFresherNativeTokensIfExpired();
+      final adoptedSession = Supabase.instance.client.auth.currentSession;
+      if (adoptedSession != null && !adoptedSession.isExpired) {
+        debugPrint(
+          '✅ [BOOTSTRAP] Session renewed from the native token store (no refresh needed)',
+        );
+        invalidateTokenProviders();
+        return;
+      }
+      // A dead family cannot be renewed from this device. Refreshing here
+      // would only replay a revoked token — the gate already owns recovery.
+      if (SessionService.deadSessionDetected.value) {
+        debugPrint(
+          '⛔ [BOOTSTRAP] Dead-session latch is armed — skipping token refresh attempts',
+        );
+        return;
+      }
       bool refreshSucceeded = false;
       for (int attempt = 1; attempt <= 3; attempt++) {
         try {
@@ -3774,9 +3999,34 @@ Future<void> _runBackgroundSessionValidation(
             final lower = refreshError.toString().toLowerCase();
             if (lower.contains('refresh_token_already_used') ||
                 lower.contains('already used')) {
+              if (SessionService.deadSessionDetected.value) {
+                // Every stored copy was rejected: the family is revoked. The
+                // re-login gate is armed, and re-seeding the dead session
+                // would only spend another rejected getUser round trip.
+                debugPrint(
+                  '⛔ [BOOTSTRAP] Refresh family proven dead — gate armed, skipping offline restore/validation',
+                );
+                return;
+              }
               debugPrint(
                 '⚠️ [BOOTSTRAP] Token refresh race (already_used) - native may have refreshed, continuing with current session',
               );
+              if (Supabase.instance.client.auth.currentSession == null) {
+                // The SDK clears its in-memory session when a refresh fails,
+                // so this is the normal state after already_used. Put the
+                // persisted session back BEFORE the getUser() validation
+                // below: validating with no session is a guaranteed
+                // AuthSessionMissingException round-trip, and the offline
+                // restore may pick up a newer token the native background
+                // service rotated in the meantime (no network spend).
+                try {
+                  final restored =
+                      await SessionService.restorePersistedSessionOfflineOnly();
+                  debugPrint(
+                    '⏱️ [BOOTSTRAP] Post-already-used session restore: restored=$restored',
+                  );
+                } catch (_) {}
+              }
               if (Supabase.instance.client.auth.currentSession != null) {
                 refreshSucceeded = true;
                 invalidateTokenProviders();
@@ -3842,6 +4092,8 @@ Future<void> _runBackgroundSessionValidation(
             errorMsg.contains('jwt expired') ||
             errorMsg.contains('token is expired') ||
             errorMsg.contains('unauthorized') ||
+            errorMsg.contains('auth session missing') ||
+            errorMsg.contains('authsessionmissing') ||
             errorMsg.contains('403') ||
             errorMsg.contains('401')) {
           debugPrint(
@@ -3965,6 +4217,10 @@ Future<bool> _applySupabaseUnreachable(String reason) async {
 Future<bool> _ensureValidSupabaseSessionOrSignOut() async {
   final session = supabase.auth.currentSession;
   if (session == null) return false;
+
+  // A proven-dead family cannot be renewed. Probing it again burns a rejected
+  // round trip and keeps the refresh storm alive under the re-login gate.
+  if (SessionService.deadSessionDetected.value) return true;
 
   if (session.accessToken.trim().isEmpty) {
     // Keep the session object; a later refresh may still succeed once the
@@ -4243,19 +4499,11 @@ Future<void> _runDeferredTasks({
     }),
   );
 
-  // Defer the Supabase health check past the first frame. It's a 1-RPC
-  // call (health_check), the response processing is light, but the
-  // method-channel round-trip lands on the Android UI thread, so doing
-  // it during the first-frame jank window is wasted work.
-  unawaited(
-    Future.delayed(const Duration(milliseconds: 4000), () {
-      unawaited(
-        _performSupabaseHealthCheck().catchError(
-          (e, st) => _reportNonFatal(e as Object, st as StackTrace),
-        ),
-      );
-    }),
-  );
+  // No separate health check here: _applySupabaseReachabilityGate already
+  // probes the backend on every startup path, with the anon key, through
+  // probeSupabaseReachability, which classifies a 42501/401 as "answered"
+  // instead of "offline". A second, authenticated health_check 4s later only
+  // duplicated that round trip and could trigger a token refresh.
 
   // Pre-warm map tiles for every cached match minimap snapshot so match
   // location maps render offline. Online-only, budgeted, de-duplicated per
@@ -4348,8 +4596,21 @@ Future<void> _runDeferredTasks({
         // data must not be erased (that would empty the app the moment the
         // network hiccups). Only a real sign-out may wipe it.
         final isExplicitSignOut = SessionService.isExplicitUserSignOutPending;
+        if (!isExplicitSignOut) {
+          // Not a logout: the non-explicit-signedOut ladder in auth_provider
+          // restores the persisted session and re-emits it. Clearing
+          // authKeyInitializedUserId here would make the restored event look
+          // like an account switch and force a full ChatKeyProvider
+          // re-init (a fresh user_chat_keys round-trip) on every refresh
+          // race — with the chat-key server read failing mid-window, that
+          // left the session without chat keys. Keep everything as-is.
+          debugPrint(
+            '⏱️ [AUTH] Ignoring non-explicit signedOut — ladder restoring session, chat key provider kept',
+          );
+          continue;
+        }
         debugPrint(
-          '⏱️ [AUTH] Signed out (explicit=$isExplicitSignOut) — resetting chat key provider',
+          '⏱️ [AUTH] Explicit signed out — resetting chat key provider',
         );
         var signedOutUserId = authKeyInitializedUserId;
         authKeyInitializedUserId = null;
@@ -4363,7 +4624,8 @@ Future<void> _runDeferredTasks({
           }
         }
         if (!isExplicitSignOut) {
-          // Not a logout: keep the user's caches and providers intact.
+          // Unreachable (handled above) — kept as a hard guarantee that only
+          // explicit sign-outs can proceed to cache clearing.
           continue;
         }
         clearUserScopedHomeMemoryCaches();
@@ -4516,38 +4778,6 @@ Future<void> _runDeferredTasks({
   }());
 }
 
-/// Simple sanity check that the Supabase client can talk to your backend.
-/// Uses a lightweight RPC `health_check()` (SECURITY DEFINER) so anonymous clients
-/// do not need direct table access to perform the check.
-Future<void> _performSupabaseHealthCheck() async {
-  try {
-    debugPrint('⏱️ [BOOTSTRAP] Performing Supabase health check...');
-
-    // The transport hint is never a reason to skip this: connectivity_plus is
-    // unreliable (it reports [none] on a healthy Windows network) and says
-    // nothing about upstream reachability. The RPC's own timeout and failure
-    // handling is the real signal. The budget is platform-scaled (5s desktop,
-    // 10s mobile) so a slow cold start is not mistaken for an outage.
-    final timeout = platformProbeTimeout(const Duration(seconds: 5));
-    await supabase
-        .rpc('health_check')
-        .maybeSingle()
-        .timeout(
-          timeout,
-          onTimeout: () {
-            throw TimeoutException(
-              'Health check timeout after ${timeout.inSeconds} seconds',
-            );
-          },
-        );
-    debugPrint('✅ [BOOTSTRAP] Supabase health check passed.');
-  } catch (e) {
-    debugPrint('⏭️ [BOOTSTRAP] Supabase health check failed (non-fatal): $e');
-    // We don't rethrow because it's non-fatal for bootstrap,
-    // but useful to know.
-  }
-}
-
 Future<void> _deferredBackgroundInit({
   required ProviderContainer container,
   required String supabaseUrl,
@@ -4584,6 +4814,21 @@ Future<void> _deferredBackgroundInit({
         if (event.event == AuthChangeEvent.signedIn) {
           final ok = await _ensureValidSupabaseSessionOrSignOut();
           if (!ok) return;
+          // A new sign-in mints a new refresh-token family. Hand it to the
+          // native service: a changed refresh token is its only "new sign-in"
+          // signal, and the only thing besides a successful refresh allowed
+          // to clear its permanent-auth-failure flag.
+          try {
+            final newSession = supabase.auth.currentSession;
+            if (newSession?.accessToken != null) {
+              unawaited(
+                BackgroundService.updateToken(
+                  newSession!.accessToken,
+                  refreshToken: newSession.refreshToken,
+                ),
+              );
+            }
+          } catch (_) {}
           final userId = supabase.auth.currentUser?.id;
           if (userId != null && userId.isNotEmpty) {
             // Warm the dashboard online/nearby stats now (before the home
@@ -4600,13 +4845,7 @@ Future<void> _deferredBackgroundInit({
                 WebNotificationService.setServiceWorkerUserId(userId);
               } catch (_) {}
             }
-            final platformText = kIsWeb
-                ? 'web'
-                : defaultTargetPlatform == TargetPlatform.android
-                ? 'android'
-                : defaultTargetPlatform == TargetPlatform.iOS
-                ? 'ios'
-                : 'unknown';
+            final platformText = SessionService.detectPlatform();
             final url = runtimeSupabaseUrl;
             debugPrint(
               '[BGSESSION] authListener: scheduling registerSession userId=$userId url=$url event=${event.event.name}',
@@ -4686,6 +4925,20 @@ Future<void> _deferredBackgroundInit({
             BackgroundService.updateToken(
               session!.accessToken,
               refreshToken: session.refreshToken,
+            );
+            // Mirror every SDK rotation into MatchMe's own stores. The SDK
+            // auto-refreshes on hourly ticks and rotates the single-use
+            // refresh token; before this mirror those copies stayed at the
+            // pre-rotation token. The recovery ladder then replayed a spent
+            // token (`refresh_token_already_used`), and on desktop - where
+            // nothing else rewrites them - that revoked the whole family.
+            unawaited(SessionService.persistCurrentSupabaseSessionSnapshot());
+            unawaited(
+              SensitiveSessionStore.instance.writeAuthTokens(
+                userId: session.user.id,
+                accessToken: session.accessToken,
+                refreshToken: session.refreshToken,
+              ),
             );
           }
         }
@@ -4811,6 +5064,105 @@ class _SmoothScrollBehavior extends ScrollBehavior {
   @override
   ScrollPhysics getScrollPhysics(BuildContext context) {
     return const ClampingScrollPhysics().applyTo(const BouncingScrollPhysics());
+  }
+}
+
+/// Full-screen gate shown while [SessionService.deadSessionDetected] is armed
+/// and a session still exists.
+///
+/// The refresh-token family is revoked server-side, so no request can ever
+/// succeed again: a signed-in shell could only show stale cached matches,
+/// chats and photos while half the app silently fails. The gate therefore
+/// replaces the app subtree entirely (see the `MaterialApp.builder` above)
+/// and offers one action — an explicit sign-out to the login screen. There is
+/// no dismiss: the only way back into the app is a new, authenticated
+/// session.
+class DeadSessionGateScreen extends StatefulWidget {
+  const DeadSessionGateScreen({
+    super.key,
+    required this.title,
+    required this.body,
+    required this.signInAgain,
+  });
+
+  final String title;
+  final String body;
+  final String signInAgain;
+
+  @override
+  State<DeadSessionGateScreen> createState() => _DeadSessionGateScreenState();
+}
+
+class _DeadSessionGateScreenState extends State<DeadSessionGateScreen> {
+  bool _signingOut = false;
+
+  Future<void> _signInAgain() async {
+    if (_signingOut) return;
+    setState(() => _signingOut = true);
+    await SessionService.signOutExpiredSession(
+      'User chose to sign in again after the refresh-token family was '
+      'detected as dead',
+    );
+    if (!mounted) return;
+    // The gate normally unmounts by itself once no session remains; if the
+    // local sign-out failed, re-enable the button so it can be retried.
+    setState(() => _signingOut = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Scaffold(
+      backgroundColor: theme.scaffoldBackgroundColor,
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.lock_outline_rounded,
+                  size: 56,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  widget.title,
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  widget.body,
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodyLarge,
+                ),
+                const SizedBox(height: 28),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    onPressed: _signingOut ? null : _signInAgain,
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(52),
+                    ),
+                    child: _signingOut
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Text(widget.signInAgain),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -4966,6 +5318,15 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
                         .read(profileSyncProvider)
                         .syncProfile(userId, source: 'web-tab-visible');
 
+                    // Realtime is paused while this tab is hidden, so a
+                    // language change made on another device while the tab was
+                    // hidden would otherwise wait for the next reconnect.
+                    unawaited(
+                      ref
+                          .read(localizationProvider.notifier)
+                          .refreshLanguageFromRemote(),
+                    );
+
                     // Force a full chats re-sync so any translation-toggle
                     // changes (or other `public.chats` row updates) made on
                     // other devices while this tab was hidden are reflected
@@ -5114,6 +5475,11 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
       if (userId == null || userId.isEmpty) return;
       if (!mounted) return;
       if (shouldSkipSupabaseCalls()) return;
+      // The reconnect may have missed a language change made on another
+      // device; this also retries a pick that was made while offline.
+      unawaited(
+        ref.read(localizationProvider.notifier).refreshLanguageFromRemote(),
+      );
       _recreateStreamRealtimeProviders(userId);
     });
 
@@ -5285,8 +5651,36 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
           return;
         }
 
-        if (effectiveRoute == null || !effectiveRoute.startsWith('/chat/')) {
+        if (effectiveRoute == null ||
+            (!effectiveRoute.startsWith('/chat/') &&
+                !effectiveRoute.startsWith('/meetup/'))) {
           return;
+        }
+
+        // The FCM callback usually handles a meet-up tap first and opens the
+        // hub; this native intent carries no notification type, so skip its
+        // chat route when that just happened.
+        if (!effectiveRoute.startsWith('/meetup/') && matchId != null) {
+          final meetupPushedAt = _lastMeetupRoutePushedAt;
+          final lastMeetup = _lastMeetupRoutePushed;
+          if ((lastMeetup == '/meetup/$matchId' ||
+                  lastMeetup == '/meetup/$matchId/plan') &&
+              meetupPushedAt != null &&
+              DateTime.now().difference(meetupPushedAt) <
+                  const Duration(seconds: 3)) {
+            return;
+          }
+        }
+        if (effectiveRoute.startsWith('/meetup/')) {
+          final now = DateTime.now();
+          final duplicate =
+              _lastMeetupRoutePushed == effectiveRoute &&
+              _lastMeetupRoutePushedAt != null &&
+              now.difference(_lastMeetupRoutePushedAt!) <
+                  const Duration(seconds: 2);
+          if (duplicate) return;
+          _lastMeetupRoutePushed = effectiveRoute;
+          _lastMeetupRoutePushedAt = now;
         }
 
         final nav = navigatorKey.currentState;
@@ -5527,6 +5921,13 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
       // translated text when the screen turns back on.
       final resumedUserId = supabase.auth.currentUser?.id;
       if (resumedUserId != null && mounted) {
+        // Realtime channels stay subscribed across short screen-off periods,
+        // but a suspended process (iOS) can miss events entirely. Re-read the
+        // account language so this device converges as soon as it is visible;
+        // this also retries a pending choice that was made while offline.
+        unawaited(
+          ref.read(localizationProvider.notifier).refreshLanguageFromRemote(),
+        );
         try {
           // Coalesce rapid duplicate resumed events (inactive → resumed plus
           // visibility/connectivity observers firing together on screen-on).
@@ -5877,6 +6278,24 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
         }
       }
 
+      // Handle /meetup/UUID and /meetup/UUID/plan (planning screen)
+      if (uri.pathSegments.length >= 2 && uri.pathSegments[0] == 'meetup') {
+        final matchId = uri.pathSegments[1];
+
+        if (matchId.isNotEmpty) {
+          final openPlan =
+              uri.pathSegments.length >= 3 && uri.pathSegments[2] == 'plan';
+          return MaterialPageRoute(
+            settings: settings,
+            builder: (context) => _DeepLinkChatHandler(
+              matchId: matchId,
+              openMeetup: true,
+              openPlan: openPlan,
+            ),
+          );
+        }
+      }
+
       // Handle /chat/UUID
       if (uri.pathSegments.length >= 2 && uri.pathSegments[0] == 'chat') {
         final matchId = uri.pathSegments[1];
@@ -5919,9 +6338,9 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
           final otherNameRaw = (args['otherUserName'] ?? '').toString();
           return ChatScreen(
             matchId: args['matchId'],
-            otherUserName: otherNameRaw.trim().isEmpty
-                ? 'Chat'
-                : otherNameRaw.formatAsFirstNameLastInitial(),
+            otherUserName: otherNameRaw.formatAsFirstNameLastInitial(
+              fallback: 'Chat',
+            ),
             otherUserId: args['otherUserId'] ?? '',
           );
         }
@@ -6131,8 +6550,21 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
             maxScaleFactor: 1.35,
             child: ScrollConfiguration(
               behavior: const _SmoothScrollBehavior(),
-              child: Builder(
-                builder: (context) {
+              child: ValueListenableBuilder<bool>(
+                valueListenable: SessionService.deadSessionDetected,
+                builder: (context, deadSession, _) {
+                  // A proven-dead refresh-token family cannot back a signed-in
+                  // UI: render the gate INSTEAD of the app, so no cached
+                  // match, chat or profile can ever show behind it.
+                  if (deadSession && authState.value?.session != null) {
+                    return DeadSessionGateScreen(
+                      title: localization.getString('sessionExpiredTitle'),
+                      body: localization.getString('sessionExpiredBody'),
+                      signInAgain: localization.getString(
+                        'sessionExpiredSignInAgain',
+                      ),
+                    );
+                  }
                   final bool isAndroid =
                       defaultTargetPlatform == TargetPlatform.android;
                   final EdgeInsets padding = MediaQuery.of(context).padding;
@@ -6187,6 +6619,13 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
                             color: barColor,
                           ),
                         ),
+                      Positioned(
+                        left: 8,
+                        right: 8,
+                        top: padding.top + 4,
+                        child: const MeetupAlertOverlay(),
+                      ),
+                      const SystemNotificationOverlay(),
                       Positioned.fill(
                         child: BirthdayOverlay(
                           isBirthdayToday: isBirthdayToday,
@@ -6339,7 +6778,13 @@ class _OAuthCallbackSplashState extends State<_OAuthCallbackSplash> {
 
 class _DeepLinkChatHandler extends ConsumerStatefulWidget {
   final String matchId;
-  const _DeepLinkChatHandler({required this.matchId});
+  final bool openMeetup;
+  final bool openPlan;
+  const _DeepLinkChatHandler({
+    required this.matchId,
+    this.openMeetup = false,
+    this.openPlan = false,
+  });
 
   @override
   ConsumerState<_DeepLinkChatHandler> createState() =>
@@ -6389,41 +6834,6 @@ class _DeepLinkChatHandlerState extends ConsumerState<_DeepLinkChatHandler>
     removeOwnRoute(context);
   }
 
-  String _capNameWord(String word) {
-    if (word.isEmpty) return word;
-    final hyphenParts = word.split('-');
-    return hyphenParts
-        .map((h) {
-          if (h.isEmpty) return h;
-          return h
-              .split("'")
-              .map((s) {
-                if (s.isEmpty) return s;
-                final lower = s.toLowerCase();
-                return '${lower[0].toUpperCase()}${lower.substring(1)}';
-              })
-              .join("'");
-        })
-        .join('-');
-  }
-
-  String _maskDisplayName(String? fullName) {
-    final raw = (fullName ?? '').replaceAll(bidiControls, '').trim();
-    if (raw.isEmpty) return 'Unknown User';
-    final parts = raw.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
-    if (parts.isEmpty) return 'Unknown User';
-    if (parts.length == 1) {
-      return _capNameWord(parts.first).withDirectionalMarks();
-    }
-    final first = _capNameWord(parts.first);
-    final last = parts.last;
-    final lastInitial = last.isNotEmpty ? last[0].toUpperCase() : '';
-    final masked = lastInitial.isEmpty ? first : '$first $lastInitial.';
-    // The name carries the directional mark of its own script, so its trailing
-    // period stays glued to the initial even in a Hebrew UI.
-    return masked.withDirectionalMarks();
-  }
-
   @override
   void initState() {
     super.initState();
@@ -6453,21 +6863,24 @@ class _DeepLinkChatHandlerState extends ConsumerState<_DeepLinkChatHandler>
     // once (the FCM callbacks, the Android intent channel and the native
     // launch intent), and each of them pushed its own `/chat/<matchId>`
     // route. Claim the conversation so the first route wins and the
-    // duplicates stand down instead of racing it.
-    _ownsConversationClaim = chatRouteObserver.claimConversation(
-      widget.matchId,
-    );
-    if (!_ownsConversationClaim) {
-      // A duplicate deep link for a conversation that is already being
-      // opened. Mark the resolve as started so the auth listener below
-      // cannot start a second one, then take this splash off the stack.
-      _resolutionStarted = true;
-      _resolutionFinished = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        _routeOffSplash();
-      });
-      return;
+    // duplicates stand down instead of racing it. The meet-up hub is not a
+    // conversation, so it relies on the push-level dedupe instead.
+    if (!widget.openMeetup) {
+      _ownsConversationClaim = chatRouteObserver.claimConversation(
+        widget.matchId,
+      );
+      if (!_ownsConversationClaim) {
+        // A duplicate deep link for a conversation that is already being
+        // opened. Mark the resolve as started so the auth listener below
+        // cannot start a second one, then take this splash off the stack.
+        _resolutionStarted = true;
+        _resolutionFinished = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          _routeOffSplash();
+        });
+        return;
+      }
     }
 
     _kickResolve();
@@ -6589,7 +7002,52 @@ class _DeepLinkChatHandlerState extends ConsumerState<_DeepLinkChatHandler>
         } catch (_) {}
       }
 
-      final otherUserName = _maskDisplayName(resolvedName);
+      final otherUserName = resolvedName.formatAsFirstNameLastInitial(
+        fallback: 'Unknown User',
+      );
+
+      if (widget.openMeetup) {
+        var matchType = 'proximity';
+        try {
+          final matchRow = await supabase
+              .from('matches')
+              .select('match_type')
+              .eq('id', widget.matchId)
+              .limit(1)
+              .maybeSingle();
+          final rawType = matchRow?['match_type']?.toString().trim();
+          if (rawType != null && rawType.isNotEmpty) matchType = rawType;
+        } catch (_) {
+          // Older rows may not carry a type; proximity is the safe default.
+        }
+        if (mounted) {
+          _markResolved();
+          _didRouteFromHere = true;
+          final routeName = widget.openPlan
+              ? '/meetup/${widget.matchId}/plan'
+              : '/meetup/${widget.matchId}';
+          replaceOwnRoute(
+            context,
+            MaterialPageRoute(
+              settings: RouteSettings(name: routeName),
+              builder: (_) => widget.openPlan
+                  ? MeetupScreen(
+                      matchId: widget.matchId,
+                      otherUserId: otherUserId,
+                      otherUserName: otherUserName,
+                      matchType: matchType,
+                    )
+                  : MeetupHubScreen(
+                      matchId: widget.matchId,
+                      otherUserId: otherUserId,
+                      otherUserName: otherUserName,
+                      matchType: matchType,
+                    ),
+            ),
+          );
+        }
+        return;
+      }
 
       if (mounted) {
         _markResolved();

@@ -29,7 +29,7 @@ import kotlinx.coroutines.tasks.await
 class PhotoPrescreenHandler {
     companion object {
         private const val TAG = "PhotoPrescreenHandler"
-        const val PRESCREEN_VERSION = 5
+        const val PRESCREEN_VERSION = 6
         
         suspend fun analyzePhoto(
             bytes: ByteArray
@@ -47,6 +47,7 @@ class PhotoPrescreenHandler {
                         "faceConfidence" to 0.0,
                         "bodyConfidence" to 0.0,
                         "faceCount" to 0,
+                        "bodyCount" to 0,
                         "faceSizeRatio" to 0.0,
                         "facePositionedCenter" to false,
                         "faceTouchesImageEdge" to false,
@@ -77,7 +78,11 @@ class PhotoPrescreenHandler {
                     .build()
             )
 
-                // Configure pose detector
+                // Configure pose detector. ML Kit's pose model is
+                // single-person: bodyCount below can never exceed 1, so the
+                // Spot me "only you" gate relies on faceCount for groups on
+                // Android. A second person with their face turned away is a
+                // known detector ceiling of this platform.
                 val poseDetector = PoseDetection.getClient(
                     PoseDetectorOptions.Builder()
                         .setDetectorMode(PoseDetectorOptions.SINGLE_IMAGE_MODE)
@@ -454,6 +459,9 @@ class PhotoPrescreenHandler {
                         "faceConfidence" to faceConfidence,
                         "bodyConfidence" to bodyConfidence,
                         "faceCount" to faceCount,
+                        // ML Kit pose is single-person: 1 when a body is
+                        // detected, never more.
+                        "bodyCount" to if (containsBody) 1 else 0,
                         "faceSizeRatio" to faceSizeRatio,
                         "facePositionedCenter" to facePositionedCenter,
                         "faceTouchesImageEdge" to faceTouchesImageEdge,
@@ -493,6 +501,7 @@ class PhotoPrescreenHandler {
                     "faceConfidence" to 0.0,
                     "bodyConfidence" to 0.0,
                     "faceCount" to 0,
+                    "bodyCount" to 0,
                     "faceSizeRatio" to 0.0,
                     "facePositionedCenter" to false,
                     "faceTouchesImageEdge" to false,

@@ -76,18 +76,12 @@ This document outlines how MatchMe provides a seamless offline experience with c
 - Shows "MatchMe is offline - showing cached data"
 - Orange color for high visibility
 
-#### Data Staleness:
-- Cached data display with "📦 Cached" badge when from offline cache
-- Last sync timestamp in status
+### 6. Provider Fallback
 
-### 6. Provider Fallback (`offline_provider_fallback.dart`)
-
-Utilities for providers to fall back to offline cache:
+Providers ask the cache manager directly before fetching:
 ```dart
-if (shouldUseCachedData()) {
-  // Use offline cache instead of fetching
-  final cached = await offlineCacheManager.getCachedRecentMatches();
-  return cached;
+if (offlineCacheManager.shouldUseCachedData()) {
+  // Serve the cached data instead of calling Supabase
 }
 ```
 

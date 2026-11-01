@@ -9,9 +9,12 @@ import 'package:matchme/screens/settings/sensitive_action_verification.dart';
 import 'package:matchme/services/session_service.dart';
 import 'package:matchme/services/calendar_sync_service.dart';
 import 'package:matchme/services/local_db_service.dart';
+import 'package:matchme/services/meetup_snapshot_cache.dart';
+import 'package:matchme/services/meetup_suggestion_cache.dart';
 import 'package:matchme/services/error_localization_service.dart';
 import 'package:matchme/services/offline_api_cache.dart';
 import 'package:matchme/services/offline_image_cache.dart';
+import 'package:matchme/services/notification_avatar_service.dart';
 import 'package:matchme/services/storage_helper.dart';
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -694,11 +697,18 @@ class _AccountManagementScreenState
                         await OfflineImageCache.instance.clear();
                       } catch (_) {}
                       try {
+                        await NotificationAvatarService.instance.clearAll();
+                      } catch (_) {}
+                      try {
                         await OfflineApiCache.instance.clear();
                       } catch (_) {}
                       try {
                         await StorageHelper.clearSessionCache();
                       } catch (_) {}
+                      try {
+                        await MeetupSnapshotCache.instance.clearAll();
+                      } catch (_) {}
+                      MeetupSuggestionCache.instance.clearAll();
                     } catch (clearError) {}
 
                     if (mounted) {

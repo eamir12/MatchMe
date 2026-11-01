@@ -17,6 +17,7 @@ import 'package:matchme/services/supabase_realtime_manager.dart';
 import 'package:matchme/services/web_notification_service.dart';
 import 'package:matchme/web_imports.dart' as html;
 import 'package:matchme/utils/offline_utils.dart';
+import 'package:matchme/utils/string_extensions.dart';
 
 final supabase = Supabase.instance.client;
 
@@ -381,7 +382,7 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
                 ref.invalidate(recentMatchesProvider(currentUserId));
                 ref.invalidate(recentChatsProvider(currentUserId));
                 developer.log(
-                  '🧩 Providers invalidated for: $changedUserId',
+                  '🧩 Photo-dependent providers invalidated for: $changedUserId',
                   name: 'MatchMeTrace',
                 );
               }
@@ -393,12 +394,29 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
                   '🧩 Triggering profile sync for: $changedUserId',
                   name: 'MatchMeTrace',
                 );
-                ref
+                final sync = ref
                     .read(profileSyncProvider)
                     .syncProfile(
                       changedUserId,
                       source: 'matched-user-realtime',
                     );
+                // Any users-row update can carry profile changes (a removed
+                // religion/lifestyle answer included). Rebuild the matched
+                // profile from the cache the sync just refreshed instead of
+                // waiting for the 1-minute cache TTL.
+                unawaited(
+                  sync.then<void>((_) {
+                    if (!ref.mounted) return;
+                    ref.invalidate(otherUserProfileProvider(changedUserId));
+                    ref.invalidate(userProfileProvider(changedUserId));
+                    ref.invalidate(recentMatchesProvider(currentUserId));
+                    ref.invalidate(recentChatsProvider(currentUserId));
+                    developer.log(
+                      '🧩 Matched-profile providers refreshed for: $changedUserId',
+                      name: 'MatchMeTrace',
+                    );
+                  }),
+                );
               } else {
                 developer.log(
                   '🧩 Skipping profile sync (throttled) for: $changedUserId',
@@ -830,23 +848,23 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
       );
 
       if (kIsWeb) {
-        String? otherUserName;
+        var otherUserName = 'MatchMe';
         try {
           final otherUserId = match.otherUserId.trim();
           if (otherUserId.isNotEmpty) {
             final otherProfile = await ref.read(
               otherUserProfileProvider(otherUserId).future,
             );
-            final trimmedName = otherProfile?.name.trim();
-            if (trimmedName != null && trimmedName.isNotEmpty) {
-              otherUserName = trimmedName;
-            }
+            otherUserName = otherProfile?.name.formatAsFirstNameLastInitial(
+                  fallback: otherUserName,
+                ) ??
+                otherUserName;
           }
         } catch (_) {}
 
         await WebNotificationService.showMatchNotification(
           matchId: match.id,
-          matchName: otherUserName ?? 'MatchMe',
+          matchName: otherUserName,
           matchPhotoUrl: '',
         );
       }
