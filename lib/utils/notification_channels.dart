@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 /// Android notification-channel ids for admin broadcasts.
 ///
 /// Android 8+ (API 26+) takes a notification's sound and vibration from its
@@ -84,3 +86,34 @@ class NotificationGroups {
 
   static const String chats = 'matchme_chats';
 }
+
+/// Java's `String.hashCode`, in Dart.
+///
+/// A tray entry is addressed by `(package, id, tag)`. This app's own Kotlin
+/// producers — `MatchMeBackgroundService.showNotification` and
+/// `LocationWorker.showFallbackNotification` — post conversation cards with
+/// `id = key.hashCode()` computed *in Kotlin*, and the FCM SDK posts the
+/// server's card as `id = 0` tagged with the push's collapse key. Dart's
+/// `String.hashCode` is a different function over the same string, so a card
+/// posted from Dart with `key.hashCode` lands beside the native card instead of
+/// replacing it: a second tray entry, and a second buzz, for one message. Any
+/// Dart card that has to share a slot with a native one — or retire it — has to
+/// hash in the native space.
+///
+/// UTF-16 code units, `31 * h + c`, truncated to a signed 32-bit int at every
+/// step, exactly like `java.lang.String.hashCode`.
+int javaStringHashCode(String value) {
+  var hash = 0;
+  for (final unit in value.codeUnits) {
+    hash = (31 * hash + unit).toSigned(32);
+  }
+  return hash;
+}
+
+/// The Android tray id for [key]: the native hash on Android, Dart's own hash
+/// elsewhere (iOS uses this as the notification request identifier, where no
+/// Kotlin code is involved).
+int cardIdForPlatform(String key) =>
+    defaultTargetPlatform == TargetPlatform.android
+    ? javaStringHashCode(key)
+    : key.hashCode;

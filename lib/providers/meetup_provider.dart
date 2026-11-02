@@ -804,6 +804,33 @@ class MeetupNotifier extends Notifier<MeetupState> {
     );
   }
 
+  Future<String?> clearSignal(MeetupSignalType type) async {
+    if (state.busy) return null;
+    state = state.copyWith(busy: true, errorKey: null);
+    try {
+      await _service.clearSignal(matchId: matchId, type: type);
+      if (!_disposed) {
+        state = state.copyWith(
+          busy: false,
+          signals: state.signals
+              .where(
+                (item) =>
+                    !(item.senderId == state.currentUserId &&
+                        item.type == type),
+              )
+              .toList(growable: false),
+        );
+      }
+      return null;
+    } on MeetupActionException catch (error) {
+      if (!_disposed) state = state.copyWith(busy: false);
+      return error.code;
+    } catch (_) {
+      if (!_disposed) state = state.copyWith(busy: false);
+      return 'meetupActionFailed';
+    }
+  }
+
   Future<String?> sendGesture([String gesture = kMeetupGestureWave]) async {
     if (state.busy) return null;
     final token = kMeetupGestureTokens.contains(gesture)
@@ -867,33 +894,7 @@ class MeetupNotifier extends Notifier<MeetupState> {
   }
 
   Future<String?> hideBeacon() async {
-    if (state.busy) return null;
-    state = state.copyWith(busy: true, errorKey: null);
-    try {
-      await _service.clearSignal(
-        matchId: matchId,
-        type: MeetupSignalType.beacon,
-      );
-      if (!_disposed) {
-        state = state.copyWith(
-          busy: false,
-          signals: state.signals
-              .where(
-                (item) =>
-                    !(item.senderId == state.currentUserId &&
-                        item.type == MeetupSignalType.beacon),
-              )
-              .toList(growable: false),
-        );
-      }
-      return null;
-    } on MeetupActionException catch (error) {
-      if (!_disposed) state = state.copyWith(busy: false);
-      return error.code;
-    } catch (_) {
-      if (!_disposed) state = state.copyWith(busy: false);
-      return 'meetupActionFailed';
-    }
+    return clearSignal(MeetupSignalType.beacon);
   }
 
   Future<String?> shareSpot({

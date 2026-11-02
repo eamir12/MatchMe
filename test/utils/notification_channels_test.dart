@@ -7,6 +7,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:matchme/utils/notification_channels.dart';
 
 void main() {
+  group('javaStringHashCode', () {
+    test('matches Java UTF-16 string hashing', () {
+      expect(javaStringHashCode('abc'), 96354);
+      expect(javaStringHashCode('😀'), 1772899);
+    });
+  });
+
   group('AdminBroadcastChannels', () {
     test('maps every alert preference combination to its channel', () {
       expect(

@@ -228,31 +228,20 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 val tag = call.argument<String>("tag")
                 result.success(cancelServerCardByTag(tag.orEmpty()))
             }
-            "isNotificationAvatarMirrored" -> {
-                val matchId = call.argument<String>("matchId")
-                val cacheKey = call.argument<String>("cacheKey")
-                if (matchId.isNullOrEmpty() || cacheKey.isNullOrEmpty()) {
-                    result.success(false)
-                } else {
-                    result.success(
-                        NotificationAvatarStore.isMirrored(context, matchId, cacheKey)
-                    )
-                }
-            }
             "mirrorNotificationAvatar" -> {
                 val matchId = call.argument<String>("matchId")
                 val cacheKey = call.argument<String>("cacheKey")
                 val bytes = call.argument<ByteArray>("bytes")
                 if (matchId.isNullOrEmpty() || cacheKey.isNullOrEmpty() || bytes == null) {
                     result.error("INVALID_ARGUMENTS", "Missing avatar arguments", null)
-                } else if (NotificationAvatarStore.isMirrored(context, matchId, cacheKey)) {
-                    // Already on disk at tray size — skip the decode entirely.
-                    result.success(true)
                 } else {
-                    CoroutineScope(Dispatchers.IO).launch {
-                        try {
-                            NotificationAvatarStore.mirror(context, matchId, cacheKey, bytes)
-                        } catch (_: Exception) {
+                    // When it is already on disk at tray size this skips the decode.
+                    if (!NotificationAvatarStore.isMirrored(context, matchId, cacheKey)) {
+                        CoroutineScope(Dispatchers.IO).launch {
+                            try {
+                                NotificationAvatarStore.mirror(context, matchId, cacheKey, bytes)
+                            } catch (_: Exception) {
+                            }
                         }
                     }
                     result.success(true)
@@ -536,7 +525,12 @@ class MatchMeBackgroundPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     cancelled = true
                 }
             cancelled
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            android.util.Log.w(
+                "MatchMeBackgroundPlugin",
+                "[PLUGIN] cancelServerCard($trimmed) failed",
+                e,
+            )
             false
         }
     }

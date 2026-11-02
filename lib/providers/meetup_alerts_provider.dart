@@ -12,9 +12,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/match_notification_provider.dart';
 import 'package:matchme/providers/notification_inbox_provider.dart';
 import 'package:matchme/services/app_config_service.dart';
-import 'package:matchme/services/background_service.dart';
-import 'package:matchme/services/mobile_local_notification_service.dart';
 import 'package:matchme/services/notification_inbox_service.dart';
+import 'package:matchme/services/web_notification_service.dart';
 import 'package:matchme/utils/meetup_alert_card.dart';
 
 export 'package:matchme/utils/meetup_alert_card.dart'
@@ -121,9 +120,10 @@ MeetupAlertCardPlan planMeetupAlertCards({
       // exception: a newer signal replaced it, which is what should clear the
       // bell, not a reason to withdraw a card for something that did happen.
       if (!alreadyDropped &&
-          previouslyUnreadIds.contains(row.id) &&
           ttl.containsKey(kind) &&
-          row.data['superseded'] != true) {
+          (row.data['withdrawn'] == true ||
+              (previouslyUnreadIds.contains(row.id) &&
+                  row.data['superseded'] != true))) {
         dismissed.add(row);
         carried.add(row.id);
       }
@@ -276,14 +276,19 @@ class MeetupAlertsNotifier extends Notifier<MeetupAlertsState> {
   Future<void> _dismissCard(NotificationInboxItem row) async {
     final kind = row.data['kind']?.toString() ?? row.type;
     final cardKey = meetupAlertCardKey(kind, row.data);
+    final serverTag = meetupAlertServerTag(kind, row.data);
+    if (serverTag.isNotEmpty) {
+      await WebNotificationService.cancelMeetupCard(tag: serverTag);
+    }
     if (cardKey.isNotEmpty) {
       await MobileLocalNotificationService.cancelMeetupCard(cardKey: cardKey);
     }
     // The card the FCM SDK posted while the app was backgrounded or killed is
-    // not ours to address by id; it is cancelled by the push's collapse tag.
-    final serverTag = meetupAlertServerTag(kind, row.data);
+    // not ours to address by id; it is cancelled by the push's collapse tag,
+    // which is also the only way a card posted from the FCM background isolate
+    // can retire it.
     if (serverTag.isNotEmpty) {
-      await BackgroundService.cancelServerCard(serverTag);
+      await MobileLocalNotificationService.cancelServerCard(tag: serverTag);
     }
   }
 
@@ -302,6 +307,7 @@ class MeetupAlertsNotifier extends Notifier<MeetupAlertsState> {
     final alerts = <MeetupAlert>[];
     for (final item in items) {
       if (item.readAt != null || item.deletedAt != null) continue;
+      if (item.data['withdrawn'] == true) continue;
       final kind = item.data['kind']?.toString() ?? item.type;
       final ttl = _ttl[kind];
       if (ttl == null) continue;
@@ -362,12 +368,11 @@ final meetupAlertsProvider =
       MeetupAlertsNotifier.new,
     );
 
-/// Which match's meet-up surfaces are currently on screen (the match chat,
-/// the meet-up hub, the Meet-up screen). The global alert bar hides itself
-/// while the alert's own match is open in one of them — those surfaces
-/// already show the same live state. Reference-counted so a screen pushed on
-/// top of another one for the same match does not un-hide the bar when it
-/// pops back.
+/// Which match's meet-up surfaces are currently on screen (the match chat or
+/// profile, the meet-up hub, or the Meet-up screen). The global alert bar hides
+/// while the alert's own match is open in one of them — those surfaces already
+/// show the same live state. Reference-counted so a screen pushed on top of
+/// another one for the same match does not un-hide the bar when it pops back.
 class MeetupSurfacesNotifier extends Notifier<Map<String, int>> {
   @override
   Map<String, int> build() {

@@ -87,4 +87,16 @@ class AuthTransitionGuard {
     if (!isActive) return false;
     return userId != _anchorUserId;
   }
+
+  /// Whether the auth router can keep rendering [visibleUserId] while its
+  /// stream is temporarily loading. This avoids tearing down an active app
+  /// shell during token refreshes or the guarded calendar OAuth exchange.
+  static bool shouldPreserveVisibleUserDuringLoading({
+    required String? visibleUserId,
+    required String? currentUserId,
+  }) {
+    if (visibleUserId == null || visibleUserId.isEmpty) return false;
+    if (currentUserId == visibleUserId) return true;
+    return isActive && _anchorUserId == visibleUserId;
+  }
 }

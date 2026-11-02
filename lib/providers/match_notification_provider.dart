@@ -823,6 +823,7 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
 
       if (kIsWeb) {
         var otherUserName = 'MatchMe';
+        var otherUserPhoto = '';
         try {
           final otherUserId = match.otherUserId.trim();
           if (otherUserId.isNotEmpty) {
@@ -834,13 +835,17 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
                   fallback: otherUserName,
                 ) ??
                 otherUserName;
+            if (otherProfile?.photos.isNotEmpty == true) {
+              otherUserPhoto = otherProfile!.photos.first;
+            }
           }
         } catch (_) {}
 
         await WebNotificationService.showMatchNotification(
           matchId: match.id,
           matchName: otherUserName,
-          matchPhotoUrl: '',
+          matchPhotoUrl: otherUserPhoto,
+          tag: 'new_match_${match.id}',
         );
       }
     } catch (e, stackTrace) {

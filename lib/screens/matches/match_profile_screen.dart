@@ -14,6 +14,7 @@ import 'package:matchme/providers/new_options_provider.dart';
 import 'package:matchme/providers/main_intents_provider.dart';
 import 'package:matchme/providers/match_notification_provider.dart';
 import 'package:matchme/providers/meetup_provider.dart';
+import 'package:matchme/providers/meetup_alerts_provider.dart';
 import 'package:matchme/widgets/signed_image.dart';
 import 'package:matchme/screens/chats/chat_screen.dart';
 import 'package:matchme/screens/meetup/meetup_hub_screen.dart';
@@ -40,6 +41,7 @@ import 'package:matchme/models/location_share_session.dart';
 import 'package:matchme/screens/location_share/location_share_map_screen.dart';
 import 'package:matchme/screens/location_share/location_share_duration_dialog.dart';
 import 'package:matchme/widgets/location_share_banner.dart';
+import 'package:matchme/widgets/meetup_banner.dart';
 import 'package:matchme/widgets/safe_text.dart';
 import 'package:matchme/utils/match_score_utils.dart';
 import 'package:matchme/utils/profile_completeness.dart';
@@ -129,6 +131,8 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen>
     with WidgetsBindingObserver {
   late final ScrollController _scrollController;
   RealtimeChannel? _chatSignalChannel;
+  MeetupSurfacesNotifier? _meetupSurfaces;
+  bool _meetupSurfaceEntered = false;
   final _ratingService = MatchRatingService();
   Future<UserRatingSummary>? _otherRatingSummaryFuture;
   Future<List<RatingQuestion>>? _ratingQuestionsFuture;
@@ -152,6 +156,9 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen>
         ref
             .read(matchNotificationProvider.notifier)
             .markAsViewed(widget.matchId);
+        _meetupSurfaces = ref.read(meetupSurfacesProvider.notifier);
+        _meetupSurfaces!.enter(widget.matchId);
+        _meetupSurfaceEntered = true;
       });
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -636,6 +643,11 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    if (_meetupSurfaceEntered) {
+      _meetupSurfaces?.exit(widget.matchId);
+      _meetupSurfaces = null;
+      _meetupSurfaceEntered = false;
+    }
     _chatSignalChannel?.unsubscribe();
     _chatSignalChannel = null;
     _scrollController.dispose();
@@ -905,10 +917,12 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen>
     if (currentSession == null) return;
     if (currentSession.matchId != widget.matchId) return;
 
-    ref.read(locationShareProvider.notifier).handleSignalDeleted(
-      deletedSharerId: payload.oldRecord['sharer_id'] as String?,
-      deletedMatchId: payload.oldRecord['match_id'] as String?,
-    );
+    ref
+        .read(locationShareProvider.notifier)
+        .handleSignalDeleted(
+          deletedSharerId: payload.oldRecord['sharer_id'] as String?,
+          deletedMatchId: payload.oldRecord['match_id'] as String?,
+        );
   }
 
   Future<void> _checkExistingLocationShareSignal() async {
@@ -1203,210 +1217,58 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen>
             ),
         ],
       ),
-      body: Center(
-        child: Builder(
-          builder: (ctx) {
-            final intentProfile = specificAsync.asData?.value;
+      body: Column(
+        children: [
+          Consumer(
+            builder: (context, ref, _) => MeetupBanner(
+              matchId: widget.matchId,
+              otherUserId: widget.otherUserId,
+              otherUserName: effectiveOtherUserName,
+              matchType: widget.matchType,
+              eventName: widget.eventName,
+            ),
+          ),
+          Expanded(
+            child: Center(
+              child: Builder(
+                builder: (ctx) {
+                  final intentProfile = specificAsync.asData?.value;
 
-            // If both aggregated profiles are present we can compute intersections locally and render immediately.
-            final UserProfile? otherProfile = otherProfileAsync.asData?.value;
-            final UserProfile? currentProfile =
-                currentProfileAsync.asData?.value;
+                  // If both aggregated profiles are present we can compute intersections locally and render immediately.
+                  final UserProfile? otherProfile =
+                      otherProfileAsync.asData?.value;
+                  final UserProfile? currentProfile =
+                      currentProfileAsync.asData?.value;
 
-            if (otherProfile != null && currentProfile != null) {
-              // Gate by active intents: stashed selections for inactive intents
-              // are preserved for quick re-activation but must stay hidden.
-              final otherActive = otherProfile.activeModes
-                  .map(_normalizeKey)
-                  .toSet();
-              final currentActive = currentProfile.activeModes
-                  .map(_normalizeKey)
-                  .toSet();
-              final showBusiness =
-                  _hasBusinessIntent(otherProfile) &&
-                  _hasBusinessIntent(currentProfile);
-              final showPersonal =
-                  _hasSocialIntent(otherProfile) &&
-                  _hasSocialIntent(currentProfile);
-              // Compute ALL shared data between the two users (not just for the matched intent)
-              final Map<String, List<String>> allSharedSubIntents = {};
-
-              for (final intentKey in otherProfile.subIntents.keys) {
-                final normIntent = _normalizeKey(intentKey);
-                if (!otherActive.contains(normIntent) ||
-                    !currentActive.contains(normIntent)) {
-                  continue;
-                }
-                if (currentProfile.subIntents.containsKey(intentKey)) {
-                  final otherSubs = otherProfile.subIntents[intentKey] ?? [];
-                  final currentSubs =
-                      currentProfile.subIntents[intentKey] ?? [];
-                  final intersected = _intersectLists(otherSubs, currentSubs);
-                  if (intersected.isNotEmpty) {
-                    allSharedSubIntents[intentKey] = intersected;
-                  }
-                }
-              }
-
-              // Compute ALL shared interests between the two users
-              final Map<String, List<String>> allSharedInterests = {};
-
-              if (showPersonal) {
-                for (final entry in otherProfile.personalInterests.entries) {
-                  final cat = entry.key;
-                  final otherList = entry.value;
-                  final currentList =
-                      currentProfile.personalInterests[cat] ?? [];
-                  final intersected = _intersectLists(otherList, currentList);
-                  final bothHaveCategory = currentProfile.personalInterests
-                      .containsKey(cat);
-                  if (intersected.isNotEmpty || bothHaveCategory) {
-                    allSharedInterests[cat] = intersected;
-                  }
-                }
-              }
-
-              if (showBusiness) {
-                for (final entry in otherProfile.businessInterests.entries) {
-                  final cat = entry.key;
-                  final otherList = entry.value;
-                  final currentList =
-                      currentProfile.businessInterests[cat] ?? [];
-                  final intersected = _intersectLists(otherList, currentList);
-                  final bothHaveCategory = currentProfile.businessInterests
-                      .containsKey(cat);
-                  if (intersected.isNotEmpty || bothHaveCategory) {
-                    allSharedInterests['business_networking::$cat'] =
-                        intersected;
-                  }
-                }
-              }
-
-              // derive shared languages and skills
-              final Map<String, List<String>> sharedLanguages = {};
-              for (final langEntry in otherProfile.languagesKnown.entries) {
-                final lang = langEntry.key;
-                final otherSkills = langEntry.value
-                    .map((s) => s.toLowerCase())
-                    .toList();
-                final currentSkills =
-                    currentProfile.languagesKnown[lang]
-                        ?.map((s) => s.toLowerCase())
-                        .toList() ??
-                    [];
-                final skillsIntersect = _intersectLists(
-                  otherSkills,
-                  currentSkills,
-                );
-                if (skillsIntersect.isNotEmpty) {
-                  sharedLanguages[lang] = skillsIntersect;
-                } else {
-                  // include language even if no shared skills? Show only languages in common:
-                  if (currentProfile.languagesKnown.containsKey(lang)) {
-                    // no shared skills but both have the language; include without skills
-                    sharedLanguages[lang] = [];
-                  }
-                }
-              }
-
-              // Realtime: prefer the aggregated (local-DB-watched) bio so the
-              // other user's edits and realtime syncs reflect instantly. The
-              // one-shot remote intent fetch (specificAsync) is fallback only.
-              final bio =
-                  otherProfile.bio ??
-                  intentProfile?.bio ??
-                  l10n.getString('matchProfileNoBio');
-
-              // Build an IntentProfileData-like object with ALL shared data
-              final IntentProfileData derived = IntentProfileData(
-                bio: bio,
-                subIntents: allSharedSubIntents.values
-                    .expand((list) => list)
-                    .toList(),
-                interests: allSharedInterests,
-              );
-
-              // Render UI (pass ref so helper can read providers)
-              return _buildProfileUI(
-                context,
-                ref,
-                l10n,
-                derived,
-                interestDisplayMap,
-                languageOptionsAsync,
-                sharedLanguages,
-                isOnline,
-                otherProfile,
-                currentProfileAsync.asData?.value,
-                _scrollController,
-                effectiveOtherUserName,
-              );
-            }
-
-            // Else: attempt using specificProvider (remote intent-specific row) + currentProfile
-            if (currentProfileAsync.isLoading) {
-              // Wait for current user's profile: it's needed to compute intersections for "matched only"
-              // but avoid blocking forever: also trigger a sync
-              Future.microtask(() {
-                if (currentUserId.isNotEmpty) {
-                  ref
-                      .read(profileSyncProvider)
-                      .syncProfile(
-                        currentUserId,
-                        source: 'match-profile-current-user-loading',
-                      );
-                }
-              });
-              return const CircularProgressIndicator();
-            }
-
-            // If current profile failed or is not present, fall back to showing other user's available data
-            final UserProfile? currentProfileAvailable =
-                currentProfileAsync.asData?.value;
-
-            return specificAsync.when(
-              data: (intentProfile) {
-                final IntentProfileData otherIntentData =
-                    intentProfile ?? IntentProfileData.fromJson(null);
-
-                // If current profile is present, compute intersections using current profile and otherIntentData
-                Map<String, List<String>> matchedInterests = {};
-                List<String> matchedSubIntents = [];
-                Map<String, List<String>> sharedLanguages = {};
-
-                if (currentProfileAvailable != null) {
-                  // Get the other user's full profile to compute ALL shared data
-                  final otherProfileAvailable = otherProfileAsync.asData?.value;
-
-                  if (otherProfileAvailable != null) {
-                    final otherActiveAv = otherProfileAvailable.activeModes
+                  if (otherProfile != null && currentProfile != null) {
+                    // Gate by active intents: stashed selections for inactive intents
+                    // are preserved for quick re-activation but must stay hidden.
+                    final otherActive = otherProfile.activeModes
                         .map(_normalizeKey)
                         .toSet();
-                    final currentActiveAv = currentProfileAvailable.activeModes
+                    final currentActive = currentProfile.activeModes
                         .map(_normalizeKey)
                         .toSet();
-                    final showBusinessAv =
-                        _hasBusinessIntent(otherProfileAvailable) &&
-                        _hasBusinessIntent(currentProfileAvailable);
-                    final showPersonalAv =
-                        _hasSocialIntent(otherProfileAvailable) &&
-                        _hasSocialIntent(currentProfileAvailable);
+                    final showBusiness =
+                        _hasBusinessIntent(otherProfile) &&
+                        _hasBusinessIntent(currentProfile);
+                    final showPersonal =
+                        _hasSocialIntent(otherProfile) &&
+                        _hasSocialIntent(currentProfile);
                     // Compute ALL shared data between the two users (not just for the matched intent)
                     final Map<String, List<String>> allSharedSubIntents = {};
-                    for (final intentKey
-                        in otherProfileAvailable.subIntents.keys) {
-                      final normAv = _normalizeKey(intentKey);
-                      if (!otherActiveAv.contains(normAv) ||
-                          !currentActiveAv.contains(normAv)) {
+
+                    for (final intentKey in otherProfile.subIntents.keys) {
+                      final normIntent = _normalizeKey(intentKey);
+                      if (!otherActive.contains(normIntent) ||
+                          !currentActive.contains(normIntent)) {
                         continue;
                       }
-                      if (currentProfileAvailable.subIntents.containsKey(
-                        intentKey,
-                      )) {
+                      if (currentProfile.subIntents.containsKey(intentKey)) {
                         final otherSubs =
-                            otherProfileAvailable.subIntents[intentKey] ?? [];
+                            otherProfile.subIntents[intentKey] ?? [];
                         final currentSubs =
-                            currentProfileAvailable.subIntents[intentKey] ?? [];
+                            currentProfile.subIntents[intentKey] ?? [];
                         final intersected = _intersectLists(
                           otherSubs,
                           currentSubs,
@@ -1420,19 +1282,18 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen>
                     // Compute ALL shared interests between the two users
                     final Map<String, List<String>> allSharedInterests = {};
 
-                    if (showPersonalAv) {
+                    if (showPersonal) {
                       for (final entry
-                          in otherProfileAvailable.personalInterests.entries) {
+                          in otherProfile.personalInterests.entries) {
                         final cat = entry.key;
                         final otherList = entry.value;
                         final currentList =
-                            currentProfileAvailable.personalInterests[cat] ??
-                            [];
+                            currentProfile.personalInterests[cat] ?? [];
                         final intersected = _intersectLists(
                           otherList,
                           currentList,
                         );
-                        final bothHaveCategory = currentProfileAvailable
+                        final bothHaveCategory = currentProfile
                             .personalInterests
                             .containsKey(cat);
                         if (intersected.isNotEmpty || bothHaveCategory) {
@@ -1441,19 +1302,18 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen>
                       }
                     }
 
-                    if (showBusinessAv) {
+                    if (showBusiness) {
                       for (final entry
-                          in otherProfileAvailable.businessInterests.entries) {
+                          in otherProfile.businessInterests.entries) {
                         final cat = entry.key;
                         final otherList = entry.value;
                         final currentList =
-                            currentProfileAvailable.businessInterests[cat] ??
-                            [];
+                            currentProfile.businessInterests[cat] ?? [];
                         final intersected = _intersectLists(
                           otherList,
                           currentList,
                         );
-                        final bothHaveCategory = currentProfileAvailable
+                        final bothHaveCategory = currentProfile
                             .businessInterests
                             .containsKey(cat);
                         if (intersected.isNotEmpty || bothHaveCategory) {
@@ -1463,26 +1323,16 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen>
                       }
                     }
 
-                    matchedSubIntents = allSharedSubIntents.values
-                        .expand((list) => list)
-                        .toList();
-                    matchedInterests = allSharedInterests;
-                  } else {
-                    // Fallback to intent-specific data if we can't get the full profile
-                    matchedSubIntents = otherIntentData.subIntents;
-                    matchedInterests = otherIntentData.interests;
-                  }
-
-                  // languages: shared languages from profiles (use aggregated otherProfile if available)
-                  final UserProfile? otherAgg = otherProfileAsync.asData?.value;
-                  if (otherAgg != null) {
-                    for (final langEntry in otherAgg.languagesKnown.entries) {
+                    // derive shared languages and skills
+                    final Map<String, List<String>> sharedLanguages = {};
+                    for (final langEntry
+                        in otherProfile.languagesKnown.entries) {
                       final lang = langEntry.key;
                       final otherSkills = langEntry.value
                           .map((s) => s.toLowerCase())
                           .toList();
                       final currentSkills =
-                          currentProfileAvailable.languagesKnown[lang]
+                          currentProfile.languagesKnown[lang]
                               ?.map((s) => s.toLowerCase())
                               .toList() ??
                           [];
@@ -1492,73 +1342,284 @@ class _MatchProfileScreenState extends ConsumerState<MatchProfileScreen>
                       );
                       if (skillsIntersect.isNotEmpty) {
                         sharedLanguages[lang] = skillsIntersect;
-                      } else if (currentProfileAvailable.languagesKnown
-                          .containsKey(lang)) {
-                        sharedLanguages[lang] = [];
+                      } else {
+                        // include language even if no shared skills? Show only languages in common:
+                        if (currentProfile.languagesKnown.containsKey(lang)) {
+                          // no shared skills but both have the language; include without skills
+                          sharedLanguages[lang] = [];
+                        }
                       }
                     }
-                  }
-                } else {
-                  matchedSubIntents = const [];
-                  matchedInterests = const {};
-                }
 
-                // Render UI
-                return _buildProfileUI(
-                  context,
-                  ref,
-                  l10n,
-                  IntentProfileData(
-                    bio: otherIntentData.bio,
-                    subIntents: matchedSubIntents,
-                    interests: matchedInterests,
-                  ),
-                  interestDisplayMap,
-                  languageOptionsAsync,
-                  sharedLanguages,
-                  isOnline,
-                  // Pass the aggregate profile when available (may be null on
-                  // first open): _buildProfileUI needs owner gender for
-                  // gender-aware bio/occupation translation. Passing null
-                  // drops the speaker gender, DeepL defaults to masculine,
-                  // and the result is cached — female speakers mistranslated.
-                  otherProfileAsync.asData?.value,
-                  currentProfileAsync.asData?.value,
-                  _scrollController,
-                  effectiveOtherUserName,
-                );
-              },
-              loading: () {
-                // kick off a background sync to try populate local aggregated profiles
-                Future.microtask(() {
-                  if (currentUserId.isNotEmpty) {
-                    ref
-                        .read(profileSyncProvider)
-                        .syncProfile(
-                          currentUserId,
-                          source: 'match-profile-current-user-loading',
-                        );
+                    // Realtime: prefer the aggregated (local-DB-watched) bio so the
+                    // other user's edits and realtime syncs reflect instantly. The
+                    // one-shot remote intent fetch (specificAsync) is fallback only.
+                    final bio =
+                        otherProfile.bio ??
+                        intentProfile?.bio ??
+                        l10n.getString('matchProfileNoBio');
+
+                    // Build an IntentProfileData-like object with ALL shared data
+                    final IntentProfileData derived = IntentProfileData(
+                      bio: bio,
+                      subIntents: allSharedSubIntents.values
+                          .expand((list) => list)
+                          .toList(),
+                      interests: allSharedInterests,
+                    );
+
+                    // Render UI (pass ref so helper can read providers)
+                    return _buildProfileUI(
+                      context,
+                      ref,
+                      l10n,
+                      derived,
+                      interestDisplayMap,
+                      languageOptionsAsync,
+                      sharedLanguages,
+                      isOnline,
+                      otherProfile,
+                      currentProfileAsync.asData?.value,
+                      _scrollController,
+                      effectiveOtherUserName,
+                    );
                   }
-                  ref
-                      .read(profileSyncProvider)
-                      .syncProfile(
-                        widget.otherUserId,
-                        source: 'match-profile-other-user-loading',
+
+                  // Else: attempt using specificProvider (remote intent-specific row) + currentProfile
+                  if (currentProfileAsync.isLoading) {
+                    // Wait for current user's profile: it's needed to compute intersections for "matched only"
+                    // but avoid blocking forever: also trigger a sync
+                    Future.microtask(() {
+                      if (currentUserId.isNotEmpty) {
+                        ref
+                            .read(profileSyncProvider)
+                            .syncProfile(
+                              currentUserId,
+                              source: 'match-profile-current-user-loading',
+                            );
+                      }
+                    });
+                    return const CircularProgressIndicator();
+                  }
+
+                  // If current profile failed or is not present, fall back to showing other user's available data
+                  final UserProfile? currentProfileAvailable =
+                      currentProfileAsync.asData?.value;
+
+                  return specificAsync.when(
+                    data: (intentProfile) {
+                      final IntentProfileData otherIntentData =
+                          intentProfile ?? IntentProfileData.fromJson(null);
+
+                      // If current profile is present, compute intersections using current profile and otherIntentData
+                      Map<String, List<String>> matchedInterests = {};
+                      List<String> matchedSubIntents = [];
+                      Map<String, List<String>> sharedLanguages = {};
+
+                      if (currentProfileAvailable != null) {
+                        // Get the other user's full profile to compute ALL shared data
+                        final otherProfileAvailable =
+                            otherProfileAsync.asData?.value;
+
+                        if (otherProfileAvailable != null) {
+                          final otherActiveAv = otherProfileAvailable
+                              .activeModes
+                              .map(_normalizeKey)
+                              .toSet();
+                          final currentActiveAv = currentProfileAvailable
+                              .activeModes
+                              .map(_normalizeKey)
+                              .toSet();
+                          final showBusinessAv =
+                              _hasBusinessIntent(otherProfileAvailable) &&
+                              _hasBusinessIntent(currentProfileAvailable);
+                          final showPersonalAv =
+                              _hasSocialIntent(otherProfileAvailable) &&
+                              _hasSocialIntent(currentProfileAvailable);
+                          // Compute ALL shared data between the two users (not just for the matched intent)
+                          final Map<String, List<String>> allSharedSubIntents =
+                              {};
+                          for (final intentKey
+                              in otherProfileAvailable.subIntents.keys) {
+                            final normAv = _normalizeKey(intentKey);
+                            if (!otherActiveAv.contains(normAv) ||
+                                !currentActiveAv.contains(normAv)) {
+                              continue;
+                            }
+                            if (currentProfileAvailable.subIntents.containsKey(
+                              intentKey,
+                            )) {
+                              final otherSubs =
+                                  otherProfileAvailable.subIntents[intentKey] ??
+                                  [];
+                              final currentSubs =
+                                  currentProfileAvailable
+                                      .subIntents[intentKey] ??
+                                  [];
+                              final intersected = _intersectLists(
+                                otherSubs,
+                                currentSubs,
+                              );
+                              if (intersected.isNotEmpty) {
+                                allSharedSubIntents[intentKey] = intersected;
+                              }
+                            }
+                          }
+
+                          // Compute ALL shared interests between the two users
+                          final Map<String, List<String>> allSharedInterests =
+                              {};
+
+                          if (showPersonalAv) {
+                            for (final entry
+                                in otherProfileAvailable
+                                    .personalInterests
+                                    .entries) {
+                              final cat = entry.key;
+                              final otherList = entry.value;
+                              final currentList =
+                                  currentProfileAvailable
+                                      .personalInterests[cat] ??
+                                  [];
+                              final intersected = _intersectLists(
+                                otherList,
+                                currentList,
+                              );
+                              final bothHaveCategory = currentProfileAvailable
+                                  .personalInterests
+                                  .containsKey(cat);
+                              if (intersected.isNotEmpty || bothHaveCategory) {
+                                allSharedInterests[cat] = intersected;
+                              }
+                            }
+                          }
+
+                          if (showBusinessAv) {
+                            for (final entry
+                                in otherProfileAvailable
+                                    .businessInterests
+                                    .entries) {
+                              final cat = entry.key;
+                              final otherList = entry.value;
+                              final currentList =
+                                  currentProfileAvailable
+                                      .businessInterests[cat] ??
+                                  [];
+                              final intersected = _intersectLists(
+                                otherList,
+                                currentList,
+                              );
+                              final bothHaveCategory = currentProfileAvailable
+                                  .businessInterests
+                                  .containsKey(cat);
+                              if (intersected.isNotEmpty || bothHaveCategory) {
+                                allSharedInterests['business_networking::$cat'] =
+                                    intersected;
+                              }
+                            }
+                          }
+
+                          matchedSubIntents = allSharedSubIntents.values
+                              .expand((list) => list)
+                              .toList();
+                          matchedInterests = allSharedInterests;
+                        } else {
+                          // Fallback to intent-specific data if we can't get the full profile
+                          matchedSubIntents = otherIntentData.subIntents;
+                          matchedInterests = otherIntentData.interests;
+                        }
+
+                        // languages: shared languages from profiles (use aggregated otherProfile if available)
+                        final UserProfile? otherAgg =
+                            otherProfileAsync.asData?.value;
+                        if (otherAgg != null) {
+                          for (final langEntry
+                              in otherAgg.languagesKnown.entries) {
+                            final lang = langEntry.key;
+                            final otherSkills = langEntry.value
+                                .map((s) => s.toLowerCase())
+                                .toList();
+                            final currentSkills =
+                                currentProfileAvailable.languagesKnown[lang]
+                                    ?.map((s) => s.toLowerCase())
+                                    .toList() ??
+                                [];
+                            final skillsIntersect = _intersectLists(
+                              otherSkills,
+                              currentSkills,
+                            );
+                            if (skillsIntersect.isNotEmpty) {
+                              sharedLanguages[lang] = skillsIntersect;
+                            } else if (currentProfileAvailable.languagesKnown
+                                .containsKey(lang)) {
+                              sharedLanguages[lang] = [];
+                            }
+                          }
+                        }
+                      } else {
+                        matchedSubIntents = const [];
+                        matchedInterests = const {};
+                      }
+
+                      // Render UI
+                      return _buildProfileUI(
+                        context,
+                        ref,
+                        l10n,
+                        IntentProfileData(
+                          bio: otherIntentData.bio,
+                          subIntents: matchedSubIntents,
+                          interests: matchedInterests,
+                        ),
+                        interestDisplayMap,
+                        languageOptionsAsync,
+                        sharedLanguages,
+                        isOnline,
+                        // Pass the aggregate profile when available (may be null on
+                        // first open): _buildProfileUI needs owner gender for
+                        // gender-aware bio/occupation translation. Passing null
+                        // drops the speaker gender, DeepL defaults to masculine,
+                        // and the result is cached — female speakers mistranslated.
+                        otherProfileAsync.asData?.value,
+                        currentProfileAsync.asData?.value,
+                        _scrollController,
+                        effectiveOtherUserName,
                       );
-                });
-                return const CircularProgressIndicator();
-              },
-              error: (err, stack) {
-                return _buildErrorUI(
-                  context,
-                  ref,
-                  err.toString(),
-                  specificProvider,
-                );
-              },
-            );
-          },
-        ),
+                    },
+                    loading: () {
+                      // kick off a background sync to try populate local aggregated profiles
+                      Future.microtask(() {
+                        if (currentUserId.isNotEmpty) {
+                          ref
+                              .read(profileSyncProvider)
+                              .syncProfile(
+                                currentUserId,
+                                source: 'match-profile-current-user-loading',
+                              );
+                        }
+                        ref
+                            .read(profileSyncProvider)
+                            .syncProfile(
+                              widget.otherUserId,
+                              source: 'match-profile-other-user-loading',
+                            );
+                      });
+                      return const CircularProgressIndicator();
+                    },
+                    error: (err, stack) {
+                      return _buildErrorUI(
+                        context,
+                        ref,
+                        err.toString(),
+                        specificProvider,
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ),
+        ],
       ),
       bottomNavigationBar: Column(
         mainAxisSize: MainAxisSize.min,

@@ -19,6 +19,7 @@ NotificationInboxItem _row({
   DateTime? readAt,
   DateTime? deletedAt,
   bool superseded = false,
+  bool withdrawn = false,
 }) {
   return NotificationInboxItem(
     id: id,
@@ -31,6 +32,7 @@ NotificationInboxItem _row({
       'senderId': 'user-2',
       'meetup_signal_id': id,
       if (superseded) 'superseded': true,
+      if (withdrawn) 'withdrawn': true,
     },
     createdAt: createdAt,
     readAt: readAt,
@@ -142,6 +144,21 @@ void main() {
         alreadyDismissed: plan.dismissedIds,
       );
       expect(next.dismissed, isEmpty);
+    });
+
+    test('a withdrawn signal loses its card even if already read', () {
+      final withdrawn = _row(
+        id: 'withdrawn-1',
+        kind: kMeetupAlertBeacon,
+        createdAt: _now.subtract(const Duration(seconds: 30)),
+        readAt: _now,
+        withdrawn: true,
+      );
+      final plan = _plan([withdrawn]);
+
+      expect(plan.dismissed.map((row) => row.id), ['withdrawn-1']);
+      expect(plan.staleIds, isEmpty);
+      expect(plan.unreadIds, isEmpty);
     });
 
     test('a row the server superseded keeps its card', () {
@@ -359,59 +376,110 @@ void main() {
           60 * 1000,
         );
 
-        await MobileLocalNotificationService.cancelMeetupCard(
-          cardKey: cardKey,
-        );
+        await MobileLocalNotificationService.cancelMeetupCard(cardKey: cardKey);
         expect(sent('cancel').single['id'], shown['id']);
       },
     );
 
-    test(
-      'the sweep drops an expired card from the tray',
-      () async {
-        SharedPreferences.setMockInitialValues({});
-        final inbox = _FakeInboxNotifier();
-        final container = ProviderContainer(
-          overrides: [notificationInboxProvider.overrideWith(() => inbox)],
-        );
-        addTearDown(container.dispose);
-        container.listen(meetupAlertsProvider, (_, _) {});
+    test('the sweep drops an expired card from the tray', () async {
+      SharedPreferences.setMockInitialValues({});
+      final inbox = _FakeInboxNotifier();
+      final container = ProviderContainer(
+        overrides: [notificationInboxProvider.overrideWith(() => inbox)],
+      );
+      addTearDown(container.dispose);
+      container.listen(meetupAlertsProvider, (_, _) {});
 
-        final row = _row(
-          id: 'stale-1',
-          kind: kMeetupAlertSignal,
-          createdAt: DateTime.now().subtract(const Duration(minutes: 5)),
-        );
-        inbox.emit([row]);
-        await Future<void>.delayed(const Duration(milliseconds: 50));
+      final row = _row(
+        id: 'stale-1',
+        kind: kMeetupAlertSignal,
+        createdAt: DateTime.now().subtract(const Duration(minutes: 5)),
+      );
+      inbox.emit([row]);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
 
-        expect(sent('cancel'), hasLength(1));
-        expect(
-          sent('cancel').single['id'],
-          meetupAlertCardKey(kMeetupAlertSignal, row.data).hashCode,
-        );
-        expect(inbox.settled, contains('stale-1'));
-      },
-    );
+      final cancelled = sent('cancel');
+      expect(
+        cancelled.any(
+          (call) =>
+              call['id'] ==
+              meetupAlertCardKey(kMeetupAlertSignal, row.data).hashCode,
+        ),
+        isTrue,
+      );
+      expect(
+        cancelled.any(
+          (call) =>
+              call['tag'] == meetupAlertServerTag(kMeetupAlertSignal, row.data),
+        ),
+        isTrue,
+      );
+      expect(inbox.settled, contains('stale-1'));
+    });
 
-    test(
-      'a card inside its window is left alone',
-      () async {
-        SharedPreferences.setMockInitialValues({});
-        final inbox = _FakeInboxNotifier();
-        final container = ProviderContainer(
-          overrides: [notificationInboxProvider.overrideWith(() => inbox)],
-        );
-        addTearDown(container.dispose);
-        container.listen(meetupAlertsProvider, (_, _) {});
+    test('withdrawing a live signal cancels its existing tray card', () async {
+      SharedPreferences.setMockInitialValues({});
+      final inbox = _FakeInboxNotifier();
+      final container = ProviderContainer(
+        overrides: [notificationInboxProvider.overrideWith(() => inbox)],
+      );
+      addTearDown(container.dispose);
+      container.listen(meetupAlertsProvider, (_, _) {});
 
-        inbox.emit([
-          _row(id: 'live-1', kind: kMeetupAlertSignal, createdAt: DateTime.now()),
-        ]);
-        await Future<void>.delayed(const Duration(milliseconds: 50));
+      final createdAt = DateTime.now();
+      final row = _row(
+        id: 'withdrawn-1',
+        kind: kMeetupAlertBeacon,
+        createdAt: createdAt,
+      );
+      inbox.emit([row]);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(sent('cancel'), isEmpty);
 
-        expect(sent('cancel'), isEmpty);
-      },
-    );
+      inbox.emit([
+        _row(
+          id: 'withdrawn-1',
+          kind: kMeetupAlertBeacon,
+          createdAt: createdAt,
+          readAt: DateTime.now(),
+          withdrawn: true,
+        ),
+      ]);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      final cancelled = sent('cancel');
+      expect(
+        cancelled.any(
+          (call) =>
+              call['id'] ==
+              meetupAlertCardKey(kMeetupAlertBeacon, row.data).hashCode,
+        ),
+        isTrue,
+      );
+      expect(
+        cancelled.any(
+          (call) =>
+              call['tag'] == meetupAlertServerTag(kMeetupAlertBeacon, row.data),
+        ),
+        isTrue,
+      );
+    });
+
+    test('a card inside its window is left alone', () async {
+      SharedPreferences.setMockInitialValues({});
+      final inbox = _FakeInboxNotifier();
+      final container = ProviderContainer(
+        overrides: [notificationInboxProvider.overrideWith(() => inbox)],
+      );
+      addTearDown(container.dispose);
+      container.listen(meetupAlertsProvider, (_, _) {});
+
+      inbox.emit([
+        _row(id: 'live-1', kind: kMeetupAlertSignal, createdAt: DateTime.now()),
+      ]);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(sent('cancel'), isEmpty);
+    });
   });
 }

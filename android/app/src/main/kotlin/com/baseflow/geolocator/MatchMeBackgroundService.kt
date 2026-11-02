@@ -3356,13 +3356,18 @@ class MatchMeBackgroundService : Service() {
                                     recordMatchBuzzed(effectiveMatchId)
                                 } else {
                                     // Log.d(TAG, "Found new unread match: $matchName (ID: $effectiveMatchId)")
-                                    // Use match name hash as ID to group match notifications.
-                                    val matchNotifyId = matchName.hashCode()
+                                    // Match cards share an ID with the Dart FCM renderer.
+                                    val matchNotifyId = if (matchId.isNotEmpty()) {
+                                        matchId.hashCode()
+                                    } else {
+                                        matchName.hashCode()
+                                    }
                                     showNotification(
                                         "New Match!",
                                         "You matched with $matchName!",
                                         matchNotifyId,
                                         effectiveMatchId,
+                                        onlyAlertOnce = true,
                                         soundEnabled = matchSoundEnabled(),
                                     )
                                     activeMatchNotificationIds[effectiveMatchId] = matchNotifyId
@@ -3540,6 +3545,7 @@ class MatchMeBackgroundService : Service() {
         notificationId: Int? = null,
         matchId: String? = null,
         silent: Boolean = false,
+        onlyAlertOnce: Boolean = false,
         soundEnabled: Boolean = true,
         previewLines: List<String> = emptyList(),
     ) {
@@ -3594,7 +3600,7 @@ class MatchMeBackgroundService : Service() {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(true)
             .setDefaults(if (silent || !soundEnabled) 0 else NotificationCompat.DEFAULT_ALL) // Respect sound preference
-            .setOnlyAlertOnce(silent) // Silent notifications don't alert
+            .setOnlyAlertOnce(silent || onlyAlertOnce)
             .setContentIntent(pendingIntent)
             // Bundle with the other conversation cards under the unread-badge
             // carrier, which is posted as this group's summary

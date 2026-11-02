@@ -49,6 +49,16 @@ class WebNotificationService {
     // No-op on non-web platforms
   }
 
+  static Future<void> showMatchExtendedNotification({
+    required String matchId,
+    required String title,
+    required String body,
+    String? photoSource,
+    String? tag,
+  }) async {
+    // No-op on non-web platforms
+  }
+
   static Future<void> showAdminBroadcastNotification({
     required String title,
     required String message,
@@ -60,7 +70,9 @@ class WebNotificationService {
   static Future<void> showLocationShareNotification({
     required String title,
     required String body,
+    String? matchId,
     bool silent = false,
+    String? photoSource,
   }) async {
     // No-op on non-web platforms
   }
@@ -72,7 +84,12 @@ class WebNotificationService {
     String? matchId,
     String? kind,
     String? tag,
+    String? photoSource,
   }) async {
+    // No-op on non-web platforms
+  }
+
+  static Future<void> cancelMeetupCard({required String tag}) async {
     // No-op on non-web platforms
   }
 

@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/user_preferences_provider.dart';
 import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/services/notification_avatar_service.dart';
 import 'package:matchme/services/storage_helper.dart';
 import 'package:matchme/utils/chat_notification_copy.dart';
 import 'package:matchme/utils/meetup_alert_card.dart';
@@ -31,6 +32,7 @@ class WebNotificationService {
   // face the member has already seen.
   static final Map<String, String> _avatarSources = {};
   static final Map<String, web.Notification> _activeChatNotifications = {};
+  static final Map<String, web.Notification> _activeMeetupNotifications = {};
   // Live-countdown location share notification state. Tracks the most recent
   // notification so per-second silent updates can replace it via the same
   // tag, and whether the user dismissed it (so updates don't resurrect it).
@@ -189,8 +191,9 @@ class WebNotificationService {
       } catch (_) {}
       final options = web.NotificationOptions(
         body: model.body,
-        icon: await _avatarIcon(
-          (photoSource?.trim().isNotEmpty ?? false)
+        icon: await _iconFor(
+          chatId,
+          photoSource: (photoSource?.trim().isNotEmpty ?? false)
               ? photoSource
               : rememberedAvatar,
         ),
@@ -289,14 +292,39 @@ class WebNotificationService {
   /// this session can show.
   static const String _appIcon = '/icons/Icon-192.png';
 
-  /// The sender's face in the slot a browser puts beside the title.
+  /// The sender's face for a conversation, in whichever form this browser can
+  /// actually load one.
+  ///
+  /// First the mirrored face: a `data:` URL, so it survives a reload and is the
+  /// same picture the service worker puts on the cards it posts while this tab
+  /// is in the background. A mirror that has the face answers without a request;
+  /// one that has nothing gets the bounded shot at the photo described on
+  /// [NotificationAvatarService.resolvePath], and this card falls through to the
+  /// next option if that comes back empty.
+  static Future<String> _iconFor(
+    String matchId, {
+    String? photoSource,
+  }) async {
+    final source = (photoSource ?? '').trim();
+    if (source.isNotEmpty) {
+      await NotificationAvatarService.instance.mirrorFor(
+        matchId: matchId,
+        photoSource: source,
+      );
+    }
+    final face = await NotificationAvatarService.instance.resolvePath(matchId);
+    if (face != null && face.isNotEmpty) return face;
+    return _avatarIcon(source);
+  }
+
+  /// The sender's face in the slot a browser puts beside the title, for the
+  /// cards the mirror could not answer.
   ///
   /// `profile-photos` is private, so an object path means nothing to the
   /// notification API — it needs a signed URL, and the only one worth using is
-  /// one this session already holds from painting the photo. A conversation
-  /// whose picture was never opened posts the app icon instead: turning a tray
-  /// card into a photo fetch would delay it and spend a request on a face the
-  /// member has not looked at.
+  /// one this session already holds from painting the photo. Asking for a fresh
+  /// one here would spend a second request on a picture the mirror pass just
+  /// failed to get, so a conversation with neither posts the app icon.
   static Future<String> _avatarIcon(String? photoSource) async {
     final source = (photoSource ?? '').trim();
     if (source.isEmpty) return _appIcon;
@@ -388,6 +416,22 @@ class WebNotificationService {
     } catch (_) {}
   }
 
+  /// Closes the matching notification rendered by this page or its service
+  /// worker. The tag is shared with the push collapse identity.
+  static Future<void> cancelMeetupCard({required String tag}) async {
+    final cardTag = tag.trim();
+    if (cardTag.isEmpty) return;
+    try {
+      _activeMeetupNotifications.remove(cardTag)?.close();
+    } catch (e) {
+      debugPrint('Web notifications: failed to close meet-up card: $e');
+    }
+    _postToServiceWorker(<String, dynamic>{
+      'type': 'CANCEL_MEETUP_CARD',
+      'tag': cardTag,
+    });
+  }
+
   static void _postToServiceWorker(Map<String, dynamic> payload) {
     try {
       final nav = web.window.navigator;
@@ -429,7 +473,7 @@ class WebNotificationService {
       );
       final options = web.NotificationOptions(
         body: enforced.body,
-        icon: await _avatarIcon(matchPhotoUrl),
+        icon: await _iconFor(matchId, photoSource: matchPhotoUrl),
         // Default matches the legacy local identity; callers pass the
         // server push tag (e.g. the expiry collapse tag) so an already
         // delivered server card is replaced instead of doubled.
@@ -458,6 +502,34 @@ class WebNotificationService {
         }
       });
 
+      notification.onclick = ((web.Event e) {
+        web.window.focus();
+        notification.close();
+      }).toJS;
+    } catch (e) {
+      // Ignore notification errors
+    }
+  }
+
+  static Future<void> showMatchExtendedNotification({
+    required String matchId,
+    required String title,
+    required String body,
+    String? photoSource,
+    String? tag,
+  }) async {
+    if (!isSupported || !_shouldShowNewMatchNotification()) return;
+
+    try {
+      final enforced = enforceTitleBody(title, body);
+      final notification = web.Notification(
+        enforced.title,
+        web.NotificationOptions(
+          body: enforced.body,
+          icon: await _iconFor(matchId, photoSource: photoSource),
+          tag: tag ?? 'match_extended_$matchId',
+        ),
+      );
       notification.onclick = ((web.Event e) {
         web.window.focus();
         notification.close();
@@ -533,10 +605,15 @@ class WebNotificationService {
   }
 
   /// Show location share notification
+  ///
+  /// [matchId] names the conversation the share belongs to, which is where the
+  /// sharer's mirrored face is filed under.
   static Future<void> showLocationShareNotification({
     required String title,
     required String body,
+    String? matchId,
     bool silent = false,
+    String? photoSource,
   }) async {
     if (!isSupported) {
       return;
@@ -560,7 +637,10 @@ class WebNotificationService {
 
       final options = web.NotificationOptions(
         body: body,
-        icon: _appIcon,
+        icon: await _iconFor(
+          (matchId ?? '').trim(),
+          photoSource: photoSource,
+        ),
         tag: 'location_share',
       );
 
@@ -629,6 +709,7 @@ class WebNotificationService {
     String? matchId,
     String? kind,
     String? tag,
+    String? photoSource,
   }) async {
     if (!isSupported) return;
     if (!_shouldShowMeetupNotification()) return;
@@ -637,7 +718,10 @@ class WebNotificationService {
       final enforced = enforceTitleBody(title, body);
       final options = web.NotificationOptions(
         body: enforced.body,
-        icon: _appIcon,
+        icon: await _iconFor(
+          (matchId ?? '').trim(),
+          photoSource: photoSource,
+        ),
         // The push's collapse tag when the caller knows it, so this card
         // replaces the one the service worker or the server posted for the same
         // event instead of stacking under it.
@@ -646,6 +730,10 @@ class WebNotificationService {
             : 'meetup_$notificationId',
       );
       final notification = web.Notification(enforced.title, options);
+      final notificationTag = (tag ?? '').trim().isNotEmpty
+          ? tag!.trim()
+          : 'meetup_$notificationId';
+      _activeMeetupNotifications[notificationTag] = notification;
 
       final route = (matchId ?? '').trim();
       // Proposal and place-change cards open the planning screen, where the
@@ -670,6 +758,9 @@ class WebNotificationService {
       Future.delayed(delay, () {
         try {
           notification.close();
+          if (identical(_activeMeetupNotifications[notificationTag], notification)) {
+            _activeMeetupNotifications.remove(notificationTag);
+          }
         } catch (e) {
           // Ignore
         }

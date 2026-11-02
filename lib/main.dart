@@ -70,6 +70,7 @@ import 'package:matchme/services/offline_trail_service.dart';
 import 'package:matchme/services/storage_helper.dart'; // Persisted photo URL warmup
 import 'package:matchme/services/startup_cache_warmer.dart';
 import 'package:matchme/services/offline_image_cache.dart';
+import 'package:matchme/services/notification_avatar_service.dart';
 import 'package:matchme/services/offline_api_cache.dart';
 import 'package:matchme/services/offline_http_client.dart';
 import 'package:matchme/services/encrypted_cache_service.dart';
@@ -917,16 +918,47 @@ Future<void> _markExpiryWarningSurfaced(
   } catch (_) {}
 }
 
-/// Foreground expiry push (onMessage): exactly one card per
-/// (match, threshold, expiry window). The in-app scan writes the same gate,
-/// so whichever path fired first wins; the OS-scheduled alarm and any server
-/// card still in the shade for this exact event are dropped in favor of the
-/// card posted here.
-Future<void> _handleForegroundExpiryPush({
+/// The expiry card text: what the server composed in the recipient's language,
+/// or the standing fallback when the push carried no copy at all (a data-only
+/// delivery — which an alert the recipient's prefs muted becomes — or a channel
+/// that cannot render a notification block).
+({String title, String body}) _expiryPushCopy(
+  String kind,
+  RemoteMessage message, [
+  Map<String, dynamic> data = const {},
+]) {
+  final title =
+      (message.notification?.title ?? data['notification_title']?.toString())
+          ?.trim() ??
+      '';
+  final body =
+      (message.notification?.body ?? data['notification_body']?.toString())
+          ?.trim() ??
+      '';
+  return (
+    title: title.isNotEmpty
+        ? title
+        : kind == 'pinned_expiry'
+        ? 'Pinned location expiring soon'
+        : 'Match expiring soon',
+    body: body.isNotEmpty ? body : 'Open the app to add more time.',
+  );
+}
+
+/// An expiry push: exactly one card per (match, threshold, expiry window). The
+/// in-app scan writes the same gate, so whichever path fired first wins; the
+/// OS-scheduled alarm and any server card still in the shade for this exact
+/// event are dropped in favor of the card posted here.
+///
+/// [silent] is the background-isolate case: the system already drew and played
+/// the server's card for this event before handing the push to Dart, so the
+/// replacement that carries the matched user's face must not announce it twice.
+Future<void> _surfaceExpiryPushCard({
   required String kind,
   required Map<String, dynamic> data,
   required String title,
   required String body,
+  bool silent = false,
 }) async {
   try {
     final matchId =
@@ -980,15 +1012,18 @@ Future<void> _handleForegroundExpiryPush({
       return;
     }
 
-    // Replace any server card for this exact event that was drawn while the
-    // app was backgrounded: the local card below is the single entry.
-    unawaited(BackgroundService.cancelServerCard(serverTag));
-
+    final avatarPhotoSource = matchId.isEmpty
+        ? null
+        : await _notificationAvatarSourceForMatch(
+            matchId,
+            otherUserId: (data['otherUserId'] ?? data['other_user_id'] ?? '')
+                .toString(),
+          );
     if (kIsWeb) {
       await WebNotificationService.showMatchNotification(
         matchId: matchId.isNotEmpty ? matchId : kind,
         matchName: title,
-        matchPhotoUrl: '',
+        matchPhotoUrl: avatarPhotoSource ?? '',
         tag: serverTag,
       );
       return;
@@ -1001,7 +1036,22 @@ Future<void> _handleForegroundExpiryPush({
       notificationKey:
           '${kind}_${thresholdSeconds ?? data['threshold_seconds'] ?? data['thresholdSeconds'] ?? 'warn'}',
       serverTag: serverTag,
+      silent: silent,
+      // A pinned-location warning is keyed on the user, not a chat: only a
+      // push that names a match gets the card's tap destination.
+      tapRoute: matchId.isNotEmpty ? '/chat/$matchId' : null,
+      avatarPhotoSource: avatarPhotoSource,
+      beforeShow: serverTag.isEmpty
+          ? null
+          : () =>
+                MobileLocalNotificationService.cancelServerCard(tag: serverTag),
     );
+    // Then retire the server's card for this exact event. Two passes, because
+    // the SDK builds its notification inside the receiver and can hand it to
+    // the system after this handler already ran.
+    await MobileLocalNotificationService.cancelServerCard(tag: serverTag);
+    await Future<void>.delayed(const Duration(seconds: 1));
+    await MobileLocalNotificationService.cancelServerCard(tag: serverTag);
   } catch (_) {}
 }
 
@@ -1020,6 +1070,52 @@ Future<void> _reconcileExpiryEventOnOpen(
   );
 }
 
+Future<String?> _notificationAvatarSourceForMatch(
+  String matchId, {
+  String? otherUserId,
+}) async {
+  var profileId = (otherUserId ?? '').trim();
+  final currentUserId = Supabase.instance.client.auth.currentUser?.id ?? '';
+  if (profileId == currentUserId || profileId.toLowerCase() == 'unknown') {
+    profileId = '';
+  }
+  if (profileId.isEmpty &&
+      currentUserId.isNotEmpty &&
+      matchId.trim().isNotEmpty) {
+    try {
+      final chats = await container
+          .read(recentChatsProvider(currentUserId).future)
+          .timeout(const Duration(seconds: 2));
+      for (final chat in chats) {
+        if (chat.matchId == matchId &&
+            chat.otherUserId.isNotEmpty &&
+            chat.otherUserId != currentUserId) {
+          profileId = chat.otherUserId;
+          break;
+        }
+      }
+    } catch (_) {}
+  }
+  if (profileId.isEmpty) return null;
+
+  try {
+    final profile = await container
+        .read(otherUserProfileProvider(profileId).future)
+        .timeout(const Duration(seconds: 2));
+    final photo = profile?.photos
+        .map((source) => source.trim())
+        .where((source) => source.isNotEmpty)
+        .firstOrNull;
+    if (photo == null) return null;
+    await NotificationAvatarService.instance
+        .mirrorFor(matchId: matchId, photoSource: photo)
+        .timeout(const Duration(milliseconds: 1500));
+    return photo;
+  } catch (_) {
+    return null;
+  }
+}
+
 /// Foreground match push: the native Realtime/poll path may have already
 /// posted its own card for this match (or may post one later). Exactly one
 /// card per match: whichever path fires first wins, the loser skips, and the
@@ -1028,17 +1124,34 @@ Future<void> _showForegroundMatchPush({
   required String matchId,
   required String title,
   required String body,
+  required String otherUserId,
 }) async {
   try {
-    if (await BackgroundService.wasMatchNotified(matchId)) return;
-    await BackgroundService.markMatchNotified(matchId);
-    // Replace any server card for this match drawn while the app was
-    // backgrounded: the local card below is the single entry.
+    final alreadyNotified = await BackgroundService.wasMatchNotified(matchId);
+    if (alreadyNotified &&
+        !await MobileLocalNotificationService.isNewMatchNotificationActive(
+          matchId,
+        )) {
+      return;
+    }
+    if (!alreadyNotified) {
+      // Reserve the match before resolving its photo so the native poller
+      // cannot independently alert. The Dart card shares its notification ID
+      // with that poller, so an in-flight card is updated instead of doubled.
+      await BackgroundService.markMatchNotified(matchId);
+    }
     unawaited(BackgroundService.cancelServerCard('new_match_$matchId'));
+    final avatarPhotoSource = await _notificationAvatarSourceForMatch(
+      matchId,
+      otherUserId: otherUserId,
+    );
     await MobileLocalNotificationService.showNewMatchNotification(
       matchId: matchId,
       title: title,
       body: body,
+      silent: alreadyNotified,
+      dedupeAlreadyClaimed: true,
+      avatarPhotoSource: avatarPhotoSource,
     );
   } catch (_) {}
 }
@@ -1053,6 +1166,223 @@ ChatPushCardModel _chatPushCardFrom(Map<String, dynamic> data) {
   return ChatPushCardModel.tryFromMap(data) ?? const ChatPushCardModel();
 }
 
+/// The card text for a meet-up push: the copy the server composed, else a
+/// sentence that names the tool. The fallback matters because a push the OS
+/// drew can reach us with the notification block stripped (data-only retries,
+/// old queue rows), and a card that says nothing is worse than one that says
+/// which tool fired.
+({String title, String body}) _meetupPushCopy(
+  String kind,
+  RemoteMessage message,
+  Map<String, dynamic> data,
+) {
+  final isBeacon = kind == kMeetupAlertBeacon;
+  final isSpot = kind == kMeetupAlertSpot;
+  final isProposal = kind == kMeetupAlertProposal;
+  final fallbackTitle = isBeacon
+      ? '📡 MatchMe'
+      : isSpot
+      ? '📸 MatchMe'
+      : isProposal
+      ? '📍 MatchMe'
+      : '👋 MatchMe';
+  final fallbackBody = isBeacon
+      ? 'A beacon is on. Open to find each other.'
+      : isSpot
+      ? 'A Spot me card was shared.'
+      : isProposal
+      ? 'A meeting point was proposed. Open to review.'
+      : kind == kMeetupAlertPlaceChange
+      ? 'A new meeting point was suggested. Open to review.'
+      : 'A gesture was sent. Open to see it.';
+  final pushTitle =
+      message.notification?.title ?? data['notification_title']?.toString();
+  final pushBody =
+      message.notification?.body ?? data['notification_body']?.toString();
+  final title = pushTitle?.trim().isNotEmpty == true
+      ? pushTitle!.trim()
+      : fallbackTitle;
+  final body = pushBody?.trim().isNotEmpty == true
+      ? pushBody!.trim()
+      : fallbackBody;
+  return (title: title, body: body);
+}
+
+/// The app-owned card for [kind], used on Android's data-only push path and in
+/// the foreground. The same key replaces realtime and push-driven updates.
+Future<void> _postMeetupPushCard(
+  String kind,
+  Map<String, dynamic> data,
+  RemoteMessage message, {
+  bool silent = false,
+  String? avatarPhotoSource,
+}) async {
+  final cardKey = meetupAlertCardKey(kind, data);
+  if (cardKey.isEmpty) return;
+  final copy = _meetupPushCopy(kind, message, data);
+  final serverTag = meetupAlertServerTag(kind, data);
+  try {
+    await MobileLocalNotificationService.showMeetupNotification(
+      notificationId: cardKey,
+      title: copy.title,
+      body: copy.body,
+      matchId: (data['matchId'] ?? data['match_id'] ?? '').toString().trim(),
+      kind: kind,
+      expiresIn: kMeetupAlertDefaultTtl[kind],
+      silent: silent,
+      avatarPhotoSource: avatarPhotoSource,
+      // Remove any legacy FCM-rendered card only after the avatar asset and
+      // local notification details are ready, immediately before the
+      // app-owned card is posted. This avoids showing both versions together.
+      beforeShow: serverTag.isEmpty
+          ? null
+          : () =>
+                MobileLocalNotificationService.cancelServerCard(tag: serverTag),
+    );
+  } catch (_) {
+    return;
+  }
+  if (serverTag.isEmpty) return;
+  await MobileLocalNotificationService.cancelServerCard(tag: serverTag);
+  await Future<void>.delayed(const Duration(seconds: 1));
+  await MobileLocalNotificationService.cancelServerCard(tag: serverTag);
+}
+
+/// The server's localized card copy, delivered as data when the app owns
+/// Android/web rendering and as an alert when APNs owns iOS background display.
+({String title, String body})? _pushCopyFrom(
+  RemoteMessage message, [
+  Map<String, dynamic> data = const {},
+]) {
+  final title =
+      (message.notification?.title ?? data['notification_title']?.toString())
+          ?.trim() ??
+      '';
+  final body =
+      (message.notification?.body ?? data['notification_body']?.toString())
+          ?.trim() ??
+      '';
+  if (title.isEmpty && body.isEmpty) return null;
+  return (title: title, body: body);
+}
+
+/// Posts the server-composed chat card under the conversation's single local
+/// notification identity. Android receives these as data-only pushes, so this
+/// path is the only FCM renderer there.
+Future<void> _postChatPushCard(
+  Map<String, dynamic> data,
+  RemoteMessage message,
+) async {
+  final chatId = (data['matchId'] ?? data['match_id'] ?? '').toString().trim();
+  if (chatId.isEmpty) return;
+  final serverTag = 'match_$chatId';
+  var card = _chatPushCardFrom(data);
+  if (card.title == null && card.body == null) {
+    // A retry row with no copy in the card fields: use the transport copy.
+    final copy = _pushCopyFrom(message, data);
+    if (copy == null) return;
+    card = ChatPushCardModel(title: copy.title, body: copy.body);
+  }
+  final senderName = (data['sender_name'] ?? data['senderName'] ?? 'Someone')
+      .toString();
+  final messageId = (data['messageId'] ?? data['message_id'])
+      ?.toString()
+      .trim();
+  try {
+    await MobileLocalNotificationService.showMessageNotification(
+      chatId: chatId,
+      matchId: chatId,
+      senderName: senderName,
+      messageContent: card.body ?? '',
+      messageId: messageId,
+      alreadyAggregated: true,
+      shouldAlertOverride: data['should_alert'] == 'false' ? false : null,
+      silent: data['silent'] == 'true',
+      card: card,
+      beforeShow: () =>
+          MobileLocalNotificationService.cancelServerCard(tag: serverTag),
+    );
+  } catch (_) {
+    return;
+  }
+  await MobileLocalNotificationService.cancelServerCard(tag: serverTag);
+  await Future<void>.delayed(const Duration(seconds: 1));
+  await MobileLocalNotificationService.cancelServerCard(tag: serverTag);
+}
+
+/// The same replace for a match-lifecycle push: new match (`new_match_<id>`)
+/// and an extension (`match_extended_<id>`). The push carries no sender name in
+/// its data block - the copy is the card - so this posts what the system drew,
+/// with the matched user's face and the conversation group it belongs to.
+///
+/// Android uses data-only pushes so this local card is the only renderer.
+Future<void> _postMatchPushCard(
+  Map<String, dynamic> data,
+  RemoteMessage message, {
+  required bool extended,
+}) async {
+  final matchId = (data['matchId'] ?? data['match_id'] ?? '').toString().trim();
+  if (matchId.isEmpty) return;
+  final copy = _pushCopyFrom(message, data);
+  if (copy == null) return;
+  final serverTag = extended ? 'match_extended_$matchId' : 'new_match_$matchId';
+  try {
+    if (extended) {
+      await MobileLocalNotificationService.showMatchExtendedNotification(
+        matchId: matchId,
+        title: copy.title,
+        body: copy.body,
+        silent: false,
+        beforeShow: () =>
+            MobileLocalNotificationService.cancelServerCard(tag: serverTag),
+      );
+    } else {
+      await MobileLocalNotificationService.showNewMatchNotification(
+        matchId: matchId,
+        title: copy.title,
+        body: copy.body,
+        silent: false,
+        beforeShow: () =>
+            MobileLocalNotificationService.cancelServerCard(tag: serverTag),
+      );
+    }
+  } catch (_) {
+    return;
+  }
+  await MobileLocalNotificationService.cancelServerCard(tag: serverTag);
+  await Future<void>.delayed(const Duration(seconds: 1));
+  await MobileLocalNotificationService.cancelServerCard(tag: serverTag);
+}
+
+/// And for a live-location push (`location_share_<id>`), which the app already
+/// draws with the sharer's face while the UI is up: the same card, the same
+/// slot, silent, because the delivery the member heard was the system's.
+Future<void> _postLocationSharePushCard(
+  Map<String, dynamic> data,
+  RemoteMessage message,
+) async {
+  final matchId = (data['matchId'] ?? data['match_id'] ?? '').toString().trim();
+  final copy = _pushCopyFrom(message, data);
+  if (matchId.isEmpty || copy == null) return;
+  final serverTag = 'location_share_$matchId';
+  try {
+    await MobileLocalNotificationService.showLocationShareNotification(
+      notificationId: 'location_share_$matchId',
+      matchId: matchId,
+      title: copy.title,
+      body: copy.body,
+      silent: false,
+      beforeShow: () =>
+          MobileLocalNotificationService.cancelServerCard(tag: serverTag),
+    );
+  } catch (_) {
+    return;
+  }
+  await MobileLocalNotificationService.cancelServerCard(tag: serverTag);
+  await Future<void>.delayed(const Duration(seconds: 1));
+  await MobileLocalNotificationService.cancelServerCard(tag: serverTag);
+}
+
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   try {
@@ -1062,9 +1392,8 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     );
     // Handle admin broadcast messages (in-app bookkeeping + tray for
     // data-only pushes). `fromBackground: true` stops this isolate from
-    // re-posting the tray entry the Android/FCM SDK already drew for the
-    // message's `notification` block (that duplicate showed the same broadcast
-    // twice for a single admin Resend click).
+    // re-posting the tray entry the Android/FCM SDK drew for the message's
+    // notification block.
     try {
       AdminBroadcastService.handleBroadcastMessage(
         message,
@@ -1082,18 +1411,18 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
           .trim()
           .toLowerCase();
 
-      // Meet-up pushes carry senderId for routing, but they are not chat:
-      // the OS already drew their FCM card and the chat pipeline would
-      // replace it with a conversation card built from an unrelated RPC.
+      // Meet-up pushes carry senderId for routing, but they are not chat: the
+      // chat pipeline would replace the card with a conversation card built
+      // from an unrelated RPC. They get their own card here - the same one the
+      // foreground posts, sender's face and all - so the tray looks the same
+      // whatever state the UI was in when the push landed.
       if (kind != null && kMeetupAlertKinds.contains(kind)) {
+        await _postMeetupPushCard(kind, data, message);
         return;
       }
 
-      // NOTE: previously this only ran when message.notification == null,
-      // but the server always sends notification+data so the branch never
-      // fired for real chat/match pushes. Handle both shapes so killed /
-      // background / reboot pushes still refresh the native tray, history,
-      // and MessagingStyle via the native service.
+      // Handle both current data-only and legacy notification+data payloads so
+      // killed/background/reboot pushes still refresh the tray and history.
       final isChat =
           (messageId != null && messageId.isNotEmpty) ||
           kind == 'message' ||
@@ -1111,65 +1440,51 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       final isRetraction =
           kind == 'message_edited' || kind == 'message_deleted';
 
-      // Silent retraction tick: drop the stale grouped card + history, then
-      // re-check latest so remaining unreads re-post with correct text.
+      // Silent retraction tick: the card this chat owns must go away. It is
+      // cancelled from here because the retraction push is data-only - there is
+      // no new card to replace the old one, and the retracted text stays on
+      // screen otherwise. Either card can be the one the member is looking at:
+      // the app's own slot, or a legacy SDK-tagged card. Remaining unreads are
+      // re-posted by the native poll (or the next launch) through the shared
+      // one-buzz-per-message keys.
       if (isRetraction && (matchId != null && matchId.isNotEmpty)) {
         try {
-          await BackgroundService.dismissChatNotification(matchId);
-        } catch (_) {}
-        try {
-          await BackgroundService.resetChatNotification(matchId);
-        } catch (_) {}
-        try {
-          await BackgroundService.triggerNotificationCheck(matchId: matchId);
+          await MobileLocalNotificationService.dismissChatNotification(matchId);
         } catch (_) {}
         return;
       }
 
       if (isChat && !isMatch && !isExpiry) {
-        // Chat pushes: hand the native service the card the server already
-        // composed (title, body, unread lines, count). It replaces the FCM
-        // SDK's plain card with the styled one - cancel-and-replace - and only
-        // falls back to its own RPC check when the payload carries no copy.
-        // The RPC cannot decrypt (chats are end-to-end encrypted), so a card
-        // built there can state the backlog but never quote text.
+        // Chat pushes: post the server-composed title, body, unread lines, and
+        // count in the one conversation slot. Android/web now receive selected
+        // events data-only; older payloads may still have an SDK-rendered card.
         if ((messageId != null && messageId.isNotEmpty) ||
             (matchId != null && matchId.isNotEmpty)) {
-          final card = _chatPushCardFrom(data);
-          await BackgroundService.triggerNotificationCheck(
-            messageId: (messageId != null && messageId.isNotEmpty)
-                ? messageId
-                : null,
-            matchId: (matchId != null && matchId.isNotEmpty) ? matchId : null,
-            translatedContent: card.body,
-            originalContent: card.body,
-            senderName: (data['sender_name'] ?? data['senderName'])?.toString(),
-            title: card.title,
-            previewLines: card.previewLines,
-            unreadCount: card.unreadCount,
-            previewsEnabled: card.previewsEnabled,
-            shouldAlert: (data['should_alert'] ?? '').toString() == 'true'
-                ? true
-                : (data['should_alert'] ?? '').toString() == 'false'
-                ? false
-                : null,
-          );
+          await _postChatPushCard(data, message);
         }
       } else if (isMatch) {
-        // Matches: the server FCM card (tag new_match_<matchId>) IS the
-        // notification, and the native RPC path knows that
-        // (isMatchPushInTray) — it only posts its own card when the server
-        // push never landed. Passing crafted copy here stacked a second
-        // match card next to the server one.
-        if (matchId != null && matchId.isNotEmpty) {
-          await BackgroundService.triggerNotificationCheck(matchId: matchId);
-        }
+        // Match lifecycle copy is rendered by the client on Android/web; the
+        // local notification reuses the same event identity as native fallback.
+        await _postMatchPushCard(
+          data,
+          message,
+          extended: kind == 'match_extended',
+        );
       } else if (isExpiry) {
-        // The FCM SDK already draws the tray card for the notification
-        // payload; this handler must not post another one. Record the event
-        // against the shared expiry gate (same key the in-app scan uses) and
-        // drop the OS-scheduled fallback alarm so exactly one card remains.
-        await _markExpiryWarningSurfaced(data, kind: kind ?? 'match_expiry');
+        // Android/web render this data-only event locally; iOS still receives
+        // an APNs alert. The shared expiry gate suppresses duplicate in-app
+        // fallbacks, and the local card includes the matched user's cached face.
+        final expiryKind = kind ?? 'match_expiry';
+        final copy = _expiryPushCopy(expiryKind, message, data);
+        await _surfaceExpiryPushCard(
+          kind: expiryKind,
+          data: data,
+          title: copy.title,
+          body: copy.body,
+          silent: false,
+        );
+      } else if (kind == 'location_share') {
+        await _postLocationSharePushCard(data, message);
       }
     } else if (defaultTargetPlatform == TargetPlatform.iOS) {
       final data = Map<String, dynamic>.from(message.data);
@@ -1460,33 +1775,46 @@ Future<void> _initializeFcmForCurrentUser() async {
           // also raise an OS notification (tap routes via onMessageOpenedApp).
           final matchId =
               (data['matchId'] ?? data['match_id'])?.toString().trim() ?? '';
-          final title = message.notification?.title?.trim().isNotEmpty == true
-              ? message.notification!.title!.trim()
+          final pushTitle =
+              message.notification?.title ??
+              data['notification_title']?.toString();
+          final pushBody =
+              message.notification?.body ??
+              data['notification_body']?.toString();
+          final title = pushTitle?.trim().isNotEmpty == true
+              ? pushTitle!.trim()
               : 'New Match!';
-          final body = message.notification?.body?.trim().isNotEmpty == true
-              ? message.notification!.body!.trim()
+          final body = pushBody?.trim().isNotEmpty == true
+              ? pushBody!.trim()
               : 'You have a new match. Tap to view.';
+          final otherUserId =
+              (data['otherUserId'] ?? data['other_user_id'] ?? '')
+                  .toString()
+                  .trim();
           if (matchId.isNotEmpty && !kIsWeb) {
             unawaited(
               _showForegroundMatchPush(
                 matchId: matchId,
                 title: title,
                 body: body,
+                otherUserId: otherUserId,
               ),
             );
           } else if (kIsWeb) {
-            final otherUser =
-                (data['otherUserId'] ?? data['other_user_id'] ?? '').toString();
-            unawaited(
-              WebNotificationService.showMatchNotification(
+            unawaited(() async {
+              final photo = await _notificationAvatarSourceForMatch(
+                matchId,
+                otherUserId: otherUserId,
+              );
+              await WebNotificationService.showMatchNotification(
                 matchId: matchId.isNotEmpty ? matchId : 'unknown',
-                matchName: otherUser.isNotEmpty ? otherUser : title,
-                matchPhotoUrl: '',
+                matchName: otherUserId.isNotEmpty ? otherUserId : title,
+                matchPhotoUrl: photo ?? '',
                 // Same identity as the server push tag: a web card already
                 // delivered for this match gets replaced, not duplicated.
                 tag: matchId.isNotEmpty ? 'new_match_$matchId' : null,
-              ),
-            );
+              );
+            }());
           }
         } else if (type == 'match_extended') {
           // Foreground extension push: the peer extended the chat window, so
@@ -1494,47 +1822,54 @@ Future<void> _initializeFcmForCurrentUser() async {
           // new-match copy ("New Match!" would be wrong and confusing).
           final matchId =
               (data['matchId'] ?? data['match_id'])?.toString().trim() ?? '';
-          final title = message.notification?.title?.trim().isNotEmpty == true
-              ? message.notification!.title!.trim()
+          final pushTitle =
+              message.notification?.title ??
+              data['notification_title']?.toString();
+          final pushBody =
+              message.notification?.body ??
+              data['notification_body']?.toString();
+          final title = pushTitle?.trim().isNotEmpty == true
+              ? pushTitle!.trim()
               : 'You have more time';
-          final body = message.notification?.body?.trim().isNotEmpty == true
-              ? message.notification!.body!.trim()
+          final body = pushBody?.trim().isNotEmpty == true
+              ? pushBody!.trim()
               : 'Say hi before this match runs out.';
-          if (!kIsWeb && matchId.isNotEmpty) {
-            unawaited(
-              MobileLocalNotificationService.showMatchExtendedNotification(
+          final otherUserId =
+              (data['otherUserId'] ?? data['other_user_id'] ?? '').toString();
+          unawaited(() async {
+            final photo = await _notificationAvatarSourceForMatch(
+              matchId,
+              otherUserId: otherUserId,
+            );
+            if (!kIsWeb && matchId.isNotEmpty) {
+              await MobileLocalNotificationService.showMatchExtendedNotification(
                 matchId: matchId,
                 title: title,
                 body: body,
-              ),
-            );
-          } else if (kIsWeb) {
-            unawaited(
-              WebNotificationService.showMatchNotification(
-                matchId: matchId.isNotEmpty ? matchId : 'match_extended',
-                matchName: title,
-                matchPhotoUrl: '',
-              ),
-            );
-          }
+                avatarPhotoSource: photo,
+              );
+            } else if (kIsWeb && matchId.isNotEmpty) {
+              await WebNotificationService.showMatchExtendedNotification(
+                matchId: matchId,
+                title: title,
+                body: body,
+                photoSource: photo,
+                tag: 'match_extended_$matchId',
+              );
+            }
+          }());
         } else if (type == 'match_expiry' || type == 'pinned_expiry') {
           // Foreground expiry push: one card per (match, threshold, expiry
           // window) — shared gate with the in-app scan, late OS alarm and
           // stale server cards are dropped by the helper.
-          final title = message.notification?.title?.trim().isNotEmpty == true
-              ? message.notification!.title!.trim()
-              : (type == 'pinned_expiry'
-                    ? 'Pinned location expiring soon'
-                    : 'Match expiring soon');
-          final body = message.notification?.body?.trim().isNotEmpty == true
-              ? message.notification!.body!.trim()
-              : 'Open the app to add more time.';
+          final kind = type ?? 'match_expiry';
+          final copy = _expiryPushCopy(kind, message, data);
           unawaited(
-            _handleForegroundExpiryPush(
-              kind: type ?? 'match_expiry',
+            _surfaceExpiryPushCard(
+              kind: kind,
               data: data,
-              title: title,
-              body: body,
+              title: copy.title,
+              body: copy.body,
             ),
           );
         } else if (type == 'ai_quota') {
@@ -1572,92 +1907,93 @@ Future<void> _initializeFcmForCurrentUser() async {
           // the SAME OS notification id, so they replace instead of stack.
           final matchId =
               (data['matchId'] ?? data['match_id'])?.toString().trim() ?? '';
-          final title = message.notification?.title?.trim().isNotEmpty == true
-              ? message.notification!.title!.trim()
+          final title =
+              (message.notification?.title ??
+                          data['notification_title']?.toString())
+                      ?.trim()
+                      .isNotEmpty ==
+                  true
+              ? (message.notification?.title ??
+                        data['notification_title']?.toString())!
+                    .trim()
               : '📍 Live location';
-          final body = message.notification?.body?.trim().isNotEmpty == true
-              ? message.notification!.body!.trim()
+          final body =
+              (message.notification?.body ??
+                          data['notification_body']?.toString())
+                      ?.trim()
+                      .isNotEmpty ==
+                  true
+              ? (message.notification?.body ??
+                        data['notification_body']?.toString())!
+                    .trim()
               : 'is sharing their live location with you';
           if (matchId.isNotEmpty) {
-            if (kIsWeb) {
-              unawaited(
-                WebNotificationService.showLocationShareNotification(
+            final otherUserId = (data['sharerId'] ?? data['sharer_id'] ?? '')
+                .toString();
+            unawaited(() async {
+              final photo = await _notificationAvatarSourceForMatch(
+                matchId,
+                otherUserId: otherUserId,
+              );
+              if (kIsWeb) {
+                await WebNotificationService.showLocationShareNotification(
                   title: title,
                   body: body,
-                ),
-              );
-            } else {
-              unawaited(
-                MobileLocalNotificationService.showLocationShareNotification(
+                  matchId: matchId,
+                  photoSource: photo,
+                );
+              } else {
+                await MobileLocalNotificationService.showLocationShareNotification(
                   notificationId: 'location_share_$matchId',
+                  matchId: matchId,
                   title: title,
                   body: body,
-                ),
-              );
-            }
+                  avatarPhotoSource: photo,
+                );
+              }
+            }());
           }
         } else if (type != null && kMeetupAlertKinds.contains(type)) {
           // Foreground meet-up push: Android/iOS do not auto-present FCM
           // alerts, so post the card ourselves. The same event also wrote the
           // inbox row server-side. The tap route opens the meet-up hub, where
           // the incoming card and the coordination tools are.
-          final matchId =
-              (data['matchId'] ?? data['match_id'])?.toString().trim() ?? '';
+          //
           // A resend replaces the sender's live row server-side, so this card
           // must replace the old one rather than stack under it: the shared key
           // derivation is the one the alert sweep cancels the card by, and it
           // mirrors the collapse tag the server push carries.
-          final cardKey = meetupAlertCardKey(type, data);
-          final serverTag = meetupAlertServerTag(type, data);
-          final isBeacon = type == 'meetup_beacon';
-          final isSpot = type == 'meetup_spot';
-          final isProposal = type == 'meetup_proposal';
-          final fallbackTitle = isBeacon
-              ? '📡 MatchMe'
-              : isSpot
-              ? '📸 MatchMe'
-              : isProposal
-              ? '📍 MatchMe'
-              : '👋 MatchMe';
-          final fallbackBody = isBeacon
-              ? 'A beacon is on. Open to find each other.'
-              : isSpot
-              ? 'A Spot me card was shared.'
-              : isProposal
-              ? 'A meeting point was proposed. Open to review.'
-              : type == 'meetup_place_change'
-              ? 'A new meeting point was suggested. Open to review.'
-              : 'A gesture was sent. Open to see it.';
-          final title = message.notification?.title?.trim().isNotEmpty == true
-              ? message.notification!.title!.trim()
-              : fallbackTitle;
-          final body = message.notification?.body?.trim().isNotEmpty == true
-              ? message.notification!.body!.trim()
-              : fallbackBody;
-          if (cardKey.isNotEmpty) {
-            if (kIsWeb) {
-              unawaited(
-                WebNotificationService.showMeetupNotification(
-                  notificationId: cardKey,
-                  title: title,
-                  body: body,
+          if (meetupAlertCardKey(type, data).isNotEmpty) {
+            final copy = _meetupPushCopy(type, message, data);
+            final matchId = (data['matchId'] ?? data['match_id'] ?? '')
+                .toString()
+                .trim();
+            final otherUserId = (data['senderId'] ?? data['sender_id'] ?? '')
+                .toString();
+            unawaited(() async {
+              final photo = await _notificationAvatarSourceForMatch(
+                matchId,
+                otherUserId: otherUserId,
+              );
+              if (kIsWeb) {
+                await WebNotificationService.showMeetupNotification(
+                  notificationId: meetupAlertCardKey(type, data),
+                  title: copy.title,
+                  body: copy.body,
                   matchId: matchId,
                   kind: type,
-                  tag: serverTag,
-                ),
-              );
-            } else {
-              unawaited(
-                MobileLocalNotificationService.showMeetupNotification(
-                  notificationId: cardKey,
-                  title: title,
-                  body: body,
-                  matchId: matchId,
-                  kind: type,
-                  expiresIn: kMeetupAlertDefaultTtl[type],
-                ),
-              );
-            }
+                  tag: meetupAlertServerTag(type, data),
+                  photoSource: photo,
+                );
+              } else {
+                await _postMeetupPushCard(
+                  type,
+                  data,
+                  message,
+                  avatarPhotoSource: photo,
+                );
+              }
+            }());
           }
         } else if (type == 'message_edited' || type == 'message_deleted') {
           // Silent retraction tick in foreground: Realtime already merged the
@@ -1703,11 +2039,17 @@ Future<void> _initializeFcmForCurrentUser() async {
           final sender =
               (data['senderName'] ?? data['sender_name'] ?? 'Someone')
                   .toString();
+          final senderId = (data['senderId'] ?? data['sender_id'] ?? '')
+              .toString();
           // The body the server composed, else the notification block it sent
           // with it, else nothing - and "nothing" is a card that states its
           // count, never a canned "New message".
           final text =
-              card.body ?? (message.notification?.body ?? '').toString().trim();
+              card.body ??
+              (message.notification?.body ??
+                      data['notification_body']?.toString() ??
+                      '')
+                  .trim();
           final alreadyAggregated = data['aggregated_messages'] == 'true';
           final alertValue = data['should_alert']?.toString();
           final bool? shouldAlert = alertValue == 'true'
@@ -1716,9 +2058,13 @@ Future<void> _initializeFcmForCurrentUser() async {
               ? false
               : null;
           if (matchId.isNotEmpty) {
-            if (kIsWeb) {
-              unawaited(
-                WebNotificationService.showMessageNotification(
+            unawaited(() async {
+              final photo = await _notificationAvatarSourceForMatch(
+                matchId,
+                otherUserId: senderId,
+              );
+              if (kIsWeb) {
+                await WebNotificationService.showMessageNotification(
                   chatId: matchId,
                   senderName: sender,
                   messageContent: text,
@@ -1726,13 +2072,12 @@ Future<void> _initializeFcmForCurrentUser() async {
                   alreadyAggregated: alreadyAggregated,
                   shouldAlertOverride: shouldAlert,
                   card: card,
-                ),
-              );
-            } else if (defaultTargetPlatform == TargetPlatform.android) {
-              // Same contract as the background isolate: the server's card,
-              // drawn by the native service over the FCM SDK's plain one.
-              unawaited(
-                BackgroundService.triggerNotificationCheck(
+                  photoSource: photo,
+                );
+              } else if (defaultTargetPlatform == TargetPlatform.android) {
+                // Same contract as the background isolate: the server's card,
+                // drawn by the native service over the FCM SDK's plain one.
+                await BackgroundService.triggerNotificationCheck(
                   matchId: matchId,
                   messageId: messageId.isNotEmpty ? messageId : null,
                   translatedContent: text,
@@ -1743,11 +2088,9 @@ Future<void> _initializeFcmForCurrentUser() async {
                   previewLines: card.previewLines,
                   unreadCount: card.unreadCount,
                   previewsEnabled: card.previewsEnabled,
-                ),
-              );
-            } else {
-              unawaited(
-                MobileLocalNotificationService.showMessageNotification(
+                );
+              } else {
+                await MobileLocalNotificationService.showMessageNotification(
                   chatId: matchId,
                   senderName: sender,
                   messageContent: text,
@@ -1756,9 +2099,10 @@ Future<void> _initializeFcmForCurrentUser() async {
                   alreadyAggregated: alreadyAggregated,
                   shouldAlertOverride: shouldAlert,
                   card: card,
-                ),
-              );
-            }
+                  avatarPhotoSource: photo,
+                );
+              }
+            }());
           }
         }
         // Don't navigate automatically for background messages - just show notification
@@ -5182,6 +5526,19 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
   ProviderSubscription<AsyncValue<ConnectivityHealth>>?
   _connectivityUiStatusSub;
 
+  User? _retainedAuthenticatedUserDuringTransientState() {
+    final visibleUser = _lastRenderedAuthUser;
+    if (visibleUser == null) return null;
+
+    final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+    return AuthTransitionGuard.shouldPreserveVisibleUserDuringLoading(
+          visibleUserId: visibleUser.id,
+          currentUserId: currentUserId,
+        )
+        ? visibleUser
+        : null;
+  }
+
   void _maybeUpdateQuickActions(LocalizationState l10n) {
     if (_quickActions == null) return;
     if (_quickActionsDisabled) return;
@@ -6350,7 +6707,8 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
     final isOffline = !offlineCacheManager.isSupabaseAvailable;
     if (!isOffline &&
         localization.isLoading &&
-        localization.supportedLanguages.isEmpty) {
+        localization.supportedLanguages.isEmpty &&
+        _retainedAuthenticatedUserDuringTransientState() == null) {
       // Keep routing enabled even while localization is still loading so cold-start deep links
       // like /chat/<matchId> don't get rejected as an unknown initialRoute.
       return MaterialApp(
@@ -6641,6 +6999,16 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
             'loading=${authState.isLoading} error=${authState.hasError}',
           );
           if (user == null) {
+            final visibleUser = _lastRenderedAuthUser;
+            if (visibleUser != null &&
+                visibleUser.id == AuthTransitionGuard.anchorUserId &&
+                AuthTransitionGuard.shouldDeferAuthEvent(null)) {
+              return ProfileCheckScreen(
+                key: ValueKey(visibleUser.id),
+                user: visibleUser,
+              );
+            }
+            _lastRenderedAuthUser = null;
             print('[STARTUP_DIAG] selecting_auth_screen');
             return const AuthScreen();
           }
@@ -6674,6 +7042,13 @@ class _MatchMeAppState extends ConsumerState<MatchMeApp>
           return ProfileCheckScreen(key: ValueKey(user.id), user: user);
         },
         loading: () {
+          final visibleUser = _retainedAuthenticatedUserDuringTransientState();
+          if (visibleUser != null) {
+            return ProfileCheckScreen(
+              key: ValueKey(visibleUser.id),
+              user: visibleUser,
+            );
+          }
           return const StartupLoaderScaffold();
         },
         error: (err, stack) {

@@ -5,12 +5,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/models/meetup_models.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/meetup_provider.dart';
+import 'package:matchme/screens/meetup/beacon_screen.dart';
 import 'package:matchme/screens/meetup/meetup_hub_screen.dart';
 import 'package:matchme/screens/meetup/meetup_screen.dart';
 import 'package:matchme/utils/meetup_display.dart';
 import 'package:matchme/widgets/safe_text.dart';
 
-/// In-chat entry point for the meet-up flow.
+/// Shared in-chat and matched-profile entry point for the meet-up flow.
 ///
 /// Watches the shared meet-up state for this match, so a proposal, a wave or
 /// a beacon reaches the other user even while they are typing in the chat.
@@ -69,7 +70,7 @@ class _MeetupBannerState extends ConsumerState<MeetupBanner> {
     final signal = state.latestIncomingSignal;
     if (signal != null) {
       return signal.type == MeetupSignalType.beacon
-          ? _beaconBanner(l10n)
+          ? _beaconBanner(l10n, state.session?.id ?? widget.matchId)
           : _signalBanner(signal, l10n);
     }
     final cards = state.incomingSpotCards;
@@ -169,9 +170,14 @@ class _MeetupBannerState extends ConsumerState<MeetupBanner> {
     );
   }
 
-  Widget _beaconBanner(LocalizationState l10n) {
+  Widget _beaconBanner(LocalizationState l10n, String beaconSeed) {
     return _BannerShell(
       icon: Icons.sensors,
+      leading: MeetupBeaconShape(
+        sessionId: beaconSeed,
+        size: 28,
+        animate: false,
+      ),
       title: l10n.getString(
         'meetupBannerBeacon',
         params: {'name': widget.otherUserName},
@@ -223,6 +229,7 @@ class _MeetupBannerState extends ConsumerState<MeetupBanner> {
 class _BannerShell extends StatelessWidget {
   final IconData icon;
   final Color? iconColor;
+  final Widget? leading;
   final String title;
   final String? subtitle;
   final String actionLabel;
@@ -234,6 +241,7 @@ class _BannerShell extends StatelessWidget {
     required this.actionLabel,
     required this.onTap,
     this.iconColor,
+    this.leading,
     this.subtitle,
   });
 
@@ -256,7 +264,8 @@ class _BannerShell extends StatelessWidget {
             ),
             child: Row(
               children: [
-                Icon(icon, color: iconColor ?? scheme.primary, size: 24),
+                leading ??
+                    Icon(icon, color: iconColor ?? scheme.primary, size: 24),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(

@@ -12,6 +12,10 @@ firebase.initializeApp({
 
 const messaging = firebase.messaging();
 
+// v9: + match-extension cards share the same tag in the worker and page.
+// v8: + every card a matched user caused carries that user's face, read from
+// the mirror the app keeps in Cache Storage, so a backgrounded tab shows the
+// same card the visible one does.
 // v7: + meet-up cards close themselves when their live window passes, and the
 // two decision tools are tagged as meet-up events instead of chat ones.
 // v6: + the server's card wins - a locally joined history no longer replaces
@@ -21,7 +25,7 @@ const messaging = firebase.messaging();
 // v4: + silent edit/delete retraction closes the stale grouped card.
 // skipWaiting + claim so rebooted/offline browsers pick up the fix without
 // waiting for the old worker to release its clients.
-const SW_VERSION = 'v7-meetup-card-expiry';
+const SW_VERSION = 'v9-match-extension-tags';
 try {
   self.addEventListener('install', (event) => {
     try {
@@ -39,6 +43,54 @@ try {
 
 const _chatMessageHistory = new Map(); // matchId -> [{ id: string, text: string }]
 let _currentUserId = '';
+
+// The app's own mark, and the only picture a card may fall back to.
+const APP_ICON = '/icons/Icon-192.png';
+
+// The sender's face, read from the mirror the app writes into Cache Storage —
+// the one place this worker and the page can both reach, and nothing in it ever
+// goes to a server. `NotificationAvatarService` files each conversation under
+// `/notification_avatars/<sha256(matchId)>-<sha256(cacheKey) prefix>.jpg`, the
+// same name Android's Kotlin store uses, so a push that carries a match id finds
+// the face without ever learning the photo's storage path. The value is a
+// `data:` URL: a `blob:` URL would die with the tab that made it and leave this
+// worker holding a broken image.
+const AVATAR_CACHE = 'matchme_notification_avatars';
+const AVATAR_PATH = '/notification_avatars/';
+
+async function _sha256Hex(text) {
+  const digest = await self.crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(text),
+  );
+  let hex = '';
+  for (const byte of new Uint8Array(digest)) {
+    hex += byte.toString(16).padStart(2, '0');
+  }
+  return hex;
+}
+
+// Newest entry wins, in case a re-mirrored picture left an older file behind.
+// A conversation with no mirror — photo never opened, mirror not written yet —
+// posts the app mark; the card never waits on a photo fetch.
+async function _avatarIcon(matchId) {
+  const id = (matchId || '').toString().trim();
+  if (!id) return APP_ICON;
+  try {
+    const cache = await self.caches.open(AVATAR_CACHE);
+    const requests = await cache.keys();
+    const prefix = AVATAR_PATH + (await _sha256Hex(id)) + '-';
+    for (let i = requests.length - 1; i >= 0; i--) {
+      const url = (requests[i] && requests[i].url) || '';
+      if (url.indexOf(prefix) < 0) continue;
+      const found = await cache.match(requests[i]);
+      if (!found) continue;
+      const text = await found.text();
+      if (text.indexOf('data:image/') === 0) return text;
+    }
+  } catch (_) {}
+  return APP_ICON;
+}
 
 // How long each meet-up tool event stays news, matching the app's
 // meetup_alerts TTLs. A card the worker posted for a wave the recipient never
@@ -62,7 +114,9 @@ async function _closeExpiredMeetupCards() {
     for (const n of (shown || [])) {
       const tag = (n.tag || '').toString();
       if (tag.indexOf('meetup_') !== 0) continue;
-      const kind = tag.slice(0, tag.lastIndexOf('_'));
+      const kind = Object.keys(MEETUP_TTL_MS).find((candidate) =>
+        tag.startsWith(`${candidate}_`),
+      );
       const ttl = MEETUP_TTL_MS[kind];
       if (!ttl) continue;
       if (n.timestamp + ttl > now) continue;
@@ -108,6 +162,19 @@ self.addEventListener('message', (event) => {
     }
   }
   const type = (data && (data.type || data.kind)) ? String(data.type || data.kind).trim() : '';
+  if (type === 'CANCEL_MEETUP_CARD') {
+    const tag = String(data.tag || '').trim();
+    if (!tag) return;
+    event.waitUntil((async () => {
+      try {
+        const cards = await self.registration.getNotifications({ tag });
+        for (const card of cards || []) {
+          try { card.close(); } catch (_) {}
+        }
+      } catch (_) {}
+    })());
+    return;
+  }
   if (type === 'SET_USER_ID') {
     _currentUserId = String(data.userId || data.user_id || '').trim();
     // The app just came up: drop the tool cards whose window has closed while
@@ -152,6 +219,7 @@ messaging.onBackgroundMessage(async (payload) => {
   const rawKind = (data.kind || data.type || data.notification_type || '').toString().trim().toLowerCase();
   const isExpiry = rawKind === 'match_expiry' || rawKind === 'pinned_expiry';
   const isMatch = rawKind === 'match' || rawKind === 'new_match';
+  const isMatchExtended = rawKind === 'match_extended';
   const isMeetup = Object.prototype.hasOwnProperty.call(MEETUP_TTL_MS, rawKind);
   // A wave or beacon replaces the sender's live row server-side, so its card
   // must replace the previous card too: keyed on who sent it, never on the row
@@ -195,6 +263,8 @@ messaging.onBackgroundMessage(async (payload) => {
     ? (broadcastId ? `admin_${broadcastId}` : 'admin_broadcast')
     : isExpiry
       ? `${rawKind}_${matchId || broadcastId || 'warn'}${expiryThreshold ? `_${expiryThreshold}` : ''}`
+      : isMatchExtended
+        ? (matchId ? `match_extended_${matchId}` : 'match_extended')
       : isMatch
         ? (matchId ? `new_match_${matchId}` : 'new_match')
         : isMeetup
@@ -227,10 +297,15 @@ messaging.onBackgroundMessage(async (payload) => {
     : _pushMessageHistory(matchId, messageId, body);
   const mergedBody = history ? history.map((m) => (m && m.text) ? m.text : '').filter(Boolean).join('\n') : '';
 
+  // Admin announcements come from the team, not from a matched user, so they
+  // keep the app mark. Every other card here is one person's action in one
+  // conversation, and that person's face belongs beside it.
+  const icon = isAdminBroadcast ? APP_ICON : await _avatarIcon(matchId);
+
   self.registration.showNotification(title, {
     body: body || mergedBody,
-    icon: '/icons/Icon-192.png',
-    badge: '/icons/Icon-192.png',
+    icon: icon,
+    badge: APP_ICON,
     data,
     tag: tag || undefined,
     renotify: false,

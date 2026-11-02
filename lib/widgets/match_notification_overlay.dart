@@ -289,6 +289,20 @@ class _MatchNotificationOverlayState
                                       width: 60,
                                       height: 60,
                                       fit: BoxFit.cover,
+                                      placeholder: Icon(
+                                        Icons.person,
+                                        size: 30,
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.primary,
+                                      ),
+                                      errorWidget: Icon(
+                                        Icons.person,
+                                        size: 30,
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.primary,
+                                      ),
                                     ),
                                   )
                                 : Icon(
@@ -305,8 +319,10 @@ class _MatchNotificationOverlayState
                           backgroundColor: Theme.of(
                             context,
                           ).colorScheme.surface,
-                          child: const CircularProgressIndicator(
-                            strokeWidth: 2,
+                          child: Icon(
+                            Icons.person,
+                            size: 30,
+                            color: Theme.of(context).colorScheme.primary,
                           ),
                         ),
                         error: (_, _) => CircleAvatar(
@@ -353,7 +369,9 @@ class _MatchNotificationOverlayState
                               data: (profile) {
                                 final displayName =
                                     profile?.name.formatAsFirstNameLastInitial(
-                                      fallback: l10n.getString('generalUnknown'),
+                                      fallback: l10n.getString(
+                                        'generalUnknown',
+                                      ),
                                     ) ??
                                     l10n.getString('generalUnknown');
                                 final layout = displayName.displayTextLayout(

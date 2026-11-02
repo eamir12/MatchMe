@@ -14,6 +14,11 @@ import CryptoKit
 import Network
 
 public class MatchMeBackgroundService: NSObject, FlutterPlugin, FlutterSceneLifeCycleDelegate, CLLocationManagerDelegate {
+    private static let notificationAvatarAppGroup = "group.com.app.matchme"
+    private static let notificationAvatarDirectoryName = "notification_avatars"
+    private static let maxNotificationAvatarBytes = 32 * 1024
+    private static let maxNotificationAvatars = 64
+
     private static var backgroundTaskService: MatchMeBackgroundService?
     private static var pendingBackgroundTasks: [(task: BGTask, isLocationUpdate: Bool)] = []
 
@@ -567,6 +572,45 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, FlutterSceneLife
             print("JWT token updated in iOS background service")
             result(true)
 
+        case "mirrorSharedNotificationAvatar":
+            guard let args = call.arguments as? [String: Any],
+                  let fileName = args["fileName"] as? String,
+                  let typedData = args["bytes"] as? FlutterStandardTypedData,
+                  fileName.range(
+                    of: "^[0-9a-f]{64}-[0-9a-f]{16}\\.jpg$",
+                    options: .regularExpression
+                  ) != nil else {
+                result(FlutterError(code: "INVALID_ARGUMENTS", message: "Invalid avatar mirror", details: nil))
+                return
+            }
+            do {
+                try mirrorSharedNotificationAvatar(fileName: fileName, data: typedData.data)
+                result(true)
+            } catch {
+                result(FlutterError(code: "AVATAR_MIRROR_FAILED", message: error.localizedDescription, details: nil))
+            }
+
+        case "evictSharedNotificationAvatar":
+            guard let args = call.arguments as? [String: Any],
+                  let matchId = args["matchId"] as? String else {
+                result(FlutterError(code: "INVALID_ARGUMENTS", message: "Missing match id", details: nil))
+                return
+            }
+            do {
+                try evictSharedNotificationAvatar(matchId: matchId)
+                result(true)
+            } catch {
+                result(FlutterError(code: "AVATAR_EVICT_FAILED", message: error.localizedDescription, details: nil))
+            }
+
+        case "clearSharedNotificationAvatars":
+            do {
+                try clearSharedNotificationAvatars()
+                result(true)
+            } catch {
+                result(FlutterError(code: "AVATAR_CLEAR_FAILED", message: error.localizedDescription, details: nil))
+            }
+
         case "startLocationShare":
             guard let args = call.arguments as? [String: Any],
                   let matchId = args["matchId"] as? String,
@@ -607,6 +651,91 @@ public class MatchMeBackgroundService: NSObject, FlutterPlugin, FlutterSceneLife
         default:
             result(FlutterMethodNotImplemented)
         }
+    }
+
+    private func notificationAvatarDirectory() throws -> URL {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: Self.notificationAvatarAppGroup
+        ) else {
+            throw NSError(
+                domain: "MatchMeNotificationAvatar",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "The notification avatar App Group is unavailable"]
+            )
+        }
+        let directory = container
+            .appendingPathComponent("Library/Caches", isDirectory: true)
+            .appendingPathComponent(Self.notificationAvatarDirectoryName, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    private func matchIdHash(_ matchId: String) -> String {
+        SHA256.hash(data: Data(matchId.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    private func mirrorSharedNotificationAvatar(fileName: String, data: Data) throws {
+        guard data.count <= Self.maxNotificationAvatarBytes else {
+            throw NSError(
+                domain: "MatchMeNotificationAvatar",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Avatar exceeds the local mirror size limit"]
+            )
+        }
+        let directory = try notificationAvatarDirectory()
+        let idPrefix = String(fileName.prefix(64)) + "-"
+        for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        where file.lastPathComponent.hasPrefix(idPrefix) {
+            try FileManager.default.removeItem(at: file)
+        }
+        let target = directory.appendingPathComponent(fileName, isDirectory: false)
+        try data.write(to: target, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: target.path
+        )
+        pruneSharedNotificationAvatars(in: directory)
+    }
+
+    private func evictSharedNotificationAvatar(matchId: String) throws {
+        let directory = try notificationAvatarDirectory()
+        let prefix = matchIdHash(matchId) + "-"
+        for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        where file.lastPathComponent.hasPrefix(prefix) {
+            try FileManager.default.removeItem(at: file)
+        }
+    }
+
+    private func clearSharedNotificationAvatars() throws {
+        let directory = try notificationAvatarDirectory()
+        for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+            try FileManager.default.removeItem(at: file)
+        }
+    }
+
+    private func pruneSharedNotificationAvatars(in directory: URL) {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        ).filter({ $0.pathExtension == "jpg" }), files.count > Self.maxNotificationAvatars else {
+            return
+        }
+        let oldestFirst = files.sorted {
+            modificationDate(for: $0) < modificationDate(for: $1)
+        }
+        for file in oldestFirst.prefix(files.count - Self.maxNotificationAvatars) {
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    private func modificationDate(for file: URL) -> Date {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: file.path),
+              let date = attributes[.modificationDate] as? Date else {
+            return .distantPast
+        }
+        return date
     }
 
     private func saveState() {

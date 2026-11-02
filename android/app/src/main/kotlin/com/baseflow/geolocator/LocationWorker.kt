@@ -582,8 +582,9 @@ class LocationWorker(
                     showFallbackNotification(
                         title = "New Match!",
                         content = "You matched with $matchName!",
-                        notifyId = matchName.hashCode(),
+                        notifyId = matchId.hashCode(),
                         matchId = matchId,
+                        onlyAlertOnce = true,
                     )
                     try {
                         checkAdminFallback(userId, supabaseUrl, supabaseKey, userToken, prefs)
@@ -599,6 +600,7 @@ class LocationWorker(
                     content = "You matched with $matchName!",
                     notifyId = matchName.hashCode(),
                     matchId = null,
+                    onlyAlertOnce = true,
                 )
                 try {
                     checkAdminFallback(userId, supabaseUrl, supabaseKey, userToken, prefs)
@@ -753,6 +755,7 @@ class LocationWorker(
         channelId: String = "chat_messages",
         channelName: String = "Chat Messages",
         groupId: String? = null,
+        onlyAlertOnce: Boolean = false,
     ) {
         try {
             val nm = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -795,6 +798,7 @@ class LocationWorker(
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setAutoCancel(true)
                 .setDefaults(NotificationCompat.DEFAULT_ALL)
+                .setOnlyAlertOnce(onlyAlertOnce)
                 .setContentIntent(pi)
             try { if (color != 0) builder.setColor(color) } catch (_: Exception) {}
             // Bundle with the other conversation cards under the unread-badge

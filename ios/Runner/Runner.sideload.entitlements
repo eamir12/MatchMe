@@ -17,5 +17,9 @@
 	     production for Release) and must match the provisioning profile. -->
 	<key>aps-environment</key>
 	<string>$(APS_ENVIRONMENT)</string>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.app.matchme</string>
+	</array>
 </dict>
 </plist>

@@ -104,4 +104,64 @@ void main() {
       expect(AuthTransitionGuard.shouldDeferAuthEvent(null), isFalse);
     });
   });
+
+  group('shouldPreserveVisibleUserDuringLoading', () {
+    test('preserves the visible account while its session is active', () {
+      expect(
+        AuthTransitionGuard.shouldPreserveVisibleUserDuringLoading(
+          visibleUserId: 'user-a',
+          currentUserId: 'user-a',
+        ),
+        isTrue,
+      );
+    });
+
+    test('does not preserve a previous account after a user switch', () {
+      expect(
+        AuthTransitionGuard.shouldPreserveVisibleUserDuringLoading(
+          visibleUserId: 'user-a',
+          currentUserId: 'user-b',
+        ),
+        isFalse,
+      );
+    });
+
+    test('preserves the anchor during guarded OAuth auth churn', () {
+      AuthTransitionGuard.begin('user-a');
+
+      expect(
+        AuthTransitionGuard.shouldPreserveVisibleUserDuringLoading(
+          visibleUserId: 'user-a',
+          currentUserId: 'provider-user',
+        ),
+        isTrue,
+      );
+      expect(
+        AuthTransitionGuard.shouldPreserveVisibleUserDuringLoading(
+          visibleUserId: 'user-a',
+          currentUserId: null,
+        ),
+        isTrue,
+      );
+    });
+
+    test('shows startup for cold start or without a matching anchor', () {
+      expect(
+        AuthTransitionGuard.shouldPreserveVisibleUserDuringLoading(
+          visibleUserId: null,
+          currentUserId: null,
+        ),
+        isFalse,
+      );
+
+      AuthTransitionGuard.begin('user-b');
+      expect(
+        AuthTransitionGuard.shouldPreserveVisibleUserDuringLoading(
+          visibleUserId: 'user-a',
+          currentUserId: null,
+        ),
+        isFalse,
+      );
+    });
+  });
 }

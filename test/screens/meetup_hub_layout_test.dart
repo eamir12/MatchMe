@@ -3,14 +3,19 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:matchme/models/chat_model.dart';
 import 'package:matchme/models/location_share_session.dart';
 import 'package:matchme/models/meetup_models.dart';
+import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/location_share_provider.dart';
 import 'package:matchme/providers/meetup_alerts_provider.dart';
 import 'package:matchme/providers/meetup_provider.dart';
+import 'package:matchme/providers/profile_provider.dart';
+import 'package:matchme/screens/meetup/beacon_screen.dart';
 import 'package:matchme/screens/meetup/meetup_hub_screen.dart';
 import 'package:matchme/theme/app_theme_tokens.dart';
+import 'package:matchme/widgets/signed_image.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -46,6 +51,20 @@ class _FakeMeetupNotifier extends MeetupNotifier {
 
   @override
   MeetupState build() => _state;
+
+  @override
+  Future<String?> clearSignal(MeetupSignalType type) async {
+    state = state.copyWith(
+      signals: state.signals
+          .where(
+            (signal) =>
+                !(signal.senderId == state.currentUserId &&
+                    signal.type == type),
+          )
+          .toList(growable: false),
+    );
+    return null;
+  }
 }
 
 class _FakeLocationShareNotifier extends LocationShareNotifier {
@@ -152,10 +171,34 @@ Widget _harness({
   double scale = 1,
   MeetupState? state,
   LocationShareSession? share,
+  List<String> profilePhotos = const [],
+  List<String> cachedPhotos = const [],
 }) {
   return ProviderScope(
     overrides: [
       localizationProvider.overrideWith(_TestLocalization.new),
+      otherUserProfileProvider.overrideWith(
+        (ref, userId) async => UserProfile.fromMap({
+          'id': userId,
+          'name': _name,
+          'photos': profilePhotos,
+        }),
+      ),
+      recentChatsProvider.overrideWith(
+        (ref, userId) => Stream.value([
+          if (cachedPhotos.isNotEmpty)
+            ChatModel(
+              matchId: _matchId,
+              otherUserId: _otherUserId,
+              otherUserName: _name,
+              otherUserPhotos: cachedPhotos,
+              lastMessage: '',
+              lastMessageId: '',
+              lastMessageAt: DateTime.utc(2024),
+              unreadCount: 0,
+            ),
+        ]),
+      ),
       meetupProvider(_matchId).overrideWith(
         () => _FakeMeetupNotifier(
           _matchId,
@@ -317,6 +360,70 @@ void main() {
     expect(find.byTooltip('Show beacon'), findsOneWidget);
     expect(find.byTooltip('Send a Spot me'), findsOneWidget);
 
+    expect(tester.takeException(), isNull);
+    await _disposeHub(tester);
+  });
+
+  testWidgets('the matched profile photo appears in the hub header', (
+    tester,
+  ) async {
+    await _usePhone(tester, const Size(360, 1200));
+    await tester.pumpWidget(
+      _harness(profilePhotos: const ['profiles/matched-user.jpg']),
+    );
+    await tester.pump();
+
+    expect(find.byType(SignedImage), findsOneWidget);
+    expect(
+      tester.widget<SignedImage>(find.byType(SignedImage)).source,
+      'profiles/matched-user.jpg',
+    );
+    expect(tester.getSize(find.byType(SignedImage)), const Size(44, 44));
+    expect(tester.takeException(), isNull);
+    await _disposeHub(tester);
+  });
+
+  testWidgets('the hub header name is larger than its supporting text', (
+    tester,
+  ) async {
+    await _usePhone(tester, const Size(360, 1200));
+    await tester.pumpWidget(_harness());
+    await tester.pump();
+
+    final titleRichText = tester.widget<RichText>(
+      find.descendant(
+        of: find.text('Meet up with $_name'),
+        matching: find.byType(RichText),
+      ),
+    );
+    final subtitleRichText = tester.widget<RichText>(
+      find.descendant(
+        of: find.text('Nothing set yet').first,
+        matching: find.byType(RichText),
+      ),
+    );
+    expect(
+      titleRichText.text.style?.fontSize,
+      greaterThan(subtitleRichText.text.style?.fontSize ?? 0),
+    );
+    expect(tester.takeException(), isNull);
+    await _disposeHub(tester);
+  });
+
+  testWidgets('the cached chat photo fills in when profile photos are absent', (
+    tester,
+  ) async {
+    await _usePhone(tester, const Size(360, 1200));
+    await tester.pumpWidget(
+      _harness(cachedPhotos: const ['profiles/cached-matched-user.jpg']),
+    );
+    await tester.pump();
+
+    expect(find.byType(SignedImage), findsOneWidget);
+    expect(
+      tester.widget<SignedImage>(find.byType(SignedImage)).source,
+      'profiles/cached-matched-user.jpg',
+    );
     expect(tester.takeException(), isNull);
     await _disposeHub(tester);
   });
@@ -593,6 +700,7 @@ void main() {
     await tester.pump();
 
     expect(find.text('Beacon on'), findsOneWidget);
+    expect(find.byType(MeetupBeaconShape), findsOneWidget);
     expect(find.byTooltip('Open beacon'), findsOneWidget);
     expect(find.byTooltip('Show beacon'), findsNothing);
 

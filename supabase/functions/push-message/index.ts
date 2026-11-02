@@ -593,6 +593,7 @@ async function sendFcmV1({
   badge,
   silent,
   sound,
+  clientRendered,
 }: {
   serviceAccount: ServiceAccount;
   accessToken: string;
@@ -605,6 +606,7 @@ async function sendFcmV1({
   badge?: number;
   silent?: boolean;
   sound?: boolean;
+  clientRendered?: boolean;
 }): Promise<{ ok: boolean; status: number; body: unknown }> {
   const projectId = serviceAccount.project_id.trim();
   const url = `https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`;
@@ -684,25 +686,34 @@ async function sendFcmV1({
   const body = {
     message: {
       token,
-      notification,
-      data: { ...data, badge: String(resolvedBadge) },
+      ...(clientRendered ? {} : { notification }),
+      data: {
+        ...data,
+        notification_title: notification.title,
+        notification_body: notification.body,
+        badge: String(resolvedBadge),
+      },
       android: {
         priority: "HIGH",
         ttl: ttlSeconds,
         ...(collapse ? { collapseKey: collapse } : {}),
-        notification: {
-          ...(collapse ? { tag: collapse } : {}),
-          channelId: resolvedChannel,
-          notificationPriority: "PRIORITY_HIGH",
-          defaultSound: playSound,
-          // Deliberately no `notification_count` here. It maps to Android's
-          // `Notification.setNumber`, and launchers that render a numeric
-          // badge SUM that number across every active notification — so a
-          // card that repeats the count on top of the app's badge carrier
-          // shows twice the unread total. The carrier is the single
-          // notification allowed to carry it (MatchMeBadgeController).
-          // iOS is unaffected: `aps.badge` below is a real, absolute count.
-        },
+        ...(!clientRendered
+          ? {
+              notification: {
+                ...(collapse ? { tag: collapse } : {}),
+                channelId: resolvedChannel,
+                notificationPriority: "PRIORITY_HIGH",
+                defaultSound: playSound,
+                // Deliberately no `notification_count` here. It maps to Android's
+                // `Notification.setNumber`, and launchers that render a numeric
+                // badge SUM that number across every active notification — so a
+                // card that repeats the count on top of the app's badge carrier
+                // shows twice the unread total. The carrier is the single
+                // notification allowed to carry it (MatchMeBadgeController).
+                // iOS is unaffected: `aps.badge` below is a real, absolute count.
+              },
+            }
+          : {}),
       },
       apns: {
         headers: {
@@ -732,12 +743,16 @@ async function sendFcmV1({
           Urgency: "high",
           ...(collapse ? { Topic: collapse } : {}),
         },
-        notification: {
-          icon: "/icons/Icon-192.png",
-          badge: "/icons/Icon-192.png",
-          requireInteraction: true,
-          ...(collapse ? { tag: collapse, renotify: true } : {}),
-        },
+        ...(!clientRendered
+          ? {
+              notification: {
+                icon: "/icons/Icon-192.png",
+                badge: "/icons/Icon-192.png",
+                requireInteraction: true,
+                ...(collapse ? { tag: collapse, renotify: true } : {}),
+              },
+            }
+          : {}),
         fcmOptions: { link: data.route || data.action_url || "/" },
       },
     },
@@ -1139,6 +1154,7 @@ serve(async (req) => {
                 channelId: "chat_messages",
                 badge,
                 sound: isSoundEnabledForPrefs(prefs, "new_match"),
+                clientRendered: true,
               })
             ),
             ...wnsChannels.map((channel) =>
@@ -1396,6 +1412,7 @@ serve(async (req) => {
                 badge,
                 sound: shouldAlert && isSoundEnabledForPrefs(profile.prefs, "chat_messages"),
                 silent: !shouldAlert,
+                clientRendered: true,
               })
         ),
       );
@@ -1986,6 +2003,7 @@ serve(async (req) => {
               badge,
               sound: shouldAlert && isSoundEnabledForPrefs(recipientProfile.prefs, "chat_messages"),
               silent: !shouldAlert,
+              clientRendered: true,
             })
       ),
     );

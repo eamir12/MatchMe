@@ -16,6 +16,7 @@ import 'package:matchme/models/chat_model.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/notification_inbox_provider.dart';
+import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/screens/meetup/meetup_hub_screen.dart';
 import 'package:matchme/screens/meetup/meetup_screen.dart';
 import 'package:matchme/services/notification_inbox_service.dart';
@@ -25,6 +26,7 @@ import 'package:matchme/utils/time_format_utils.dart';
 import 'package:matchme/widgets/app_empty_state.dart';
 import 'package:matchme/widgets/multi_select.dart';
 import 'package:matchme/widgets/safe_text.dart';
+import 'package:matchme/widgets/signed_image.dart';
 
 class NotificationInboxScreen extends ConsumerStatefulWidget {
   const NotificationInboxScreen({super.key});
@@ -347,9 +349,11 @@ class _InboxRow extends ConsumerWidget {
                       key: const ValueKey('check'),
                       selected: selected,
                     )
-                  : _InboxTypeIcon(
+                  : _InboxAvatar(
                       key: const ValueKey('icon'),
-                      icon: icon,
+                      item: item,
+                      size: 40,
+                      fallbackIcon: icon,
                       iconColor: iconColor,
                       unread: unread,
                       colors: colors,
@@ -482,34 +486,60 @@ class _InboxRow extends ConsumerWidget {
 
 /// The circular type icon shown at the leading edge of an inbox row, with the
 /// unread dot overlay.
-class _InboxTypeIcon extends StatelessWidget {
-  final IconData icon;
+class _InboxAvatar extends ConsumerWidget {
+  final NotificationInboxItem item;
+  final double size;
+  final IconData fallbackIcon;
   final Color iconColor;
   final bool unread;
   final ColorScheme colors;
 
-  const _InboxTypeIcon({
+  const _InboxAvatar({
     super.key,
-    required this.icon,
+    required this.item,
+    required this.size,
+    required this.fallbackIcon,
     required this.iconColor,
     required this.unread,
     required this.colors,
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final otherUserId = _resolveOtherUserId(ref, item);
+    final profile = otherUserId == null
+        ? null
+        : ref.watch(otherUserProfileProvider(otherUserId)).asData?.value;
+    final photo = profile?.photos
+        .where((source) => source.trim().isNotEmpty)
+        .firstOrNull;
+    final fallback = Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: iconColor.withValues(alpha: 0.12),
+        shape: BoxShape.circle,
+      ),
+      alignment: Alignment.center,
+      child: Icon(fallbackIcon, size: size * 0.5, color: iconColor),
+    );
+
     return Stack(
       clipBehavior: Clip.none,
       children: [
-        Container(
-          width: 40,
-          height: 40,
-          decoration: BoxDecoration(
-            color: iconColor.withValues(alpha: 0.12),
-            shape: BoxShape.circle,
+        if (photo == null)
+          fallback
+        else
+          ClipOval(
+            child: SignedImage(
+              source: photo,
+              width: size,
+              height: size,
+              fit: BoxFit.cover,
+              placeholder: fallback,
+              errorWidget: fallback,
+            ),
           ),
-          child: Icon(icon, size: 20, color: iconColor),
-        ),
         if (unread)
           PositionedDirectional(
             top: -2,
@@ -526,6 +556,59 @@ class _InboxTypeIcon extends StatelessWidget {
           ),
       ],
     );
+  }
+
+  String? _resolveOtherUserId(WidgetRef ref, NotificationInboxItem item) {
+    final type = item.type.trim().toLowerCase();
+    const matchedUserTypes = {
+      'match',
+      'new_match',
+      'match_extended',
+      'match_expiry',
+      'pinned_expiry',
+      'chat',
+      'message',
+      'chat_message',
+      'location_share',
+      'meetup_signal',
+      'meetup_beacon',
+      'meetup_spot',
+      'meetup_proposal',
+      'meetup_place_change',
+    };
+    if (!matchedUserTypes.contains(type)) return null;
+
+    final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+    final directId =
+        (item.data['other_user_id'] ??
+                item.data['otherUserId'] ??
+                item.data['sender_id'] ??
+                item.data['senderId'] ??
+                '')
+            .toString()
+            .trim();
+    if (directId.isNotEmpty &&
+        directId != currentUserId &&
+        directId.toLowerCase() != 'unknown') {
+      return directId;
+    }
+
+    final matchId = (item.data['match_id'] ?? item.data['matchId'] ?? '')
+        .toString()
+        .trim();
+    if (currentUserId == null || currentUserId.isEmpty || matchId.isEmpty) {
+      return null;
+    }
+    final chats =
+        ref.watch(recentChatsProvider(currentUserId)).asData?.value ?? const [];
+    for (final chat in chats) {
+      if (chat.matchId == matchId &&
+          chat.otherUserId.isNotEmpty &&
+          chat.otherUserId != currentUserId) {
+        return chat.otherUserId;
+      }
+    }
+    return null;
   }
 }
 
@@ -637,14 +720,13 @@ class _InboxDetailSheet extends ConsumerWidget {
           children: [
             Row(
               children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: iconColor.withValues(alpha: 0.12),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(icon, size: 22, color: iconColor),
+                _InboxAvatar(
+                  item: item,
+                  size: 44,
+                  fallbackIcon: icon,
+                  iconColor: iconColor,
+                  unread: false,
+                  colors: colors,
                 ),
                 const SizedBox(width: 12),
                 Expanded(

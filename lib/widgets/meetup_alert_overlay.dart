@@ -5,8 +5,8 @@
 // The bar shows the alert at full detail — what to look for. Swiping it
 // sideways or up (or tapping the X) clears that match's alerts; it also
 // slides away by itself once the tool's timer runs out. It hides itself while
-// one of the alert's own surfaces (the match chat, the meet-up hub or the
-// Meet-up screen) is open, because those already show the same live state.
+// one of the alert's own surfaces (the match chat or profile, the meet-up hub,
+// or the Meet-up screen) is open, because those already show the same live state.
 
 import 'dart:async';
 
@@ -17,6 +17,8 @@ import 'package:matchme/models/chat_model.dart';
 import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/meetup_alerts_provider.dart';
+import 'package:matchme/providers/meetup_provider.dart';
+import 'package:matchme/screens/meetup/beacon_screen.dart';
 import 'package:matchme/screens/meetup/meetup_coordination_widgets.dart';
 import 'package:matchme/screens/meetup/meetup_hub_screen.dart';
 import 'package:matchme/screens/meetup/meetup_screen.dart';
@@ -74,6 +76,15 @@ class MeetupAlertOverlay extends ConsumerWidget {
     final l10n = ref.watch(localizationProvider);
     final scheme = Theme.of(context).colorScheme;
     final (icon, iconColor) = _icon(alert);
+    final leading = alert.kind == kMeetupAlertBeacon
+        ? MeetupBeaconShape(
+            sessionId:
+                ref.watch(meetupProvider(alert.matchId)).session?.id ??
+                alert.matchId,
+            size: 28,
+            animate: false,
+          )
+        : Icon(icon, color: iconColor ?? scheme.primary, size: 24);
     final title = _title(ref, alert, l10n);
     final subtitle = _subtitle(alert, l10n);
 
@@ -96,7 +107,7 @@ class MeetupAlertOverlay extends ConsumerWidget {
             ),
             child: Row(
               children: [
-                Icon(icon, color: iconColor ?? scheme.primary, size: 24),
+                leading,
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(

@@ -13,12 +13,15 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:matchme/models/chat_model.dart';
 import 'package:matchme/models/location_share_session.dart';
 import 'package:matchme/models/meetup_models.dart';
+import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/providers/location_share_provider.dart';
 import 'package:matchme/providers/meetup_alerts_provider.dart';
 import 'package:matchme/providers/meetup_provider.dart';
+import 'package:matchme/providers/profile_provider.dart';
 import 'package:matchme/screens/location_share/location_share_duration_dialog.dart';
 import 'package:matchme/screens/location_share/location_share_map_screen.dart';
 import 'package:matchme/screens/meetup/beacon_screen.dart';
@@ -33,6 +36,8 @@ import 'package:matchme/utils/meetup_display.dart';
 import 'package:matchme/utils/offline_utils.dart';
 import 'package:matchme/utils/unit_utils.dart';
 import 'package:matchme/widgets/safe_text.dart';
+import 'package:matchme/widgets/signed_image.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class MeetupHubScreen extends ConsumerStatefulWidget {
   final String matchId;
@@ -390,6 +395,26 @@ class _MeetupHubScreenState extends ConsumerState<MeetupHubScreen> {
     final state = ref.watch(meetupProvider(widget.matchId));
     final share = ref.watch(locationShareProvider);
     final l10n = ref.watch(localizationProvider);
+    final otherProfile = ref
+        .watch(otherUserProfileProvider(widget.otherUserId))
+        .asData
+        ?.value;
+    final currentUserId = Supabase.instance.client.auth.currentUser?.id ?? '';
+    final chats =
+        ref.watch(recentChatsProvider(currentUserId)).asData?.value ??
+        const <ChatModel>[];
+    String? photoSource = otherProfile?.photos
+        .where((photo) => photo.trim().isNotEmpty)
+        .firstOrNull;
+    if (photoSource == null || photoSource.trim().isEmpty) {
+      for (final chat in chats) {
+        if (chat.otherUserId != widget.otherUserId) continue;
+        photoSource = chat.otherUserPhotos
+            .where((photo) => photo.trim().isNotEmpty)
+            .firstOrNull;
+        if (photoSource != null) break;
+      }
+    }
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
     final brightness = theme.brightness;
@@ -448,7 +473,7 @@ class _MeetupHubScreenState extends ConsumerState<MeetupHubScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        toolbarHeight: 58,
+        toolbarHeight: 72,
         titleSpacing: 4,
         title: _HubToolbar(
           title: l10n.getString(
@@ -460,6 +485,7 @@ class _MeetupHubScreenState extends ConsumerState<MeetupHubScreen> {
               l10n.getString('meetupHubNothingYet'),
           live: iShare || otherShare,
           initial: _nameInitial(widget.otherUserName),
+          photoSource: photoSource,
         ),
         bottom: state.loading
             ? const PreferredSize(
@@ -602,6 +628,13 @@ class _MeetupHubScreenState extends ConsumerState<MeetupHubScreen> {
                   accent: beaconInk,
                   label: l10n.getString('meetupHubBeaconTitle'),
                   actionLabel: beaconAction,
+                  iconContent: myBeacon == null
+                      ? null
+                      : MeetupBeaconShape(
+                          sessionId: beaconSeed,
+                          size: 30,
+                          animate: false,
+                        ),
                   badge: myBeacon == null
                       ? null
                       : l10n.getString('meetupBeaconActiveTitle'),
@@ -688,43 +721,60 @@ class _HubToolbar extends StatelessWidget {
   final String place;
   final bool live;
   final String initial;
+  final String? photoSource;
 
   const _HubToolbar({
     required this.title,
     required this.place,
     required this.live,
     required this.initial,
+    required this.photoSource,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
+    final imageSource = photoSource;
+    final fallback = Container(
+      color: colors.primary.withValues(alpha: 0.14),
+      child: Center(
+        child: Text(
+          initial,
+          style: TextStyle(
+            color: colors.primary,
+            fontWeight: FontWeight.w700,
+            fontSize: 18,
+          ),
+        ),
+      ),
+    );
     return Row(
       children: [
         SizedBox(
-          width: 34,
-          height: 34,
+          width: 48,
+          height: 48,
           child: Stack(
             children: [
               Center(
                 child: Container(
-                  width: 30,
-                  height: 30,
+                  width: 44,
+                  height: 44,
                   decoration: BoxDecoration(
                     color: colors.primary.withValues(alpha: 0.14),
                     shape: BoxShape.circle,
                   ),
-                  child: Center(
-                    child: Text(
-                      initial,
-                      style: TextStyle(
-                        color: colors.primary,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 13,
-                      ),
-                    ),
-                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: imageSource != null && imageSource.trim().isNotEmpty
+                      ? SignedImage(
+                          source: imageSource,
+                          width: 44,
+                          height: 44,
+                          fit: BoxFit.cover,
+                          placeholder: fallback,
+                          errorWidget: fallback,
+                        )
+                      : fallback,
                 ),
               ),
               if (live)
@@ -752,7 +802,8 @@ class _HubToolbar extends StatelessWidget {
             children: [
               ShrinkText(
                 title,
-                style: theme.textTheme.titleSmall?.copyWith(
+                maxLines: 2,
+                style: theme.textTheme.titleLarge?.copyWith(
                   fontWeight: FontWeight.w700,
                 ),
               ),
@@ -975,6 +1026,7 @@ class _ToolTileRow extends StatelessWidget {
 
 class _ToolTile extends StatelessWidget {
   final IconData icon;
+  final Widget? iconContent;
   final Color accent;
   final String label;
   final String actionLabel;
@@ -992,6 +1044,7 @@ class _ToolTile extends StatelessWidget {
     required this.onTap,
     required this.onExplain,
     this.badge,
+    this.iconContent,
   });
 
   @override
@@ -1031,7 +1084,9 @@ class _ToolTile extends StatelessWidget {
                             ),
                             shape: BoxShape.circle,
                           ),
-                          child: Icon(icon, size: 19, color: accent),
+                          child:
+                              iconContent ??
+                              Icon(icon, size: 19, color: accent),
                         ),
                         const SizedBox(height: 4),
                         ShrinkText(

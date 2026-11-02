@@ -330,10 +330,7 @@ class _ExpiryTrack extends StatelessWidget {
         child: LayoutBuilder(
           builder: (context, constraints) => Stack(
             children: [
-              Container(
-                height: 3,
-                color: accent.withValues(alpha: 0.22),
-              ),
+              Container(height: 3, color: accent.withValues(alpha: 0.22)),
               SizedBox(
                 width: constraints.maxWidth * fraction,
                 child: Container(height: 3, color: accent),
@@ -1490,9 +1487,16 @@ class MeetupCoordinationFeed extends ConsumerWidget {
             signal: outgoing,
             otherUserName: otherUserName,
             l10n: l10n,
-            onDismiss: () => ref
-                .read(meetupProvider(matchId).notifier)
-                .dismissSignal(outgoing.id),
+            onDismiss: () async {
+              final error = await ref
+                  .read(meetupProvider(matchId).notifier)
+                  .clearSignal(MeetupSignalType.wave);
+              if (error != null && context.mounted) {
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text(l10n.getString(error))));
+              }
+            },
           ),
         ),
       );

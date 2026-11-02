@@ -214,12 +214,22 @@ class MeetupBeaconScreen extends ConsumerStatefulWidget {
 class _MeetupBeaconScreenState extends ConsumerState<MeetupBeaconScreen> {
   Timer? _ticker;
   bool _hiding = false;
+  bool _expiryNavigationScheduled = false;
 
   @override
   void initState() {
     super.initState();
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() {});
+      if (!mounted) return;
+      final state = ref.read(meetupProvider(widget.matchId));
+      final signal = widget.mine ? state.myBeacon : state.incomingBeacon;
+      if (widget.mine &&
+          !state.loading &&
+          (signal == null || signal.timeRemaining <= Duration.zero)) {
+        _returnToHubAfterExpiry();
+        return;
+      }
+      setState(() {});
     });
   }
 
@@ -238,6 +248,14 @@ class _MeetupBeaconScreenState extends ConsumerState<MeetupBeaconScreen> {
     if (mounted) Navigator.of(context).pop();
   }
 
+  void _returnToHubAfterExpiry() {
+    if (_expiryNavigationScheduled) return;
+    _expiryNavigationScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) Navigator.of(context).maybePop();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final l10n = ref.watch(localizationProvider);
@@ -246,6 +264,12 @@ class _MeetupBeaconScreenState extends ConsumerState<MeetupBeaconScreen> {
     final sessionId = state.session?.id ?? widget.matchId;
     final remaining = signal?.timeRemaining ?? Duration.zero;
     final active = signal != null && remaining > Duration.zero;
+    if (widget.mine &&
+        !state.loading &&
+        !active &&
+        !_expiryNavigationScheduled) {
+      _returnToHubAfterExpiry();
+    }
 
     return Scaffold(
       backgroundColor: Colors.black,

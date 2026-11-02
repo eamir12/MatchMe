@@ -974,6 +974,11 @@ class BackgroundService {
   /// (Android only). Used by the expiry paths to drop the server card for an
   /// event that a local card (or a consumed tap) already represents, so the
   /// shade keeps exactly one entry per event.
+  ///
+  /// Only reachable from an engine that has this plugin registered - the app's
+  /// own, not the FCM background isolate. A card posted from that isolate
+  /// retires the server's through
+  /// [MobileLocalNotificationService.cancelServerCard] instead.
   static Future<void> cancelServerCard(String tag) async {
     if (kIsWeb || !Platform.isAndroid) return;
     final trimmed = tag.trim();
@@ -981,7 +986,7 @@ class BackgroundService {
     try {
       await _channel.invokeMethod('cancelServerCard', {'tag': trimmed});
     } catch (e) {
-      // print('Failed to cancel server card: $e');
+      debugPrint('[BG_SERVICE] cancelServerCard($trimmed) failed: $e');
     }
   }
 

@@ -21,6 +21,7 @@ import 'package:matchme/services/notification_inbox_service.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/widgets/chat_list_item.dart';
 import 'package:matchme/widgets/match_box.dart';
+import 'package:matchme/widgets/signed_image.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -38,11 +39,11 @@ String _accessToken() {
       '${encode({'sub': _currentUserId, 'iat': now, 'exp': now + 3600})}.sig';
 }
 
-UserProfile _profile(String id, String name) {
+UserProfile _profile(String id, String name, {List<String> photos = const []}) {
   return UserProfile.fromMap({
     'id': id,
     'name': name,
-    'photos': <String>[],
+    'photos': photos,
     'personal_interests': <String, List<String>>{},
   });
 }
@@ -307,12 +308,11 @@ void main() {
           overrides: [
             meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
             localizationProvider.overrideWithValue(_l10n(TextDirection.ltr)),
-            otherUserProfileProvider(
-              _otherUserId,
-            ).overrideWith((ref) => Future<UserProfile?>.value(_profile(
-              _otherUserId,
-              _hebrewName,
-            ))),
+            otherUserProfileProvider(_otherUserId).overrideWith(
+              (ref) => Future<UserProfile?>.value(
+                _profile(_otherUserId, _hebrewName),
+              ),
+            ),
           ],
           child: MaterialApp(
             home: Scaffold(body: ChatListItem(chat: chat)),
@@ -347,12 +347,11 @@ void main() {
           overrides: [
             meetupAlertsProvider.overrideWith(_StubMeetupAlerts.new),
             localizationProvider.overrideWithValue(_l10n(TextDirection.rtl)),
-            otherUserProfileProvider(
-              _otherUserId,
-            ).overrideWith((ref) => Future<UserProfile?>.value(_profile(
-              _otherUserId,
-              _hebrewName,
-            ))),
+            otherUserProfileProvider(_otherUserId).overrideWith(
+              (ref) => Future<UserProfile?>.value(
+                _profile(_otherUserId, _hebrewName),
+              ),
+            ),
           ],
           child: MaterialApp(
             home: Directionality(
@@ -396,12 +395,12 @@ void main() {
             localizationProvider.overrideWith(
               () => _TestLocalization(_l10n(TextDirection.ltr)),
             ),
-            otherUserProfileProvider(
-              _otherUserId,
-            ).overrideWith((ref) => Future.value(_profile(_otherUserId, _hebrewName))),
-            userProfileProvider(
-              _currentUserId,
-            ).overrideWith((ref) => Stream.value(_profile(_currentUserId, 'Viewer Example'))),
+            otherUserProfileProvider(_otherUserId).overrideWith(
+              (ref) => Future.value(_profile(_otherUserId, _hebrewName)),
+            ),
+            userProfileProvider(_currentUserId).overrideWith(
+              (ref) => Stream.value(_profile(_currentUserId, 'Viewer Example')),
+            ),
             userChatIdsProvider(
               _currentUserId,
             ).overrideWith((ref) => Stream.value(<String>{})),
@@ -416,9 +415,7 @@ void main() {
                 }),
               ]),
             ),
-            matchExpiryNowProvider.overrideWith(
-              (ref) => Stream.value(now),
-            ),
+            matchExpiryNowProvider.overrideWith((ref) => Stream.value(now)),
             userRatingSummaryProvider(_otherUserId).overrideWith(
               (ref) async => const UserRatingSummary(
                 ratedByCount: 0,
@@ -453,6 +450,44 @@ void main() {
   });
 
   group('notification inbox row', () {
+    testWidgets('shows the matched user photo when the profile is available', (
+      tester,
+    ) async {
+      const photoSource = 'other-user/avatar.jpg';
+      final item = NotificationInboxItem(
+        id: 'inbox-match-avatar',
+        type: 'new_match',
+        title: 'New match',
+        body: 'You matched with Alex.',
+        data: const {'otherUserId': _otherUserId},
+        createdAt: DateTime(2026, 1, 1, 11, 2),
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            localizationProvider.overrideWithValue(_l10n(TextDirection.ltr)),
+            notificationInboxProvider.overrideWith(
+              () => _FakeInboxNotifier([item]),
+            ),
+            otherUserProfileProvider(_otherUserId).overrideWith(
+              (ref) async =>
+                  _profile(_otherUserId, 'Alex Example', photos: [photoSource]),
+            ),
+          ],
+          child: MaterialApp(home: Scaffold(body: NotificationInboxScreen())),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      final avatar = tester.widget<SignedImage>(find.byType(SignedImage));
+      expect(avatar.source, photoSource);
+      expect(tester.takeException(), isNull);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
     testWidgets('keeps an English name period on the right in a Hebrew UI', (
       tester,
     ) async {

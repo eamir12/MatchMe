@@ -20,6 +20,12 @@ import java.security.MessageDigest
  * and is excluded a second time in both backup_rules.xml and
  * data_extraction_rules.xml so a future change in either cannot quietly start
  * shipping faces off the device.
+ *
+ * Dart cards (meet-up, expiry, location) read this directory themselves rather
+ * than asking for a path: the FCM background isolate has no handler on our
+ * channel, so `notification_avatars` under `no_backup` is a contract between
+ * [NotificationAvatarStore.dir] and `NotificationAvatarService._mirrorDir`, and
+ * changing either name silently takes the face off those cards.
  */
 object NotificationAvatarStore {
 
@@ -114,14 +120,26 @@ object NotificationAvatarStore {
     }
 
     fun bitmapFor(context: Context, matchId: String): Bitmap? {
+        val path = pathFor(context, matchId) ?: return null
+        return try {
+            BitmapFactory.decodeFile(path)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Absolute path of this conversation's mirrored face, or null when it has
+     * none.
+     */
+    private fun pathFor(context: Context, matchId: String): String? {
         if (matchId.isBlank()) return null
         val prefix = hash(matchId)
         if (prefix.isEmpty()) return null
         return try {
-            val file = dir(context).listFiles()?.firstOrNull {
+            dir(context).listFiles()?.firstOrNull {
                 it.name.startsWith("$prefix-") && it.name.endsWith(".jpg")
-            } ?: return null
-            BitmapFactory.decodeFile(file.absolutePath)
+            }?.absolutePath
         } catch (_: Exception) {
             null
         }

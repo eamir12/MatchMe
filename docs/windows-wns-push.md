@@ -42,6 +42,16 @@ createPushChannel ──► WNS channel URI
 | Bootstrap hook | `lib/main.dart` | `_registerWindowsWnsChannel()` (fire-and-forget, after Supabase init) and Windows cold-start URI feeding `_processDeepLink`. |
 | Packaging | `pubspec.yaml` (`msix_config`) | Add `msix` dev dependency; `identity_name`/`publisher` must match Partner Center. |
 
+## Avatar and duplicate-delivery limits
+
+WNS currently sends text-only toast XML. A WNS-delivered toast cannot read the
+device-local avatar cache, and adding a remotely fetchable photo URL would
+violate the app's local-cache-only privacy policy. Windows local notifications
+can include a cached avatar while the app is running, but WNS and local toasts
+do not share a notification identity, so simultaneous delivery can still leave
+two entries. WNS `tag`/`group` collapses retries of the same remote toast only;
+it is not an exactly-once guarantee.
+
 ## What must happen outside this repo (prerequisites)
 
 ### Partner Center (done — MatchMeApp product created)

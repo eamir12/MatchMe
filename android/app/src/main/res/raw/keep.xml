@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The release resource shrinker only sees references from Java/Kotlin, and
+     this sound is named from Dart, so without this rule it is dropped from the
+     release APK and every app-posted meet-up card then fails to build. -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@raw/meetup_chime" />

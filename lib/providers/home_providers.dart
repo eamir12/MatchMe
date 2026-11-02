@@ -103,9 +103,9 @@ Future<String> _resolveChatNotificationSenderName({
 ///
 /// A notification card puts this face beside the sender's name. Web resolves it
 /// from a signed URL the session already holds and Windows from the local avatar
-/// mirror, so the path alone is enough - and it is deliberately never fetched
-/// here: a tray card does not spend a request on a photo the member has not
-/// looked at, and a conversation with no picture simply posts without one.
+/// mirror, so the path alone is enough - and it is never fetched here: the
+/// avatar mirror asks the bucket for it, once and bounded, when a card is about
+/// to post without a face.
 Future<String> _resolveChatNotificationAvatarSource({
   required LocalDbService localDb,
   required String currentUserId,

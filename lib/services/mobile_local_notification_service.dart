@@ -108,6 +108,26 @@ class MobileLocalNotificationService {
     }
   }
 
+  /// True while the Android match card is still visible, whether its most
+  /// recent renderer was the app or a legacy tagged FCM push.
+  static Future<bool> isNewMatchNotificationActive(String matchId) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return false;
+    final id = matchId.trim();
+    if (id.isEmpty) return false;
+    try {
+      await ensureInitialized();
+      final active = await _notificationsPlugin.getActiveNotifications();
+      return active.any(
+        (notification) =>
+            notification.id == cardIdForPlatform(id) ||
+            notification.tag == 'new_match_$id',
+      );
+    } catch (error) {
+      debugPrint('Local notification: Could not inspect match card: $error');
+      return false;
+    }
+  }
+
   static Future<void> ensureInitialized() async {
     if (_initialized) return;
     if (kIsWeb) return;
@@ -140,6 +160,7 @@ class MobileLocalNotificationService {
     const InitializationSettings settings = InitializationSettings(
       android: androidSettings,
       iOS: iosSettings,
+      macOS: iosSettings,
       windows: windowsSettings,
     );
 
@@ -234,6 +255,10 @@ class MobileLocalNotificationService {
     required String matchId,
     required String title,
     required String body,
+    bool silent = false,
+    bool dedupeAlreadyClaimed = false,
+    String? avatarPhotoSource,
+    Future<void> Function()? beforeShow,
   }) async {
     if (kIsWeb) return;
     await ensureInitialized();
@@ -245,70 +270,87 @@ class MobileLocalNotificationService {
         _shownNewMatchIds.remove(_shownNewMatchIds.first);
       }
       _shownNewMatchIds.add(id);
-      // Cross-path dedupe (mirrors the Android native contract): the match
-      // may already have been alerted by another path — the prefs mirror, a
-      // server banner delivered while the app was killed (iOS). Either way
-      // this card must stay silent.
-      SharedPreferences? dedupePrefs;
-      try {
-        dedupePrefs = await SharedPreferences.getInstance();
-      } catch (_) {}
-      if (dedupePrefs?.getString('flutter.last_notified_match_id') == id) {
-        return;
-      }
-      if (await hasDeliveredServerNotification('new_match_$id')) {
+      if (!dedupeAlreadyClaimed) {
+        // Cross-path dedupe (mirrors the Android native contract): the match
+        // may already have been alerted by another path — the prefs mirror, a
+        // server banner delivered while the app was killed (iOS). Either way
+        // this card must stay silent.
+        SharedPreferences? dedupePrefs;
         try {
-          await dedupePrefs?.setString('flutter.last_notified_match_id', id);
-          await dedupePrefs?.setString(
-            'flutter.worker_last_notified_key',
-            'match:$id',
-          );
+          dedupePrefs = await SharedPreferences.getInstance();
         } catch (_) {}
-        return;
+        final alreadyRecorded =
+            dedupePrefs?.getString('flutter.last_notified_match_id') == id;
+        final hasServerCard = await hasDeliveredServerNotification(
+          'new_match_$id',
+        );
+        final hasActiveCard = await isNewMatchNotificationActive(id);
+        if (alreadyRecorded || hasServerCard || hasActiveCard) {
+          if (hasActiveCard) {
+            silent = true;
+          } else if (hasServerCard) {
+            try {
+              await dedupePrefs?.setString(
+                'flutter.last_notified_match_id',
+                id,
+              );
+              await dedupePrefs?.setString(
+                'flutter.worker_last_notified_key',
+                'match:$id',
+              );
+            } catch (_) {}
+            return;
+          } else {
+            return;
+          }
+        }
       }
     }
     final soundEnabled = _isSoundEnabledForType(NotificationType.newMatch);
     final vibrationEnabled = _isVibrationEnabledForType(
       NotificationType.newMatch,
     );
+    final avatarPath = await _avatarPath(
+      matchId,
+      photoSource: avatarPhotoSource,
+    );
     final details = NotificationDetails(
       android: AndroidNotificationDetails(
         'chat_messages',
         'Chat Messages',
         channelDescription: 'Notifications for new chat messages and matches',
-        importance: Importance.high,
-        priority: Priority.high,
+        importance: silent ? Importance.defaultImportance : Importance.high,
+        priority: silent ? Priority.defaultPriority : Priority.high,
         showWhen: true,
-        playSound: soundEnabled,
-        enableVibration: vibrationEnabled,
+        playSound: !silent && soundEnabled,
+        enableVibration: !silent && vibrationEnabled,
+        // Match cards can race the native poller; updates to their shared ID
+        // must not produce a second banner or buzz.
+        silent: silent,
+        onlyAlertOnce: true,
         // Joins the conversation group whose summary carries the unread badge
         // (MatchMeBadgeController). Deliberately no `number` here: numeric
         // launchers *sum* the number of every active notification, so a card
         // that repeats the badge count doubles it.
         groupKey: NotificationGroups.chats,
         groupAlertBehavior: GroupAlertBehavior.children,
-        // Same tag the server push and the native background-service dedup
-        // key on: the Kotlin poller checks the tray for "new_match_<id>"
-        // before posting its own fallback card, so this foreground card must
-        // carry the tag too or the poller would stack a duplicate after the
-        // app is backgrounded with the match still unread.
-        tag: 'new_match_$matchId',
+        largeIcon: _androidAvatar(avatarPath),
       ),
-      iOS: DarwinNotificationDetails(
-        presentAlert: true,
-        presentBadge: true,
-        presentSound: soundEnabled,
-        sound: soundEnabled ? 'default' : null,
+      iOS: _darwinDetails(soundEnabled: soundEnabled, avatarPath: avatarPath),
+      macOS: _darwinDetails(soundEnabled: soundEnabled, avatarPath: avatarPath),
+      windows: _windowsDetails(
+        soundEnabled: soundEnabled,
+        avatarPath: avatarPath,
       ),
-      windows: _windowsDetails(soundEnabled: soundEnabled),
     );
     final enforced = enforceTitleBody(title, body);
+    await beforeShow?.call();
     await _notificationsPlugin.show(
-      id: 'new_match_$matchId'.hashCode,
+      id: cardIdForPlatform(id),
       title: _wrapRtlIfNeeded(enforced.title),
       body: _wrapRtlIfNeeded(enforced.body),
       notificationDetails: details,
-      payload: matchId,
+      payload: '/chat/$matchId',
     );
     // Best-effort: share the native one-buzz-per-match key so the background
     // service and the WorkManager fallback stay quiet for this match even
@@ -344,6 +386,9 @@ class MobileLocalNotificationService {
     required String matchId,
     required String title,
     required String body,
+    bool silent = false,
+    String? avatarPhotoSource,
+    Future<void> Function()? beforeShow,
   }) async {
     if (kIsWeb) return;
     await ensureInitialized();
@@ -368,34 +413,42 @@ class MobileLocalNotificationService {
             NotificationType.matchExtended,
             NotificationMethod.vibrate,
           );
+    final avatarPath = await _avatarPath(
+      matchId,
+      photoSource: avatarPhotoSource,
+    );
     final details = NotificationDetails(
       android: AndroidNotificationDetails(
         'chat_messages',
         'Chat Messages',
         channelDescription: 'Notifications for new chat messages and matches',
-        importance: Importance.high,
-        priority: Priority.high,
+        importance: silent ? Importance.defaultImportance : Importance.high,
+        priority: silent ? Priority.defaultPriority : Priority.high,
         showWhen: true,
-        playSound: soundEnabled,
-        enableVibration: vibrationEnabled,
+        playSound: !silent && soundEnabled,
+        enableVibration: !silent && vibrationEnabled,
+        // Replaces a card the system already announced — the face yes, a second
+        // banner or buzz no.
+        silent: silent,
         groupKey: NotificationGroups.chats,
         groupAlertBehavior: GroupAlertBehavior.children,
+        largeIcon: _androidAvatar(avatarPath),
       ),
-      iOS: DarwinNotificationDetails(
-        presentAlert: true,
-        presentBadge: true,
-        presentSound: soundEnabled,
-        sound: soundEnabled ? 'default' : null,
+      iOS: _darwinDetails(soundEnabled: soundEnabled, avatarPath: avatarPath),
+      macOS: _darwinDetails(soundEnabled: soundEnabled, avatarPath: avatarPath),
+      windows: _windowsDetails(
+        soundEnabled: soundEnabled,
+        avatarPath: avatarPath,
       ),
-      windows: _windowsDetails(soundEnabled: soundEnabled),
     );
     final enforced = enforceTitleBody(title, body);
+    await beforeShow?.call();
     await _notificationsPlugin.show(
       id: 'match_extended_$matchId'.hashCode,
       title: _wrapRtlIfNeeded(enforced.title),
       body: _wrapRtlIfNeeded(enforced.body),
       notificationDetails: details,
-      payload: matchId,
+      payload: '/chat/$matchId',
     );
   }
 
@@ -447,12 +500,15 @@ class MobileLocalNotificationService {
   /// so an iOS banner, a Windows toast, a browser tray entry and the Android
   /// card say the same thing about the same conversation.
   ///
-  /// The sender's face rides along where the OS can take one: a Windows toast
-  /// resolves the local avatar mirror itself. iOS is left with text - a face in
-  /// a banner means an attachment, an attachment means a plaintext JPEG in the
-  /// app's Documents directory, and that directory goes into the member's
-  /// iCloud backup unless native code marks it excluded. A face the member
-  /// never agreed to back up is not worth a thumbnail.
+  /// Local notifications use the mirrored face where the platform supports
+  /// attachments or local toast images. Remote notifications shown directly by
+  /// APNs or WNS cannot read this app-local mirror; iOS needs a configured
+  /// notification service extension, and WNS needs an image URI available to
+  /// the toast renderer.
+  ///
+  /// [silent] is the Android background case: this card replaces one the system
+  /// already drew and announced, so it joins the shade with the sender's face
+  /// and adds neither a second banner nor a second buzz.
   static Future<void> showMessageNotification({
     required String chatId,
     required String senderName,
@@ -463,6 +519,9 @@ class MobileLocalNotificationService {
     bool? shouldAlertOverride,
     ChatPushCardModel? card,
     int? unreadCount,
+    bool silent = false,
+    String? avatarPhotoSource,
+    Future<void> Function()? beforeShow,
   }) async {
     if (kIsWeb) return;
     await ensureInitialized();
@@ -554,28 +613,61 @@ class MobileLocalNotificationService {
       payload: served,
     );
 
+    final avatarPath = await _avatarPath(
+      matchId,
+      photoSource: avatarPhotoSource,
+    );
+    // The expanded card is the same window the native service builds when it
+    // owns this chat: the server's unread lines, newest tail, no repeats of the
+    // body. One line is the body itself, so a style would only repeat it.
+    final lines = model.previewLines;
     final NotificationDetails details = NotificationDetails(
       android: AndroidNotificationDetails(
         'chat_messages',
         'Chat Messages',
         channelDescription: 'Notifications for new chat messages',
-        importance: shouldAlert ? Importance.high : Importance.low,
-        priority: shouldAlert ? Priority.high : Priority.low,
+        // Three shapes of one card: a fresh event this card announces (banner
+        // and buzz), a follow-up the server muted (shade only, the prominence
+        // the native path has always given it), and a silent replacement of a
+        // card the system already announced (shade only, at the same
+        // prominence the system's own entry had).
+        importance: shouldAlert && !silent
+            ? Importance.high
+            : silent
+            ? Importance.defaultImportance
+            : Importance.low,
+        priority: shouldAlert && !silent
+            ? Priority.high
+            : silent
+            ? Priority.defaultPriority
+            : Priority.low,
         showWhen: true,
-        playSound: shouldAlert && soundEnabled,
-        enableVibration: shouldAlert && vibrationEnabled,
+        playSound: shouldAlert && !silent && soundEnabled,
+        enableVibration: shouldAlert && !silent && vibrationEnabled,
+        // Same reasoning as the expiry card: when this post replaces a card
+        // the system already announced, the tray entry must stay quiet. On
+        // 31+ this is the only flag that overrides a sounding channel.
+        silent: silent || !shouldAlert,
         groupKey: NotificationGroups.chats,
         groupAlertBehavior: GroupAlertBehavior.children,
+        largeIcon: _androidAvatar(avatarPath),
+        styleInformation: lines.length > 1
+            ? InboxStyleInformation(lines, contentTitle: model.title)
+            : null,
       ),
-      iOS: DarwinNotificationDetails(
+      iOS: _darwinDetails(
+        soundEnabled: shouldAlert && soundEnabled,
         presentAlert: shouldAlert,
-        presentBadge: true,
-        presentSound: shouldAlert && soundEnabled,
-        sound: (shouldAlert && soundEnabled) ? 'default' : null,
+        avatarPath: avatarPath,
+      ),
+      macOS: _darwinDetails(
+        soundEnabled: shouldAlert && soundEnabled,
+        presentAlert: shouldAlert,
+        avatarPath: avatarPath,
       ),
       windows: _windowsDetails(
         soundEnabled: shouldAlert && soundEnabled,
-        avatarPath: NotificationAvatarService.instance.filePathFor(matchId),
+        avatarPath: avatarPath,
         altText: safeSender,
       ),
     );
@@ -583,12 +675,20 @@ class MobileLocalNotificationService {
     final title = _wrapRtlIfNeeded(model.title);
     final body = _wrapRtlIfNeeded(model.body);
 
+    await beforeShow?.call();
+    // Android ids are shared with `MatchMeBackgroundService` and the
+    // WorkManager fallback, which both post this chat as
+    // `chatId.hashCode()` in Java's space. A Dart-side hash would be a second
+    // tray entry for the same conversation.
     await _notificationsPlugin.show(
-      id: chatId.hashCode,
+      id: cardIdForPlatform(chatId),
       title: title,
       body: body,
       notificationDetails: details,
-      payload: chatId,
+      // The route the SDK card's tap produced (`push-message` data → `/chat/…`
+      // in `_applyNavigationFromPushData`), so tapping this card lands in the
+      // same place a tap on the card it replaced did.
+      payload: '/chat/$chatId',
     );
 
     if (shouldAlert) {
@@ -663,7 +763,7 @@ class MobileLocalNotificationService {
     _messageHistory.remove(chatId);
     debugPrint('Local notification: Reset state for chat');
     if (!kIsWeb) {
-      unawaited(_notificationsPlugin.cancel(id: chatId.hashCode));
+      unawaited(_notificationsPlugin.cancel(id: cardIdForPlatform(chatId)));
     }
   }
 
@@ -672,7 +772,14 @@ class MobileLocalNotificationService {
     _lastNotifiedChatIds.remove(chatId);
     _messageHistory.remove(chatId);
     try {
-      await _notificationsPlugin.cancel(id: chatId.hashCode);
+      await _notificationsPlugin.cancel(id: cardIdForPlatform(chatId));
+      // The FCM SDK's card for this chat is a separate tray entry - id 0,
+      // tagged with the push's collapse key - and the native dismiss path
+      // drops that too, so entering a chat clears whichever card currently
+      // represents it.
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        await cancelServerCard(tag: 'match_$chatId');
+      }
       debugPrint('Local notification: Dismissed notification');
     } catch (e) {
       debugPrint('Local notification: Failed to dismiss notification: $e');
@@ -756,9 +863,10 @@ class MobileLocalNotificationService {
   /// preference that maps. Silent when the user turned sound off so toasts
   /// respect the same settings as the other platforms.
   ///
-  /// [avatarPath] is a file this app already holds: a toast resolves its own
-  /// images from a URI and cannot be handed bytes, and an https URL only works
-  /// in an MSIX-packaged build. No path, no face - the card posts without one.
+  /// [avatarPath] is a file this app already holds - see
+  /// [NotificationAvatarService.resolvePath]. A toast resolves its own images
+  /// from a URI and cannot be handed bytes, and an https URL only works in an
+  /// MSIX-packaged build. No path, no face: the card posts without one.
   static WindowsNotificationDetails _windowsDetails({
     required bool soundEnabled,
     String? avatarPath,
@@ -773,6 +881,23 @@ class MobileLocalNotificationService {
         : WindowsNotificationDetails(audio: audio, images: [avatar]);
   }
 
+  static DarwinNotificationDetails _darwinDetails({
+    required bool soundEnabled,
+    bool presentAlert = true,
+    String? avatarPath,
+  }) {
+    final path = (avatarPath ?? '').trim();
+    return DarwinNotificationDetails(
+      presentAlert: presentAlert,
+      presentBadge: true,
+      presentSound: soundEnabled,
+      sound: soundEnabled ? 'default' : null,
+      attachments: path.isEmpty
+          ? null
+          : [DarwinNotificationAttachment(path, hideThumbnail: false)],
+    );
+  }
+
   static WindowsImage? _windowsAvatar(String? path, {String? altText}) {
     final file = (path ?? '').trim();
     if (file.isEmpty) return null;
@@ -785,12 +910,56 @@ class MobileLocalNotificationService {
     );
   }
 
+  /// The mirrored face of the conversation [matchId], or null when it has none.
+  ///
+  /// Android's `largeIcon` and a toast's image are both plain local files, so
+  /// every card - chat, match, expiry, location, meet-up - draws the same face
+  /// from the same one mirror, in the foreground or from the FCM background
+  /// isolate, and no photo is ever published.
+  static Future<String?> _avatarPath(
+    String matchId, {
+    String? photoSource,
+  }) async {
+    final source = (photoSource ?? '').trim();
+    if (source.isNotEmpty) {
+      await NotificationAvatarService.instance.mirrorFor(
+        matchId: matchId,
+        photoSource: source,
+      );
+    }
+    return NotificationAvatarService.instance.resolvePath(matchId);
+  }
+
+  static AndroidBitmap<String>? _androidAvatar(String? path) =>
+      path == null ? null : FilePathAndroidBitmap(path);
+
+  /// Retire the card the FCM SDK drew for a push, addressed by the collapse tag
+  /// the push carried - the only identity that card has.
+  ///
+  /// The SDK always posts it as `(id 0, tag <collapse key>)`, so the
+  /// notification plugin can cancel it directly. That matters because the FCM
+  /// background isolate registers real plugin classes only: our own
+  /// `matchme/background_service` channel has no handler there, and a card
+  /// posted from that isolate could never retire the SDK's duplicate.
+  static Future<void> cancelServerCard({required String tag}) async {
+    final trimmed = tag.trim();
+    if (kIsWeb || trimmed.isEmpty) return;
+    try {
+      await ensureInitialized();
+      await _notificationsPlugin.cancel(id: 0, tag: trimmed);
+    } catch (_) {}
+  }
+
   static Future<void> showMatchExpiryNotification({
     required String matchId,
     required String title,
     required String body,
     String? notificationKey,
     String? serverTag,
+    bool silent = false,
+    String? tapRoute,
+    String? avatarPhotoSource,
+    Future<void> Function()? beforeShow,
   }) async {
     if (kIsWeb) return;
     await ensureInitialized();
@@ -814,37 +983,51 @@ class MobileLocalNotificationService {
       NotificationType.expiringMatch,
     );
 
+    final avatarPath = await _avatarPath(
+      matchId,
+      photoSource: avatarPhotoSource,
+    );
+
     final NotificationDetails details = NotificationDetails(
       android: AndroidNotificationDetails(
         'match_expiry_alerts',
         'Match Expiry Alerts',
         channelDescription: 'Notifications for expiring matches',
-        importance: Importance.high,
-        priority: Priority.high,
+        importance: silent ? Importance.defaultImportance : Importance.high,
+        priority: silent ? Priority.defaultPriority : Priority.high,
         showWhen: true,
-        playSound: soundEnabled,
-        enableVibration: vibrationEnabled,
+        playSound: !silent && soundEnabled,
+        enableVibration: !silent && vibrationEnabled,
+        // A replacement for a card the system already announced follows the
+        // native service's convention for that case: no second banner, no
+        // second buzz — the entry stays in the shade, which is where the face
+        // is visible. `silent` is what carries that on 31+, where the channel's
+        // own sound cannot be overridden any other way.
+        silent: silent,
+        largeIcon: _androidAvatar(avatarPath),
       ),
-      iOS: DarwinNotificationDetails(
-        presentAlert: true,
-        presentBadge: true,
-        presentSound: soundEnabled,
-        sound: soundEnabled ? 'default' : null,
+      iOS: _darwinDetails(soundEnabled: soundEnabled, avatarPath: avatarPath),
+      macOS: _darwinDetails(soundEnabled: soundEnabled, avatarPath: avatarPath),
+      windows: _windowsDetails(
+        soundEnabled: soundEnabled,
+        avatarPath: avatarPath,
       ),
-      windows: _windowsDetails(soundEnabled: soundEnabled),
     );
 
     final enforced = enforceTitleBody(title, body);
     final finalTitle = _wrapRtlIfNeeded(enforced.title);
     final finalBody = _wrapRtlIfNeeded(enforced.body);
 
+    await beforeShow?.call();
     await _notificationsPlugin.show(
       id: (notificationKey == null ? matchId : '$matchId:$notificationKey')
           .hashCode,
       title: finalTitle,
       body: finalBody,
       notificationDetails: details,
-      payload: matchId,
+      // A card that replaces the server's own carries the tap destination that
+      // card had; a bare id leaves the app where it was, as before.
+      payload: tapRoute ?? matchId,
     );
   }
 
@@ -915,9 +1098,12 @@ class MobileLocalNotificationService {
 
   static Future<void> showLocationShareNotification({
     required String notificationId,
+    required String matchId,
     required String title,
     required String body,
     bool silent = false,
+    String? avatarPhotoSource,
+    Future<void> Function()? beforeShow,
   }) async {
     if (kIsWeb) return;
     await ensureInitialized();
@@ -930,6 +1116,11 @@ class MobileLocalNotificationService {
         !silent && _isSoundEnabledForType(NotificationType.locationSharing);
     final vibrationEnabled =
         !silent && _isVibrationEnabledForType(NotificationType.locationSharing);
+
+    final avatarPath = await _avatarPath(
+      matchId,
+      photoSource: avatarPhotoSource,
+    );
 
     final NotificationDetails details = NotificationDetails(
       android: AndroidNotificationDetails(
@@ -945,26 +1136,41 @@ class MobileLocalNotificationService {
         // Without this, Android replays the channel's sound/vibration on
         // every update; with it, only the first post alerts.
         onlyAlertOnce: true,
+        // A replacement for the card the system already announced adds no
+        // second banner and no second buzz; `silent` is what carries that on
+        // 31+, where a sounding channel cannot be overridden any other way.
+        silent: silent,
+        largeIcon: _androidAvatar(avatarPath),
       ),
-      iOS: DarwinNotificationDetails(
+      iOS: _darwinDetails(
+        soundEnabled: soundEnabled,
         presentAlert: !silent,
-        presentBadge: true,
-        presentSound: soundEnabled,
-        sound: soundEnabled ? 'default' : null,
+        avatarPath: avatarPath,
       ),
-      windows: _windowsDetails(soundEnabled: soundEnabled),
+      macOS: _darwinDetails(
+        soundEnabled: soundEnabled,
+        presentAlert: !silent,
+        avatarPath: avatarPath,
+      ),
+      windows: _windowsDetails(
+        soundEnabled: soundEnabled,
+        avatarPath: avatarPath,
+      ),
     );
 
     final enforced = enforceTitleBody(title, body);
     final finalTitle = _wrapRtlIfNeeded(enforced.title);
     final finalBody = _wrapRtlIfNeeded(enforced.body);
 
+    await beforeShow?.call();
     await _notificationsPlugin.show(
       id: notificationId.hashCode,
       title: finalTitle,
       body: finalBody,
       notificationDetails: details,
-      payload: notificationId,
+      // Same destination the push this card replaces produced: the share lives
+      // in the conversation, and the SDK card's tap landed there.
+      payload: '/chat/$matchId',
     );
   }
 
@@ -1016,6 +1222,9 @@ class MobileLocalNotificationService {
     String? matchId,
     String? kind,
     Duration? expiresIn,
+    bool silent = false,
+    String? avatarPhotoSource,
+    Future<void> Function()? beforeShow,
   }) async {
     if (kIsWeb) return;
     await ensureInitialized();
@@ -1027,38 +1236,6 @@ class MobileLocalNotificationService {
       NotificationType.meetupTools,
     );
 
-    final NotificationDetails details = NotificationDetails(
-      android: AndroidNotificationDetails(
-        'meetup_alerts',
-        'Meet-up alerts',
-        channelDescription:
-            'Waves, beacons, Spot me cards and meeting-point updates',
-        importance: Importance.high,
-        priority: Priority.high,
-        showWhen: true,
-        playSound: soundEnabled,
-        enableVibration: vibrationEnabled,
-        // Per-notification sound overrides the channel, so existing installs
-        // get the distinct chime without a channel-id bump.
-        sound: soundEnabled
-            ? const RawResourceAndroidNotificationSound('meetup_chime')
-            : null,
-        // A tool the recipient never acted on stops being news once its live
-        // window closes: the system drops the card at the TTL even when this
-        // process is gone and no sweep can run.
-        timeoutAfter: expiresIn != null && expiresIn.inMilliseconds > 0
-            ? expiresIn.inMilliseconds
-            : null,
-      ),
-      iOS: DarwinNotificationDetails(
-        presentAlert: true,
-        presentBadge: true,
-        presentSound: soundEnabled,
-        sound: soundEnabled ? 'default' : null,
-      ),
-      windows: _windowsDetails(soundEnabled: soundEnabled),
-    );
-
     final enforced = enforceTitleBody(title, body);
     final finalTitle = _wrapRtlIfNeeded(enforced.title);
     final finalBody = _wrapRtlIfNeeded(enforced.body);
@@ -1067,16 +1244,71 @@ class MobileLocalNotificationService {
     // accept/counter decision lives; every other kind opens the hub.
     final isDecision =
         kind == kMeetupAlertProposal || kind == kMeetupAlertPlaceChange;
+    final timeoutAfter = expiresIn != null && expiresIn.inMilliseconds > 0
+        ? expiresIn.inMilliseconds
+        : null;
 
-    await _notificationsPlugin.show(
+    final avatarPath = await _avatarPath(
+      matchId ?? '',
+      photoSource: avatarPhotoSource,
+    );
+    await beforeShow?.call();
+
+    Future<void> post({required bool withChime}) => _notificationsPlugin.show(
       id: notificationId.hashCode,
       title: finalTitle,
       body: finalBody,
-      notificationDetails: details,
+      notificationDetails: NotificationDetails(
+        android: AndroidNotificationDetails(
+          'meetup_alerts',
+          'Meet-up alerts',
+          channelDescription:
+              'Waves, beacons, Spot me cards and meeting-point updates',
+          importance: Importance.high,
+          priority: Priority.high,
+          showWhen: true,
+          playSound: !silent && soundEnabled,
+          enableVibration: !silent && vibrationEnabled,
+          // Per-notification sound overrides the channel, so existing installs
+          // get the distinct chime without a channel-id bump.
+          sound: soundEnabled && withChime && !silent
+              ? const RawResourceAndroidNotificationSound('meetup_chime')
+              : null,
+          // When this card replaces the one the system drew for the same
+          // signal, it must not announce it again: on 31+ this is what
+          // overrides a sounding channel. Unlike the quieter card types, this
+          // one keeps its full banner — a wave or a beacon is read in seconds,
+          // and the entry that carries the face should be the one on screen.
+          silent: silent,
+          // A tool the recipient never acted on stops being news once its live
+          // window closes: the system drops the card at the TTL even when this
+          // process is gone and no sweep can run.
+          timeoutAfter: timeoutAfter,
+          largeIcon: _androidAvatar(avatarPath),
+        ),
+        iOS: _darwinDetails(soundEnabled: soundEnabled, avatarPath: avatarPath),
+        macOS: _darwinDetails(
+          soundEnabled: soundEnabled,
+          avatarPath: avatarPath,
+        ),
+        windows: _windowsDetails(
+          soundEnabled: soundEnabled,
+          avatarPath: avatarPath,
+        ),
+      ),
       payload: route.isEmpty
           ? notificationId
           : (isDecision ? '/meetup/$route/plan' : '/meetup/$route'),
     );
+
+    try {
+      await post(withChime: true);
+    } catch (_) {
+      // The chime is cosmetic, but a build that does not carry it makes the
+      // plugin throw before the card is ever posted — which used to swallow
+      // meet-up alerts whole. Losing the sound beats losing the alert.
+      await post(withChime: false);
+    }
   }
 
   /// Removes the meet-up tool card posted under [cardKey] — the same key

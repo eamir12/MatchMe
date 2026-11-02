@@ -852,14 +852,17 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
                 await WebNotificationService.showLocationShareNotification(
                   title: notifTitle,
                   body: notifBody,
+                  matchId: matchId,
                 );
               } else if (defaultTargetPlatform == TargetPlatform.android ||
                   defaultTargetPlatform == TargetPlatform.iOS) {
-                await MobileLocalNotificationService.showLocationShareNotification(
-                  notificationId: 'location_share_$matchId',
-                  title: notifTitle,
-                  body: notifBody,
-                );
+                await MobileLocalNotificationService
+                    .showLocationShareNotification(
+                      notificationId: 'location_share_$matchId',
+                      matchId: matchId,
+                      title: notifTitle,
+                      body: notifBody,
+                    );
               }
             } catch (e) {
               print('LocationShare: Failed to show OS notification: $e');
@@ -2451,12 +2454,14 @@ class LocationShareNotifier extends Notifier<LocationShareSession?> {
           WebNotificationService.showLocationShareNotification(
             title: title,
             body: body,
+            matchId: _notifCountdownMatchId,
             silent: silent,
           );
         } else if (defaultTargetPlatform == TargetPlatform.android ||
             defaultTargetPlatform == TargetPlatform.iOS) {
           MobileLocalNotificationService.showLocationShareNotification(
             notificationId: 'location_share_$_notifCountdownMatchId',
+            matchId: _notifCountdownMatchId ?? '',
             title: title,
             body: body,
             silent: silent,

@@ -1,44 +1,39 @@
-# iOS Notification Service Extension — setup (5 min in Xcode)
+# iOS Notification Service Extension
 
-The extension source (`NotificationService.swift` + `Info.plist` in this
-folder) is complete and crash-safe, but the Xcode target is intentionally
-**not** wired into `ios/Runner.xcodeproj` — hand-editing `project.pbxproj`
-without Xcode to verify risks breaking the iOS build, so this stays a
-checklist instead.
+The `NotificationServiceExtension` target is wired into `Runner.xcodeproj` and
+embedded in the app. It adds a matched user's avatar to eligible remote
+notifications only when that image is already present in the shared local
+cache. It does not fetch photo URLs or add them to push payloads.
 
-## Step 1 — create the target
-1. Open `ios/Runner.xcworkspace` in Xcode.
-2. File → New → Target → **Notification Service Extension** → name it
-   `NotificationServiceExtension`, bundle ID
-   `<app-bundle-id>.NotificationServiceExtension`.
-3. When Xcode offers to activate the scheme, choose **Cancel**.
-4. Delete the template files Xcode generated inside the new group, then drag
-   this folder's `NotificationService.swift` + `Info.plist` into the new
-   target (tick the extension target, untick Runner).
+## Required Apple signing setup
 
-## Step 2 — App Group (required for future key handoff)
-1. Runner target → Signing & Capabilities → **+ Capability → App Groups** →
-   add `group.com.example.matchme` (use the production prefix, e.g.
-   `group.com.matchme.app`, for store builds).
-2. Same for the `NotificationServiceExtension` target (both must list it).
-3. Update `NotificationService.appGroup` in the Swift file to the exact group.
+The project uses `group.com.app.matchme` in the Runner and extension
+entitlements. Before distributing an iOS build:
 
-## Step 3 — verify server payload (already done)
-The extension only runs when `mutable-content: 1` is set — `push-message`
-and `cron-jobs` already send it on every push, plus `matchId/match_id`,
-`kind/type`, `senderId`, `recipientId` in `data`. No server change needed.
+1. Register that App Group identifier in the Apple Developer account for the
+   app's team.
+2. Enable the App Group for both the app ID `com.app.matchme` and extension
+   app ID `com.app.matchme.NotificationServiceExtension`.
+3. Regenerate or update both targets' provisioning profiles so they include
+   the App Group entitlement, and sign both targets with the same team.
+4. If that identifier is unavailable, choose an App Group registered to the
+   team, update both Runner entitlement files and the extension entitlement
+   file, and update `MatchMeBackgroundService.notificationAvatarAppGroup` and
+   `NotificationService.appGroup` to the same value.
 
-## Step 4 — E2EE key handoff (future, not implemented)
-For real decrypted previews, the Flutter app must write the chat's message
-key to the shared group defaults:
-`UserDefaults(suite)["nse_keys_<matchId>"] = <base64 key>`, cleared on
-logout. Then implement AES-GCM inside `trySharedDecrypt` (keep it allocation-
-light: 30 s / ~24 MB budget). Until then the extension groups threads and
-keeps the localized server placeholder — still a strict improvement over
-ungrouped generic cards.
+The repository cannot verify Apple Developer registration, provisioning
+profiles, or the final signed archive. An iOS build must be completed on macOS.
 
-## Step 5 — build & test
-1. `flutter build ipa` (or Archive in Xcode) — both targets must sign with
-   the same team + `aps-environment`.
-2. Kill the app, send a chat → tray card appears with per-chat grouping.
-3. Confirm `serviceExtensionTimeWillExpire` path: no blank cards in logs.
+## Behavior and verification
+
+The app copies a resized avatar already in its local image cache into the App
+Group. The extension hashes the notification's match ID, looks up that local
+file, and attaches it. Missing cache entries, unavailable entitlements, or
+attachment errors leave the original text notification intact.
+
+The push must be an alert with `mutable-content: 1` for iOS to invoke the
+extension. Build/archive on macOS, install a correctly signed build, then test
+notifications with the app foregrounded, backgrounded, and terminated, both
+with a pre-cached avatar and with a cache miss. iOS controls whether and how
+prominently an attachment is shown in each notification presentation; compact
+banners are not guaranteed to display the image.

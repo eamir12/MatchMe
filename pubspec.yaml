@@ -78,6 +78,9 @@ dependencies:
   # --- Local Database (Hive) ---
   hive: ^2.2.3
   hive_flutter: ^1.1.0
+  # Direct because the notification avatar mirror resolves its own directory
+  # with it (already in the tree via hive_flutter).
+  path_provider: ^2.1.0
 
   # --- Local Notifications ---
   flutter_local_notifications: ^22.3.0

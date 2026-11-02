@@ -444,6 +444,7 @@ async function sendFcmV1({
   collapseKey,
   channelId,
   badge,
+  clientRendered,
 }: {
   serviceAccount: ServiceAccount;
   accessToken: string;
@@ -454,6 +455,7 @@ async function sendFcmV1({
   collapseKey?: string;
   channelId?: string;
   badge?: number;
+  clientRendered?: boolean;
 }): Promise<{ ok: boolean; status: number; body: unknown }> {
   const projectId = serviceAccount.project_id.trim();
   const url = `https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`;
@@ -486,8 +488,12 @@ async function sendFcmV1({
   const body = {
     message: {
       token,
-      notification: { title, body: bodyText },
-      data,
+      ...(clientRendered ? {} : { notification: { title, body: bodyText } }),
+      data: {
+        ...data,
+        notification_title: title,
+        notification_body: bodyText,
+      },
       android: {
         priority: 'HIGH' as const,
         ttl: ttlSeconds,
@@ -496,29 +502,20 @@ async function sendFcmV1({
           ? {
               collapseKey: collapse,
               collapse_key: collapse,
+            }
+          : {}),
+        ...(!clientRendered
+          ? {
               notification: {
-                tag: collapse,
+                ...(collapse ? { tag: collapse } : {}),
                 channelId: resolvedChannel,
                 notificationPriority: 'PRIORITY_HIGH',
                 defaultSound: soundEnabled,
                 defaultVibrateTimings: vibrateEnabled,
-                // Deliberately no `notification_count`: it maps to Android's
-                // `Notification.setNumber`, and numeric-badge launchers SUM it
-                // across every active notification, so repeating the count on
-                // a card double-counts it against the app's badge carrier
-                // (MatchMeBadgeController), which is the only notification
-                // allowed to carry it. iOS is unaffected: `aps.badge` is a
-                // real, absolute count.
+                // The app badge carrier alone owns the unread number.
               },
             }
-          : {
-              notification: {
-                channelId: resolvedChannel,
-                notificationPriority: 'PRIORITY_HIGH',
-                defaultSound: soundEnabled,
-                defaultVibrateTimings: vibrateEnabled,
-              },
-            }),
+          : {}),
       },
       apns: {
         headers: {
@@ -549,12 +546,16 @@ async function sendFcmV1({
           Urgency: 'high',
           ...(collapse ? { Topic: collapse } : {}),
         },
-        notification: {
-          icon: '/icons/Icon-192.png',
-          badge: '/icons/Icon-192.png',
-          requireInteraction: true,
-          ...(collapse ? { tag: collapse, renotify: true } : {}),
-        },
+        ...(!clientRendered
+          ? {
+              notification: {
+                icon: '/icons/Icon-192.png',
+                badge: '/icons/Icon-192.png',
+                requireInteraction: true,
+                ...(collapse ? { tag: collapse, renotify: true } : {}),
+              },
+            }
+          : {}),
         fcmOptions: {
           link: (data as Record<string, string>).route ||
             (data as Record<string, string>).action_url ||
@@ -1965,6 +1966,24 @@ async function handleNotificationQueueProcessing(
           collapseKey: collapseTag,
           channelId: channelIdForType(data),
           badge: safeRowBadge,
+          clientRendered: [
+            'match',
+            'new_match',
+            'match_extended',
+            'message',
+            'chat',
+            'chat_message',
+            'location_share',
+            'meetup_signal',
+            'meetup_beacon',
+            'meetup_spot',
+            'meetup_proposal',
+            'meetup_place_change',
+            'match_expiry',
+            'pinned_expiry',
+            'message_edited',
+            'message_deleted',
+          ].includes(String(data.type ?? data.kind ?? '').toLowerCase()),
         });
 
         if (result.ok) {
