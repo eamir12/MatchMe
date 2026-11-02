@@ -10,7 +10,6 @@ import 'package:matchme/providers/home_providers.dart';
 import 'package:matchme/providers/match_notification_provider.dart';
 import 'package:matchme/providers/notification_inbox_provider.dart';
 import 'package:matchme/providers/meetup_activity_provider.dart';
-import 'package:matchme/providers/meetup_alerts_provider.dart';
 import 'package:matchme/providers/invisibility_rules_provider.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
 import 'package:matchme/services/global_sync_manager.dart';
@@ -40,6 +39,7 @@ import 'package:matchme/providers/chat_key_provider.dart';
 import 'package:matchme/services/chat_key_service.dart';
 import 'package:matchme/providers/connected_online_accounts_provider.dart';
 import 'package:matchme/providers/calendar_sync_provider.dart';
+import 'package:matchme/utils/meetup_alert_card.dart';
 import 'package:matchme/utils/resume_route_restore.dart';
 import 'package:matchme/screens/onboarding/onboarding_intro_screen.dart';
 import 'package:matchme/screens/onboarding/onboarding_content.dart';
@@ -1510,13 +1510,18 @@ class _MeetupDesktopToastWatcherState
         if (!item.createdAt.isAfter(_mountedAt)) continue;
         final kind = item.data['kind']?.toString() ?? item.type;
         if (!kMeetupAlertKinds.contains(kind)) continue;
+        // The same key the alert sweep cancels by, so a tool that stops being
+        // news also loses its desktop toast.
+        final cardKey = meetupAlertCardKey(kind, item.data);
+        if (cardKey.isEmpty) continue;
         unawaited(
           MobileLocalNotificationService.showMeetupNotification(
-            notificationId: item.id,
+            notificationId: cardKey,
             title: item.title,
             body: item.body,
             matchId: item.data['matchId']?.toString() ?? '',
             kind: kind,
+            expiresIn: kMeetupAlertDefaultTtl[kind],
           ),
         );
       }

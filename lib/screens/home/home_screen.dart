@@ -379,7 +379,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   String? _selectedMatchesIntentKey;
   String? _genderFilterMatches;
   MatchTypeFilter _matchTypeFilterMatches = MatchTypeFilter.all;
-  ListSortOption _sortOptionMatches = ListSortOption.recent;
+  ListSortOption _sortOptionMatches = matchDefaultSort;
   final TextEditingController _matchesSearchController =
       TextEditingController();
   String _matchesSearchQuery = '';
@@ -388,7 +388,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   String? _selectedChatsIntentKey;
   String? _genderFilterChats;
   MatchTypeFilter _matchTypeFilterChats = MatchTypeFilter.all;
-  ListSortOption _sortOptionChats = ListSortOption.recent;
+  ListSortOption _sortOptionChats = chatDefaultSort;
   bool _unreadOnlyChats = false;
   final TextEditingController _chatsSearchController = TextEditingController();
   String _chatsSearchQuery = '';
@@ -427,19 +427,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// `null` until the list has been built once.
   bool? _anchoredCardInList;
 
-  static const List<ListSortOption> _matchSortOptions = [
-    ListSortOption.recent,
-    ListSortOption.nameAsc,
-    ListSortOption.sharedInterests,
-    ListSortOption.topRated,
-    ListSortOption.expiringSoon,
-  ];
+  /// Feeds an open filter sheet the options its own section currently
+  /// supports; see [ListFilterSheetLiveSource]. One publisher per section, so
+  /// the chats section's unread count cannot leak into a Matches sheet.
+  final ListFilterSheetLiveSource _matchesSheetLive = ListFilterSheetLiveSource(
+    const ListFilterSheetLive(sortOptions: [], revision: 0),
+  );
+  final ListFilterSheetLiveSource _chatsSheetLive = ListFilterSheetLiveSource(
+    const ListFilterSheetLive(sortOptions: [], revision: 0),
+  );
 
-  static const List<ListSortOption> _chatSortOptions = [
-    ListSortOption.recent,
-    ListSortOption.unreadFirst,
-    ListSortOption.nameAsc,
-  ];
+  /// Home's two sections use the same sort subsets, defaults and gating as the
+  /// Matches and Chats tabs — [matchSortOptions] / [chatSortOptions] are shared
+  /// so the two entry points cannot disagree.
 
   void _clearMatchesFilters() {
     _matchesSearchController.clear();
@@ -448,7 +448,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       _selectedMatchesIntentKey = null;
       _genderFilterMatches = null;
       _matchTypeFilterMatches = MatchTypeFilter.all;
-      _sortOptionMatches = ListSortOption.recent;
+      _sortOptionMatches = matchDefaultSort;
     });
   }
 
@@ -461,7 +461,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       _genderFilterChats = null;
       _unreadOnlyChats = false;
       _matchTypeFilterChats = MatchTypeFilter.all;
-      _sortOptionChats = ListSortOption.recent;
+      _sortOptionChats = chatDefaultSort;
     });
   }
 
@@ -573,6 +573,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }).length;
   }
 
+  /// The "Unread only" toggle label, with a count when anything is unread.
+  ///
+  /// Shared by the filter button, the sheet this screen opens and the live
+  /// value pushed to a sheet that is already open, so the three cannot disagree.
+  String _unreadOnlyLabel(LocalizationState l10n, int unreadCount) {
+    return unreadCount == 0
+        ? l10n.getString('chatsUnreadOnly')
+        : l10n.getString(
+            'chatsUnreadOnlyWithCount',
+            params: {'count': '$unreadCount'},
+          );
+  }
+
   Future<void> _openMatchesFilterSheet(
     BuildContext context,
     LocalizationState l10n,
@@ -580,8 +593,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     List<AppIntent> allIntents,
     List<Map<String, String>> genderOptions,
     bool canFilterByMatchType,
-    int Function(ListFilterState draft) countFor,
-  ) async {
+    int Function(ListFilterState draft) countFor, {
+    required bool hasExpiring,
+  }) async {
+    final availableSorts = matchSortOptions(hasExpiring: hasExpiring);
+    // The last timer may have run out since this order was picked; show the
+    // default rather than a sheet with nothing selected.
+    final activeSort = resolveSort(
+      _sortOptionMatches,
+      availableSorts,
+      matchDefaultSort,
+    );
     final result = await showListFilterSheet(
       context: context,
       l10n: l10n,
@@ -590,13 +612,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       resultCountFor: countFor,
       showMatchType: canFilterByMatchType,
       genderOptions: genderOptions,
-      sortOptions: _matchSortOptions,
+      sortOptions: availableSorts,
       initial: ListFilterState(
         selectedIntentKey: _selectedMatchesIntentKey,
         selectedGenderKey: _genderFilterMatches,
         matchType: _matchTypeFilterMatches,
-        sort: _sortOptionMatches,
+        sort: activeSort,
+        defaultSort: matchDefaultSort,
       ),
+      live: _matchesSheetLive,
     );
     if (result == null || !mounted) return;
     setState(() {
@@ -617,6 +641,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     int unreadConversationCount,
     int Function(ListFilterState draft) countFor,
   ) async {
+    final availableSorts = chatSortOptions(
+      hasUnread: unreadConversationCount > 0,
+    );
+    final activeSort = resolveSort(
+      _sortOptionChats,
+      availableSorts,
+      chatDefaultSort,
+    );
     final result = await showListFilterSheet(
       context: context,
       l10n: l10n,
@@ -625,23 +657,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       resultCountFor: countFor,
       showMatchType: canFilterByMatchType,
       genderOptions: genderOptions,
-      sortOptions: _chatSortOptions,
+      sortOptions: availableSorts,
       initial: ListFilterState(
         selectedIntentKey: _selectedChatsIntentKey,
         selectedGenderKey: _genderFilterChats,
         matchType: _matchTypeFilterChats,
         extraToggleKey: 'unread',
-        extraToggleLabel: unreadConversationCount == 0
-            ? l10n.getString('chatsUnreadOnly')
-            : l10n.getString(
-                'chatsUnreadOnlyWithCount',
-                params: {'count': '$unreadConversationCount'},
-              ),
+        extraToggleLabel: _unreadOnlyLabel(l10n, unreadConversationCount),
         extraToggleActive: _unreadOnlyChats,
         // Nothing unread means the toggle would narrow nothing: hide it.
         extraToggleVisible: unreadConversationCount > 0,
-        sort: _sortOptionChats,
+        sort: activeSort,
+        defaultSort: chatDefaultSort,
       ),
+      live: _chatsSheetLive,
     );
     if (result == null || !mounted) return;
     setState(() {
@@ -656,10 +685,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   List<MatchModel> _sortMatches(
     List<MatchModel> matches,
     UserProfile? currentProfile,
+    ListSortOption sortOption,
+    Set<String> chatIds,
+    Map<String, DateTime> lastActivityAt,
   ) {
-    if (_sortOptionMatches == ListSortOption.recent) {
+    // The time-only orders need nothing beyond the rows themselves, so they
+    // answer without a per-second ticker watching expiry.
+    if (sortOption == ListSortOption.recent) {
       final sorted = List<MatchModel>.from(matches);
       sorted.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      return sorted;
+    }
+    if (sortOption == ListSortOption.latestActivity) {
+      final sorted = List<MatchModel>.from(matches);
+      sorted.sort((a, b) {
+        final c = b
+            .activityAt(lastActivityAt)
+            .compareTo(a.activityAt(lastActivityAt));
+        return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
+      });
       return sorted;
     }
 
@@ -690,9 +734,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
       final displayName = otherProfile?.name.trim() ?? '';
 
-      Duration? remaining;
-      final rem = match.remainingFrom(now);
-      remaining = rem <= Duration.zero ? null : rem;
+      // Only a match whose chat has not started has a countdown running, which
+      // is what "Expiring soon" orders by; a chat that exists sinks below.
+      final hasTimer = match.hasRunningTimer(
+        chatStarted: chatIds.contains(match.id),
+        now: now,
+      );
+      final Duration? remaining = hasTimer ? match.remainingFrom(now) : null;
 
       entries.add(
         _SortableMatch(
@@ -705,7 +753,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       );
     }
 
-    switch (_sortOptionMatches) {
+    switch (sortOption) {
       case ListSortOption.sharedInterests:
         entries.sort((a, b) {
           final c = b.sharedInterests.compareTo(a.sharedInterests);
@@ -740,6 +788,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           );
           return c != 0 ? c : b.match.createdAt.compareTo(a.match.createdAt);
         });
+      case ListSortOption.latestActivity:
       case ListSortOption.recent:
       case ListSortOption.unreadFirst:
         break;
@@ -771,6 +820,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           return an.compareTo(bn);
         });
       case ListSortOption.recent:
+      case ListSortOption.latestActivity:
       case ListSortOption.sharedInterests:
       case ListSortOption.topRated:
       case ListSortOption.expiringSoon:
@@ -1080,13 +1130,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       _selectedMatchesIntentKey = null;
       _genderFilterMatches = null;
       _matchTypeFilterMatches = MatchTypeFilter.all;
-      _sortOptionMatches = ListSortOption.recent;
+      _sortOptionMatches = matchDefaultSort;
       _matchesSearchController.clear();
       _matchesSearchQuery = '';
       _selectedChatsIntentKey = null;
       _genderFilterChats = null;
       _matchTypeFilterChats = MatchTypeFilter.all;
-      _sortOptionChats = ListSortOption.recent;
+      _sortOptionChats = chatDefaultSort;
       _unreadOnlyChats = false;
       _chatsSearchController.clear();
       _chatsSearchQuery = '';
@@ -1437,6 +1487,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           if (chatIds.contains(m.id)) return true;
                           return m.remainingFrom(now) > Duration.zero;
                         }).toList();
+                        // "Expiring soon" only when a timer actually runs: a
+                        // match whose chat started shows no countdown, and an
+                        // expired one is already hidden above.
+                        final hasExpiringMatches =
+                            hasChatsLoaded &&
+                            nonExpiredMatches.any(
+                              (m) => m.hasRunningTimer(
+                                chatStarted: chatIds.contains(m.id),
+                                now: now,
+                              ),
+                            );
+                        final availableMatchSorts = matchSortOptions(
+                          hasExpiring: hasExpiringMatches,
+                        );
+                        // A stale pick falls back to the section default rather
+                        // than ordering by something the sheet no longer offers.
+                        final activeMatchSort = resolveSort(
+                          _sortOptionMatches,
+                          availableMatchSorts,
+                          matchDefaultSort,
+                        );
+                        final lastActivityAt =
+                            ref
+                                .watch(chatActivityByMatchProvider(userId))
+                                .asData
+                                ?.value ??
+                            const <String, DateTime>{};
                         final canFilterByMatchType = MatchTypeFilter.canFilter(
                           nonExpiredMatches.map((m) => m.matchType).toList(),
                         );
@@ -1544,6 +1621,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         final sortedMatches = _sortMatches(
                           afterGenderMatches,
                           currentProfile,
+                          activeMatchSort,
+                          chatIds,
+                          lastActivityAt,
                         );
 
                         final filterOptions = <String>{};
@@ -1570,6 +1650,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         final hasActiveMatchesFilter =
                             activeFilterCount > 0 ||
                             normalizedSearchMatches.isNotEmpty;
+
+                        // An open sheet reads its options through this instead
+                        // of the snapshot it opened with.
+                        _matchesSheetLive.publish(
+                          ListFilterSheetLive(
+                            sortOptions: availableMatchSorts,
+                            revision: nonExpiredMatches.length,
+                            resultCountFor: (draft) => _countMatches(
+                              nonExpiredMatches,
+                              matchGenderById,
+                              draft,
+                            ),
+                          ),
+                        );
 
                         return Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1601,6 +1695,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                     matchGenderById,
                                     draft,
                                   ),
+                                  hasExpiring: hasExpiringMatches,
                                 ),
                                 activeFilterCount: activeFilterCount,
                                 l10n: l10n,
@@ -1853,18 +1948,43 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         final unreadConversationCount = activeChats
                             .where((c) => c.unreadCount > 0)
                             .length;
+                        // Exact number of chats that would survive a draft, for
+                        // the sheet's apply button. Same predicate as the list.
+                        int countChatsFor(ListFilterState draft) => _countChats(
+                          activeChats,
+                          matchIntentById,
+                          matchTypeById,
+                          chatGenderById,
+                          draft,
+                        );
+
+                        // An open sheet reads its options through this instead
+                        // of the snapshot it opened with: a message can arrive,
+                        // or the last unread be read, while it is on screen.
+                        _chatsSheetLive.publish(
+                          ListFilterSheetLive(
+                            sortOptions: chatSortOptions(
+                              hasUnread: unreadConversationCount > 0,
+                            ),
+                            revision: activeChats.length,
+                            extraToggleLabel: _unreadOnlyLabel(
+                              l10n,
+                              unreadConversationCount,
+                            ),
+                            extraToggleVisible: unreadConversationCount > 0,
+                            resultCountFor: countChatsFor,
+                          ),
+                        );
 
                         final activeFilterCount = ListFilterState(
                           selectedIntentKey: _selectedChatsIntentKey,
                           selectedGenderKey: _genderFilterChats,
                           matchType: _matchTypeFilterChats,
                           extraToggleKey: 'unread',
-                          extraToggleLabel: unreadConversationCount == 0
-                              ? l10n.getString('chatsUnreadOnly')
-                              : l10n.getString(
-                                  'chatsUnreadOnlyWithCount',
-                                  params: {'count': '$unreadConversationCount'},
-                                ),
+                          extraToggleLabel: _unreadOnlyLabel(
+                            l10n,
+                            unreadConversationCount,
+                          ),
                           extraToggleActive: _unreadOnlyChats,
                           sort: _sortOptionChats,
                         ).activeCount;
@@ -1953,13 +2073,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                       const <Map<String, String>>[],
                                   canFilterByMatchType,
                                   unreadConversationCount,
-                                  (draft) => _countChats(
-                                    activeChats,
-                                    matchIntentById,
-                                    matchTypeById,
-                                    chatGenderById,
-                                    draft,
-                                  ),
+                                  countChatsFor,
                                 ),
                                 activeFilterCount: activeFilterCount,
                                 l10n: l10n,
@@ -2193,6 +2307,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void dispose() {
     _matchesSearchController.dispose();
     _chatsSearchController.dispose();
+    _matchesSheetLive.dispose();
+    _chatsSheetLive.dispose();
     _chatsSelection.removeListener(_onChatsSelectionChanged);
     _chatsSelection.dispose();
     super.dispose();

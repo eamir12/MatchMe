@@ -6,11 +6,11 @@ import 'package:web/web.dart' as web;
 import 'dart:js_interop';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:matchme/providers/meetup_alerts_provider.dart';
 import 'package:matchme/providers/user_preferences_provider.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/storage_helper.dart';
 import 'package:matchme/utils/chat_notification_copy.dart';
+import 'package:matchme/utils/meetup_alert_card.dart';
 import 'package:matchme/utils/notification_copy_source.dart';
 import 'package:matchme/utils/notification_limits.dart';
 
@@ -19,6 +19,7 @@ import 'package:matchme/utils/notification_limits.dart';
 class WebNotificationService {
   static bool _isSupported = false;
   static ProviderContainer? _container;
+
   /// Handler for route payloads from clicked cards ('/meetup/<id>' and
   /// '/meetup/<id>/plan'). Installed by main.dart, which owns the navigator.
   static void Function(String route)? onOpenRoute;
@@ -150,8 +151,8 @@ class WebNotificationService {
     _lastNotifiedChatIds.putIfAbsent(chatId, () => chatId.hashCode);
 
     try {
-      final previewsEnabled = card?.previewsEnabled ??
-          messagePreviewsEnabled(_container);
+      final previewsEnabled =
+          card?.previewsEnabled ?? messagePreviewsEnabled(_container);
       // Remember which picture belongs to which conversation: a card signalled
       // by a push knows the chat but not the photo, and the face belongs to the
       // conversation, not to the message that happened to arrive.
@@ -162,13 +163,15 @@ class WebNotificationService {
       // The server's total wins: it counts messages this tab never saw. A
       // locally-signalled message falls back to the lines this tab holds,
       // which is the same window the member can read in the chat list.
-      final count = card?.unreadCount ??
+      final count =
+          card?.unreadCount ??
           unreadCount ??
           (history.isEmpty ? 1 : history.length);
       final maskedName = maskFullName(senderName);
       // An aggregated push without a card of its own carries only its body —
       // that body already stands for the whole batch, so nothing is re-merged.
-      final served = card ??
+      final served =
+          card ??
           (alreadyAggregated && messageContent.trim().isNotEmpty
               ? ChatPushCardModel(body: messageContent.trim())
               : null);
@@ -625,6 +628,7 @@ class WebNotificationService {
     required String body,
     String? matchId,
     String? kind,
+    String? tag,
   }) async {
     if (!isSupported) return;
     if (!_shouldShowMeetupNotification()) return;
@@ -634,7 +638,12 @@ class WebNotificationService {
       final options = web.NotificationOptions(
         body: enforced.body,
         icon: _appIcon,
-        tag: 'meetup_$notificationId',
+        // The push's collapse tag when the caller knows it, so this card
+        // replaces the one the service worker or the server posted for the same
+        // event instead of stacking under it.
+        tag: (tag ?? '').trim().isNotEmpty
+            ? tag!.trim()
+            : 'meetup_$notificationId',
       );
       final notification = web.Notification(enforced.title, options);
 

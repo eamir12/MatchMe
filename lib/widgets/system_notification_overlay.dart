@@ -198,12 +198,16 @@ class _SystemNotificationOverlayState
                               ),
                               onPressed: () async {
                                 if (isPinnedManage) {
-                                  // The overlay mounts above the Navigator, so
-                                  // the sheet needs a context below it.
-                                  showPinnedLocationSheet(
-                                    navigatorKey.currentContext ?? context,
-                                    ref,
-                                  );
+                                  // The sheet resolves a Navigator (and later a
+                                  // ScaffoldMessenger) from this context, and
+                                  // this overlay mounts above the Navigator, so
+                                  // only the Navigator's own context is usable.
+                                  // Falling back to this subtree would throw
+                                  // and redden the screen.
+                                  final sheetContext =
+                                      navigatorKey.currentContext;
+                                  if (sheetContext == null) return;
+                                  showPinnedLocationSheet(sheetContext, ref);
                                   return;
                                 }
                                 try {
@@ -234,11 +238,14 @@ class _SystemNotificationOverlayState
                         Icons.close,
                         color: Theme.of(context).colorScheme.onPrimary,
                         size: 20,
+                        // This overlay mounts above the Navigator, where no
+                        // Overlay exists, so a Tooltip would throw. Keep the
+                        // label on the icon's semantics instead.
+                        semanticLabel: l10n.getString('generalClose'),
                       ),
                       onPressed: () => ref
                           .read(systemNotificationProvider.notifier)
                           .dismissCurrent(),
-                      tooltip: l10n.getString('dismiss'),
                     ),
                   ],
                 ),

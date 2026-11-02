@@ -67,6 +67,17 @@ const _strings = {
   'meetupBeaconActiveTitle': 'Beacon on',
   'meetupBeaconActiveBody':
       'Hold up your screen. {name} is looking for this shape.',
+  'meetupBannerWave': '{name} waved at you',
+  'meetupWaveIncomingBody': 'Raise your hand so they can see you.',
+  'meetupBannerGesture': '{name} is signaling: {gesture}',
+  'meetupGestureIncomingBody': 'Look for this gesture so you can spot each other.',
+  'meetupGestureWave': 'Wave',
+  'meetupGestureHandsUp': 'Both hands up',
+  'meetupGestureJumping': 'Jumping',
+  'meetupGestureArmsWide': 'Arms wide',
+  'meetupActivityYourWave': 'You waved',
+  'meetupActivityYourGesture': 'You sent {gesture}',
+  'meetupActivityHintWaveMine': 'They can wave back',
 };
 
 LocalizationState _l10n({TextDirection direction = TextDirection.ltr}) =>
@@ -340,6 +351,70 @@ void main() {
 
     expect(_sentenceContaining('suggested a meeting point'), findsNothing);
     expect(find.byIcon(Icons.chevron_right), findsNothing);
+    expect(tester.takeException(), isNull);
+    await _drainTimers(tester);
+  });
+
+  testWidgets('their wave is named by gesture, not called a wave', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _harness(
+        activity: const MeetupActivity(
+          topKind: MeetupActivityKind.wave,
+          topOwn: false,
+          toolCount: 1,
+          topGesture: 'jumping',
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(_sentenceContaining('is signaling: Jumping'), findsOneWidget);
+    expect(_sentenceContaining('waved at you'), findsNothing);
+    expect(
+      find.text('Look for this gesture so you can spot each other.'),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+    await _drainTimers(tester);
+  });
+
+  testWidgets('your own wave says which gesture you sent', (tester) async {
+    await tester.pumpWidget(
+      _harness(
+        activity: const MeetupActivity(
+          topKind: MeetupActivityKind.wave,
+          topOwn: true,
+          toolCount: 1,
+          topGesture: 'arms_wide',
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('You sent Arms wide'), findsOneWidget);
+    expect(find.text('You waved'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await _drainTimers(tester);
+  });
+
+  testWidgets('a wave recorded without a gesture keeps the generic copy', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _harness(
+        activity: const MeetupActivity(
+          topKind: MeetupActivityKind.wave,
+          topOwn: false,
+          toolCount: 1,
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(_sentenceContaining('waved at you'), findsOneWidget);
+    expect(find.text('Raise your hand so they can see you.'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await _drainTimers(tester);
   });

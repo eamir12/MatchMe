@@ -20,6 +20,7 @@ import 'package:matchme/services/offline_image_cache.dart';
 import 'package:matchme/services/notification_avatar_service.dart';
 import 'package:matchme/services/mobile_local_notification_service.dart';
 import 'package:matchme/services/pinned_location_gate.dart';
+import 'package:matchme/services/list_sync_gate.dart';
 import 'package:matchme/services/email_change_service.dart';
 import 'package:matchme/providers/connected_online_accounts_provider.dart';
 import 'package:matchme/utils/offline_utils.dart';
@@ -502,6 +503,16 @@ class OfflineCacheManager {
           .where((key) => key.startsWith('last_known_country_'))
           .toList();
       for (final key in lastKnownCountryKeys) {
+        await prefs.remove(key);
+      }
+      // A delta watermark describes the Hive lists that clearUserData just
+      // deleted. Surviving sign-out, it makes the next sign-in fetch "changes
+      // since then", get zero rows, and keep the now-empty cache.
+      final staleListCursors = prefs.getKeys().where((key) {
+        if (!key.startsWith(ListSyncGate.keyPrefix)) return false;
+        return wipeAllUsers || key.endsWith('_$outgoingUserId');
+      }).toList();
+      for (final key in staleListCursors) {
         await prefs.remove(key);
       }
       // Translation mirrors are keyed by message ID, not account.

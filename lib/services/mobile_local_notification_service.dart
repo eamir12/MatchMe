@@ -3,11 +3,11 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:matchme/providers/meetup_alerts_provider.dart';
 import 'package:matchme/providers/user_preferences_provider.dart';
 import 'package:matchme/services/app_badge_service.dart';
 import 'package:matchme/services/notification_avatar_service.dart';
 import 'package:matchme/utils/chat_notification_copy.dart';
+import 'package:matchme/utils/meetup_alert_card.dart';
 import 'package:matchme/utils/notification_channels.dart';
 import 'package:matchme/utils/notification_copy_source.dart';
 import 'package:matchme/utils/notification_limits.dart';
@@ -1015,6 +1015,7 @@ class MobileLocalNotificationService {
     required String body,
     String? matchId,
     String? kind,
+    Duration? expiresIn,
   }) async {
     if (kIsWeb) return;
     await ensureInitialized();
@@ -1041,6 +1042,12 @@ class MobileLocalNotificationService {
         // get the distinct chime without a channel-id bump.
         sound: soundEnabled
             ? const RawResourceAndroidNotificationSound('meetup_chime')
+            : null,
+        // A tool the recipient never acted on stops being news once its live
+        // window closes: the system drops the card at the TTL even when this
+        // process is gone and no sweep can run.
+        timeoutAfter: expiresIn != null && expiresIn.inMilliseconds > 0
+            ? expiresIn.inMilliseconds
             : null,
       ),
       iOS: DarwinNotificationDetails(
@@ -1070,6 +1077,17 @@ class MobileLocalNotificationService {
           ? notificationId
           : (isDecision ? '/meetup/$route/plan' : '/meetup/$route'),
     );
+  }
+
+  /// Removes the meet-up tool card posted under [cardKey] — the same key
+  /// `showMeetupNotification` used. Called when the event stops being news:
+  /// the recipient opened the tool, or its live window closed.
+  static Future<void> cancelMeetupCard({required String cardKey}) async {
+    if (kIsWeb) return;
+    try {
+      await ensureInitialized();
+      await _notificationsPlugin.cancel(id: cardKey.hashCode);
+    } catch (_) {}
   }
 
   static bool _shouldShowMeetupNotification() {

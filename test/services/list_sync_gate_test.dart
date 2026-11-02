@@ -113,6 +113,23 @@ void main() {
       expect(gate.fullSyncAtKey('u1'), 'list_sync_v1_chats_full_at_u1');
       expect(gate.watermarkKey('u1'), isNot(contains('matches')));
     });
+
+    test('every cursor key matches the pattern sign-out prunes by', () {
+      // Logout deletes the cached lists, so it must also delete the watermarks
+      // that describe them. The prune matches on prefix + user suffix; a key
+      // format change that breaks either would silently resurrect the bug
+      // where a sign-in replays an empty delta onto an emptied cache.
+      for (final kind in ['chats', 'matches']) {
+        final cursorGate = ListSyncGate(kind: kind);
+        for (final key in [
+          cursorGate.watermarkKey('u1'),
+          cursorGate.fullSyncAtKey('u1'),
+        ]) {
+          expect(key.startsWith(ListSyncGate.keyPrefix), isTrue, reason: key);
+          expect(key.endsWith('_u1'), isTrue, reason: key);
+        }
+      }
+    });
   });
 
   group('maxUpdatedAt', () {

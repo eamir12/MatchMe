@@ -23,6 +23,7 @@ import 'package:matchme/services/global_sync_manager.dart';
 import 'package:matchme/theme/semantic_colors.dart';
 import 'package:matchme/theme/app_theme_tokens.dart';
 import 'package:matchme/utils/match_score_utils.dart';
+import 'package:matchme/utils/meetup_display.dart';
 import 'package:matchme/utils/profile_completeness.dart';
 import 'package:matchme/utils/string_extensions.dart';
 import 'package:matchme/utils/time_format_utils.dart';
@@ -1420,9 +1421,22 @@ class _MeetupActivityBanner extends StatelessWidget {
             ? (key: 'meetupSpotMeFromYou', params: const {})
             : (key: 'meetupSpotMeIncomingTitle', params: {'name': name});
       case MeetupActivityKind.wave:
+        // The server names the gesture the wave carried, so the card says what
+        // was sent instead of calling every gesture a wave. A wave from before
+        // that was recorded has no gesture and keeps the generic copy.
+        final gesture = activity.topGesture;
+        if (gesture == null) {
+          return activity.topOwn
+              ? (key: 'meetupActivityYourWave', params: const {})
+              : (key: 'meetupBannerWave', params: {'name': name});
+        }
+        final label = meetupGestureDisplay(gesture, l10n);
         return activity.topOwn
-            ? (key: 'meetupActivityYourWave', params: const {})
-            : (key: 'meetupBannerWave', params: {'name': name});
+            ? (key: 'meetupActivityYourGesture', params: {'gesture': label})
+            : (
+                key: 'meetupBannerGesture',
+                params: {'name': name, 'gesture': label},
+              );
       case MeetupActivityKind.active:
         final place = activity.topLabel;
         return place == null
@@ -1456,9 +1470,14 @@ class _MeetupActivityBanner extends StatelessWidget {
             ? (key: 'meetupActivityHintSpotMine', params: const {})
             : (key: 'meetupSpotMeIncomingBody', params: const {});
       case MeetupActivityKind.wave:
-        return activity.topOwn
-            ? (key: 'meetupActivityHintWaveMine', params: const {})
-            : (key: 'meetupWaveIncomingBody', params: const {});
+        if (activity.topOwn) {
+          return (key: 'meetupActivityHintWaveMine', params: const {});
+        }
+        // With the gesture named, "raise your hand" no longer fits every
+        // gesture; this is the pairing the chat banner and the hub already use.
+        return activity.topGesture == null
+            ? (key: 'meetupWaveIncomingBody', params: const {})
+            : (key: 'meetupGestureIncomingBody', params: const {});
       case MeetupActivityKind.active:
         return (key: 'meetupActivityHintActive', params: const {});
       default:

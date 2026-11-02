@@ -7220,7 +7220,7 @@ class _AdminUserMapScreenState extends ConsumerState<_AdminUserMapScreen>
                   child: ShrinkText(
                     displayName,
                     style: const TextStyle(
-                      fontSize: 10,
+                      fontSize: 12,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
@@ -7270,7 +7270,7 @@ class _AdminUserMapScreenState extends ConsumerState<_AdminUserMapScreen>
                     child: ShrinkText(
                       displayName,
                       style: const TextStyle(
-                        fontSize: 9,
+                        fontSize: 12,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -7464,7 +7464,7 @@ class _ScaleBarPainter extends CustomPainter {
       text: TextSpan(
         text: label,
         style: TextStyle(
-          fontSize: 10,
+          fontSize: 12,
           color: color,
           fontWeight: FontWeight.w500,
         ),

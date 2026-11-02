@@ -180,6 +180,23 @@ class MatchModel {
   Duration remainingFrom(DateTime now) =>
       effectiveExpiresAt.difference(now.toUtc());
 
+  /// Whether the chat-start countdown is still running: the window has not
+  /// elapsed and no chat has been opened yet. Once a chat exists there is
+  /// nothing left to expire, which is why the row hides its timer — and why
+  /// "Expiring soon" has nothing to order.
+  bool hasRunningTimer({required bool chatStarted, required DateTime now}) =>
+      !chatStarted && remainingFrom(now) > Duration.zero;
+
+  /// When something last happened in this match: its newest message, or the
+  /// match itself while the chat has no message yet. [lastMessageAtByMatch] is
+  /// the client-side per-match message times — the server's `last_activity_at`
+  /// is still just the match's own created_at.
+  DateTime activityAt(Map<String, DateTime> lastMessageAtByMatch) {
+    final messageAt = lastMessageAtByMatch[id];
+    if (messageAt == null) return createdAt;
+    return messageAt.isAfter(createdAt) ? messageAt : createdAt;
+  }
+
   MatchModel({
     required this.id,
     required this.userAId,

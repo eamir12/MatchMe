@@ -37,10 +37,13 @@ class ListSyncGate {
   /// Per-manager (per app process) schedule; a new process starts clean.
   final Map<String, DateTime> _deferredFullAt = {};
 
-  String watermarkKey(String userId) =>
-      'list_sync_v1_${kind}_watermark_$userId';
+  /// Shared prefix for every persisted cursor key, so sign-out can prune them
+  /// without restating each [kind].
+  static const keyPrefix = 'list_sync_v1_';
 
-  String fullSyncAtKey(String userId) => 'list_sync_v1_${kind}_full_at_$userId';
+  String watermarkKey(String userId) => '$keyPrefix${kind}_watermark_$userId';
+
+  String fullSyncAtKey(String userId) => '$keyPrefix${kind}_full_at_$userId';
 
   ListSyncPlan plan({
     required String userId,

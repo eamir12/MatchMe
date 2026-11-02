@@ -34,6 +34,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:matchme/providers/auth_provider.dart';
+import 'package:matchme/services/shared_realtime_tables.dart';
 import 'package:matchme/services/supabase_realtime_manager.dart';
 import 'package:matchme/utils/offline_utils.dart';
 
@@ -67,8 +68,10 @@ final Map<String, _PinnedCacheEntry> _pinnedCache = {};
 /// Whether [partnerId]'s matching currently uses a pinned home-base location.
 ///
 /// Fail-closed to false on any error / empty id / offline.
-final pinnedPartnerProvider =
-    FutureProvider.family.autoDispose<bool, String>((ref, partnerId) async {
+final pinnedPartnerProvider = FutureProvider.family.autoDispose<bool, String>((
+  ref,
+  partnerId,
+) async {
   final id = partnerId.trim();
   if (id.isEmpty) return false;
   if (shouldSkipSupabaseCalls()) return false;
@@ -152,6 +155,7 @@ class PinnedPartnerRealtimeNotifier extends Notifier<int> {
   Timer? _pollTimer;
   void Function()? _resumeDispose;
   String? _channelUserId;
+  SharedTableSubscription? _usersSubscription;
   int _seenUpdates = 0;
 
   /// Partner id from the most recent signal. Null after bulk refreshes.
@@ -219,102 +223,73 @@ class PinnedPartnerRealtimeNotifier extends Notifier<int> {
     // so a suffixed registration here would never match the live topic and
     // the channel would be torn down and re-created forever.
     SupabaseRealtimeManager.instance.register(kPinnedUpdatesChannel, () {
-        if (Supabase.instance.client.auth.currentSession == null) {
-          throw Exception(
-            'No active session — skipping pinned broadcast subscription',
-          );
-        }
-        final channel =
-            Supabase.instance.client.channel(kPinnedUpdatesChannel);
-        channel.onBroadcast(
-          event: kPinnedChangedEvent,
-          callback: (payload) {
-            if (!ref.mounted) return;
-            if (Supabase.instance.client.auth.currentSession == null) return;
-            final changedId = _extractUserId(payload);
-            if (changedId == null || changedId.isEmpty) return;
-            _handlePartnerUpdated(
-              changedId,
-              source: 'broadcast',
-              knownValue: _extractBool(payload, 'is_pinned'),
-            );
-          },
+      if (Supabase.instance.client.auth.currentSession == null) {
+        throw Exception(
+          'No active session — skipping pinned broadcast subscription',
         );
-        channel.subscribe((status, err) {
-          if (status == RealtimeSubscribeStatus.subscribed) {
-            debugPrint('📍 Pinned realtime: broadcast subscribed');
-          } else if (handleExpectedSupabaseOfflineFailure(err)) {
-            return;
-          } else if (SupabaseRealtimeManager.instance.isPaused) {
-            return;
-          } else if (err != null &&
-              !isExpectedOfflineFailure(err) &&
-              !isAuthRateLimitFailure(err)) {
-            debugPrint('📍 Pinned realtime broadcast error: $err');
-          }
-        });
-        return channel;
-      },
-    );
+      }
+      final channel = Supabase.instance.client.channel(kPinnedUpdatesChannel);
+      channel.onBroadcast(
+        event: kPinnedChangedEvent,
+        callback: (payload) {
+          if (!ref.mounted) return;
+          if (Supabase.instance.client.auth.currentSession == null) return;
+          final changedId = _extractUserId(payload);
+          if (changedId == null || changedId.isEmpty) return;
+          _handlePartnerUpdated(
+            changedId,
+            source: 'broadcast',
+            knownValue: _extractBool(payload, 'is_pinned'),
+          );
+        },
+      );
+      channel.subscribe((status, err) {
+        if (status == RealtimeSubscribeStatus.subscribed) {
+          debugPrint('📍 Pinned realtime: broadcast subscribed');
+        } else if (handleExpectedSupabaseOfflineFailure(err)) {
+          return;
+        } else if (SupabaseRealtimeManager.instance.isPaused) {
+          return;
+        } else if (err != null &&
+            !isExpectedOfflineFailure(err) &&
+            !isAuthRateLimitFailure(err)) {
+          debugPrint('📍 Pinned realtime broadcast error: $err');
+        }
+      });
+      return channel;
+    });
 
     // 2) users-table UPDATEs — secondary path. `users` is SELECT-readable by
     // all authenticated + in the realtime publication, so partner updates
     // arrive here. Post-migration the pin trigger bumps this row on every pin
     // change (including server-side cron expiry); pre-migration any profile
     // edit still triggers a cheap RPC refresh.
-    SupabaseRealtimeManager.instance.register(
-      'pinned_users_for_$userId',
-      () {
+    _usersSubscription ??= SharedRealtimeTables.instance.subscribe(
+      table: SharedRealtimeTable.users,
+      userId: userId,
+      events: const {PostgresChangeEvent.update},
+      onPayload: (payload) {
+        if (!ref.mounted) return;
         if (Supabase.instance.client.auth.currentSession == null) {
-          throw Exception(
-            'No active session — skipping pinned users subscription',
-          );
+          return;
         }
-        final channel =
-            Supabase.instance.client.channel('pinned_users_for_$userId');
-        channel
-            .onPostgresChanges(
-              event: PostgresChangeEvent.update,
-              schema: 'public',
-              table: 'users',
-              callback: (payload) {
-                if (!ref.mounted) return;
-                if (Supabase.instance.client.auth.currentSession == null) {
-                  return;
-                }
-                final newRec = payload.newRecord;
-                final oldRec = payload.oldRecord;
-                final changedId =
-                    (newRec['id'] ?? oldRec['id'])?.toString().trim() ?? '';
-                if (changedId.isEmpty || changedId == userId) return;
-                // Fast path post-migration: row carries the flag directly.
-                final direct = _extractDirectPinned(newRec);
-                if (direct != null) {
-                  _handlePartnerUpdated(
-                    changedId,
-                    source: 'users-direct',
-                    knownValue: direct,
-                  );
-                } else {
-                  // Pre-migration or unrelated edit: RPC refresh (cheap, rare).
-                  _handlePartnerUpdated(changedId, source: 'users');
-                }
-              },
-            )
-            .subscribe((status, err) {
-              if (status == RealtimeSubscribeStatus.subscribed) {
-                debugPrint('📍 Pinned realtime: users subscribed');
-              } else if (handleExpectedSupabaseOfflineFailure(err)) {
-                return;
-              } else if (SupabaseRealtimeManager.instance.isPaused) {
-                return;
-              } else if (err != null &&
-                  !isExpectedOfflineFailure(err) &&
-                  !isAuthRateLimitFailure(err)) {
-                debugPrint('📍 Pinned realtime users error: $err');
-              }
-            });
-        return channel;
+        final newRec = payload.newRecord;
+        final oldRec = payload.oldRecord;
+        final changedId =
+            (newRec['id'] ?? oldRec['id'])?.toString().trim() ?? '';
+        if (changedId.isEmpty || changedId == userId) return;
+        // Fast path post-migration: row carries the flag directly.
+        final direct = _extractDirectPinned(newRec);
+        if (direct != null) {
+          _handlePartnerUpdated(
+            changedId,
+            source: 'users-direct',
+            knownValue: direct,
+          );
+        } else {
+          // Pre-migration or unrelated edit: RPC refresh (cheap, rare).
+          _handlePartnerUpdated(changedId, source: 'users');
+        }
       },
     );
   }
@@ -383,7 +358,9 @@ class PinnedPartnerRealtimeNotifier extends Notifier<int> {
       // serves it without an RPC round trip.
       _pinnedCache[partnerId] = _PinnedCacheEntry(knownValue, DateTime.now());
     }
-    debugPrint('📍 Pinned realtime: $source for partner=$partnerId — refreshing');
+    debugPrint(
+      '📍 Pinned realtime: $source for partner=$partnerId — refreshing',
+    );
     _seenUpdates++;
     lastUpdatedUserId = partnerId;
     state = _seenUpdates;
@@ -425,15 +402,13 @@ class PinnedPartnerRealtimeNotifier extends Notifier<int> {
     // Session-scoped cache: a different signed-in user must never inherit
     // verdicts fetched for the previous one.
     _pinnedCache.clear();
-    final userId = _channelUserId;
     SupabaseRealtimeManager.instance.unregister(kPinnedUpdatesChannel);
-    if (userId != null && userId.isNotEmpty) {
-      SupabaseRealtimeManager.instance.unregister('pinned_users_for_$userId');
-    }
+    _usersSubscription?.cancel();
+    _usersSubscription = null;
   }
 }
 
 final pinnedPartnerRealtimeProvider =
     NotifierProvider<PinnedPartnerRealtimeNotifier, int>(
-  PinnedPartnerRealtimeNotifier.new,
-);
+      PinnedPartnerRealtimeNotifier.new,
+    );

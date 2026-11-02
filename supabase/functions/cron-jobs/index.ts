@@ -421,6 +421,19 @@ function channelIdForType(data: Record<string, string>): string {
   return 'chat_messages';
 }
 
+// FCM validates every platform block before routing, so an apns-collapse-id
+// over 64 bytes rejects the whole send with 400 INVALID_ARGUMENT even when the
+// target token is Android. A key that is too long must degrade to a truncated
+// one - which collapses slightly less precisely - instead of silently killing
+// the notification.
+const COLLAPSE_MAX_BYTES = 64;
+
+function clampCollapse(value: string): string {
+  return value.length > COLLAPSE_MAX_BYTES
+    ? value.slice(0, COLLAPSE_MAX_BYTES)
+    : value;
+}
+
 async function sendFcmV1({
   serviceAccount,
   accessToken,
@@ -446,7 +459,7 @@ async function sendFcmV1({
   const url = `https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`;
   const title = wrapRtlIfNeeded(notification.title);
   const bodyText = wrapRtlIfNeeded(notification.body);
-  const collapse = (collapseKey ?? tag ?? '').trim();
+  const collapse = clampCollapse((collapseKey ?? tag ?? '').trim());
   // Per-recipient alert preference. Admin-broadcast queue rows carry the
   // recipient's sound/vibrate flags plus the matching Android channel id
   // (see migration 20260925000000_admin_broadcast_alert_preferences.sql).
@@ -1877,10 +1890,14 @@ async function handleNotificationQueueProcessing(
           // 20262217000000), so the newest signal is the only live one and its
           // card must replace the old card rather than stack under it. Keyed on
           // who sent it, never on meetup_signal_id, which changes per resend.
+          // The uuid segments are truncated to 8 hex chars: the full form is 87
+          // bytes, which FCM rejects outright (see clampCollapse). Two
+          // participants per match and an 8-char prefix per id keep the key
+          // unique for every direction that actually exists.
           // Without a sender the two directions cannot be told apart, so the
           // row id is the fallback.
-          const match = String(data.match_id ?? data.matchId ?? '').trim();
-          const sender = String(data.sender_id ?? data.senderId ?? '').trim();
+          const match = String(data.match_id ?? data.matchId ?? '').trim().slice(0, 8);
+          const sender = String(data.sender_id ?? data.senderId ?? '').trim().slice(0, 8);
           const row = String(data.meetup_signal_id ?? '').trim();
           if (match && sender) {
             collapseTag = `${data.type}_${match}_${sender}`;

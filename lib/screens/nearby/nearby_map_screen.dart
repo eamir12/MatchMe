@@ -21,6 +21,7 @@ import 'package:matchme/services/error_localization_service.dart';
 import 'package:matchme/services/location_service.dart';
 import 'package:matchme/services/pinned_location_gate.dart';
 import 'package:matchme/services/session_service.dart';
+import 'package:matchme/services/shared_realtime_tables.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:matchme/services/local_db_service.dart';
@@ -124,9 +125,9 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
   Timer? _debounce;
   Timer? _pollTimer;
   ProviderSubscription<AsyncValue<bool>>? _connectivitySub;
-  RealtimeChannel? _activityChannel;
-  RealtimeChannel? _locationChannel;
-  RealtimeChannel? _presenceTickChannel;
+  SharedTableSubscription? _activitySubscription;
+  SharedTableSubscription? _locationSubscription;
+  SharedTableSubscription? _presenceTickSubscription;
   Timer? _presenceTickDebounce;
   Timer? _throttledRefreshTimer;
   Timer? _visibilityFollowUpTimer;
@@ -428,80 +429,49 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
     final userId = Supabase.instance.client.auth.currentUser?.id;
     if (userId == null) return;
 
-    // Subscribe to user_activity table for online status changes
-    _activityChannel = Supabase.instance.client
-        .channel('nearby_map_activity_$userId')
-        .onPostgresChanges(
-          event: PostgresChangeEvent.insert,
-          schema: 'public',
-          table: 'user_activity',
-          callback: (payload) {
-            // Dedup by commit timestamp (handles duplicate events from Postgres)
-            if (_dedupActivityEvent(payload.commitTimestamp)) return;
+    // Shared channels: Home and the online map watch the same tables, so the
+    // hub owns one server binding per table and fans events out locally.
+    _activitySubscription?.cancel();
+    _activitySubscription = SharedRealtimeTables.instance.subscribe(
+      table: SharedRealtimeTable.userActivity,
+      userId: userId,
+      events: const {PostgresChangeEvent.insert, PostgresChangeEvent.update},
+      onPayload: (payload) {
+        // Dedup by commit timestamp (handles duplicate events from Postgres)
+        if (_dedupActivityEvent(payload.commitTimestamp)) return;
 
-            final newRecord = payload.newRecord as Map<String, dynamic>?;
-            final changedUserId = newRecord?['user_id'] as String?;
-            if (changedUserId == null || changedUserId == userId) return;
+        final newRecord = payload.newRecord;
+        final oldRecord = payload.oldRecord;
+        final changedUserId =
+            (newRecord['user_id'] ?? oldRecord['user_id']) as String?;
+        if (changedUserId == null || changedUserId == userId) return;
 
-            // Refresh on any user_activity change (online/offline)
-            print(
-              '[${_ts()}] 🗺️ NearbyMapScreen: User activity changed, refreshing nearby cells',
-            );
-            _triggerRefresh();
-          },
-        )
-        .onPostgresChanges(
-          event: PostgresChangeEvent.update,
-          schema: 'public',
-          table: 'user_activity',
-          callback: (payload) {
-            // Dedup by commit timestamp (handles duplicate events from Postgres)
-            if (_dedupActivityEvent(payload.commitTimestamp)) return;
+        // Refresh on any user_activity change (online/offline)
+        print(
+          '[${_ts()}] 🗺️ NearbyMapScreen: User activity changed, refreshing nearby cells',
+        );
+        _triggerRefresh();
+      },
+    );
 
-            final newRecord = payload.newRecord as Map<String, dynamic>?;
-            final oldRecord = payload.oldRecord as Map<String, dynamic>?;
-            final changedUserId =
-                (newRecord?['user_id'] ?? oldRecord?['user_id']) as String?;
-            if (changedUserId == null || changedUserId == userId) return;
+    _locationSubscription?.cancel();
+    _locationSubscription = SharedRealtimeTables.instance.subscribe(
+      table: SharedRealtimeTable.userLocations,
+      userId: userId,
+      events: const {PostgresChangeEvent.update},
+      onPayload: (payload) {
+        final newRecord = payload.newRecord;
+        final oldRecord = payload.oldRecord;
+        final changedUserId =
+            (newRecord['user_id'] ?? oldRecord['user_id']) as String?;
+        if (changedUserId == null || changedUserId == userId) return;
 
-            // Refresh on any user_activity UPDATE (online/offline changes)
-            print(
-              '[${_ts()}] 🗺️ NearbyMapScreen: User activity updated, refreshing nearby cells',
-            );
-            _triggerRefresh();
-          },
-        )
-        .subscribe((status, err) {
-          print(
-            '[${_ts()}] 🗺️ NearbyMapScreen: Activity channel status: $status, error: $err',
-          );
-        });
-
-    // Subscribe to user_locations table for location changes
-    _locationChannel = Supabase.instance.client
-        .channel('nearby_map_location_$userId')
-        .onPostgresChanges(
-          event: PostgresChangeEvent.update,
-          schema: 'public',
-          table: 'user_locations',
-          callback: (payload) {
-            final newRecord = payload.newRecord as Map<String, dynamic>?;
-            final oldRecord = payload.oldRecord as Map<String, dynamic>?;
-            final changedUserId =
-                (newRecord?['user_id'] ?? oldRecord?['user_id']) as String?;
-            if (changedUserId == null || changedUserId == userId) return;
-
-            print(
-              '[${_ts()}] 🗺️ NearbyMapScreen: User location changed, refreshing nearby cells',
-            );
-            _triggerRefresh();
-          },
-        )
-        .subscribe((status, err) {
-          print(
-            '[${_ts()}] 🗺️ NearbyMapScreen: Location channel status: $status, error: $err',
-          );
-        });
+        print(
+          '[${_ts()}] 🗺️ NearbyMapScreen: User location changed, refreshing nearby cells',
+        );
+        _triggerRefresh();
+      },
+    );
 
     // The users/user_activity channels above only deliver rows this user may
     // SELECT under RLS, so visibility toggles of the (mostly unmatched) users
@@ -509,40 +479,30 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
     // readable-by-all signal: DB triggers touch it on every visibility flip
     // (and login/logout/pin change), so the map re-queries the aggregated
     // cells RPC immediately instead of waiting for the 30s fallback poll.
-    _presenceTickChannel = Supabase.instance.client
-        .channel('nearby_map_presence_tick_$userId')
-        .onPostgresChanges(
-          event: PostgresChangeEvent.all,
-          schema: 'public',
-          table: 'presence_tick',
-          callback: (payload) {
-            if (!mounted) return;
-            print(
-              '[${_ts()}] 🗺️ NearbyMapScreen: presence_tick received, refreshing nearby cells',
-            );
-            _presenceTickDebounce?.cancel();
-            _presenceTickDebounce = Timer(
-              const Duration(milliseconds: 500),
-              () {
-                if (!mounted) return;
-                // Bypass the throttle: a visibility flip must reach the map
-                // right away. The 350ms fetch debounce inside _scheduleFetch
-                // still coalesces tick bursts (the DB fires two ticks per
-                // manual toggle).
-                _triggerRefresh(bypassThrottle: true);
-                // A user turning visible may not have a fresh location /
-                // heartbeat yet (GPS restarts on the visible transition), so
-                // refresh once more shortly after to let them appear.
-                _scheduleVisibilityFollowUpRefresh();
-              },
-            );
-          },
-        )
-        .subscribe((status, err) {
-          print(
-            '[${_ts()}] 🗺️ NearbyMapScreen: Presence tick channel status: $status, error: $err',
-          );
+    _presenceTickSubscription?.cancel();
+    _presenceTickSubscription = SharedRealtimeTables.instance.subscribe(
+      table: SharedRealtimeTable.presenceTick,
+      userId: userId,
+      onPayload: (payload) {
+        if (!mounted) return;
+        print(
+          '[${_ts()}] 🗺️ NearbyMapScreen: presence_tick received, refreshing nearby cells',
+        );
+        _presenceTickDebounce?.cancel();
+        _presenceTickDebounce = Timer(const Duration(milliseconds: 500), () {
+          if (!mounted) return;
+          // Bypass the throttle: a visibility flip must reach the map
+          // right away. The 350ms fetch debounce inside _scheduleFetch
+          // still coalesces tick bursts (the DB fires two ticks per
+          // manual toggle).
+          _triggerRefresh(bypassThrottle: true);
+          // A user turning visible may not have a fresh location /
+          // heartbeat yet (GPS restarts on the visible transition), so
+          // refresh once more shortly after to let them appear.
+          _scheduleVisibilityFollowUpRefresh();
         });
+      },
+    );
   }
 
   void _triggerRefresh({bool bypassThrottle = false}) {
@@ -600,9 +560,9 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
     _debounce?.cancel();
     _pollTimer?.cancel();
     _connectivitySub?.close();
-    _activityChannel?.unsubscribe();
-    _locationChannel?.unsubscribe();
-    _presenceTickChannel?.unsubscribe();
+    _activitySubscription?.cancel();
+    _locationSubscription?.cancel();
+    _presenceTickSubscription?.cancel();
     _presenceTickDebounce?.cancel();
     _throttledRefreshTimer?.cancel();
     _visibilityFollowUpTimer?.cancel();
@@ -1176,7 +1136,8 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
     // Same transient-null guard as home/profile: the raw auth client can be
     // empty for a few hundred ms while the recovery ladder re-seeds it, and
     // the auth provider still holds the session throughout that window.
-    final userId = Supabase.instance.client.auth.currentUser?.id ??
+    final userId =
+        Supabase.instance.client.auth.currentUser?.id ??
         ref.watch(authStateProvider).value?.session?.user.id;
     final isOnline = ref.watch(connectivityProvider).value ?? true;
     // The "Showing ~N users" pill must state exactly what the map plots, so
@@ -1666,7 +1627,8 @@ class _NearbyMapScreenState extends ConsumerState<NearbyMapScreen>
                                     l10n.getString(
                                       'mapShowingApproxUsers',
                                       params: {
-                                        'count': displayedNearbyCount.toString(),
+                                        'count': displayedNearbyCount
+                                            .toString(),
                                       },
                                     ),
                                     style: Theme.of(
@@ -1827,6 +1789,10 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
 
   bool _loading = false;
   List<_CountryCount> _counts = const [];
+  // Worldwide total from the SAME RPC snapshot as _counts. dashboardStatsProvider
+  // only refetches on realtime events (with a >=300s fallback timer) while the
+  // markers poll every 30s, so a total read from it can lag a marker by a user.
+  int? _snapshotOnlineTotal;
   final Map<String, LatLng> _countryCenters = {};
   final Map<String, String> _countryNames = {};
   String? _lastLanguageCode;
@@ -1834,7 +1800,7 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
   int _lastOnlineCount = -1;
   bool _isFetchingLocation = false;
   RealtimeChannel? _sessionChannel;
-  RealtimeChannel? _presenceTickChannel;
+  SharedTableSubscription? _presenceTickSubscription;
   Timer? _presenceTickDebounce;
   bool _pendingTickRefresh = false;
   static bool _hasFetchedInitialLocation = false;
@@ -1901,40 +1867,27 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
     // table is readable by every authenticated user, so logon/logoff always
     // refreshes the country markers immediately. The counts themselves still
     // come from the SECURITY DEFINER RPC — the tick carries no user data.
-    _presenceTickChannel = Supabase.instance.client
-        .channel('online_map_presence_tick_${userId ?? 'anon'}')
-        .onPostgresChanges(
-          event: PostgresChangeEvent.all,
-          schema: 'public',
-          table: 'presence_tick',
-          callback: (payload) {
-            if (!mounted) return;
-            print(
-              '[${_ts()}] 🗺️ OnlineWorldMapScreen: presence_tick event received: $payload',
-            );
-            if (_loading) {
-              // A refresh is already in flight; re-run it right after so the
-              // change that produced this tick is never dropped.
-              _pendingTickRefresh = true;
-              return;
-            }
-            _presenceTickDebounce?.cancel();
-            _presenceTickDebounce = Timer(
-              const Duration(milliseconds: 500),
-              () {
-                if (!mounted || _loading) return;
-                unawaited(_refresh());
-              },
-            );
-          },
-        )
-        .subscribe((status, err) {
-          if (err != null) {
-            print(
-              '[${_ts()}] 🗺️ OnlineWorldMapScreen: Presence tick channel status: $status, error: $err',
-            );
-          }
+    _presenceTickSubscription = SharedRealtimeTables.instance.subscribe(
+      table: SharedRealtimeTable.presenceTick,
+      userId: userId ?? 'anon',
+      onPayload: (payload) {
+        if (!mounted) return;
+        print(
+          '[${_ts()}] 🗺️ OnlineWorldMapScreen: presence_tick event received: $payload',
+        );
+        if (_loading) {
+          // A refresh is already in flight; re-run it right after so the
+          // change that produced this tick is never dropped.
+          _pendingTickRefresh = true;
+          return;
+        }
+        _presenceTickDebounce?.cancel();
+        _presenceTickDebounce = Timer(const Duration(milliseconds: 500), () {
+          if (!mounted || _loading) return;
+          unawaited(_refresh());
         });
+      },
+    );
   }
 
   /// Loads cached localized country names from local storage (pre-fetched at
@@ -1979,9 +1932,9 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
       Supabase.instance.client.removeChannel(_sessionChannel!);
       _sessionChannel = null;
     }
-    if (_presenceTickChannel != null) {
-      Supabase.instance.client.removeChannel(_presenceTickChannel!);
-      _presenceTickChannel = null;
+    if (_presenceTickSubscription != null) {
+      _presenceTickSubscription!.cancel();
+      _presenceTickSubscription = null;
     }
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -2338,17 +2291,21 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
 
       // Add the caller's own country from the same snapshot so it shows up
       // instantly, before the presence flow marks them online server-side.
-      // Self is only added when their own profile is complete — the RPC
-      // excludes incomplete profiles, so an account that has not finished
-      // onboarding must not sneak back in here.
-      final selfCountsOnline =
-          statsMap['self_online'] == true &&
-          statsMap['self_is_complete'] == true;
+      // Self is counted whenever their own profile is complete — the exact rule
+      // the worldwide total uses. Gating it on the server having already marked
+      // them online would put self in the total but not on the map, since the
+      // presence cycle below runs after this query. Incomplete profiles are
+      // excluded by the RPC, so an account that has not finished onboarding
+      // must not sneak back in here.
+      final selfIsComplete = statsMap['self_is_complete'] == true;
+      final onlineTotal =
+          ((statsMap['online_others'] as num?)?.toInt() ?? 0) +
+          (selfIsComplete ? 1 : 0);
       String? myCountry;
       if (userId != null) {
         myCountry = (statsMap['self_country'] as String?)?.trim();
         if (myCountry != null && myCountry.isEmpty) myCountry = null;
-        if (selfCountsOnline && myCountry != null && myCountry.isNotEmpty) {
+        if (selfIsComplete && myCountry != null && myCountry.isNotEmpty) {
           final idx = parsed.indexWhere((e) => e.countryCode == myCountry);
           if (idx >= 0) {
             parsed[idx] = _CountryCount(
@@ -2379,6 +2336,7 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
       if (!mounted) return;
       setState(() {
         _counts = parsed;
+        _snapshotOnlineTotal = onlineTotal;
       });
       print(
         '[${_ts()}] 🗺️ OnlineWorldMapScreen: _refresh() - success, updated UI with ${parsed.length} countries',
@@ -2414,6 +2372,7 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
       if (!isNetworkError) {
         setState(() {
           _counts = const [];
+          _snapshotOnlineTotal = null;
         });
       }
     } finally {
@@ -3199,8 +3158,9 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
     final l10n = ref.watch(localizationProvider);
     final pin = ref.watch(pinnedLocationProvider);
     final isOnline = ref.watch(connectivityProvider).value ?? true;
-    // Use dashboardStatsProvider for real-time total (same as home screen)
-    // while _counts provides the per-country breakdown for map markers
+    // The header total comes from the same RPC snapshot as the markers below;
+    // dashboardStatsProvider is only the fallback for the first frame, before
+    // the first snapshot has landed.
     final dashboardStats = ref.watch(dashboardStatsProvider);
 
     // Reset initial-location flag when user becomes visible again
@@ -3233,11 +3193,12 @@ class _OnlineWorldMapScreenState extends ConsumerState<OnlineWorldMapScreen>
       );
     });
 
-    final displayedOnlineCount = dashboardStats.when<int?>(
-      data: (stats) => stats['online'],
-      loading: () => null,
-      error: (_, e) => null,
-    );
+    final displayedOnlineCount = _snapshotOnlineTotal ??
+        dashboardStats.when<int?>(
+          data: (stats) => stats['online'],
+          loading: () => null,
+          error: (_, e) => null,
+        );
 
     final mapBackground = Theme.of(context).colorScheme.surfaceContainerHighest;
 

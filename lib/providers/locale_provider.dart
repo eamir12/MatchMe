@@ -151,8 +151,7 @@ String translationContentMarkerKey(String langCode) =>
 const _translationStampTtl = Duration(hours: 24);
 
 /// The key of the cached `translations.updated_at` maximum for [langCode].
-String translationStampKey(String langCode) =>
-    'translations_${langCode}_stamp';
+String translationStampKey(String langCode) => 'translations_${langCode}_stamp';
 
 /// The key of the last successful stamp check or full fetch, in epoch
 /// milliseconds.
@@ -3957,6 +3956,7 @@ class LocalizationState {
     'similarityPercentage': '% Similarity',
     'sortByLabel': 'Sort by',
     'sortNewest': 'Newest',
+    'sortLatestActivity': 'Latest activity',
     'sortSharedInterests': 'Shared interests',
     'sortTopRated': 'Top rated',
     'sortExpiringSoon': 'Expiring soon', 'listFiltersTitle': 'Filters',
@@ -4812,6 +4812,7 @@ class LocalizationState {
     'meetupActivityHintWaveMine': 'They can wave back',
     'meetupActivityHintActive': 'Open the meet-up for the tools',
     'meetupActivityYourWave': 'You waved',
+    'meetupActivityYourGesture': 'You sent {gesture}',
     'meetupActivityOneMoreTool': '1 more meet-up tool is active',
     'meetupActivityMoreTools': '{count} more meet-up tools are active',
     'meetupChosenPlace': 'Meeting point',

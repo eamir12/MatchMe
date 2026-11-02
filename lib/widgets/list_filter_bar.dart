@@ -23,6 +23,7 @@
 
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -123,9 +124,18 @@ enum MatchTypeFilter {
 /// Chats and Matches each offer a subset, but they share this enum, one chip
 /// style and one section so the two screens feel like the same control. Adding
 /// an option to one screen and not the other is how the two drift apart.
+///
+/// A screen also trims its subset by what the current rows allow: an order that
+/// cannot change anything (no running timers, nothing unread) is not offered at
+/// all, because a sort that sorts nothing reads as a broken control.
 enum ListSortOption {
-  /// Most recent first: newest match, or most recently active chat.
+  /// Newest first by when the row itself happened: match created, or the
+  /// chat's last message.
   recent,
+
+  /// Whatever the user last exchanged something in, newest activity first.
+  /// Matches only, and that screen's default order.
+  latestActivity,
 
   /// Conversations with unread messages float to the top. Chats only.
   unreadFirst,
@@ -146,6 +156,8 @@ enum ListSortOption {
     switch (this) {
       case ListSortOption.recent:
         return 'sortNewest';
+      case ListSortOption.latestActivity:
+        return 'sortLatestActivity';
       case ListSortOption.unreadFirst:
         return 'sortUnreadFirst';
       case ListSortOption.nameAsc:
@@ -163,6 +175,8 @@ enum ListSortOption {
     switch (this) {
       case ListSortOption.recent:
         return Icons.schedule_rounded;
+      case ListSortOption.latestActivity:
+        return Icons.history_rounded;
       case ListSortOption.unreadFirst:
         return Icons.mark_chat_unread_rounded;
       case ListSortOption.nameAsc:
@@ -175,10 +189,55 @@ enum ListSortOption {
         return Icons.timer_outlined;
     }
   }
+}
 
-  /// Whether this is the screen's default order, in which case it is not
-  /// counted as an active change and needs no summary pill.
-  bool get isDefault => this == ListSortOption.recent;
+/// Matches defaults to whatever was last active; Chats to the last message.
+const ListSortOption matchDefaultSort = ListSortOption.latestActivity;
+const ListSortOption chatDefaultSort = ListSortOption.recent;
+
+/// The orders the Matches list can offer right now, in sheet order.
+///
+/// [hasExpiring] gates "Expiring soon": a countdown only runs on a match whose
+/// chat has not started, so with no running timer that order sorts nothing and
+/// offering it reads as a broken control.
+///
+/// Lives here rather than in each screen because the Matches tab and Home's
+/// matches section must offer the same subset — the two drift otherwise.
+List<ListSortOption> matchSortOptions({required bool hasExpiring}) {
+  return [
+    ListSortOption.latestActivity,
+    ListSortOption.recent,
+    ListSortOption.nameAsc,
+    ListSortOption.sharedInterests,
+    ListSortOption.topRated,
+    if (hasExpiring) ListSortOption.expiringSoon,
+  ];
+}
+
+/// The orders the Chats list can offer right now.
+///
+/// [hasUnread] gates "Unread first" for the same reason nothing unread means an
+/// order that changes nothing — the same rule the "Unread only" toggle follows.
+List<ListSortOption> chatSortOptions({required bool hasUnread}) {
+  return [
+    ListSortOption.recent,
+    if (hasUnread) ListSortOption.unreadFirst,
+    ListSortOption.nameAsc,
+  ];
+}
+
+/// The order actually used: [picked], unless it has fallen out of [offered] —
+/// the last timer ran out or the last unread was read — in which case the
+/// screen's default.
+///
+/// Resolved at use time instead of with a setState: the list is rebuilt by the
+/// very data that makes the pick stale, so writing state from build would throw.
+ListSortOption resolveSort(
+  ListSortOption picked,
+  List<ListSortOption> offered,
+  ListSortOption fallback,
+) {
+  return offered.contains(picked) ? picked : fallback;
 }
 
 /// The complete filter + sort state for a list screen.
@@ -192,6 +251,7 @@ class ListFilterState {
     this.extraToggleActive = false,
     this.extraToggleVisible = true,
     this.sort = ListSortOption.recent,
+    this.defaultSort = ListSortOption.recent,
   });
 
   final String? selectedIntentKey;
@@ -212,6 +272,11 @@ class ListFilterState {
 
   final ListSortOption sort;
 
+  /// The screen's own default order. Matches default to "latest activity",
+  /// Chats to "recent", so "has the user changed anything" cannot be answered
+  /// by comparing against one hard-coded option.
+  final ListSortOption defaultSort;
+
   /// Filters that narrow the list. Sorting is deliberately excluded: changing
   /// the order is not a narrowing, and a filter sheet that counts itself would
   /// badge the icon for a preference the user did not "apply".
@@ -226,7 +291,7 @@ class ListFilterState {
 
   /// True when anything — including the sort order — differs from the
   /// screen's defaults. Drives the "Clear" affordance.
-  bool get isPristine => activeCount == 0 && sort.isDefault;
+  bool get isPristine => activeCount == 0 && sort == defaultSort;
 
   ListFilterState copyWith({
     String? selectedIntentKey,
@@ -239,6 +304,7 @@ class ListFilterState {
     bool? extraToggleActive,
     bool? extraToggleVisible,
     ListSortOption? sort,
+    ListSortOption? defaultSort,
   }) {
     return ListFilterState(
       selectedIntentKey: clearIntent
@@ -253,7 +319,113 @@ class ListFilterState {
       extraToggleActive: extraToggleActive ?? this.extraToggleActive,
       extraToggleVisible: extraToggleVisible ?? this.extraToggleVisible,
       sort: sort ?? this.sort,
+      defaultSort: defaultSort ?? this.defaultSort,
     );
+  }
+}
+
+/// The parts of an open filter sheet that depend on arriving data rather than
+/// on what the user is editing.
+///
+/// Everything else in the sheet is a snapshot taken when it opens, which is
+/// right for the user's own draft and wrong for the option list: a message can
+/// arrive, or a match's timer can start, while the sheet is on screen, and an
+/// option that was hidden because there was nothing to sort by must not stay
+/// hidden. The owning screen pushes a new value from its build.
+@immutable
+class ListFilterSheetLive {
+  const ListFilterSheetLive({
+    required this.sortOptions,
+    required this.revision,
+    this.extraToggleLabel,
+    this.extraToggleVisible = true,
+    this.resultCountFor,
+  });
+
+  final List<ListSortOption> sortOptions;
+  final String? extraToggleLabel;
+  final bool extraToggleVisible;
+
+  /// Recounted against the sheet's live draft, so "Show N results" tracks the
+  /// rows that have arrived rather than the ones present when it opened.
+  final int Function(ListFilterState draft)? resultCountFor;
+
+  /// Stands in for "the rows changed": how many records the list is built from.
+  /// The closure above cannot be compared, and the number it returns depends on
+  /// a draft the screen never sees.
+  final int revision;
+
+  bool sameAs(ListFilterSheetLive other) {
+    if (extraToggleLabel != other.extraToggleLabel ||
+        extraToggleVisible != other.extraToggleVisible ||
+        revision != other.revision ||
+        sortOptions.length != other.sortOptions.length) {
+      return false;
+    }
+    for (var i = 0; i < sortOptions.length; i++) {
+      if (sortOptions[i] != other.sortOptions[i]) return false;
+    }
+    return true;
+  }
+}
+
+/// Owns what an open filter sheet reads from the screen's current data, so a
+/// screen can publish [ListFilterSheetLive] from its own build.
+///
+/// Two things are deliberately separate here:
+///
+///   * the value is replaced as soon as a screen publishes, so a sheet that
+///     opens afterwards reads the closures over the freshest rows even when
+///     nothing it displays has changed and no rebuild was warranted;
+///   * notifying is deferred to the end of the frame, and only when something
+///     the sheet actually shows changes. The sheet lives in a modal route rather
+///     than under the screen, so asking it to rebuild while the screen is still
+///     building is what Flutter rejects; and a screen rebuilds for reasons the
+///     sheet never sees, most of them changing nothing.
+class ListFilterSheetLiveSource
+    implements ValueListenable<ListFilterSheetLive> {
+  ListFilterSheetLiveSource(this._value);
+
+  ListFilterSheetLive _value;
+  final List<VoidCallback> _listeners = <VoidCallback>[];
+  bool _flushScheduled = false;
+
+  @override
+  ListFilterSheetLive get value => _value;
+
+  @override
+  void addListener(VoidCallback listener) => _listeners.add(listener);
+
+  @override
+  void removeListener(VoidCallback listener) => _listeners.remove(listener);
+
+  /// Replaces what a sheet reads, and rebuilds an open one only if the
+  /// replacement shows anything differently.
+  ///
+  /// Storing even when nothing visible changed is what keeps the count honest:
+  /// [ListFilterSheetLive.resultCountFor] is a closure over the screen's rows,
+  /// and a screen rebuild that fills in data the count needs — a profile that
+  /// arrives, a map that finishes resolving — changes none of the compared
+  /// fields.
+  void publish(ListFilterSheetLive next) {
+    final showsDifferently = !_value.sameAs(next);
+    _value = next;
+    if (!showsDifferently || _flushScheduled) return;
+    _flushScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback(_flush);
+  }
+
+  void _flush(Duration _) {
+    _flushScheduled = false;
+    if (_listeners.isEmpty) return;
+    // Copied: a listener may add or remove one while being called.
+    for (final listener in List<VoidCallback>.of(_listeners)) {
+      listener();
+    }
+  }
+
+  void dispose() {
+    _listeners.clear();
   }
 }
 
@@ -637,6 +809,7 @@ Future<ListFilterState?> showListFilterSheet({
   bool showMatchType = false,
   List<Map<String, String>> genderOptions = const [],
   List<ListSortOption> sortOptions = const [],
+  ValueListenable<ListFilterSheetLive>? live,
 }) async {
   // Drop focus from the list's search field before the sheet opens: without
   // this the keyboard stays up behind the sheet, and a swipe-down dismiss
@@ -657,6 +830,7 @@ Future<ListFilterState?> showListFilterSheet({
       showMatchType: showMatchType,
       genderOptions: genderOptions,
       sortOptions: sortOptions,
+      live: live,
     ),
   );
   // Swiping the sheet down to dismiss must not put the cursor back in the
@@ -678,6 +852,7 @@ class _FilterSheet extends StatefulWidget {
     required this.showMatchType,
     required this.genderOptions,
     required this.sortOptions,
+    this.live,
   });
 
   final ListFilterState initial;
@@ -688,6 +863,7 @@ class _FilterSheet extends StatefulWidget {
   final bool showMatchType;
   final List<Map<String, String>> genderOptions;
   final List<ListSortOption> sortOptions;
+  final ValueListenable<ListFilterSheetLive>? live;
 
   @override
   State<_FilterSheet> createState() => _FilterSheetState();
@@ -695,6 +871,52 @@ class _FilterSheet extends StatefulWidget {
 
 class _FilterSheetState extends State<_FilterSheet> {
   late ListFilterState _draft = widget.initial;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.live?.addListener(_onLiveChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.live?.removeListener(_onLiveChanged);
+    super.dispose();
+  }
+
+  // Read through these rather than the widget fields: a caller with nothing
+  // live to report leaves the sheet on its opening snapshot. Read at build time,
+  // not mirrored into the draft, so the sheet cannot show an option the rows
+  // behind it stopped supporting between opening and the first update.
+  List<ListSortOption> get _sortOptions =>
+      widget.live?.value.sortOptions ?? widget.sortOptions;
+
+  String? get _extraToggleLabel =>
+      widget.live?.value.extraToggleLabel ?? widget.initial.extraToggleLabel;
+
+  bool get _extraToggleVisible =>
+      widget.live?.value.extraToggleVisible ??
+      widget.initial.extraToggleVisible;
+
+  int Function(ListFilterState) get _countFor =>
+      widget.live?.value.resultCountFor ?? widget.resultCountFor;
+
+  void _onLiveChanged() {
+    if (!mounted) return;
+    final sorts = _sortOptions;
+    setState(() {
+      _draft = _draft.copyWith(
+        // The last unread may have been read, or the last timer run out, while
+        // the sheet sat open: keep an order the list behind can actually honour.
+        sort: sorts.contains(_draft.sort) ? _draft.sort : _draft.defaultSort,
+        // An armed toggle with nothing left to narrow would apply as an empty
+        // list, which reads as lost conversations rather than as a filter.
+        extraToggleActive: _extraToggleVisible
+            ? _draft.extraToggleActive
+            : false,
+      );
+    });
+  }
 
   List<IntentFilterOption> _options() {
     return widget.intentKeys
@@ -710,7 +932,7 @@ class _FilterSheetState extends State<_FilterSheet> {
     final l10n = widget.l10n;
     final scheme = Theme.of(context).colorScheme;
     final options = _options();
-    final resultCount = widget.resultCountFor(_draft);
+    final resultCount = _countFor(_draft);
     final intentOption = _draft.selectedIntentKey == null
         ? null
         : options.where((o) => o.key == _draft.selectedIntentKey).firstOrNull;
@@ -787,11 +1009,11 @@ class _FilterSheetState extends State<_FilterSheet> {
                               setState(
                                 () => _draft = ListFilterState(
                                   matchType: MatchTypeFilter.all,
-                                  extraToggleLabel:
-                                      widget.initial.extraToggleLabel,
+                                  extraToggleLabel: _extraToggleLabel,
                                   extraToggleKey: widget.initial.extraToggleKey,
-                                  extraToggleVisible:
-                                      widget.initial.extraToggleVisible,
+                                  extraToggleVisible: _extraToggleVisible,
+                                  sort: widget.initial.defaultSort,
+                                  defaultSort: widget.initial.defaultSort,
                                 ),
                               );
                             },
@@ -800,7 +1022,8 @@ class _FilterSheetState extends State<_FilterSheet> {
                           ),
                       ],
                     ),
-                    if (_draft.activeCount > 0 || !_draft.sort.isDefault) ...[
+                    if (_draft.activeCount > 0 ||
+                        _draft.sort != _draft.defaultSort) ...[
                       const SizedBox(height: 10),
                       Wrap(
                         spacing: 8,
@@ -840,9 +1063,9 @@ class _FilterSheetState extends State<_FilterSheet> {
                               ),
                             ),
                           if (_draft.extraToggleActive &&
-                              (_draft.extraToggleLabel?.isNotEmpty ?? false))
+                              (_extraToggleLabel?.isNotEmpty ?? false))
                             _RemovablePill(
-                              label: _draft.extraToggleLabel!,
+                              label: _extraToggleLabel!,
                               icon: Icons.bolt_rounded,
                               // Lifted in dark mode: the pill paints its label
                               // in this colour on a 14% wash of itself.
@@ -861,7 +1084,7 @@ class _FilterSheetState extends State<_FilterSheet> {
                           // silent state, but it is not part of activeCount — the
                           // user changed a preference, they did not narrow the
                           // list.
-                          if (!_draft.sort.isDefault)
+                          if (_draft.sort != _draft.defaultSort)
                             _RemovablePill(
                               label: l10n.getString(_draft.sort.labelKey(l10n)),
                               icon: _draft.sort.icon,
@@ -874,7 +1097,7 @@ class _FilterSheetState extends State<_FilterSheet> {
                                   : const Color(0xFF0F766E),
                               onRemoved: () => setState(
                                 () => _draft = _draft.copyWith(
-                                  sort: ListSortOption.recent,
+                                  sort: _draft.defaultSort,
                                 ),
                               ),
                             ),
@@ -1015,7 +1238,7 @@ class _FilterSheetState extends State<_FilterSheet> {
                         const SizedBox(height: 22),
                       ],
                       if (_draft.extraToggleKey != null &&
-                          (_draft.extraToggleVisible ||
+                          (_extraToggleVisible ||
                               _draft.extraToggleActive)) ...[
                         _SectionLabel(
                           label: l10n.getString('listFilterOptionsSection'),
@@ -1035,7 +1258,7 @@ class _FilterSheetState extends State<_FilterSheet> {
                             contentPadding: EdgeInsets.zero,
                             value: _draft.extraToggleActive,
                             title: Text(
-                              _draft.extraToggleLabel ?? '',
+                              _extraToggleLabel ?? '',
                               style: const TextStyle(
                                 fontWeight: FontWeight.w600,
                               ),
@@ -1055,14 +1278,14 @@ class _FilterSheetState extends State<_FilterSheet> {
                       // Sort last: the sections above answer "which", this one
                       // answers "in what order". Same chip shape as the intent
                       // chips so the sheet reads as one control.
-                      if (widget.sortOptions.length > 1) ...[
+                      if (_sortOptions.length > 1) ...[
                         _SectionLabel(label: l10n.getString('listSortSection')),
                         const SizedBox(height: 10),
                         Wrap(
                           spacing: 8,
                           runSpacing: 8,
                           children: [
-                            for (final option in widget.sortOptions)
+                            for (final option in _sortOptions)
                               _SortChip(
                                 label: l10n.getString(option.labelKey(l10n)),
                                 icon: option.icon,

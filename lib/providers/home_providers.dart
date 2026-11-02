@@ -34,6 +34,7 @@ import 'package:matchme/providers/pinned_location_provider.dart';
 import 'package:matchme/services/offline_cache_manager.dart';
 import 'package:matchme/services/encrypted_notification_preview_service.dart';
 import 'package:matchme/services/supabase_realtime_manager.dart';
+import 'package:matchme/services/shared_realtime_tables.dart';
 import 'package:matchme/services/web_location_service.dart';
 import 'package:matchme/providers/chat_key_provider.dart';
 import 'package:matchme/providers/auth_provider.dart';
@@ -614,12 +615,14 @@ Future<void> _warmSpecificProfilesCache(
       for (final row in rows) {
         final data = Map<String, dynamic>.from(row);
         final partner = data.remove('user_id')?.toString().trim() ?? '';
-        for (final intent in coldIntentsByPartner[partner] ?? const <String>{}) {
+        for (final intent
+            in coldIntentsByPartner[partner] ?? const <String>{}) {
           await localDb.saveCachedSpecificProfile(partner, intent, data);
         }
       }
     }
-  } catch (_) {} finally {
+  } catch (_) {
+  } finally {
     _specificProfileWarmInFlight.removeAll(targets);
   }
 }
@@ -3776,6 +3779,7 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
   Timer? periodicRefreshTimer;
   Timer? userActivityDebounceTimer;
   Timer? presenceTickDebounceTimer;
+  Timer? onlinePollTimer;
   DateTime? lastFetchStatsTime;
   Map<String, int?>? lastEmittedStats;
   DateTime? lastActivityCommitTimestamp;
@@ -4107,258 +4111,209 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
     fetchStats().then(emitIfChanged);
   });
 
+  /// Re-reads ONLY the presence number from the stats RPC, so it never re-runs
+  /// the nearby (PostGIS) count.
+  ///
+  /// Needed because a user can enter and leave the counted set without any row
+  /// changing: the count window is `last_activity > now() - 61s`, while the
+  /// presence_tick trigger fires only on an actual `is_online` flip, and the
+  /// sweep that performs that flip runs once a minute. A heartbeat that pauses
+  /// and resumes inside that gap is therefore invisible to every realtime
+  /// trigger below, and the card would hold the old number for minutes.
+  Future<Map<String, int?>?> fetchOnlineOnly() async {
+    if (isFetchingStats) return null;
+    if (shouldSkipSupabaseCalls()) return null;
+    if (supabase.auth.currentSession == null) return null;
+    try {
+      final statsResp = await supabase.rpc(
+        'get_online_dashboard_stats',
+        params: {'p_user_id': userId},
+      );
+      final statsMap = (statsResp as Map?)?.cast<String, dynamic>() ?? const {};
+      final othersOnlineCount = (statsMap['online_others'] as num?)?.toInt();
+      if (othersOnlineCount == null) return null;
+      // Same rule as _fetchLiveDashboardStats: a signed-in user with a
+      // completed profile counts as online by definition.
+      final selfProfileComplete = statsMap['self_is_complete'] == true;
+      return <String, int?>{
+        if (lastEmittedStats != null) ...lastEmittedStats!,
+        'online': othersOnlineCount + (selfProfileComplete ? 1 : 0),
+      };
+    } catch (e) {
+      if (!isExpectedOfflineFailure(e)) {
+        debugPrint('Online-only presence poll failed: $e');
+      }
+      return null;
+    }
+  }
+
+  onlinePollTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+    if (!ref.mounted || controller.isClosed) return;
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    if (lifecycle != null &&
+        lifecycle != AppLifecycleState.resumed &&
+        lifecycle != AppLifecycleState.inactive) {
+      return;
+    }
+    fetchOnlineOnly().then(emitIfChanged);
+  });
+
   // Subscribe to users table for visibility setting changes
   // This works because users table RLS allows reading all users
-  final visibilityChannelName = 'dashboard_stats_visibility_$userId';
-  RealtimeChannel? visibilityChannel;
-  SupabaseRealtimeManager.instance.register(visibilityChannelName, () {
-    visibilityChannel = supabase
-        .channel(visibilityChannelName)
-        .onPostgresChanges(
-          event: PostgresChangeEvent.update,
-          schema: 'public',
-          table: 'users',
-          callback: (payload) {
-            final newRecord = payload.newRecord as Map<String, dynamic>?;
-            final oldRecord = payload.oldRecord as Map<String, dynamic>?;
-            final changedUserId =
-                (newRecord?['id'] ?? oldRecord?['id']) as String?;
+  final visibilitySubscription = SharedRealtimeTables.instance.subscribe(
+    table: SharedRealtimeTable.users,
+    userId: userId,
+    events: const {PostgresChangeEvent.update},
+    onPayload: (payload) {
+      final newRecord = payload.newRecord as Map<String, dynamic>?;
+      final oldRecord = payload.oldRecord as Map<String, dynamic>?;
+      final changedUserId = (newRecord?['id'] ?? oldRecord?['id']) as String?;
 
-            if (changedUserId == null || changedUserId == userId) return;
+      if (changedUserId == null || changedUserId == userId) return;
 
-            final bool userVisibilityFieldPresent =
-                (newRecord?.containsKey('user_visibility_setting') ?? false) ||
-                (oldRecord?.containsKey('user_visibility_setting') ?? false);
-            final bool systemVisibilityFieldPresent =
-                (newRecord?.containsKey('system_visibility_status') ?? false) ||
-                (oldRecord?.containsKey('system_visibility_status') ?? false);
-            if (!userVisibilityFieldPresent && !systemVisibilityFieldPresent) {
-              return;
-            }
+      final bool userVisibilityFieldPresent =
+          (newRecord?.containsKey('user_visibility_setting') ?? false) ||
+          (oldRecord?.containsKey('user_visibility_setting') ?? false);
+      final bool systemVisibilityFieldPresent =
+          (newRecord?.containsKey('system_visibility_status') ?? false) ||
+          (oldRecord?.containsKey('system_visibility_status') ?? false);
+      if (!userVisibilityFieldPresent && !systemVisibilityFieldPresent) {
+        return;
+      }
 
-            final newVisible = newRecord?['user_visibility_setting'] as bool?;
-            final oldVisible = oldRecord?['user_visibility_setting'] as bool?;
-            final newSystem = newRecord?['system_visibility_status']
-                ?.toString();
-            final oldSystem = oldRecord?['system_visibility_status']
-                ?.toString();
-            final bool shouldRefetch =
-                oldRecord == null ||
-                newVisible != oldVisible ||
-                newSystem != oldSystem;
-            if (!shouldRefetch) return;
+      final newVisible = newRecord?['user_visibility_setting'] as bool?;
+      final oldVisible = oldRecord?['user_visibility_setting'] as bool?;
+      final newSystem = newRecord?['system_visibility_status']?.toString();
+      final oldSystem = oldRecord?['system_visibility_status']?.toString();
+      final bool shouldRefetch =
+          oldRecord == null ||
+          newVisible != oldVisible ||
+          newSystem != oldSystem;
+      if (!shouldRefetch) return;
 
-            debugPrint('Another user visibility setting changed');
-            if (!ref.mounted) return;
-            if (supabase.auth.currentSession == null) {
-              debugPrint(
-                'fetchStats skipped in visibility callback: No valid session',
-              );
-              return;
-            }
-            // Delay nearby count refresh when visibility changes to allow
-            // location sync to complete. Without this delay, users who just
-            // became visible may see nearby=0 because user_locations has no
-            // fresh position yet, even though GPS is actively tracking.
-            fetchStats().then(emitIfChanged);
-            // Schedule a follow-up refresh after a short delay to pick up
-            // the location that should have synced by then.
-            Future.delayed(const Duration(seconds: 3), () {
-              if (!ref.mounted) return;
-              if (supabase.auth.currentSession == null) return;
-              fetchStats().then(emitIfChanged);
-            });
-          },
-        )
-        .subscribe((status, err) {
-          if (handleExpectedSupabaseOfflineFailure(err)) {
-            return;
-          }
-          if (SupabaseRealtimeManager.instance.isPaused) return;
-          if (err != null) {
-            debugPrint('Visibility channel status: $status, error: $err');
-          }
-        });
-    return visibilityChannel!;
-  });
+      debugPrint('Another user visibility setting changed');
+      if (!ref.mounted) return;
+      if (supabase.auth.currentSession == null) {
+        debugPrint(
+          'fetchStats skipped in visibility callback: No valid session',
+        );
+        return;
+      }
+      // Delay nearby count refresh when visibility changes to allow
+      // location sync to complete. Without this delay, users who just
+      // became visible may see nearby=0 because user_locations has no
+      // fresh position yet, even though GPS is actively tracking.
+      fetchStats().then(emitIfChanged);
+      // Schedule a follow-up refresh after a short delay to pick up
+      // the location that should have synced by then.
+      Future.delayed(const Duration(seconds: 3), () {
+        if (!ref.mounted) return;
+        if (supabase.auth.currentSession == null) return;
+        fetchStats().then(emitIfChanged);
+      });
+    },
+  );
 
   // Subscribe to user_locations table for location changes that affect nearby count
-  final locationChannelName = 'dashboard_stats_location_$userId';
-  RealtimeChannel? locationChannel;
-  SupabaseRealtimeManager.instance.register(locationChannelName, () {
-    locationChannel = supabase
-        .channel(locationChannelName)
-        .onPostgresChanges(
-          event: PostgresChangeEvent.update,
-          schema: 'public',
-          table: 'user_locations',
-          callback: (payload) {
-            final newRecord = payload.newRecord as Map<String, dynamic>?;
-            final oldRecord = payload.oldRecord as Map<String, dynamic>?;
-            final changedUserId =
-                (newRecord?['user_id'] ?? oldRecord?['user_id']) as String?;
+  final locationSubscription = SharedRealtimeTables.instance.subscribe(
+    table: SharedRealtimeTable.userLocations,
+    userId: userId,
+    events: const {PostgresChangeEvent.update},
+    onPayload: (payload) {
+      final newRecord = payload.newRecord as Map<String, dynamic>?;
+      final oldRecord = payload.oldRecord as Map<String, dynamic>?;
+      final changedUserId =
+          (newRecord?['user_id'] ?? oldRecord?['user_id']) as String?;
 
-            if (changedUserId == null || changedUserId == userId) return;
+      if (changedUserId == null || changedUserId == userId) return;
 
-            debugPrint(
-              'Another user location changed - refreshing nearby count',
-            );
-            if (!ref.mounted) return;
-            if (supabase.auth.currentSession == null) {
-              debugPrint(
-                'fetchStats skipped in location callback: No valid session',
-              );
-              return;
-            }
-            fetchStats().then(emitIfChanged);
-          },
-        )
-        .subscribe((status, err) {
-          if (handleExpectedSupabaseOfflineFailure(err)) {
-            return;
-          }
-          if (SupabaseRealtimeManager.instance.isPaused) return;
-          if (err != null) {
-            debugPrint('Location channel status: $status, error: $err');
-          }
-        });
-    return locationChannel!;
-  });
+      debugPrint('Another user location changed - refreshing nearby count');
+      if (!ref.mounted) return;
+      if (supabase.auth.currentSession == null) {
+        debugPrint('fetchStats skipped in location callback: No valid session');
+        return;
+      }
+      fetchStats().then(emitIfChanged);
+    },
+  );
 
   // Subscribe to user_activity table for online status changes
   // This ensures the online count updates immediately when users come online/offline
-  // Filter out own user_activity changes server-side to avoid wasted processing
-  final activityChannelName = 'dashboard_stats_activity_$userId';
-  RealtimeChannel? activityChannel;
-  SupabaseRealtimeManager.instance.register(activityChannelName, () {
-    activityChannel = supabase
-        .channel(activityChannelName)
-        .onPostgresChanges(
-          event: PostgresChangeEvent.insert,
-          schema: 'public',
-          table: 'user_activity',
-          filter: PostgresChangeFilter(
-            type: PostgresChangeFilterType.neq,
-            column: 'user_id',
-            value: userId,
-          ),
-          callback: (payload) {
-            if (payload.commitTimestamp == lastActivityCommitTimestamp) {
-              return;
-            }
-            lastActivityCommitTimestamp = payload.commitTimestamp;
+  // Own rows are filtered out server-side on the shared channel.
+  final activitySubscription = SharedRealtimeTables.instance.subscribe(
+    table: SharedRealtimeTable.userActivity,
+    userId: userId,
+    events: const {PostgresChangeEvent.insert, PostgresChangeEvent.update},
+    onPayload: (payload) {
+      if (payload.commitTimestamp == lastActivityCommitTimestamp) {
+        return;
+      }
+      lastActivityCommitTimestamp = payload.commitTimestamp;
 
-            debugPrint(
-              '🔄 [REALTIME] user_activity INSERT event received: $payload',
-            );
-            final newRecord = payload.newRecord as Map<String, dynamic>?;
-            final changedUserId = newRecord?['user_id'] as String?;
+      final newRecord = payload.newRecord;
+      final oldRecord = payload.oldRecord;
+      final changedUserId =
+          (newRecord['user_id'] ?? oldRecord['user_id']) as String?;
 
-            debugPrint(
-              '🔄 [REALTIME] Changed user ID: $changedUserId, My user ID: $userId',
-            );
-            if (changedUserId == null || changedUserId == userId) {
-              debugPrint(
-                '🔄 [REALTIME] Skipping - changed user is null or is me',
-              );
-              return;
-            }
+      debugPrint(
+        '🔄 [REALTIME] Changed user ID: $changedUserId, My user ID: $userId',
+      );
+      if (changedUserId == null || changedUserId == userId) {
+        debugPrint('🔄 [REALTIME] Skipping - changed user is null or is me');
+        return;
+      }
 
-            if (!shouldRefreshForActivityChange(
-              changedUserId: changedUserId,
-              newRecord: newRecord,
-            )) {
-              debugPrint('🔄 [REALTIME] Skipping - activity data unchanged');
-              return;
-            }
+      if (payload.eventType == PostgresChangeEvent.insert) {
+        debugPrint(
+          '🔄 [REALTIME] user_activity INSERT event received: $payload',
+        );
+        if (!shouldRefreshForActivityChange(
+          changedUserId: changedUserId,
+          newRecord: newRecord,
+        )) {
+          debugPrint('🔄 [REALTIME] Skipping - activity data unchanged');
+          return;
+        }
+        debugPrint(
+          '🔄 [REALTIME] Another user activity changed - refreshing online count',
+        );
+        if (!ref.mounted) return;
+        if (supabase.auth.currentSession == null) {
+          debugPrint(
+            'fetchStats skipped in activity callback: No valid session',
+          );
+          return;
+        }
+        fetchStats().then(emitIfChanged);
+        return;
+      }
 
-            debugPrint(
-              '🔄 [REALTIME] Another user activity changed - refreshing online count',
-            );
-            if (!ref.mounted) return;
-            if (supabase.auth.currentSession == null) {
-              debugPrint(
-                'fetchStats skipped in activity callback: No valid session',
-              );
-              return;
-            }
-            fetchStats().then(emitIfChanged);
-          },
-        )
-        .onPostgresChanges(
-          event: PostgresChangeEvent.update,
-          schema: 'public',
-          table: 'user_activity',
-          filter: PostgresChangeFilter(
-            type: PostgresChangeFilterType.neq,
-            column: 'user_id',
-            value: userId,
-          ),
-          callback: (payload) {
-            if (payload.commitTimestamp == lastActivityCommitTimestamp) {
-              return;
-            }
-            lastActivityCommitTimestamp = payload.commitTimestamp;
+      debugPrint('🔄 [REALTIME] user_activity UPDATE event received: $payload');
+      if (!shouldRefreshForActivityChange(
+        changedUserId: changedUserId,
+        newRecord: newRecord,
+        oldRecord: oldRecord,
+      )) {
+        debugPrint('🔄 [REALTIME] Skipping - activity data unchanged');
+        return;
+      }
 
-            debugPrint(
-              '🔄 [REALTIME] user_activity UPDATE event received: $payload',
-            );
-            final newRecord = payload.newRecord as Map<String, dynamic>?;
-            final oldRecord = payload.oldRecord as Map<String, dynamic>?;
-            final changedUserId =
-                (newRecord?['user_id'] ?? oldRecord?['user_id']) as String?;
-
-            debugPrint(
-              '🔄 [REALTIME] Changed user ID: $changedUserId, My user ID: $userId',
-            );
-            if (changedUserId == null || changedUserId == userId) {
-              debugPrint(
-                '🔄 [REALTIME] Skipping - changed user is null or is me',
-              );
-              return;
-            }
-
-            if (!shouldRefreshForActivityChange(
-              changedUserId: changedUserId,
-              newRecord: newRecord,
-              oldRecord: oldRecord,
-            )) {
-              debugPrint('🔄 [REALTIME] Skipping - activity data unchanged');
-              return;
-            }
-
-            userActivityDebounceTimer?.cancel();
-            userActivityDebounceTimer = Timer(
-              const Duration(milliseconds: 500),
-              () {
-                debugPrint(
-                  '🔄 [REALTIME] Another user activity updated - refreshing online count (debounced)',
-                );
-                if (!ref.mounted) return;
-                if (supabase.auth.currentSession == null) {
-                  debugPrint(
-                    'fetchStats skipped in activity update callback: No valid session',
-                  );
-                  return;
-                }
-                fetchStats().then(emitIfChanged);
-              },
-            );
-          },
-        )
-        .subscribe((status, err) {
-          if (handleExpectedSupabaseOfflineFailure(err)) {
-            return;
-          }
-          if (SupabaseRealtimeManager.instance.isPaused) return;
-          if (err != null) {
-            debugPrint(
-              '🔄 [REALTIME] Activity channel status: $status, error: $err',
-            );
-          }
-        });
-    return activityChannel!;
-  });
+      userActivityDebounceTimer?.cancel();
+      userActivityDebounceTimer = Timer(const Duration(milliseconds: 500), () {
+        debugPrint(
+          '🔄 [REALTIME] Another user activity updated - refreshing online count (debounced)',
+        );
+        if (!ref.mounted) return;
+        if (supabase.auth.currentSession == null) {
+          debugPrint(
+            'fetchStats skipped in activity update callback: No valid session',
+          );
+          return;
+        }
+        fetchStats().then(emitIfChanged);
+      });
+    },
+  );
 
   // Subscribe to the shared presence tick: a single-row table touched by DB
   // triggers whenever any user's presence flips (login, explicit logout, or
@@ -4367,45 +4322,23 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
   // so these events always arrive even when RLS hides other users'
   // user_activity / user_session rows. The count itself still comes from the
   // SECURITY DEFINER RPCs — the tick carries no user data.
-  final presenceTickChannelName = 'dashboard_stats_presence_tick_$userId';
-  RealtimeChannel? presenceTickChannel;
-  SupabaseRealtimeManager.instance.register(presenceTickChannelName, () {
-    presenceTickChannel = supabase
-        .channel(presenceTickChannelName)
-        .onPostgresChanges(
-          event: PostgresChangeEvent.all,
-          schema: 'public',
-          table: 'presence_tick',
-          callback: (payload) {
-            debugPrint('🔄 [REALTIME] presence_tick event received: $payload');
-            if (!ref.mounted || controller.isClosed) return;
-            presenceTickDebounceTimer?.cancel();
-            presenceTickDebounceTimer = Timer(
-              const Duration(milliseconds: 500),
-              () {
-                debugPrint(
-                  '🔄 [REALTIME] Presence tick - refreshing online/nearby counts (debounced)',
-                );
-                if (!ref.mounted || controller.isClosed) return;
-                if (supabase.auth.currentSession == null) return;
-                fetchStats(force: true).then(emitIfChanged);
-              },
-            );
-          },
-        )
-        .subscribe((status, err) {
-          if (handleExpectedSupabaseOfflineFailure(err)) {
-            return;
-          }
-          if (SupabaseRealtimeManager.instance.isPaused) return;
-          if (err != null) {
-            debugPrint(
-              '🔄 [REALTIME] Presence tick channel status: $status, error: $err',
-            );
-          }
-        });
-    return presenceTickChannel!;
-  });
+  final presenceTickSubscription = SharedRealtimeTables.instance.subscribe(
+    table: SharedRealtimeTable.presenceTick,
+    userId: userId,
+    onPayload: (payload) {
+      debugPrint('🔄 [REALTIME] presence_tick event received: $payload');
+      if (!ref.mounted || controller.isClosed) return;
+      presenceTickDebounceTimer?.cancel();
+      presenceTickDebounceTimer = Timer(const Duration(milliseconds: 500), () {
+        debugPrint(
+          '🔄 [REALTIME] Presence tick - refreshing online/nearby counts (debounced)',
+        );
+        if (!ref.mounted || controller.isClosed) return;
+        if (supabase.auth.currentSession == null) return;
+        fetchStats(force: true).then(emitIfChanged);
+      });
+    },
+  );
 
   // Listen to connectivity changes and force refresh when coming back online
   StreamSubscription? connectivitySubscription;
@@ -4482,11 +4415,12 @@ final dashboardStatsProvider = StreamProvider.autoDispose<Map<String, int?>>((
 
   ref.onDispose(() {
     disposeResumeListener();
-    SupabaseRealtimeManager.instance.unregister(visibilityChannelName);
-    SupabaseRealtimeManager.instance.unregister(locationChannelName);
-    SupabaseRealtimeManager.instance.unregister(activityChannelName);
-    SupabaseRealtimeManager.instance.unregister(presenceTickChannelName);
+    visibilitySubscription.cancel();
+    locationSubscription.cancel();
+    activitySubscription.cancel();
+    presenceTickSubscription.cancel();
     periodicRefreshTimer?.cancel();
+    onlinePollTimer?.cancel();
     cacheRefreshTimer?.cancel();
     userActivityDebounceTimer?.cancel();
     presenceTickDebounceTimer?.cancel();
@@ -4658,6 +4592,47 @@ final userChatIdsProvider = StreamProvider.autoDispose.family<Set<String>, Strin
         });
   },
 );
+
+// --- chatActivityByMatchProvider ---
+// Last message time per match, read from the same local chats box that
+// [userChatIdsProvider] watches — no extra network query. Matches sort by
+// "latest activity" using this: what the user last exchanged in a match, not
+// when the match row was created.
+final chatActivityByMatchProvider = StreamProvider.autoDispose
+    .family<Map<String, DateTime>, String>((ref, userId) {
+      if (userId.isEmpty) {
+        return Stream.value(const <String, DateTime>{});
+      }
+      final localDb = ref.watch(localDbProvider);
+      final localStream = localDb.watchChats(userId);
+
+      return localStream
+          .map((chats) {
+            final out = <String, DateTime>{};
+            for (final chat in chats) {
+              final matchId = chat['match_id'] as String?;
+              if (matchId == null || matchId.isEmpty) continue;
+              final raw = chat['last_message_at'];
+              if (raw == null) continue;
+              final at = raw is DateTime ? raw : DateTime.tryParse('$raw');
+              if (at == null) continue;
+              final known = out[matchId];
+              if (known == null || at.isAfter(known)) out[matchId] = at;
+            }
+            return Map<String, DateTime>.unmodifiable(out);
+          })
+          // A chats-box write fires for unrelated changes (preview text,
+          // read markers); emitting a new map each time would re-sort the whole
+          // matches list for nothing.
+          .distinct((prev, next) {
+            if (identical(prev, next)) return true;
+            if (prev.length != next.length) return false;
+            for (final entry in next.entries) {
+              if (prev[entry.key] != entry.value) return false;
+            }
+            return true;
+          });
+    });
 
 // --- matchExpiryNowProvider ---
 // Provides the current DateTime for calculating match expiry countdown

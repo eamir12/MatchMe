@@ -74,6 +74,13 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
   /// Whether the Archived view (instead of the main chat list) is shown.
   bool _showArchived = false;
 
+  /// Feeds an open filter sheet the options the current view supports; see
+  /// [ListFilterSheetLiveSource]. Only one sheet is ever open, and only one
+  /// view is ever on screen, so the two views share the publisher.
+  final ListFilterSheetLiveSource _sheetLive = ListFilterSheetLiveSource(
+    const ListFilterSheetLive(sortOptions: [], revision: 0),
+  );
+
   @override
   void initState() {
     super.initState();
@@ -84,6 +91,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
   void dispose() {
     _searchController.dispose();
     _archivedSearchController.dispose();
+    _sheetLive.dispose();
     _selection.removeListener(_onSelectionChanged);
     _selection.dispose();
     super.dispose();
@@ -123,17 +131,10 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  /// Sort orders the Chats screen offers, in sheet order.
-  ///
-  /// Declared here, as on the Matches screen, so the sheet and the list cannot
-  /// disagree about what is available. Chats has no rating or shared-interest
-  /// data to sort on, so it offers a different subset of the same enum — the
-  /// control itself is identical.
-  static const List<ListSortOption> _chatSortOptions = [
-    ListSortOption.recent,
-    ListSortOption.unreadFirst,
-    ListSortOption.nameAsc,
-  ];
+  /// Chats' sort subset and default live in [chatSortOptions] /
+  /// [chatDefaultSort], shared with Home's chats section. Chats has no rating or
+  /// shared-interest data to sort on, so it offers a different subset of the
+  /// same enum — the control itself is identical.
 
   /// Applies the chosen sort to the filtered list.
   ///
@@ -166,6 +167,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
           return an.compareTo(bn);
         });
       case ListSortOption.recent:
+      case ListSortOption.latestActivity:
       case ListSortOption.sharedInterests:
       case ListSortOption.topRated:
       case ListSortOption.expiringSoon:
@@ -279,6 +281,20 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
     }).length;
   }
 
+  /// The "Unread only" toggle label, with a count when anything is unread.
+  ///
+  /// One place decides the wording because the same string appears on the
+  /// filter button, in the sheet the screen opens, and in the live value pushed
+  /// to a sheet that is already open.
+  String _unreadOnlyLabel(LocalizationState l10n, int unreadCount) {
+    return unreadCount == 0
+        ? l10n.getString('chatsUnreadOnly')
+        : l10n.getString(
+            'chatsUnreadOnlyWithCount',
+            params: {'count': '$unreadCount'},
+          );
+  }
+
   /// Opens the filter sheet and applies the result to the active view.
   ///
   /// The sheet edits a local draft and the list only changes when the user
@@ -302,6 +318,12 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
     required int unreadConversationCount,
     required void Function(ListFilterState result) apply,
   }) async {
+    final availableSorts = chatSortOptions(
+      hasUnread: unreadConversationCount > 0,
+    );
+    // The last unread may have been read since this order was picked; fall back
+    // to the screen default rather than showing a sheet with no selection.
+    final activeSort = resolveSort(sortOption, availableSorts, chatDefaultSort);
     final result = await showListFilterSheet(
       context: context,
       l10n: l10n,
@@ -313,23 +335,20 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
       // hide every row, which reads as data loss rather than as a filter.
       showMatchType: canFilterByMatchType,
       genderOptions: genderOptions,
-      sortOptions: _chatSortOptions,
+      sortOptions: availableSorts,
       initial: ListFilterState(
         selectedIntentKey: selectedIntentKey,
         selectedGenderKey: genderFilter,
         matchType: matchTypeFilter,
         extraToggleKey: 'unread',
-        extraToggleLabel: unreadConversationCount == 0
-            ? l10n.getString('chatsUnreadOnly')
-            : l10n.getString(
-                'chatsUnreadOnlyWithCount',
-                params: {'count': '$unreadConversationCount'},
-              ),
+        extraToggleLabel: _unreadOnlyLabel(l10n, unreadConversationCount),
         extraToggleActive: unreadOnly,
         // Nothing unread means the toggle would narrow nothing: hide it.
         extraToggleVisible: unreadConversationCount > 0,
-        sort: sortOption,
+        sort: activeSort,
+        defaultSort: chatDefaultSort,
       ),
+      live: _sheetLive,
     );
     if (result == null || !mounted) return;
     apply(result);
@@ -546,6 +565,27 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
             hasMatchTypeFilter;
         final selecting = _selection.isActive;
 
+        // An open sheet reads its options through this rather than the snapshot
+        // it opened with: a message can arrive, or the last unread be read,
+        // while the sheet is on screen.
+        _sheetLive.publish(
+          ListFilterSheetLive(
+            sortOptions: chatSortOptions(
+              hasUnread: unreadConversationCount > 0,
+            ),
+            revision: viewChats.length,
+            extraToggleLabel: _unreadOnlyLabel(l10n, unreadConversationCount),
+            extraToggleVisible: unreadConversationCount > 0,
+            resultCountFor: (draft) => _countChats(
+              viewChats,
+              matchIntentById,
+              matchTypeById,
+              chatGenderById,
+              draft,
+            ),
+          ),
+        );
+
         return Column(
           children: [
             if (selecting)
@@ -669,12 +709,10 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                   selectedGenderKey: viewGenderFilter,
                   matchType: viewMatchTypeFilter,
                   extraToggleKey: 'unread',
-                  extraToggleLabel: unreadConversationCount == 0
-                      ? l10n.getString('chatsUnreadOnly')
-                      : l10n.getString(
-                          'chatsUnreadOnlyWithCount',
-                          params: {'count': '$unreadConversationCount'},
-                        ),
+                  extraToggleLabel: _unreadOnlyLabel(
+                    l10n,
+                    unreadConversationCount,
+                  ),
                   extraToggleActive: viewUnreadOnly,
                   sort: viewSortOption,
                 ).activeCount,

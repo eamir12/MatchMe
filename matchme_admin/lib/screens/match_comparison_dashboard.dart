@@ -1354,7 +1354,7 @@ class _UserPickerCard extends StatelessWidget {
                           child: Text(
                             _localizeGender(user!['gender'].toString(), t),
                             style: TextStyle(
-                              fontSize: 11,
+                              fontSize: 12,
                               fontWeight: FontWeight.w600,
                               color: theme.colorScheme.onSurface,
                             ),
@@ -1379,7 +1379,7 @@ class _UserPickerCard extends StatelessWidget {
                               return Text(
                                 '$ageLabel: ${_displayAge(user!)}',
                                 style: TextStyle(
-                                  fontSize: 11,
+                                  fontSize: 12,
                                   fontWeight: FontWeight.w600,
                                   color: theme.colorScheme.onSurface,
                                 ),
@@ -1683,7 +1683,7 @@ class _UserSearchDialogState extends State<_UserSearchDialog> {
                               child: SafeText(
                                 '${u['id']}\n${[u['email'], localizedGender, if (userAge.isNotEmpty) '$ageLabel: $userAge'].where((e) => e != null && e.toString().isNotEmpty).join(' • ')}',
                                 style: TextStyle(
-                                  fontSize: 11,
+                                  fontSize: 12,
                                   color: theme.colorScheme.onSurfaceVariant,
                                 ),
                               ),
@@ -1934,7 +1934,7 @@ class _EnhancedComparisonView extends StatelessWidget {
                             ].join(' • ').trim(),
                             style: const TextStyle(
                               color: Colors.white,
-                              fontSize: 11,
+                              fontSize: 12,
                               fontWeight: FontWeight.w700,
                             ),
                           ),
@@ -1967,7 +1967,7 @@ class _EnhancedComparisonView extends StatelessWidget {
                             ),
                             style: const TextStyle(
                               color: Colors.white,
-                              fontSize: 11,
+                              fontSize: 12,
                               fontWeight: FontWeight.w700,
                             ),
                           ),
@@ -2006,7 +2006,7 @@ class _EnhancedComparisonView extends StatelessWidget {
                             ),
                             style: const TextStyle(
                               color: Colors.white,
-                              fontSize: 11,
+                              fontSize: 12,
                               fontWeight: FontWeight.w700,
                             ),
                           ),
@@ -2046,7 +2046,7 @@ class _EnhancedComparisonView extends StatelessWidget {
                             ),
                             style: const TextStyle(
                               color: Colors.white,
-                              fontSize: 11,
+                              fontSize: 12,
                               fontWeight: FontWeight.w700,
                             ),
                           ),
@@ -2505,7 +2505,7 @@ class _HudItem extends StatelessWidget {
                 Text(
                   title,
                   style: TextStyle(
-                    fontSize: 10,
+                    fontSize: 12,
                     fontWeight: FontWeight.w700,
                     color: theme.colorScheme.onSurfaceVariant,
                     letterSpacing: 0.2,
@@ -2522,7 +2522,7 @@ class _HudItem extends StatelessWidget {
                 SafeText(
                   subtitle,
                   style: TextStyle(
-                    fontSize: 10,
+                    fontSize: 12,
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
@@ -3110,7 +3110,7 @@ class _IntentMatrixCard extends StatelessWidget {
                   softWrap: true,
                   style: const TextStyle(
                     fontWeight: FontWeight.w700,
-                    fontSize: 11,
+                    fontSize: 12,
                     height: 1.2,
                   ),
                 ),
@@ -3122,14 +3122,14 @@ class _IntentMatrixCard extends StatelessWidget {
           padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
           child: Text(
             aText.isEmpty ? unrestricted : aText,
-            style: const TextStyle(fontSize: 11, height: 1.3),
+            style: const TextStyle(fontSize: 12, height: 1.3),
           ),
         ),
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
           child: Text(
             bText.isEmpty ? unrestricted : bText,
-            style: const TextStyle(fontSize: 11, height: 1.3),
+            style: const TextStyle(fontSize: 12, height: 1.3),
           ),
         ),
         Padding(
@@ -3243,7 +3243,7 @@ class _VerdictPill extends StatelessWidget {
             child: ShrinkText(
               label,
               style: TextStyle(
-                fontSize: 10,
+                fontSize: 12,
                 fontWeight: FontWeight.w800,
                 color: passed
                     ? const Color(0xFF059669)
@@ -3493,7 +3493,7 @@ class _InterestsDetail extends StatelessWidget {
                           child: Text(
                             isOverlapCat ? sharedBadgeText : noMatchText,
                             style: TextStyle(
-                              fontSize: 10,
+                              fontSize: 12,
                               fontWeight: FontWeight.w800,
                               color: isOverlapCat
                                   ? const Color(0xFF059669)
@@ -3526,7 +3526,7 @@ class _InterestsDetail extends StatelessWidget {
                             userAName,
                             style: TextStyle(
                               fontWeight: FontWeight.w800,
-                              fontSize: 10,
+                              fontSize: 12,
                               color: theme.colorScheme.primary,
                             ),
                           ),
@@ -3536,7 +3536,7 @@ class _InterestsDetail extends StatelessWidget {
                             emptyText,
                             style: theme.textTheme.bodySmall?.copyWith(
                               color: theme.colorScheme.onSurfaceVariant,
-                              fontSize: 11,
+                              fontSize: 12,
                             ),
                           )
                         else
@@ -3577,7 +3577,7 @@ class _InterestsDetail extends StatelessWidget {
                                   Text(
                                     s,
                                     style: TextStyle(
-                                      fontSize: 11,
+                                      fontSize: 12,
                                       color: isMatch
                                           ? const Color(0xFF059669)
                                           : theme.colorScheme.onSurface,
@@ -3615,7 +3615,7 @@ class _InterestsDetail extends StatelessWidget {
                             userBName,
                             style: TextStyle(
                               fontWeight: FontWeight.w800,
-                              fontSize: 10,
+                              fontSize: 12,
                               color: theme.colorScheme.secondary,
                             ),
                           ),
@@ -3625,7 +3625,7 @@ class _InterestsDetail extends StatelessWidget {
                             emptyText,
                             style: theme.textTheme.bodySmall?.copyWith(
                               color: theme.colorScheme.onSurfaceVariant,
-                              fontSize: 11,
+                              fontSize: 12,
                             ),
                           )
                         else
@@ -3666,7 +3666,7 @@ class _InterestsDetail extends StatelessWidget {
                                   Text(
                                     s,
                                     style: TextStyle(
-                                      fontSize: 11,
+                                      fontSize: 12,
                                       color: isMatch
                                           ? const Color(0xFF059669)
                                           : theme.colorScheme.onSurface,

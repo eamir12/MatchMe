@@ -3951,7 +3951,7 @@ class _AdminSponsoredAdsDashboardState extends State<AdminSponsoredAdsDashboard>
               subtitle,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
-                fontSize: 11,
+                fontSize: 12,
               ),
             ),
           ],

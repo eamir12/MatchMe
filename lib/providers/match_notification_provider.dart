@@ -14,6 +14,7 @@ import 'package:matchme/services/local_db_service.dart';
 import 'package:matchme/services/global_sync_manager.dart';
 import 'package:matchme/services/storage_helper.dart';
 import 'package:matchme/services/supabase_realtime_manager.dart';
+import 'package:matchme/services/shared_realtime_tables.dart';
 import 'package:matchme/services/web_notification_service.dart';
 import 'package:matchme/web_imports.dart' as html;
 import 'package:matchme/utils/offline_utils.dart';
@@ -71,6 +72,7 @@ class MatchNotificationState {
 class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
   RealtimeChannel? _matchChannel;
   StreamSubscription? _channelSubscription;
+  SharedTableSubscription? _matchedUsersSubscription;
   Timer? _matchedProfilePollTimer;
   Timer? _fallbackMatchesPollTimer;
   Set<String> _matchedOtherUserIds = <String>{};
@@ -89,10 +91,6 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
   int _reconnectAttempts = 0;
   DateTime? _lastReconnectAt;
   Timer? _reconnectTimer;
-
-  // Tracks the userId that was used to create channels, so cleanup can
-  // unregister them even after currentUser becomes null on sign-out.
-  String _currentUserId = '';
 
   // Guards against concurrent setup calls (e.g. from delayed init + onResume)
   bool _isSettingUp = false;
@@ -131,12 +129,10 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
       name: 'MatchMeTrace',
     );
     if (userId == null || userId.trim().isEmpty) {
-      _currentUserId = '';
       cleanup();
       _matchedOtherUserIds = <String>{};
       return MatchNotificationState();
     }
-    _currentUserId = userId;
 
     // Listen to auth state to clean up when user signs out or switches
     ref.listen<AsyncValue<AuthState>>(authStateProvider, (
@@ -242,6 +238,14 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
       if (shouldSkipSupabaseCalls()) return;
       final current = supabase.auth.currentUser?.id;
       if (current == null || current != userId) return;
+      // 12.2: the live matches channel already delivers inserts/updates.
+      // Poll only while that channel is down; otherwise every 15 s poll
+      // duplicates Realtime work and is the largest steady-state cost.
+      final channelHealthy =
+          _matchChannelSubscribed &&
+          _matchChannelName != null &&
+          SupabaseRealtimeManager.instance.isActive(_matchChannelName!);
+      if (channelHealthy) return;
       unawaited(ref.read(globalSyncManagerProvider).syncMatchesNow(userId));
     });
     ref.listen<AsyncValue<List<MatchModel>>>(recentMatchesProvider(userId), (
@@ -315,138 +319,108 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
     _matchedProfilePollTimer?.cancel();
     _matchedProfilePollTimer = null;
 
-    SupabaseRealtimeManager.instance.unregister(
-      'match_profile_updates_$currentUserId',
+    if (otherUserIds.isEmpty) {
+      _matchedUsersSubscription?.cancel();
+      _matchedUsersSubscription = null;
+      return;
+    }
+
+    // One shared users channel serves Home, the pinned provider and this
+    // listener. The callback re-checks _matchedOtherUserIds, so membership
+    // changes no longer require a re-subscribe.
+    _matchedUsersSubscription ??= SharedRealtimeTables.instance.subscribe(
+      table: SharedRealtimeTable.users,
+      userId: currentUserId,
+      events: const {PostgresChangeEvent.update},
+      onPayload: (payload) async {
+        if (!ref.mounted) return;
+        if (supabase.auth.currentSession == null) return;
+        final newRecord = payload.newRecord;
+        final changedUserId = newRecord['id']?.toString();
+        if (changedUserId == null || changedUserId.isEmpty) return;
+        if (changedUserId == currentUserId) return;
+        if (!_matchedOtherUserIds.contains(changedUserId)) return;
+        developer.log(
+          '🧩 Realtime users update for matched user: $changedUserId',
+          name: 'MatchMeTrace',
+        );
+        final photoPaths = _extractPhotoPaths(newRecord['photos']);
+        final localDb = ref.read(localDbProvider);
+        final cachedLocal = await localDb.getLocalProfile(changedUserId);
+        final cachedPhotos = _extractPhotoPaths(cachedLocal?['photos']);
+        final photosChanged = !listEquals(cachedPhotos, photoPaths);
+        developer.log(
+          '🧩 Photos changed: $photosChanged (old: ${cachedPhotos.length}, new: ${photoPaths.length})',
+          name: 'MatchMeTrace',
+        );
+        if (photosChanged) {
+          final allPaths = <String>{...cachedPhotos, ...photoPaths};
+          for (final path in allPaths) {
+            StorageHelper.evictImageCache(path);
+          }
+          final updatedLocal = Map<String, dynamic>.from(cachedLocal ?? {});
+          updatedLocal['photos'] = photoPaths;
+          updatedLocal['_cached_at'] = DateTime.now().toIso8601String();
+          await localDb.saveLocalProfile(changedUserId, updatedLocal);
+          final cachedOther = await localDb.getOtherUserProfileWithCacheMeta(
+            changedUserId,
+          );
+          if (cachedOther != null) {
+            final updatedOther = Map<String, dynamic>.from(cachedOther);
+            updatedOther['photos'] = photoPaths;
+            await localDb.saveOtherUserProfile(changedUserId, updatedOther);
+          }
+          developer.log(
+            '🧩 Local photo caches updated for: $changedUserId',
+            name: 'MatchMeTrace',
+          );
+        }
+        if (photosChanged && ref.mounted) {
+          ref.invalidate(otherUserProfileProvider(changedUserId));
+          ref.invalidate(userProfileProvider(changedUserId));
+          ref.invalidate(recentMatchesProvider(currentUserId));
+          ref.invalidate(recentChatsProvider(currentUserId));
+          developer.log(
+            '🧩 Photo-dependent providers invalidated for: $changedUserId',
+            name: 'MatchMeTrace',
+          );
+        }
+        if (_shouldSyncProfileFromRealtime(
+          changedUserId,
+          const Duration(milliseconds: 100),
+        )) {
+          developer.log(
+            '🧩 Triggering profile sync for: $changedUserId',
+            name: 'MatchMeTrace',
+          );
+          final sync = ref
+              .read(profileSyncProvider)
+              .syncProfile(changedUserId, source: 'matched-user-realtime');
+          // Any users-row update can carry profile changes (a removed
+          // religion/lifestyle answer included). Rebuild the matched
+          // profile from the cache the sync just refreshed instead of
+          // waiting for the 1-minute cache TTL.
+          unawaited(
+            sync.then<void>((_) {
+              if (!ref.mounted) return;
+              ref.invalidate(otherUserProfileProvider(changedUserId));
+              ref.invalidate(userProfileProvider(changedUserId));
+              ref.invalidate(recentMatchesProvider(currentUserId));
+              ref.invalidate(recentChatsProvider(currentUserId));
+              developer.log(
+                '🧩 Matched-profile providers refreshed for: $changedUserId',
+                name: 'MatchMeTrace',
+              );
+            }),
+          );
+        } else {
+          developer.log(
+            '🧩 Skipping profile sync (throttled) for: $changedUserId',
+            name: 'MatchMeTrace',
+          );
+        }
+      },
     );
-
-    if (otherUserIds.isEmpty) return;
-
-    final channelName = 'match_profile_updates_$currentUserId';
-    SupabaseRealtimeManager.instance.register(channelName, () {
-      final channel = supabase.channel(channelName);
-      channel
-          .onPostgresChanges(
-            event: PostgresChangeEvent.update,
-            schema: 'public',
-            table: 'users',
-            callback: (payload) async {
-              if (!ref.mounted) return;
-              if (supabase.auth.currentSession == null) return;
-              final newRecord = payload.newRecord;
-              final changedUserId = newRecord['id']?.toString();
-              if (changedUserId == null || changedUserId.isEmpty) return;
-              if (changedUserId == currentUserId) return;
-              if (!_matchedOtherUserIds.contains(changedUserId)) return;
-              developer.log(
-                '🧩 Realtime users update for matched user: $changedUserId',
-                name: 'MatchMeTrace',
-              );
-              final photoPaths = _extractPhotoPaths(newRecord['photos']);
-              final localDb = ref.read(localDbProvider);
-              final cachedLocal = await localDb.getLocalProfile(changedUserId);
-              final cachedPhotos = _extractPhotoPaths(cachedLocal?['photos']);
-              final photosChanged = !listEquals(cachedPhotos, photoPaths);
-              developer.log(
-                '🧩 Photos changed: $photosChanged (old: ${cachedPhotos.length}, new: ${photoPaths.length})',
-                name: 'MatchMeTrace',
-              );
-              if (photosChanged) {
-                final allPaths = <String>{...cachedPhotos, ...photoPaths};
-                for (final path in allPaths) {
-                  StorageHelper.evictImageCache(path);
-                }
-                final updatedLocal = Map<String, dynamic>.from(
-                  cachedLocal ?? {},
-                );
-                updatedLocal['photos'] = photoPaths;
-                updatedLocal['_cached_at'] = DateTime.now().toIso8601String();
-                await localDb.saveLocalProfile(changedUserId, updatedLocal);
-                final cachedOther = await localDb
-                    .getOtherUserProfileWithCacheMeta(changedUserId);
-                if (cachedOther != null) {
-                  final updatedOther = Map<String, dynamic>.from(cachedOther);
-                  updatedOther['photos'] = photoPaths;
-                  await localDb.saveOtherUserProfile(
-                    changedUserId,
-                    updatedOther,
-                  );
-                }
-                developer.log(
-                  '🧩 Local photo caches updated for: $changedUserId',
-                  name: 'MatchMeTrace',
-                );
-              }
-              if (photosChanged && ref.mounted) {
-                ref.invalidate(otherUserProfileProvider(changedUserId));
-                ref.invalidate(userProfileProvider(changedUserId));
-                ref.invalidate(recentMatchesProvider(currentUserId));
-                ref.invalidate(recentChatsProvider(currentUserId));
-                developer.log(
-                  '🧩 Photo-dependent providers invalidated for: $changedUserId',
-                  name: 'MatchMeTrace',
-                );
-              }
-              if (_shouldSyncProfileFromRealtime(
-                changedUserId,
-                const Duration(milliseconds: 100),
-              )) {
-                developer.log(
-                  '🧩 Triggering profile sync for: $changedUserId',
-                  name: 'MatchMeTrace',
-                );
-                final sync = ref
-                    .read(profileSyncProvider)
-                    .syncProfile(
-                      changedUserId,
-                      source: 'matched-user-realtime',
-                    );
-                // Any users-row update can carry profile changes (a removed
-                // religion/lifestyle answer included). Rebuild the matched
-                // profile from the cache the sync just refreshed instead of
-                // waiting for the 1-minute cache TTL.
-                unawaited(
-                  sync.then<void>((_) {
-                    if (!ref.mounted) return;
-                    ref.invalidate(otherUserProfileProvider(changedUserId));
-                    ref.invalidate(userProfileProvider(changedUserId));
-                    ref.invalidate(recentMatchesProvider(currentUserId));
-                    ref.invalidate(recentChatsProvider(currentUserId));
-                    developer.log(
-                      '🧩 Matched-profile providers refreshed for: $changedUserId',
-                      name: 'MatchMeTrace',
-                    );
-                  }),
-                );
-              } else {
-                developer.log(
-                  '🧩 Skipping profile sync (throttled) for: $changedUserId',
-                  name: 'MatchMeTrace',
-                );
-              }
-            },
-          )
-          .subscribe((status, err) {
-            try {
-              if (!ref.mounted) return;
-              if (status == RealtimeSubscribeStatus.subscribed) {
-                developer.log(
-                  '🧩 Users realtime subscribed for currentUser=$currentUserId',
-                  name: 'MatchMeTrace',
-                );
-              } else if (handleExpectedSupabaseOfflineFailure(err)) {
-                return;
-              } else if (SupabaseRealtimeManager.instance.isPaused) {
-                return;
-              }
-            } catch (e) {
-              developer.log(
-                '⚠️ Profile channel subscription error (caught): $e',
-                name: 'MatchMeTrace',
-              );
-            }
-          });
-      return channel;
-    });
 
     // Warm matched profiles with a small worker pool instead of firing one
     // full sync per match at once. Two at a time keeps startup network work
@@ -855,7 +829,8 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
             final otherProfile = await ref.read(
               otherUserProfileProvider(otherUserId).future,
             );
-            otherUserName = otherProfile?.name.formatAsFirstNameLastInitial(
+            otherUserName =
+                otherProfile?.name.formatAsFirstNameLastInitial(
                   fallback: otherUserName,
                 ) ??
                 otherUserName;
@@ -1132,13 +1107,8 @@ class MatchNotificationNotifier extends Notifier<MatchNotificationState> {
     _matchedProfilePollTimer = null;
     _fallbackMatchesPollTimer?.cancel();
     _fallbackMatchesPollTimer = null;
-    // Unregister profile-update channel using the stored userId (not
-    // currentUser, which may be null after sign-out).
-    if (_currentUserId.isNotEmpty) {
-      SupabaseRealtimeManager.instance.unregister(
-        'match_profile_updates_$_currentUserId',
-      );
-    }
+    _matchedUsersSubscription?.cancel();
+    _matchedUsersSubscription = null;
     // Remove the onSupabaseResume callback so connectivity restore cannot
     // re-subscribe channels after the user has signed out.
     _resumeDispose?.call();

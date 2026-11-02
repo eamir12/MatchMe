@@ -71,6 +71,7 @@ class WebNotificationService {
     required String body,
     String? matchId,
     String? kind,
+    String? tag,
   }) async {
     // No-op on non-web platforms
   }

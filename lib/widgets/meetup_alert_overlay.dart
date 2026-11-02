@@ -127,19 +127,22 @@ class MeetupAlertOverlay extends ConsumerWidget {
                     fontWeight: FontWeight.w600,
                   ),
                 ),
-                Tooltip(
-                  message: l10n.getString('systemNotificationDismiss'),
-                  child: InkResponse(
-                    onTap: () => ref
-                        .read(meetupAlertsProvider.notifier)
-                        .clearMatch(alert.matchId),
-                    radius: 20,
-                    child: Padding(
-                      padding: const EdgeInsets.all(6),
-                      child: Icon(
-                        Icons.close,
-                        size: 18,
-                        color: scheme.onSurfaceVariant,
+                InkResponse(
+                  onTap: () => ref
+                      .read(meetupAlertsProvider.notifier)
+                      .clearMatch(alert.matchId),
+                  radius: 20,
+                  child: Padding(
+                    padding: const EdgeInsets.all(6),
+                    child: Icon(
+                      Icons.close,
+                      size: 18,
+                      color: scheme.onSurfaceVariant,
+                      // This overlay mounts above the Navigator, where no
+                      // Overlay exists, so a Tooltip would throw. Keep the
+                      // label on the icon's semantics instead.
+                      semanticLabel: l10n.getString(
+                        'systemNotificationDismiss',
                       ),
                     ),
                   ),

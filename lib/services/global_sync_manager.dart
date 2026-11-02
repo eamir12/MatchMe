@@ -1083,12 +1083,21 @@ class GlobalHomeSyncManager {
               defaultValue: 500,
             );
             final cursor = await _readListCursor(_chatsListGate, userId);
-            final plan = _chatsListGate.plan(
+            final cachedChats = await localDb.watchChats(userId).first;
+            var plan = _chatsListGate.plan(
               userId: userId,
               watermark: cursor.watermark,
               lastFullAt: cursor.lastFullAt,
               now: DateTime.now().toUtc(),
             );
+            if (!plan.isFull && cachedChats.isEmpty) {
+              // See syncMatchesNow: a watermark left behind by sign-out must not
+              // replay "nothing changed" onto an empty cache.
+              debugPrint(
+                '[SYNC] syncChatsNow: empty cache with a watermark; fetching full',
+              );
+              plan = const ListSyncPlan.full();
+            }
             var fetch = await _fetchRecentChats(
               userId: userId,
               limit: fullLimit,
@@ -1674,12 +1683,21 @@ class GlobalHomeSyncManager {
           defaultValue: 500,
         );
         final cursor = await _readListCursor(_matchesListGate, userId);
-        final plan = _matchesListGate.plan(
+        var plan = _matchesListGate.plan(
           userId: userId,
           watermark: cursor.watermark,
           lastFullAt: cursor.lastFullAt,
           now: DateTime.now().toUtc(),
         );
+        if (!plan.isFull && existing.isEmpty) {
+          // A watermark can outlive the cache it describes (sign-out deletes
+          // the rows). Replaying "nothing changed" onto an empty cache would
+          // leave the list empty until the reconcile timer expires.
+          debugPrint(
+            '[SYNC] syncMatchesNow: empty cache with a watermark; fetching full',
+          );
+          plan = const ListSyncPlan.full();
+        }
         var fetch = await _fetchRecentMatches(
           userId: userId,
           limit: fullLimit,

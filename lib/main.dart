@@ -91,6 +91,7 @@ import 'package:matchme/services/platform_trace_logger.dart';
 import 'package:matchme/utils/permission_helper.dart';
 import 'package:matchme/utils/permission_coordinator.dart';
 import 'package:matchme/utils/permission_manager.dart';
+import 'package:matchme/utils/meetup_alert_card.dart';
 import 'package:matchme/utils/resume_route_restore.dart';
 import 'package:matchme/utils/time_of_day_ranges.dart';
 import 'package:quick_actions/quick_actions.dart';
@@ -109,7 +110,6 @@ import 'package:matchme/providers/chat_provider.dart'
 import 'package:matchme/providers/match_notification_provider.dart'
     show matchNotificationProvider;
 import 'package:matchme/providers/notification_inbox_provider.dart';
-import 'package:matchme/providers/meetup_alerts_provider.dart';
 import 'package:matchme/services/global_sync_manager.dart';
 import 'package:matchme/providers/event_provider.dart';
 import 'package:matchme/utils/app_shortcuts.dart';
@@ -1603,24 +1603,12 @@ Future<void> _initializeFcmForCurrentUser() async {
           // the incoming card and the coordination tools are.
           final matchId =
               (data['matchId'] ?? data['match_id'])?.toString().trim() ?? '';
-          final senderId =
-              (data['senderId'] ?? data['sender_id'])?.toString().trim() ?? '';
-          final rowId =
-              (data['meetup_signal_id'] ??
-                      data['meetup_spot_id'] ??
-                      data['meetup_session_id'] ??
-                      '')
-                  .toString()
-                  .trim();
-          final isLiveSignal =
-              type == 'meetup_signal' || type == 'meetup_beacon';
           // A resend replaces the sender's live row server-side, so this card
-          // must replace the old one rather than stack under it: keyed on who
-          // sent it, never on the row id, which changes with every resend.
-          // Mirrors the collapse tag the server push carries.
-          final eventId = !isLiveSignal || matchId.isEmpty || senderId.isEmpty
-              ? rowId
-              : '${matchId}_$senderId';
+          // must replace the old one rather than stack under it: the shared key
+          // derivation is the one the alert sweep cancels the card by, and it
+          // mirrors the collapse tag the server push carries.
+          final cardKey = meetupAlertCardKey(type, data);
+          final serverTag = meetupAlertServerTag(type, data);
           final isBeacon = type == 'meetup_beacon';
           final isSpot = type == 'meetup_spot';
           final isProposal = type == 'meetup_proposal';
@@ -1646,26 +1634,27 @@ Future<void> _initializeFcmForCurrentUser() async {
           final body = message.notification?.body?.trim().isNotEmpty == true
               ? message.notification!.body!.trim()
               : fallbackBody;
-          final notificationId = eventId.isNotEmpty ? eventId : matchId;
-          if (notificationId.isNotEmpty) {
+          if (cardKey.isNotEmpty) {
             if (kIsWeb) {
               unawaited(
                 WebNotificationService.showMeetupNotification(
-                  notificationId: notificationId,
+                  notificationId: cardKey,
                   title: title,
                   body: body,
                   matchId: matchId,
                   kind: type,
+                  tag: serverTag,
                 ),
               );
             } else {
               unawaited(
                 MobileLocalNotificationService.showMeetupNotification(
-                  notificationId: '${type}_$notificationId',
+                  notificationId: cardKey,
                   title: title,
                   body: body,
                   matchId: matchId,
                   kind: type,
+                  expiresIn: kMeetupAlertDefaultTtl[type],
                 ),
               );
             }

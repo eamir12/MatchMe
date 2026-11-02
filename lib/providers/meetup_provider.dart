@@ -172,13 +172,25 @@ class MeetupState {
   MeetupSignal? get myBeacon =>
       _latestSignal(mine: true, type: MeetupSignalType.beacon);
 
+  /// The live signal the other side sent most recently, whatever its type.
+  ///
+  /// Anything that announces one thing per match has to use this rather than
+  /// choosing by type. A beacon turned on after a wave is the newer signal, and
+  /// a surface that still reports the wave disagrees with the alert bar, which
+  /// already ranks the alerts by time. Nothing is hidden by this: every live
+  /// tool keeps its own card in the hub feed, and a wave that wins a beacon
+  /// only holds the banner until it expires, when the beacon reappears.
+  MeetupSignal? get latestIncomingSignal =>
+      _latestSignal(mine: false, type: null);
+
   MeetupSignal? _latestSignal({
     required bool mine,
-    required MeetupSignalType type,
+    required MeetupSignalType? type,
   }) {
     MeetupSignal? latest;
     for (final signal in signals) {
-      if (signal.type != type || signal.isExpired) continue;
+      if (type != null && signal.type != type) continue;
+      if (signal.isExpired) continue;
       if (hiddenSignalIds.contains(signal.id)) continue;
       final isMine = signal.senderId == currentUserId;
       if (isMine != mine) continue;

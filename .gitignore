@@ -47,6 +47,9 @@ app.*.map.json
 # Local scratch: one-off SQL, query payloads, probes and logs
 .tmp/
 
+# Supabase CLI link state: project ref, org slug and owner email
+supabase/.temp/
+
 # Gradle caches and reports inside vendored packages
 third_party/**/.gradle/
 third_party/**/build/

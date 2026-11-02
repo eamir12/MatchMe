@@ -55,6 +55,34 @@ void main() {
       expect(activity.topLabel, isNull);
     });
 
+    test('keeps the gesture of a winning wave', () {
+      final activity = MeetupActivity.fromJson({
+        'top_kind': 'wave',
+        'top_own': false,
+        'top_gesture': 'jumping',
+        'tool_count': 1,
+      });
+
+      expect(activity.topKind, MeetupActivityKind.wave);
+      expect(activity.topGesture, 'jumping');
+    });
+
+    test('has no gesture for a beacon or a blank payload', () {
+      final beacon = MeetupActivity.fromJson({
+        'top_kind': 'beacon',
+        'top_own': true,
+        'top_gesture': null,
+      });
+      final legacyWave = MeetupActivity.fromJson({
+        'top_kind': 'wave',
+        'top_own': false,
+        'top_gesture': '  ',
+      });
+
+      expect(beacon.topGesture, isNull);
+      expect(legacyWave.topGesture, isNull);
+    });
+
     test('fails closed when optional fields are missing', () {
       final activity = MeetupActivity.fromJson(const {});
 
@@ -62,6 +90,7 @@ void main() {
       expect(activity.topOwn, isFalse);
       expect(activity.toolCount, 1);
       expect(activity.topLabel, isNull);
+      expect(activity.topGesture, isNull);
       expect(activity.nextExpiry, isNull);
     });
   });

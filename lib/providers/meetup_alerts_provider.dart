@@ -3,7 +3,8 @@
 // The inbox realtime channel already delivers one row per tool event
 // (wave, beacon, Spot card, proposal, place-change request) with the
 // recipient's localized title/body, so this notifier only filters, ages and
-// groups those rows. Nothing here requests or stores location.
+// groups those rows — and drops the OS cards for the events that stopped being
+// news. Nothing here requests or stores location.
 
 import 'dart:async';
 
@@ -11,29 +12,19 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:matchme/providers/match_notification_provider.dart';
 import 'package:matchme/providers/notification_inbox_provider.dart';
 import 'package:matchme/services/app_config_service.dart';
+import 'package:matchme/services/background_service.dart';
+import 'package:matchme/services/mobile_local_notification_service.dart';
 import 'package:matchme/services/notification_inbox_service.dart';
+import 'package:matchme/utils/meetup_alert_card.dart';
 
-const String kMeetupAlertSignal = 'meetup_signal';
-const String kMeetupAlertBeacon = 'meetup_beacon';
-const String kMeetupAlertSpot = 'meetup_spot';
-const String kMeetupAlertProposal = 'meetup_proposal';
-const String kMeetupAlertPlaceChange = 'meetup_place_change';
-
-const Set<String> kMeetupAlertKinds = {
-  kMeetupAlertSignal,
-  kMeetupAlertBeacon,
-  kMeetupAlertSpot,
-  kMeetupAlertProposal,
-  kMeetupAlertPlaceChange,
-};
-
-const Map<String, Duration> _defaultAlertTtl = {
-  kMeetupAlertSignal: Duration(seconds: 60),
-  kMeetupAlertBeacon: Duration(seconds: 120),
-  kMeetupAlertSpot: Duration(minutes: 120),
-  kMeetupAlertProposal: Duration(minutes: 240),
-  kMeetupAlertPlaceChange: Duration(minutes: 240),
-};
+export 'package:matchme/utils/meetup_alert_card.dart'
+    show
+        kMeetupAlertBeacon,
+        kMeetupAlertKinds,
+        kMeetupAlertPlaceChange,
+        kMeetupAlertProposal,
+        kMeetupAlertSignal,
+        kMeetupAlertSpot;
 
 class MeetupAlert {
   final String id;
@@ -76,10 +67,99 @@ class MeetupAlertsState {
   }
 }
 
+/// What one pass over the inbox says the OS cards and the unread state are
+/// allowed to forget. Pure, so the rule can be read and tested on its own.
+class MeetupAlertCardPlan {
+  const MeetupAlertCardPlan({
+    required this.dismissed,
+    required this.staleIds,
+    required this.unreadIds,
+    required this.dismissedIds,
+  });
+
+  /// Rows whose card is no longer news: the recipient read or removed the row,
+  /// or its live window closed with nobody acting on it.
+  final List<NotificationInboxItem> dismissed;
+
+  /// Unread rows past their live window. Settling them as read is what clears
+  /// the app-icon, bell and Matches badges: nothing on the server expires an
+  /// unread tool row (`cleanup_expired_meetups` deletes the live tool rows and
+  /// leaves the inbox alone), so the row would keep counting forever.
+  final List<String> staleIds;
+
+  /// Rows still unread and still news — the baseline the next pass compares
+  /// against to notice that one of them was seen.
+  final Set<String> unreadIds;
+
+  /// Rows whose card this process has already dropped, still present in the
+  /// inbox. Hand it back as `alreadyDismissedIds` on the next pass.
+  final Set<String> dismissedIds;
+}
+
+MeetupAlertCardPlan planMeetupAlertCards({
+  required List<NotificationInboxItem> items,
+  required Map<String, Duration> ttl,
+  required Set<String> previouslyUnreadIds,
+  required Set<String> alreadyDismissedIds,
+  required DateTime now,
+}) {
+  final dismissed = <NotificationInboxItem>[];
+  final staleIds = <String>[];
+  final unreadIds = <String>{};
+  // Passing over a row twice is the normal case (the inbox, the ticker and the
+  // config read all re-run the sweep), and the write that settles a stale row
+  // lands asynchronously. Without this memory every re-pass would drop the
+  // same card again and re-issue the same read update.
+  final carried = <String>{};
+  for (final row in items) {
+    final alreadyDropped = alreadyDismissedIds.contains(row.id);
+    if (alreadyDropped) carried.add(row.id);
+    final kind = row.data['kind']?.toString() ?? row.type;
+    if (row.deletedAt != null || row.readAt != null) {
+      // Seen (or swiped away) since the last pass: the event it announced is
+      // over, so its card goes with it. A row the server superseded is the
+      // exception: a newer signal replaced it, which is what should clear the
+      // bell, not a reason to withdraw a card for something that did happen.
+      if (!alreadyDropped &&
+          previouslyUnreadIds.contains(row.id) &&
+          ttl.containsKey(kind) &&
+          row.data['superseded'] != true) {
+        dismissed.add(row);
+        carried.add(row.id);
+      }
+      continue;
+    }
+    final window = ttl[kind];
+    if (window == null) continue;
+    if (row.createdAt.add(window).isAfter(now)) {
+      unreadIds.add(row.id);
+      continue;
+    }
+    if (alreadyDropped) continue;
+    dismissed.add(row);
+    staleIds.add(row.id);
+    carried.add(row.id);
+  }
+  return MeetupAlertCardPlan(
+    dismissed: dismissed,
+    staleIds: staleIds,
+    unreadIds: unreadIds,
+    dismissedIds: carried,
+  );
+}
+
 class MeetupAlertsNotifier extends Notifier<MeetupAlertsState> {
   Timer? _ticker;
-  Map<String, Duration> _ttl = _defaultAlertTtl;
+  Map<String, Duration> _ttl = kMeetupAlertDefaultTtl;
   bool _ttlLoaded = false;
+
+  /// Unread tool rows seen by the previous pass. A row that leaves that set was
+  /// read or deleted — the recipient saw the tool — so its OS card goes too.
+  Set<String> _unreadToolRowIds = const {};
+
+  /// Tool rows whose OS card this process already dropped. Ids leave it when
+  /// the row itself leaves the inbox.
+  Set<String> _dismissedToolRowIds = const {};
 
   @override
   MeetupAlertsState build() {
@@ -97,6 +177,7 @@ class MeetupAlertsNotifier extends Notifier<MeetupAlertsState> {
     }
     final now = DateTime.now();
     final alerts = _activeAlerts(items, now);
+    _clearSettledCards(items, now);
     _syncTicker(alerts.isNotEmpty);
     return MeetupAlertsState(alerts: alerts, now: now);
   }
@@ -148,11 +229,61 @@ class MeetupAlertsNotifier extends Notifier<MeetupAlertsState> {
     final items = ref.read(notificationInboxProvider).items;
     final now = DateTime.now();
     final alerts = _activeAlerts(items, now);
+    _clearSettledCards(items, now);
     if (alerts.length != state.alerts.length ||
         now.difference(state.now) >= const Duration(seconds: 1) ||
         !_sameIds(alerts, state.alerts)) {
       state = MeetupAlertsState(alerts: alerts, now: now);
       _syncTicker(alerts.isNotEmpty);
+    }
+  }
+
+  /// Drops the OS cards of the tool events that stopped being news, and settles
+  /// the stale unread rows that keep the app-icon, bell and Matches badges set
+  /// after the tool itself is gone.
+  ///
+  /// The bookkeeping runs in the pass itself, so a row is acted on once even
+  /// when several passes see it before the read write lands; the platform calls
+  /// and that write are deferred — this also runs while the inbox rebuilds,
+  /// where marking a row read would mutate another provider mid-build and trip
+  /// Riverpod's modify-during-build assert.
+  void _clearSettledCards(List<NotificationInboxItem> items, DateTime now) {
+    final plan = planMeetupAlertCards(
+      items: items,
+      ttl: _ttl,
+      previouslyUnreadIds: _unreadToolRowIds,
+      alreadyDismissedIds: _dismissedToolRowIds,
+      now: now,
+    );
+    _unreadToolRowIds = plan.unreadIds;
+    _dismissedToolRowIds = plan.dismissedIds;
+    if (plan.dismissed.isEmpty && plan.staleIds.isEmpty) return;
+    Future.microtask(() {
+      if (!ref.mounted) return;
+      for (final row in plan.dismissed) {
+        unawaited(_dismissCard(row));
+      }
+      if (plan.staleIds.isNotEmpty) {
+        unawaited(
+          ref
+              .read(notificationInboxProvider.notifier)
+              .markReadMany(plan.staleIds.toSet()),
+        );
+      }
+    });
+  }
+
+  Future<void> _dismissCard(NotificationInboxItem row) async {
+    final kind = row.data['kind']?.toString() ?? row.type;
+    final cardKey = meetupAlertCardKey(kind, row.data);
+    if (cardKey.isNotEmpty) {
+      await MobileLocalNotificationService.cancelMeetupCard(cardKey: cardKey);
+    }
+    // The card the FCM SDK posted while the app was backgrounded or killed is
+    // not ours to address by id; it is cancelled by the push's collapse tag.
+    final serverTag = meetupAlertServerTag(kind, row.data);
+    if (serverTag.isNotEmpty) {
+      await BackgroundService.cancelServerCard(serverTag);
     }
   }
 

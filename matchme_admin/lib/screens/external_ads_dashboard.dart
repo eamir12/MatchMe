@@ -1007,7 +1007,7 @@ class _AdminExternalAdsDashboardState extends State<AdminExternalAdsDashboard>
               subtitle,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
-                fontSize: 11,
+                fontSize: 12,
               ),
             ),
           ],

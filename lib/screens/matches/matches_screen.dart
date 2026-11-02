@@ -25,15 +25,9 @@ import 'package:matchme/utils/shared_intent_utils.dart';
 import 'package:matchme/widgets/list_filter_bar.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-/// Sort orders the Matches screen offers, in sheet order. Declared here so
-/// the sheet and the list cannot disagree about what is available.
-const List<ListSortOption> _matchSortOptions = [
-  ListSortOption.recent,
-  ListSortOption.nameAsc,
-  ListSortOption.sharedInterests,
-  ListSortOption.topRated,
-  ListSortOption.expiringSoon,
-];
+/// The Matches screen's sort subset and default live in [matchSortOptions] /
+/// [matchDefaultSort], shared with Home's matches section so the two entry
+/// points can never offer different orders.
 
 /// MatchesScreen
 ///
@@ -50,7 +44,7 @@ class MatchesScreen extends ConsumerStatefulWidget {
 class _MatchesScreenState extends ConsumerState<MatchesScreen> {
   String? _selectedIntentKey;
   String? _genderFilter;
-  ListSortOption _sortOption = ListSortOption.recent;
+  ListSortOption _sortOption = matchDefaultSort;
 
   // Owned by the State, not by build(). Creating a ScrollController inside
   // build() allocates a fresh controller on every rebuild and never disposes
@@ -61,10 +55,17 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
   String _searchQuery = '';
   MatchTypeFilter _matchTypeFilter = MatchTypeFilter.all;
 
+  /// Feeds an open filter sheet the sort options and result count that the
+  /// current list supports; see [ListFilterSheetLiveSource].
+  final ListFilterSheetLiveSource _sheetLive = ListFilterSheetLiveSource(
+    const ListFilterSheetLive(sortOptions: [], revision: 0),
+  );
+
   @override
   void dispose() {
     _scrollController.dispose();
     _searchController.dispose();
+    _sheetLive.dispose();
     super.dispose();
   }
 
@@ -118,8 +119,10 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
     List<AppIntent> allIntents,
     List<Map<String, String>> genderOptions,
     bool canFilterByMatchType,
-    int Function(ListFilterState draft) countFor,
-  ) async {
+    int Function(ListFilterState draft) countFor, {
+    required List<ListSortOption> sortOptions,
+    required ListSortOption activeSort,
+  }) async {
     final result = await showListFilterSheet(
       context: context,
       l10n: l10n,
@@ -131,12 +134,14 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
       // reads as data loss rather than as a filter.
       showMatchType: canFilterByMatchType,
       genderOptions: genderOptions,
-      sortOptions: _matchSortOptions,
+      sortOptions: sortOptions,
+      live: _sheetLive,
       initial: ListFilterState(
         selectedIntentKey: _selectedIntentKey,
         selectedGenderKey: _genderFilter,
         matchType: _matchTypeFilter,
-        sort: _sortOption,
+        sort: activeSort,
+        defaultSort: matchDefaultSort,
       ),
     );
     if (result == null || !mounted) return;
@@ -148,19 +153,35 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
     });
   }
 
-  /// Sorts matches using the current sort option.
+  /// Sorts matches using [sortOption].
   ///
-  /// [ListSortOption.distance] needs the other user's profile and the rating
-  /// providers, so the list re-sorts automatically as data arrives. Ties always
-  /// fall back to newest match first.
+  /// [ListSortOption.sharedInterests] and [ListSortOption.topRated] need the
+  /// other user's profile and the rating providers, so the list re-sorts
+  /// automatically as data arrives. Ties always fall back to newest match first.
   List<MatchModel> _sortMatches(
     WidgetRef ref,
     List<MatchModel> matches,
     UserProfile? currentProfile,
+    ListSortOption sortOption,
+    Set<String> chatIds,
+    Map<String, DateTime> lastActivityAt,
   ) {
-    if (_sortOption == ListSortOption.recent) {
+    // The two time-only orders resolve from fields already on the row, so they
+    // answer without the per-second expiry ticker — watching it here would
+    // rebuild and re-sort the whole list every second for no visible change.
+    if (sortOption == ListSortOption.recent) {
       final sorted = List<MatchModel>.from(matches);
       sorted.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      return sorted;
+    }
+    if (sortOption == ListSortOption.latestActivity) {
+      final sorted = List<MatchModel>.from(matches);
+      sorted.sort((a, b) {
+        final c = b
+            .activityAt(lastActivityAt)
+            .compareTo(a.activityAt(lastActivityAt));
+        return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
+      });
       return sorted;
     }
 
@@ -195,9 +216,14 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
       // rather than jumping around as data arrives.
       final displayName = otherProfile?.name.trim() ?? '';
 
-      Duration? remaining;
-      final rem = match.remainingFrom(now);
-      remaining = rem <= Duration.zero ? null : rem;
+      // Only a match whose chat has not started has a countdown running, which
+      // is exactly what "Expiring soon" orders by; a chat that exists is sorted
+      // as if it had no timer at all, so it sinks below the live ones.
+      final hasTimer = match.hasRunningTimer(
+        chatStarted: chatIds.contains(match.id),
+        now: now,
+      );
+      final Duration? remaining = hasTimer ? match.remainingFrom(now) : null;
 
       entries.add(
         _SortableMatch(
@@ -210,7 +236,7 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
       );
     }
 
-    switch (_sortOption) {
+    switch (sortOption) {
       case ListSortOption.sharedInterests:
         entries.sort((a, b) {
           final c = b.sharedInterests.compareTo(a.sharedInterests);
@@ -247,6 +273,7 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
           );
           return c != 0 ? c : b.match.createdAt.compareTo(a.match.createdAt);
         });
+      case ListSortOption.latestActivity:
       case ListSortOption.recent:
       case ListSortOption.unreadFirst:
         break;
@@ -351,6 +378,32 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
                   if (chatIds.contains(m.id)) return true;
                   return m.remainingFrom(now) > Duration.zero;
                 }).toList();
+
+                // A match's countdown only runs while its chat has not started;
+                // an expired one is already hidden above. With none running,
+                // "Expiring soon" would sort nothing, so it is not offered.
+                final hasExpiringMatches =
+                    hasChatsLoaded &&
+                    nonExpired.any(
+                      (m) => m.hasRunningTimer(
+                        chatStarted: chatIds.contains(m.id),
+                        now: now,
+                      ),
+                    );
+                final availableSorts = matchSortOptions(
+                  hasExpiring: hasExpiringMatches,
+                );
+                final activeSort = resolveSort(
+                  _sortOption,
+                  availableSorts,
+                  matchDefaultSort,
+                );
+                final lastActivityAt =
+                    ref
+                        .watch(chatActivityByMatchProvider(userId))
+                        .asData
+                        ?.value ??
+                    const <String, DateTime>{};
 
                 // Gender lives on the other person's profile — the provider
                 // each MatchBox already watches for its age/gender line.
@@ -467,6 +520,17 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
                 final canFilterByMatchType = MatchTypeFilter.canFilter(
                   nonExpired.map((m) => m.matchType).toList(),
                 );
+                // An open sheet reads its options through this instead of its
+                // opening snapshot: a match's countdown can start, or a match
+                // can arrive, while the sheet is on screen.
+                _sheetLive.publish(
+                  ListFilterSheetLive(
+                    sortOptions: availableSorts,
+                    revision: nonExpired.length,
+                    resultCountFor: (draft) =>
+                        _countMatches(nonExpired, matchGenderById, draft),
+                  ),
+                );
                 final searchBar = nonExpired.isEmpty
                     ? const SizedBox.shrink()
                     : ListSearchBar(
@@ -483,6 +547,8 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
                           canFilterByMatchType,
                           (draft) =>
                               _countMatches(nonExpired, matchGenderById, draft),
+                          sortOptions: availableSorts,
+                          activeSort: activeSort,
                         ),
                         activeFilterCount: ListFilterState(
                           selectedIntentKey: _selectedIntentKey,
@@ -537,6 +603,9 @@ class _MatchesScreenState extends ConsumerState<MatchesScreen> {
                   ref,
                   searchedMatches,
                   currentProfile,
+                  activeSort,
+                  chatIds,
+                  lastActivityAt,
                 );
 
                 return Column(

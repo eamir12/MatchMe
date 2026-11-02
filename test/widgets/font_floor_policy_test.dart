@@ -3,9 +3,9 @@
 // under 12.
 //
 // 1. Source scan — fails if a hard-coded `fontSize:` below the floor comes
-//    back into the app. The ramp lives in the theme, so a literal size is
-//    almost always a mistake; the only files allowed to carry one are listed
-//    below with the reason.
+//    back into the app or the admin tool. The ramp lives in the theme, so a
+//    literal size is almost always a mistake; the only files allowed to carry
+//    one are listed below with the reason.
 // 2. Theme test — the ramp values themselves, so a tweak to the token file is
 //    a deliberate act rather than a silent regression.
 
@@ -23,19 +23,25 @@ const _exemptFiles = <String, String>{
       'not readable text',
 };
 
+/// Every Flutter package in the repo. The admin tool shares the same copy and
+/// contrast bar as the app.
+const _sourceRoots = ['lib', 'matchme_admin/lib'];
+
 void main() {
   group('source scan: no hard-coded size below the 12 floor', () {
     late List<File> dartFiles;
 
     setUpAll(() {
-      dartFiles = Directory('lib')
-          .listSync(recursive: true)
-          .whereType<File>()
-          .where((f) => f.path.endsWith('.dart'))
-          .toList();
+      dartFiles = [
+        for (final root in _sourceRoots)
+          ...Directory(root)
+              .listSync(recursive: true)
+              .whereType<File>()
+              .where((f) => f.path.endsWith('.dart')),
+      ];
     });
 
-    test('every fontSize: literal in lib/ is at least 12', () {
+    test('every fontSize: literal in the app and admin packages is 12+', () {
       final pattern = RegExp(r'(?<![A-Za-z])fontSize:\s*(\d+(?:\.\d+)?)');
       final offenders = <String>[];
 
@@ -60,9 +66,10 @@ void main() {
         offenders,
         isEmpty,
         reason:
-            'Text below 12 is too small to read on a phone. Take the size '
-            'from the theme (textTheme.titleSmall/bodySmall/labelLarge/'
-            'labelSmall) instead of a literal. Offenders:\n'
+            'Text below 12 is too small to read on a phone and falls under '
+            'the admin tool\'s copy/contrast bar. Take the size from the '
+            'theme (textTheme.titleSmall/bodySmall/labelLarge/labelSmall) '
+            'instead of a literal. Offenders:\n'
             '${offenders.join('\n')}',
       );
     });

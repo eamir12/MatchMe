@@ -60,14 +60,18 @@ class _MeetupBannerState extends ConsumerState<MeetupBanner> {
     final state = ref.watch(provider);
     final l10n = ref.watch(localizationProvider);
 
-    final wave = state.incomingWave;
     if (state.loading) return const SizedBox.shrink();
 
     // Tool alerts are match-scoped: they must show even when no location
     // invite exists (or the last one ended or expired).
-    if (wave != null) return _signalBanner(wave, l10n);
-    final beacon = state.incomingBeacon;
-    if (beacon != null) return _beaconBanner(l10n);
+    // The newest signal of either type wins, which is what the alert bar above
+    // the Navigator already reports; choosing by type made the two disagree.
+    final signal = state.latestIncomingSignal;
+    if (signal != null) {
+      return signal.type == MeetupSignalType.beacon
+          ? _beaconBanner(l10n)
+          : _signalBanner(signal, l10n);
+    }
     final cards = state.incomingSpotCards;
     if (cards.isNotEmpty) return _spotBanner(cards.last, l10n);
 

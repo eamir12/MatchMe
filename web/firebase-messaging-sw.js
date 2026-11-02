@@ -12,6 +12,8 @@ firebase.initializeApp({
 
 const messaging = firebase.messaging();
 
+// v7: + meet-up cards close themselves when their live window passes, and the
+// two decision tools are tagged as meet-up events instead of chat ones.
 // v6: + the server's card wins - a locally joined history no longer replaces
 // the body of a chat card that collapsed because several messages are unread.
 // v5: tags aligned with the server contract (admin_<id>, expiry _<threshold>)
@@ -19,7 +21,7 @@ const messaging = firebase.messaging();
 // v4: + silent edit/delete retraction closes the stale grouped card.
 // skipWaiting + claim so rebooted/offline browsers pick up the fix without
 // waiting for the old worker to release its clients.
-const SW_VERSION = 'v6-server-copy-card';
+const SW_VERSION = 'v7-meetup-card-expiry';
 try {
   self.addEventListener('install', (event) => {
     try {
@@ -37,6 +39,37 @@ try {
 
 const _chatMessageHistory = new Map(); // matchId -> [{ id: string, text: string }]
 let _currentUserId = '';
+
+// How long each meet-up tool event stays news, matching the app's
+// meetup_alerts TTLs. A card the worker posted for a wave the recipient never
+// answered would otherwise sit in the tray after the wave itself is gone: the
+// server deletes the live tool row and leaves the notification untouched.
+const MEETUP_TTL_MS = {
+  meetup_signal: 60 * 1000,
+  meetup_beacon: 120 * 1000,
+  meetup_spot: 120 * 60 * 1000,
+  meetup_proposal: 240 * 60 * 1000,
+  meetup_place_change: 240 * 60 * 1000,
+};
+
+// Closes the meetup cards whose live window has passed. The worker has no
+// timers of its own, so it runs on every push and whenever the app boots and
+// identifies itself.
+async function _closeExpiredMeetupCards() {
+  try {
+    const shown = await self.registration.getNotifications();
+    const now = Date.now();
+    for (const n of (shown || [])) {
+      const tag = (n.tag || '').toString();
+      if (tag.indexOf('meetup_') !== 0) continue;
+      const kind = tag.slice(0, tag.lastIndexOf('_'));
+      const ttl = MEETUP_TTL_MS[kind];
+      if (!ttl) continue;
+      if (n.timestamp + ttl > now) continue;
+      try { n.close(); } catch (_) {}
+    }
+  } catch (_) {}
+}
 
 function _pushMessageHistory(matchId, messageId, text) {
   const key = (matchId || '').toString().trim() || 'unknown_chat';
@@ -77,6 +110,9 @@ self.addEventListener('message', (event) => {
   const type = (data && (data.type || data.kind)) ? String(data.type || data.kind).trim() : '';
   if (type === 'SET_USER_ID') {
     _currentUserId = String(data.userId || data.user_id || '').trim();
+    // The app just came up: drop the tool cards whose window has closed while
+    // nobody was looking at the tray.
+    event.waitUntil(_closeExpiredMeetupCards());
     return;
   }
   if (type === 'CLEAR_USER_ID') {
@@ -95,6 +131,9 @@ messaging.onBackgroundMessage(async (payload) => {
     : (data.notification_body || '');
   const dataType = (data.type || data.kind || data.notification_type || data.notificationType || '').toString().trim();
   const isAdminBroadcast = dataType === 'admin_broadcast';
+  // Any push is a reason to tidy the tray: a tool card whose live window closed
+  // is stale news even if this push belongs to another event entirely.
+  try { await _closeExpiredMeetupCards(); } catch (_) {}
 
   try {
     const allClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
@@ -113,11 +152,14 @@ messaging.onBackgroundMessage(async (payload) => {
   const rawKind = (data.kind || data.type || data.notification_type || '').toString().trim().toLowerCase();
   const isExpiry = rawKind === 'match_expiry' || rawKind === 'pinned_expiry';
   const isMatch = rawKind === 'match' || rawKind === 'new_match';
-  const isMeetup = rawKind === 'meetup_signal' || rawKind === 'meetup_beacon' || rawKind === 'meetup_spot';
+  const isMeetup = Object.prototype.hasOwnProperty.call(MEETUP_TTL_MS, rawKind);
   // A wave or beacon replaces the sender's live row server-side, so its card
   // must replace the previous card too: keyed on who sent it, never on the row
-  // id, which changes with every resend. Mirrors the cron-jobs collapse tag.
+  // id, which changes with every resend. Mirrors the cron-jobs collapse tag,
+  // including its 8-char id prefixes (the full pair is too long for FCM) and
+  // the row-first key the one-shot tools use.
   const isLiveSignal = rawKind === 'meetup_signal' || rawKind === 'meetup_beacon';
+  const meetupRowId = (data.meetup_signal_id || data.meetup_spot_id || data.meetup_session_id || '').toString().trim();
   const isRetraction = rawKind === 'message_edited' || rawKind === 'message_deleted';
   // Retraction tick: close the stale grouped card instead of posting.
   // The next real message re-posts with correct text via its own tag.
@@ -157,8 +199,8 @@ messaging.onBackgroundMessage(async (payload) => {
         ? (matchId ? `new_match_${matchId}` : 'new_match')
         : isMeetup
           ? (isLiveSignal && matchId && senderId
-              ? `${rawKind}_${matchId}_${senderId}`
-              : `${rawKind}_${(data.meetup_signal_id || data.meetup_spot_id || matchId || 'event').toString().trim()}`)
+              ? `${rawKind}_${matchId.slice(0, 8)}_${senderId.slice(0, 8)}`
+              : `${rawKind}_${meetupRowId || matchId || 'event'}`)
           : (matchId ? `match_${matchId}` : (data.tag || data.collapseKey || data.collapse_key || '').toString().trim());
 
   if (_currentUserId) {
