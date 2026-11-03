@@ -107,8 +107,11 @@ dependencies:
   passkeys: ^2.22.1
   
   # --- PAYMENTS ---
-  purchases_flutter: ^10.16.0
-  purchases_ui_flutter: ^10.16.0
+  # Keep both RevenueCat plugins on 10.16.0: their iOS SPM manifests pin the
+  # same purchases-hybrid-common release (19.12.0), and newer core versions
+  # otherwise make Xcode dependency resolution fail.
+  purchases_flutter: 10.16.0
+  purchases_ui_flutter: 10.16.0
   share_plus: ^13.3.1
   # Transitive (via geolocator_linux); pinned to 10.x so its win32 ^6
   # requirement stays compatible with flutter_secure_storage 10+/11.
@@ -313,4 +316,3 @@ msix_config:
   protocol_activation: matchme
   logo_path: tools/icons/app_icon.png
   architecture: x64
-
