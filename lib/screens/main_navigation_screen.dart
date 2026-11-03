@@ -1290,15 +1290,12 @@ class _MainNavigationScreenState extends ConsumerState<MainNavigationScreen>
 
     return Stack(
       children: [
-        if (useRail)
-          Row(
-            children: [
-              railPane(),
-              Expanded(child: contentScaffold()),
-            ],
-          )
-        else
-          contentScaffold(),
+        Row(
+          children: [
+            if (useRail) railPane() else const SizedBox.shrink(),
+            Expanded(child: contentScaffold()),
+          ],
+        ),
         const MatchNotificationOverlay(),
         const _NotificationInboxWatcher(),
         const _MeetupDesktopToastWatcher(),

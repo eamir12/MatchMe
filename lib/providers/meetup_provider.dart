@@ -15,6 +15,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:matchme/models/meetup_models.dart';
 import 'package:matchme/providers/connectivity_provider.dart';
+import 'package:matchme/providers/location_share_provider.dart';
 import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/services/app_config_service.dart';
 import 'package:matchme/services/landmark_suggestion_service.dart';
@@ -998,9 +999,12 @@ class MeetupNotifier extends Notifier<MeetupState> {
     if (session == null || !session.isOpen) return null;
     if (state.busy) return null;
 
-    List<String> paths = const [];
+    final paths = <String>{};
     try {
-      paths = await _service.spotPaths(session.id);
+      paths.addAll(await _service.spotPaths(session.id));
+    } catch (_) {}
+    try {
+      paths.addAll(await _service.spotPathsForMatch(matchId));
     } catch (_) {}
 
     final error = await _run(
@@ -1011,6 +1015,17 @@ class MeetupNotifier extends Notifier<MeetupState> {
     );
     if (error == null) {
       await _service.deleteSpotObjects(paths);
+      final locationShare = ref.read(locationShareProvider);
+      if (locationShare?.matchId == matchId) {
+        try {
+          await ref.read(locationShareProvider.notifier).stopSharing();
+        } catch (error, stackTrace) {
+          debugPrint(
+            'Meetup: Failed to stop local location sharing: '
+            '$error\n$stackTrace',
+          );
+        }
+      }
     }
     return error;
   }

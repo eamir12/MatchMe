@@ -14,11 +14,18 @@ import 'package:matchme/providers/locale_provider.dart';
 import 'package:matchme/widgets/custom_app_bar.dart';
 
 /// Mirrors the rail/content structure in `MainNavigationScreen.build`.
-Widget _shell({required Widget rail, required Widget content}) {
+Widget _shell({
+  required Widget rail,
+  required Widget content,
+  bool useRail = true,
+}) {
   return Scaffold(
     body: Row(
       children: [
-        SizedBox(width: 88, child: SafeArea(right: false, child: rail)),
+        if (useRail)
+          SizedBox(width: 88, child: SafeArea(right: false, child: rail))
+        else
+          const SizedBox.shrink(),
         Expanded(child: content),
       ],
     ),
@@ -141,6 +148,50 @@ void main() {
     // The bug: the rail's painted background ballooned to half the window, so
     // the destinations sat nowhere near the leading edge.
     expect(railRect.left, 0);
+  });
+
+  testWidgets('content stays mounted when switching orientation layouts', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(400, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    var count = 0;
+    Widget content() => StatefulBuilder(
+      builder: (context, setState) => TextButton(
+        onPressed: () => setState(() => count++),
+        child: Text('content $count'),
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: _shell(rail: _buildRail(), content: content(), useRail: false),
+      ),
+    );
+    await tester.tap(find.text('content 0'));
+    await tester.pump();
+    expect(find.text('content 1'), findsOneWidget);
+
+    tester.view.physicalSize = const Size(800, 400);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: _shell(rail: _buildRail(), content: content()),
+      ),
+    );
+    await tester.pump();
+    expect(find.text('content 1'), findsOneWidget);
+
+    tester.view.physicalSize = const Size(400, 800);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: _shell(rail: _buildRail(), content: content(), useRail: false),
+      ),
+    );
+    await tester.pump();
+    expect(find.text('content 1'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('rail does not inflate to its flex share (loose Flexible bug)', (
